@@ -811,11 +811,15 @@ async fn streamed_web_request(
         )]));
     };
     let finished = |error| {
-        let _ = senders.send_to_background_jobs(BackgroundJob::WebRequestStreamFinished(
+        // not `let _ =`: dropping this leaves the stream registered and the plugin waiting for a
+        // terminator that will never come
+        if let Err(e) = senders.send_to_background_jobs(BackgroundJob::WebRequestStreamFinished(
             key.clone(),
             generation,
             error,
-        ));
+        )) {
+            log::error!("Failed to report web request stream as finished: {}", e);
+        }
     };
 
     let mut res = match send_web_request(url, verb, headers, body, http_client).await {
