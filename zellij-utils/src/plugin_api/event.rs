@@ -265,6 +265,17 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the WebRequestResult Event"),
             },
+            Some(ProtobufEventType::WebRequestStreamChunk) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::WebRequestStreamChunkPayload(payload)) => {
+                    Ok(Event::WebRequestStreamChunk {
+                        stream_id: payload.stream_id,
+                        chunk: payload.chunk,
+                        done: payload.done,
+                        error: payload.error,
+                    })
+                },
+                _ => Err("Malformed payload for the WebRequestStreamChunk Event"),
+            },
             Some(ProtobufEventType::CommandPaneOpened) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandPaneOpenedPayload(
                     command_pane_opened_payload,
@@ -867,6 +878,22 @@ impl TryFrom<Event> for ProtobufEvent {
                     )),
                 })
             },
+            Event::WebRequestStreamChunk {
+                stream_id,
+                chunk,
+                done,
+                error,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::WebRequestStreamChunk as i32,
+                payload: Some(event::Payload::WebRequestStreamChunkPayload(
+                    WebRequestStreamChunkPayload {
+                        stream_id,
+                        chunk,
+                        done,
+                        error,
+                    },
+                )),
+            }),
             Event::CommandPaneOpened(terminal_pane_id, context) => {
                 let command_pane_opened_payload = CommandPaneOpenedPayload {
                     terminal_pane_id,
@@ -2226,6 +2253,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             },
             ProtobufEventType::HintText => EventType::HintText,
             ProtobufEventType::ActivePaneScroll => EventType::ActivePaneScroll,
+            ProtobufEventType::WebRequestStreamChunk => EventType::WebRequestStreamChunk,
         })
     }
 }
@@ -2284,6 +2312,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             },
             EventType::HintText => ProtobufEventType::HintText,
             EventType::ActivePaneScroll => ProtobufEventType::ActivePaneScroll,
+            EventType::WebRequestStreamChunk => ProtobufEventType::WebRequestStreamChunk,
         })
     }
 }
@@ -3339,5 +3368,40 @@ impl TryFrom<SelectedText> for ProtobufSelectedText {
             start: Some(selected_text.start.try_into()?),
             end: Some(selected_text.end.try_into()?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_request_stream_chunk_round_trips_through_protobuf() {
+        // a data chunk and the terminator carrying an error - the two shapes a plugin sees
+        for original in [
+            Event::WebRequestStreamChunk {
+                stream_id: "stream-1".to_owned(),
+                chunk: b"data: {\"n\":1}\n\n".to_vec(),
+                done: false,
+                error: None,
+            },
+            Event::WebRequestStreamChunk {
+                stream_id: "stream-1".to_owned(),
+                chunk: vec![],
+                done: true,
+                error: Some("cancelled".to_owned()),
+            },
+        ] {
+            let protobuf: ProtobufEvent = original.clone().try_into().expect("encode");
+            let decoded: Event = protobuf.try_into().expect("decode");
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn web_request_stream_chunk_event_type_round_trips() {
+        let protobuf: ProtobufEventType = EventType::WebRequestStreamChunk.try_into().unwrap();
+        let decoded: EventType = protobuf.try_into().unwrap();
+        assert_eq!(decoded, EventType::WebRequestStreamChunk);
     }
 }

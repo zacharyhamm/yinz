@@ -22,10 +22,10 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
-        ChangeFloatingPanesCoordinatesPayload, ChangeHostFolderPayload, ClearPaneHighlightsPayload,
-        ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
-        CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ContextItem,
-        CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
+        CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload, ChangeHostFolderPayload,
+        ClearPaneHighlightsPayload, ClearScreenForPaneIdPayload, CliPipeOutputPayload,
+        CloseMultiplePanesPayload, CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName,
+        ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
         CreateTokenResponse, CurrentSessionLastSavedTimePayload,
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
@@ -1394,9 +1394,16 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         headers,
                         web_request_payload.body,
                         context,
+                        web_request_payload.stream_id,
                     ))
                 },
                 _ => Err("Mismatched payload for WebRequest"),
+            },
+            Some(CommandName::CancelWebRequest) => match protobuf_plugin_command.payload {
+                Some(Payload::CancelWebRequestPayload(payload)) => {
+                    Ok(PluginCommand::CancelWebRequest(payload.stream_id))
+                },
+                _ => Err("Mismatched payload for CancelWebRequest"),
             },
             Some(CommandName::DeleteDeadSession) => match protobuf_plugin_command.payload {
                 Some(Payload::DeleteDeadSessionPayload(dead_session_name)) => {
@@ -3304,7 +3311,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     })),
                 })
             },
-            PluginCommand::WebRequest(url, verb, headers, body, context) => {
+            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
                 let context: Vec<_> = context
                     .into_iter()
                     .map(|(name, value)| ContextItem { name, value })
@@ -3322,9 +3329,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         body,
                         headers,
                         context,
+                        stream_id,
                     })),
                 })
             },
+            PluginCommand::CancelWebRequest(stream_id) => Ok(ProtobufPluginCommand {
+                name: CommandName::CancelWebRequest as i32,
+                payload: Some(Payload::CancelWebRequestPayload(CancelWebRequestPayload {
+                    stream_id,
+                })),
+            }),
             PluginCommand::DeleteDeadSession(dead_session_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::DeleteDeadSession as i32,
                 payload: Some(Payload::DeleteDeadSessionPayload(dead_session_name)),
@@ -5278,6 +5292,55 @@ mod tests {
         match decoded {
             PluginCommand::ToggleFloatingPanes { tab_id } => assert_eq!(tab_id, Some(2)),
             other => panic!("expected ToggleFloatingPanes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn web_request_protobuf_round_trip() {
+        use crate::data::HttpVerb;
+        // None must survive as None: it is what keeps a plain web_request buffered
+        for stream_id in [None, Some("stream-1".to_owned())] {
+            let original = PluginCommand::WebRequest(
+                "https://example.com/v1/chat/completions".to_owned(),
+                HttpVerb::Post,
+                BTreeMap::from([("authorization".to_owned(), "Bearer sk-test".to_owned())]),
+                b"{\"stream\":true}".to_vec(),
+                BTreeMap::from([("request_id".to_owned(), "7".to_owned())]),
+                stream_id.clone(),
+            );
+            let protobuf: ProtobufPluginCommand = original.clone().try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match (decoded, original) {
+                (
+                    PluginCommand::WebRequest(url, _, headers, body, context, decoded_stream_id),
+                    PluginCommand::WebRequest(
+                        expected_url,
+                        _,
+                        expected_headers,
+                        expected_body,
+                        expected_context,
+                        _,
+                    ),
+                ) => {
+                    assert_eq!(url, expected_url);
+                    assert_eq!(headers, expected_headers);
+                    assert_eq!(body, expected_body);
+                    assert_eq!(context, expected_context);
+                    assert_eq!(decoded_stream_id, stream_id);
+                },
+                (other, _) => panic!("expected WebRequest, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_web_request_protobuf_round_trip() {
+        let original = PluginCommand::CancelWebRequest("stream-1".to_owned());
+        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        match decoded {
+            PluginCommand::CancelWebRequest(stream_id) => assert_eq!(stream_id, "stream-1"),
+            other => panic!("expected CancelWebRequest, got {:?}", other),
         }
     }
 }

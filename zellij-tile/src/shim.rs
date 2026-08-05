@@ -869,7 +869,56 @@ pub fn web_request<S: AsRef<str>>(
 ) where
     S: ToString,
 {
-    let plugin_command = PluginCommand::WebRequest(url.to_string(), verb, headers, body, context);
+    let plugin_command =
+        PluginCommand::WebRequest(url.to_string(), verb, headers, body, context, None);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Make a web request whose response body is streamed back in chunks rather than buffered,
+/// eg. for a `text/event-stream` (SSE) response from an LLM endpoint.
+///
+/// Subscribe to both `WebRequestResult` and `WebRequestStreamChunk`. Every stream begins with a
+/// `WebRequestResult` and ends with exactly one `WebRequestStreamChunk` carrying `done: true` -
+/// on clean end of stream, on network error and on cancellation alike, with `error` set in the
+/// latter two cases. In between:
+///
+/// - on a 2xx status: the `WebRequestResult` carries the status and headers with an **empty**
+///   body, and the body arrives as `WebRequestStreamChunk` events with `done: false`
+/// - on a non-2xx status: the `WebRequestResult` carries the full body exactly as
+///   [`web_request`] would deliver it, and there are no data chunks (so an error JSON from the
+///   endpoint arrives whole rather than as stream frames)
+///
+/// `stream_id` correlates the chunks and is the handle for [`cancel_web_request`]. It is scoped
+/// to this plugin, so it need only be unique among this plugin's in-flight streams. Parsing the
+/// stream framing (SSE, NDJSON, ...) is up to the plugin.
+pub fn web_request_stream<I: ToString, S: ToString>(
+    stream_id: I,
+    url: S,
+    verb: HttpVerb,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+    context: BTreeMap<String, String>,
+) {
+    let plugin_command = PluginCommand::WebRequest(
+        url.to_string(),
+        verb,
+        headers,
+        body,
+        context,
+        Some(stream_id.to_string()),
+    );
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Cancel an in-flight [`web_request_stream`]. A final `WebRequestStreamChunk` with `done: true`
+/// and `error: Some(_)` is still delivered. Cancelling an unknown or already finished stream is
+/// a no-op.
+pub fn cancel_web_request<S: ToString>(stream_id: S) {
+    let plugin_command = PluginCommand::CancelWebRequest(stream_id.to_string());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

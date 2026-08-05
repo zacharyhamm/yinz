@@ -16,6 +16,7 @@ use zellij_utils::web_server_commands::{
     WebServerResponse,
 };
 
+use futures_lite::io::AsyncReadExt;
 use isahc::prelude::*;
 use isahc::AsyncReadResponseExt;
 use isahc::{config::RedirectPolicy, HttpClient, Request};
@@ -36,6 +37,23 @@ use crate::pty::PtyInstruction;
 use crate::screen::ScreenInstruction;
 use crate::thread_bus::Bus;
 use crate::{ClientId, ServerInstruction};
+
+/// Identifies an in-flight streaming web request. Scoped to the plugin and client that started
+/// it, so one plugin cannot cancel another's stream.
+pub type StreamKey = (PluginId, ClientId, String);
+
+struct ActiveWebRequestStream {
+    abort_handle: tokio::task::AbortHandle,
+    generation: u64,
+    state: Arc<Mutex<WebRequestStreamState>>,
+    context: BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct WebRequestStreamState {
+    response_sent: bool,
+    finished: bool,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum BackgroundJob {
@@ -62,7 +80,12 @@ pub enum BackgroundJob {
         BTreeMap<String, String>, // headers
         Vec<u8>,                  // body
         BTreeMap<String, String>, // context
+        Option<String>,           // stream_id, when set the response body is streamed back
     ),
+    CancelWebRequest(PluginId, ClientId, String), // String - stream_id
+    /// Sent by a streaming request task back to this thread when its body ends, so that the
+    /// terminating chunk is always emitted from one place (see `finish_stream`)
+    WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
     RenderToClients,
     QueryZellijWebServerStatus,
@@ -89,7 +112,9 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::ReportSessionInfo(..) => BackgroundJobContext::ReportSessionInfo,
             BackgroundJob::ReportLayoutInfo(..) => BackgroundJobContext::ReportLayoutInfo,
             BackgroundJob::RunCommand(..) => BackgroundJobContext::RunCommand,
-            BackgroundJob::WebRequest(..) => BackgroundJobContext::WebRequest,
+            BackgroundJob::WebRequest(..)
+            | BackgroundJob::CancelWebRequest(..)
+            | BackgroundJob::WebRequestStreamFinished(..) => BackgroundJobContext::WebRequest,
             BackgroundJob::ReportPluginList(..) => BackgroundJobContext::ReportPluginList,
             BackgroundJob::RenderToClients => BackgroundJobContext::ReportPluginList,
             BackgroundJob::HighlightPanesWithMessage(..) => {
@@ -117,6 +142,13 @@ static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
 static REPAINT_DELAY_MS: u64 = 10;
+/// no web request gets a total cap - a long generation or a large download is legitimate - but a
+/// connection that stops producing bytes for this long is reaped
+static WEB_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// the idle timeout above is a transfer-rate guard and does not cover connection setup, so a
+/// blackholed host needs its own bound
+static WEB_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const WEB_REQUEST_STREAM_CHUNK_SIZE: usize = 8192;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
 
 #[derive(Clone)]
@@ -162,9 +194,12 @@ pub(crate) fn background_jobs_main(
     let mut flashing_pane_bells: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
     let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
     let mut nested_guest_pings: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
+    let mut active_streams: HashMap<StreamKey, ActiveWebRequestStream> = HashMap::new();
+    let mut next_stream_generation = 0u64;
 
     let http_client = HttpClient::builder()
-        // TODO: timeout?
+        .connect_timeout(WEB_REQUEST_CONNECT_TIMEOUT)
+        // the idle timeout is per-request, in send_web_request
         .redirect_policy(RedirectPolicy::Follow)
         .build()
         .ok();
@@ -342,87 +377,111 @@ pub(crate) fn background_jobs_main(
                     }
                 });
             },
-            BackgroundJob::WebRequest(plugin_id, client_id, url, verb, headers, body, context) => {
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    let http_client = http_client.clone();
-                    async move {
-                        async fn web_request(
-                            url: String,
-                            verb: HttpVerb,
-                            headers: BTreeMap<String, String>,
-                            body: Vec<u8>,
-                            http_client: HttpClient,
-                        ) -> Result<
-                            (u16, BTreeMap<String, String>, Vec<u8>), // status_code, headers, body
-                            isahc::Error,
-                        > {
-                            let mut request = match verb {
-                                HttpVerb::Get => Request::get(url),
-                                HttpVerb::Post => Request::post(url),
-                                HttpVerb::Put => Request::put(url),
-                                HttpVerb::Delete => Request::delete(url),
-                            };
-                            for (header, value) in headers {
-                                request = request.header(header.as_str(), value);
-                            }
-                            let mut res = if !body.is_empty() {
-                                let req = request.body(body)?;
-                                http_client.send_async(req).await?
-                            } else {
-                                let req = request.body(())?;
-                                http_client.send_async(req).await?
-                            };
-
-                            let status_code = res.status();
-                            let headers: BTreeMap<String, String> = res
-                                .headers()
-                                .iter()
-                                .filter_map(|(name, value)| match value.to_str() {
-                                    Ok(value) => Some((name.to_string(), value.to_string())),
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to convert header {:?} to string: {:?}",
-                                            name,
-                                            e
-                                        );
-                                        None
+            BackgroundJob::WebRequest(
+                plugin_id,
+                client_id,
+                url,
+                verb,
+                headers,
+                body,
+                context,
+                stream_id,
+            ) => {
+                let Some(http_client) = http_client.clone() else {
+                    log::error!(
+                        "Cannot perform http request, likely due to a misconfigured http client"
+                    );
+                    continue;
+                };
+                let senders = bus.senders.clone();
+                match stream_id {
+                    None => {
+                        runtime.spawn(async move {
+                            let event =
+                                match buffered_web_request(url, verb, headers, body, http_client)
+                                    .await
+                                {
+                                    Ok((status, headers, body)) => {
+                                        Event::WebRequestResult(status, headers, body, context)
                                     },
-                                })
-                                .collect();
-                            let body = res.bytes().await?;
-                            Ok((status_code.as_u16(), headers, body))
-                        }
-                        let Some(http_client) = http_client else {
-                            log::error!("Cannot perform http request, likely due to a misconfigured http client");
-                            return;
-                        };
-
-                        match web_request(url, verb, headers, body, http_client).await {
-                            Ok((status, headers, body)) => {
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::WebRequestResult(status, headers, body, context),
-                                )]));
+                                    Err(e) => {
+                                        log::error!("Failed to send web request: {}", e);
+                                        Event::WebRequestResult(
+                                            400,
+                                            BTreeMap::new(),
+                                            e.to_string().into_bytes(),
+                                            context,
+                                        )
+                                    },
+                                };
+                            let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                Some(plugin_id),
+                                Some(client_id),
+                                event,
+                            )]));
+                        });
+                    },
+                    Some(stream_id) => {
+                        let key: StreamKey = (plugin_id, client_id, stream_id);
+                        // reusing the id of a stream that is still in flight ends the old one,
+                        // so it can't be left running with nothing able to cancel it
+                        finish_stream(
+                            &mut active_streams,
+                            &bus.senders,
+                            key.clone(),
+                            None,
+                            Some("superseded".to_owned()),
+                        );
+                        next_stream_generation = next_stream_generation.wrapping_add(1);
+                        let generation = next_stream_generation;
+                        let state = Arc::new(Mutex::new(WebRequestStreamState::default()));
+                        let handle = runtime.spawn(streamed_web_request(
+                            key.clone(),
+                            generation,
+                            state.clone(),
+                            senders,
+                            url,
+                            verb,
+                            headers,
+                            body,
+                            context.clone(),
+                            http_client,
+                        ));
+                        // ponytail: unloading a plugin does not cancel its in-flight streams -
+                        // they drain to completion and the events are dropped by
+                        // update_plugins' plugin-id filter. Add a
+                        // BackgroundJob::CancelPluginWebRequests(plugin_id) from wasm_bridge's
+                        // unload path if abandoned streams become a bandwidth problem.
+                        active_streams.insert(
+                            key,
+                            ActiveWebRequestStream {
+                                abort_handle: handle.abort_handle(),
+                                generation,
+                                state,
+                                context,
                             },
-                            Err(e) => {
-                                log::error!("Failed to send web request: {}", e);
-                                let error_body = e.to_string().as_bytes().to_vec();
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::WebRequestResult(
-                                        400,
-                                        BTreeMap::new(),
-                                        error_body,
-                                        context,
-                                    ),
-                                )]));
-                            },
-                        }
-                    }
-                });
+                        );
+                    },
+                }
+            },
+            BackgroundJob::CancelWebRequest(plugin_id, client_id, stream_id) => {
+                let key: StreamKey = (plugin_id, client_id, stream_id);
+                finish_stream(
+                    &mut active_streams,
+                    &bus.senders,
+                    key,
+                    None,
+                    Some("cancelled".to_owned()),
+                );
+            },
+            BackgroundJob::WebRequestStreamFinished(key, generation, error) => {
+                finish_stream(
+                    &mut active_streams,
+                    &bus.senders,
+                    key,
+                    Some(generation),
+                    error,
+                );
             },
             BackgroundJob::QueryZellijWebServerStatus => {
                 #[cfg(feature = "web_server_capability")]
@@ -664,6 +723,210 @@ pub(crate) fn background_jobs_main(
             },
         }
     }
+}
+
+/// Build and send a web request. Buffered and streamed requests are sent identically - see
+/// `WEB_REQUEST_IDLE_TIMEOUT` for why neither gets a total cap.
+async fn send_web_request(
+    url: String,
+    verb: HttpVerb,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+    http_client: HttpClient,
+) -> Result<isahc::Response<isahc::AsyncBody>, isahc::Error> {
+    let mut request = match verb {
+        HttpVerb::Get => Request::get(url),
+        HttpVerb::Post => Request::post(url),
+        HttpVerb::Put => Request::put(url),
+        HttpVerb::Delete => Request::delete(url),
+    };
+    for (header, value) in headers {
+        request = request.header(header.as_str(), value);
+    }
+    request = request.low_speed_timeout(1, WEB_REQUEST_IDLE_TIMEOUT);
+    if !body.is_empty() {
+        http_client.send_async(request.body(body)?).await
+    } else {
+        http_client.send_async(request.body(())?).await
+    }
+}
+
+fn response_headers(response: &isahc::Response<isahc::AsyncBody>) -> BTreeMap<String, String> {
+    response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| match value.to_str() {
+            Ok(value) => Some((name.to_string(), value.to_string())),
+            Err(e) => {
+                log::error!("Failed to convert header {:?} to string: {:?}", name, e);
+                None
+            },
+        })
+        .collect()
+}
+
+async fn buffered_web_request(
+    url: String,
+    verb: HttpVerb,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+    http_client: HttpClient,
+) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), isahc::Error> {
+    let mut res = send_web_request(url, verb, headers, body, http_client).await?;
+    let status_code = res.status().as_u16();
+    let headers = response_headers(&res);
+    let body = res.bytes().await?;
+    Ok((status_code, headers, body))
+}
+
+/// Sends the leading `WebRequestResult` and then one `WebRequestStreamChunk` per read off the
+/// socket. Never emits the terminating chunk itself: it reports back with
+/// `BackgroundJob::WebRequestStreamFinished` so the terminator is emitted from a single place
+/// even when this task is aborted mid-read by a cancellation.
+async fn streamed_web_request(
+    key: StreamKey,
+    generation: u64,
+    state: Arc<Mutex<WebRequestStreamState>>,
+    senders: crate::thread_bus::ThreadSenders,
+    url: String,
+    verb: HttpVerb,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+    context: BTreeMap<String, String>,
+    http_client: HttpClient,
+) {
+    let (plugin_id, client_id, stream_id) = key.clone();
+    let send_event = |event: Event| {
+        let mut state = state.lock().unwrap();
+        if state.finished {
+            return;
+        }
+        if matches!(event, Event::WebRequestResult(..)) {
+            state.response_sent = true;
+        }
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            event,
+        )]));
+    };
+    let finished = |error| {
+        let _ = senders.send_to_background_jobs(BackgroundJob::WebRequestStreamFinished(
+            key.clone(),
+            generation,
+            error,
+        ));
+    };
+
+    let mut res = match send_web_request(url, verb, headers, body, http_client).await {
+        Ok(res) => res,
+        Err(e) => {
+            log::error!("Failed to send web request: {}", e);
+            // no response at all - report it the same way a buffered request would
+            send_event(Event::WebRequestResult(
+                400,
+                BTreeMap::new(),
+                e.to_string().into_bytes(),
+                context,
+            ));
+            return finished(Some(e.to_string()));
+        },
+    };
+
+    let status = res.status().as_u16();
+    let headers = response_headers(&res);
+    if !(200..300).contains(&status) {
+        // an error response is not a stream - buffer it whole so the plugin gets the body
+        let (body, error) = match res.bytes().await {
+            Ok(body) => (body, None),
+            Err(e) => {
+                let error = e.to_string();
+                (error.clone().into_bytes(), Some(error))
+            },
+        };
+        send_event(Event::WebRequestResult(status, headers, body, context));
+        return finished(error);
+    }
+    send_event(Event::WebRequestResult(status, headers, vec![], context));
+
+    // ponytail: chunks are forwarded as they come off the socket, one plugin update() per chunk
+    // (~50/s for a token stream, ~100us each). Coalesce on a ~30ms window here if it ever shows
+    // up in a profile.
+    let mut buf = [0u8; WEB_REQUEST_STREAM_CHUNK_SIZE];
+    let error = loop {
+        match res.body_mut().read(&mut buf).await {
+            Ok(0) => break None,
+            Ok(bytes_read) => send_event(Event::WebRequestStreamChunk {
+                stream_id: stream_id.clone(),
+                chunk: buf[..bytes_read].to_vec(),
+                done: false,
+                error: None,
+            }),
+            Err(e) => {
+                log::error!("Web request stream failed: {}", e);
+                break Some(e.to_string());
+            },
+        }
+    };
+    finished(error);
+}
+
+/// Ends a stream: drop it from the registry, abort its task if it is still running, and emit its
+/// terminating chunk. Both the cancellation and the natural-completion paths go through here, and
+/// removing the entry is the *sole* mechanism making the terminator exactly-once - whichever of
+/// the two arrives second finds the key already gone. Aborting an already-finished task is a
+/// no-op. The state lock is held across the terminator send so that a chunk racing in from the
+/// task lands before it or not at all.
+fn finish_stream(
+    active_streams: &mut HashMap<StreamKey, ActiveWebRequestStream>,
+    senders: &crate::thread_bus::ThreadSenders,
+    key: StreamKey,
+    generation: Option<u64>,
+    error: Option<String>,
+) {
+    if generation.is_some_and(|generation| {
+        active_streams
+            .get(&key)
+            .map_or(true, |stream| stream.generation != generation)
+    }) {
+        return;
+    }
+    let Some(stream) = active_streams.remove(&key) else {
+        return;
+    };
+    let mut state = stream.state.lock().unwrap();
+    // `finished` is only ever set below, on a state whose entry has already been removed, and a
+    // removed entry is never re-inserted - so a state still reachable here cannot be finished
+    debug_assert!(!state.finished, "a registered stream was already finished");
+    stream.abort_handle.abort();
+    let (plugin_id, client_id, stream_id) = key;
+    if !state.response_sent {
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            Event::WebRequestResult(
+                400,
+                BTreeMap::new(),
+                error
+                    .clone()
+                    .unwrap_or_else(|| "cancelled".to_owned())
+                    .into_bytes(),
+                stream.context,
+            ),
+        )]));
+        state.response_sent = true;
+    }
+    state.finished = true;
+    let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+        Some(plugin_id),
+        Some(client_id),
+        Event::WebRequestStreamChunk {
+            stream_id,
+            chunk: vec![],
+            done: true,
+            error,
+        },
+    )]));
 }
 
 fn job_already_running(
@@ -957,5 +1220,448 @@ mod tests {
         for name in ["live-a", "live-b", "live-c"] {
             assert!(!resurrectable.contains_key(name));
         }
+    }
+}
+
+#[cfg(test)]
+mod web_request_stream_tests {
+    use super::*;
+    use crate::thread_bus::ThreadSenders;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
+    use zellij_utils::errors::ErrorContext;
+
+    const PLUGIN_ID: PluginId = 1;
+    const CLIENT_ID: ClientId = 2;
+    const GENERATION: u64 = 7;
+
+    type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;
+    type JobRx = Receiver<(BackgroundJob, ErrorContext)>;
+
+    fn test_senders() -> (ThreadSenders, PluginRx, JobRx) {
+        let (to_plugin, plugin_rx) = unbounded();
+        let (to_background_jobs, job_rx) = unbounded();
+        let senders = ThreadSenders {
+            to_plugin: Some(SenderWithContext::new(to_plugin)),
+            to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
+            ..Default::default()
+        };
+        (senders, plugin_rx, job_rx)
+    }
+
+    /// Serves exactly one request, then responds with `status` and the given body parts, each
+    /// written as a separate `Transfer-Encoding: chunked` chunk with a gap in between so they
+    /// reach the client as distinct reads. Returns the url to hit.
+    async fn serve_once(
+        status: &'static str,
+        content_type: &'static str,
+        parts: Vec<&'static str>,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // read the request headers so curl isn't left writing into a full buffer
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match socket.read(&mut byte).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => request.push(byte[0]),
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\n\r\n",
+                status, content_type
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            for part in parts {
+                let chunk = format!("{:x}\r\n{}\r\n", part.len(), part);
+                socket.write_all(chunk.as_bytes()).await.unwrap();
+                socket.flush().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            let _ = socket.flush().await;
+        });
+        url
+    }
+
+    async fn serve_truncated_response() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match socket.read(&mut byte).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => request.push(byte[0]),
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\nshort",
+                )
+                .await
+                .unwrap();
+        });
+        url
+    }
+
+    fn drain_events(plugin_rx: &PluginRx) -> Vec<Event> {
+        let mut events = vec![];
+        while let Ok((PluginInstruction::Update(updates), _)) = plugin_rx.try_recv() {
+            events.extend(updates.into_iter().map(|(_, _, event)| event));
+        }
+        events
+    }
+
+    fn stream_key() -> StreamKey {
+        (PLUGIN_ID, CLIENT_ID, "stream-1".to_owned())
+    }
+
+    async fn run_stream(url: String) -> (Vec<Event>, Vec<BackgroundJob>) {
+        let (senders, plugin_rx, job_rx) = test_senders();
+        streamed_web_request(
+            stream_key(),
+            GENERATION,
+            Arc::new(Mutex::new(WebRequestStreamState::default())),
+            senders,
+            url,
+            HttpVerb::Get,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            HttpClient::new().unwrap(),
+        )
+        .await;
+        let events = drain_events(&plugin_rx);
+        let jobs = job_rx.try_iter().map(|(job, _)| job).collect();
+        (events, jobs)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streams_body_in_chunks_and_reports_finished_once() {
+        let url = serve_once(
+            "200 OK",
+            "text/event-stream",
+            vec![
+                "data: {\"n\":1}\n\n",
+                "data: {\"n\":2}\n\n",
+                "data: [DONE]\n\n",
+            ],
+        )
+        .await;
+        let (events, jobs) = run_stream(url).await;
+
+        // the leading WebRequestResult carries the status and headers with an empty body
+        match &events[0] {
+            Event::WebRequestResult(status, headers, body, _) => {
+                assert_eq!(*status, 200);
+                assert_eq!(
+                    headers.get("content-type").map(|s| s.as_str()),
+                    Some("text/event-stream")
+                );
+                assert!(body.is_empty(), "streamed body must not be buffered");
+            },
+            other => panic!("expected a leading WebRequestResult, got {:?}", other),
+        }
+
+        let chunks: Vec<&Vec<u8>> = events[1..]
+            .iter()
+            .map(|e| match e {
+                Event::WebRequestStreamChunk { chunk, done, .. } => {
+                    assert!(!done, "the task must never emit the terminator itself");
+                    chunk
+                },
+                other => panic!("expected a chunk, got {:?}", other),
+            })
+            .collect();
+        assert!(
+            chunks.len() >= 2,
+            "body should arrive incrementally, got {} chunk(s)",
+            chunks.len()
+        );
+        let joined: Vec<u8> = chunks.into_iter().flatten().copied().collect();
+        assert_eq!(
+            String::from_utf8(joined).unwrap(),
+            "data: {\"n\":1}\n\ndata: {\"n\":2}\n\ndata: [DONE]\n\n"
+        );
+
+        assert_eq!(
+            jobs,
+            vec![BackgroundJob::WebRequestStreamFinished(
+                (PLUGIN_ID, CLIENT_ID, "stream-1".to_owned()),
+                GENERATION,
+                None
+            )],
+            "exactly one finish report, with no error"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_2xx_response_is_buffered_whole_with_no_chunks() {
+        let url = serve_once(
+            "401 Unauthorized",
+            "application/json",
+            vec!["{\"error\":", "\"bad key\"}"],
+        )
+        .await;
+        let (events, jobs) = run_stream(url).await;
+
+        assert_eq!(events.len(), 1, "an error response is not a stream");
+        match &events[0] {
+            Event::WebRequestResult(status, _, body, _) => {
+                assert_eq!(*status, 401);
+                assert_eq!(
+                    String::from_utf8(body.clone()).unwrap(),
+                    "{\"error\":\"bad key\"}"
+                );
+            },
+            other => panic!("expected a buffered WebRequestResult, got {:?}", other),
+        }
+        assert_eq!(
+            jobs,
+            vec![BackgroundJob::WebRequestStreamFinished(
+                (PLUGIN_ID, CLIENT_ID, "stream-1".to_owned()),
+                GENERATION,
+                None
+            )]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unreachable_host_reports_an_error_and_still_finishes() {
+        let (events, jobs) = run_stream("http://127.0.0.1:1/".to_owned()).await;
+
+        assert!(matches!(events[0], Event::WebRequestResult(400, ..)));
+        match &jobs[..] {
+            [BackgroundJob::WebRequestStreamFinished(_, GENERATION, Some(_))] => {},
+            other => panic!(
+                "expected one finish report carrying an error, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn truncated_non_2xx_response_finishes_with_an_error() {
+        let (events, jobs) = run_stream(serve_truncated_response().await).await;
+
+        assert!(matches!(events[0], Event::WebRequestResult(500, ..)));
+        assert!(matches!(
+            &jobs[..],
+            [BackgroundJob::WebRequestStreamFinished(
+                _,
+                GENERATION,
+                Some(_)
+            )]
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminator_is_emitted_exactly_once_per_stream() {
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let mut active_streams = HashMap::new();
+        let task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        active_streams.insert(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: task.abort_handle(),
+                generation: GENERATION,
+                state: Arc::new(Mutex::new(WebRequestStreamState::default())),
+                context: BTreeMap::from([("request_id".to_owned(), "7".to_owned())]),
+            },
+        );
+
+        // a cancel arrives, then the task's own finish report races in behind it - as would
+        // happen if the body ended just as the user hit the stop key
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            None,
+            Some("cancelled".to_owned()),
+        );
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            Some(GENERATION),
+            None,
+        );
+
+        let events = drain_events(&plugin_rx);
+        assert_eq!(
+            events.len(),
+            2,
+            "cancellation before headers must still lead with a result"
+        );
+        assert!(matches!(
+            &events[0],
+            Event::WebRequestResult(400, _, _, context)
+                if context.get("request_id").map(String::as_str) == Some("7")
+        ));
+        assert!(matches!(
+            &events[1],
+            Event::WebRequestStreamChunk { done: true, error: Some(e), .. } if e == "cancelled"
+        ));
+        assert!(
+            task.await.unwrap_err().is_cancelled(),
+            "task should be aborted"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn completed_stream_terminates_without_a_second_result() {
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let mut active_streams = HashMap::new();
+        active_streams.insert(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: tokio::spawn(async {}).abort_handle(),
+                generation: GENERATION,
+                state: Arc::new(Mutex::new(WebRequestStreamState {
+                    // the task already emitted the leading result and its chunks
+                    response_sent: true,
+                    finished: false,
+                })),
+                context: BTreeMap::new(),
+            },
+        );
+
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            Some(GENERATION),
+            None,
+        );
+
+        let events = drain_events(&plugin_rx);
+        assert!(
+            matches!(
+                &events[..],
+                [Event::WebRequestStreamChunk {
+                    done: true,
+                    error: None,
+                    chunk,
+                    ..
+                }] if chunk.is_empty()
+            ),
+            "a completed stream ends with only the terminator, got {:?}",
+            events
+        );
+        assert!(active_streams.is_empty(), "the stream must be deregistered");
+    }
+
+    /// reusing an in-flight stream_id supersedes the old stream - the registry ends up holding
+    /// only the new one, and the old one is terminated rather than orphaned
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reusing_a_stream_id_supersedes_the_old_stream() {
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let mut active_streams = HashMap::new();
+        let old_task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        active_streams.insert(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: old_task.abort_handle(),
+                generation: GENERATION,
+                state: Arc::new(Mutex::new(WebRequestStreamState {
+                    response_sent: true,
+                    finished: false,
+                })),
+                context: BTreeMap::new(),
+            },
+        );
+
+        // what the WebRequest arm does before spawning a replacement under the same key
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            None,
+            Some("superseded".to_owned()),
+        );
+        let new_state = Arc::new(Mutex::new(WebRequestStreamState::default()));
+        let new_task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        active_streams.insert(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: new_task.abort_handle(),
+                generation: GENERATION + 1,
+                state: new_state,
+                context: BTreeMap::new(),
+            },
+        );
+
+        assert!(
+            matches!(
+                &drain_events(&plugin_rx)[..],
+                [Event::WebRequestStreamChunk { done: true, error: Some(e), .. }] if e == "superseded"
+            ),
+            "the superseded stream gets its terminator"
+        );
+        assert!(old_task.await.unwrap_err().is_cancelled());
+
+        // the old stream's finish report must not disturb its replacement
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            Some(GENERATION),
+            None,
+        );
+        assert!(drain_events(&plugin_rx).is_empty());
+        assert_eq!(
+            active_streams.get(&stream_key()).map(|s| s.generation),
+            Some(GENERATION + 1)
+        );
+        new_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_an_unknown_stream_is_a_no_op() {
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        finish_stream(&mut HashMap::new(), &senders, stream_key(), None, None);
+        assert!(drain_events(&plugin_rx).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_finish_does_not_cancel_replacement_stream() {
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let mut active_streams = HashMap::new();
+        let task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        active_streams.insert(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: task.abort_handle(),
+                generation: GENERATION + 1,
+                state: Arc::new(Mutex::new(WebRequestStreamState::default())),
+                context: BTreeMap::new(),
+            },
+        );
+
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            Some(GENERATION),
+            None,
+        );
+
+        assert!(active_streams.contains_key(&stream_key()));
+        assert!(drain_events(&plugin_rx).is_empty());
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            None,
+            Some("cancelled".to_owned()),
+        );
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 }
