@@ -23,10 +23,10 @@ pub enum RecorderInstruction {
 
 #[derive(Clone)]
 pub struct SessionRecorderHandle {
-    sender: crossbeam::channel::Sender<RecorderInstruction>,
-    started_at: Instant,
-    capture_input: bool,
-    enabled: Arc<AtomicBool>,
+    pub sender: crossbeam::channel::Sender<RecorderInstruction>,
+    pub started_at: Instant,
+    pub capture_input: bool,
+    pub enabled: Arc<AtomicBool>,
 }
 
 impl SessionRecorderHandle {
