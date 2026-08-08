@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::implicit_saturating_sub)]
 use super::kitty_graphics::{
     format_kitty_error, format_kitty_reply, KittyAction, KittyCommand, KittyCommandParser,
     KittyError, KittyErrorCode, KittyGrid, KittyHostSupport, KittyImageChunk, KittyImageStore,
@@ -266,10 +268,7 @@ fn transfer_rows_from_lines_above_to_viewport(
         let excess_row = Row::from_rows(next_lines);
         bounded_push(lines_above, sixel_grid, kitty_grid, excess_row);
     }
-    match usize::try_from(lines_added_to_viewport) {
-        Ok(n) => n,
-        _ => 0,
-    }
+    usize::try_from(lines_added_to_viewport).unwrap_or_default()
 }
 
 fn transfer_rows_from_viewport_to_lines_above(
@@ -402,7 +401,7 @@ fn calculate_row_display_height(row_width: usize, viewport_width: usize) -> usiz
 
 fn subtract_isize_from_usize(u: usize, i: isize) -> usize {
     if i.is_negative() {
-        u - i.abs() as usize
+        u - i.unsigned_abs()
     } else {
         u + i as usize
     }
@@ -627,6 +626,7 @@ fn match_to_selection(
 /// context such as surrounding whitespace in the full match while
 /// highlighting only the content in group 1). Otherwise the full match
 /// (group 0) is returned.
+#[allow(clippy::get_first)]
 fn highlight_match<'t>(captures: &regex::Captures<'t>) -> Option<regex::Match<'t>> {
     captures.get(1).or_else(|| captures.get(0))
 }
@@ -863,31 +863,21 @@ impl Click {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum MouseMode {
+    #[default]
     NoEncoding,
     Utf8,
     Sgr,
 }
 
-impl Default for MouseMode {
-    fn default() -> Self {
-        MouseMode::NoEncoding
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum MouseTracking {
+    #[default]
     Off,
     Normal,
     ButtonEventTracking,
     AnyEventTracking,
-}
-
-impl Default for MouseTracking {
-    fn default() -> Self {
-        MouseTracking::Off
-    }
 }
 
 impl Debug for Grid {
@@ -1005,6 +995,7 @@ fn resolve_highlight_colors(
 }
 
 impl Grid {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rows: usize,
         columns: usize,
@@ -1253,17 +1244,16 @@ impl Grid {
     }
     fn kitty_canonical_line_starts(&self) -> Vec<usize> {
         let mut starts = Vec::new();
-        let mut wrapped_row = 0usize;
-        for row in self
+        for (wrapped_row, row) in self
             .lines_above
             .iter()
             .chain(self.viewport.iter())
             .chain(self.lines_below.iter())
+            .enumerate()
         {
             if row.is_canonical {
                 starts.push(wrapped_row);
             }
-            wrapped_row += 1;
         }
         starts
     }
@@ -1903,12 +1893,12 @@ impl Grid {
                 }
             }
         }
-        return Ok(Some((
+        Ok(Some((
             character_chunks,
             Some(raw_vte_output),
             sixel_image_chunks,
             kitty_image_chunks,
-        )));
+        )))
     }
     /// Returns the cursor position and whether it is visible.
     /// The position is returned unconditionally (as long as the cursor is within
@@ -2631,10 +2621,7 @@ impl Grid {
         highlights: Vec<RegexHighlight>,
         style: &Style,
     ) {
-        let slot = self
-            .plugin_highlights
-            .entry(plugin_id)
-            .or_insert_with(Vec::new);
+        let slot = self.plugin_highlights.entry(plugin_id).or_default();
         for h in highlights {
             let (fg, bg) = resolve_highlight_colors(&h.style, style);
             if let Ok(regex) = regex::Regex::new(&h.pattern) {
@@ -2701,7 +2688,7 @@ impl Grid {
         position: &Position,
     ) -> Option<(u32, String, String, BTreeMap<String, String>)> {
         let click_row = position.line.0 as usize;
-        let click_col = position.column.0 as usize;
+        let click_col = position.column.0;
 
         let (_canonical, _group_len, logical_text, boundaries) =
             collect_and_build_logical_line(&self.viewport, click_row)?;
@@ -2803,7 +2790,7 @@ impl Grid {
             return;
         }
         let hover_row = hover_pos.line.0 as usize;
-        let hover_col = hover_pos.column.0 as usize;
+        let hover_col = hover_pos.column.0;
         let (_canonical, _group_len, logical_text, boundaries) =
             match collect_and_build_logical_line(&self.viewport, hover_row) {
                 Some(v) => v,
@@ -2811,7 +2798,7 @@ impl Grid {
             };
         let mut best_layer: Option<HighlightLayer> = None;
         let mut best_tooltip: Option<String> = None;
-        for (_plugin_id, pattern_map) in &self.plugin_highlights {
+        for pattern_map in self.plugin_highlights.values() {
             for (_pattern, compiled) in pattern_map {
                 if !compiled.on_hover || compiled.tooltip_text.is_none() {
                     continue;
@@ -2870,7 +2857,7 @@ impl Grid {
                     let group_end_row = ridx + group_len - 1;
                     if hover_row >= ridx && hover_row <= group_end_row {
                         let hover_col = hover_pos.column.0;
-                        for (_plugin_id, pattern_map) in &self.plugin_highlights {
+                        for pattern_map in self.plugin_highlights.values() {
                             for (_pattern, compiled) in pattern_map {
                                 if !compiled.on_hover || !compiled.has_visual_effect() {
                                     continue;
@@ -2907,7 +2894,7 @@ impl Grid {
 
             // Non-hover highlights are pushed after hover so that hover
             // takes precedence for overlapping regions.
-            for (_plugin_id, pattern_map) in &self.plugin_highlights {
+            for pattern_map in self.plugin_highlights.values() {
                 for (_pattern, compiled) in pattern_map {
                     if compiled.on_hover || !compiled.has_visual_effect() {
                         continue;
@@ -2950,7 +2937,7 @@ impl Grid {
         self.click.record_click(*start);
 
         if self.click.is_double_click() {
-            let Some((start_position, end_position)) = self.word_around_position(&start) else {
+            let Some((start_position, end_position)) = self.word_around_position(start) else {
                 // no-op
                 return;
             };
@@ -2964,7 +2951,7 @@ impl Grid {
             self.mark_for_rerender();
             return;
         } else if self.click.is_triple_click() {
-            let Some((start_position, end_position)) = self.canonical_line_around_position(&start)
+            let Some((start_position, end_position)) = self.canonical_line_around_position(start)
             else {
                 // no-op
                 return;
@@ -2988,7 +2975,7 @@ impl Grid {
         let old_selection = self.selection;
         if &old_selection.end != to {
             if self.click.is_double_click() {
-                let Some((word_start_position, word_end_position)) = self.word_around_position(&to)
+                let Some((word_start_position, word_end_position)) = self.word_around_position(to)
                 else {
                     // no-op
                     return;
@@ -2999,7 +2986,7 @@ impl Grid {
                 self.update_selected_lines(&old_selection, &current_selection);
                 self.mark_for_rerender();
             } else if self.click.is_triple_click() {
-                let Some(last_index_in_line) = self.last_index_in_line(&to) else {
+                let Some(last_index_in_line) = self.last_index_in_line(to) else {
                     return;
                 };
                 self.selection
@@ -3067,7 +3054,7 @@ impl Grid {
                 Row::from_columns(VecDeque::from(vec![EMPTY_TERMINAL_CHARACTER; self.width]));
 
             // get the row from lines_above, viewport, or lines below depending on index
-            let row = if l < 0 && self.lines_above.len() > l.abs() as usize {
+            let row = if l < 0 && self.lines_above.len() > l.unsigned_abs() {
                 let offset_from_end = l.abs();
                 &self.lines_above[self
                     .lines_above
@@ -3407,10 +3394,7 @@ impl Grid {
                 } else {
                     self.kitty_grid.resolve_display_target(&command)
                 };
-                let (pane_image_id, internal) = match resolved {
-                    Ok(resolved) => resolved,
-                    Err(e) => return Err(e),
-                };
+                let (pane_image_id, internal) = resolved?;
                 let cursor_px = self.current_cursor_pixel_coordinates();
                 let cell = { *self.character_cell_size.borrow() };
                 let (cursor_px, cell) = match (cursor_px, cell) {
@@ -3822,7 +3806,7 @@ impl Grid {
         self.lock_renders = false;
     }
     pub fn update_theme(&mut self, theme: Styling) {
-        self.style.colors = theme.clone();
+        self.style.colors = theme;
     }
     pub fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
@@ -3843,13 +3827,13 @@ impl Grid {
     ) -> PaneContents {
         let mut viewport: Vec<String> = Vec::with_capacity(self.viewport.len());
         for row in &self.viewport {
-            let s: String = (&row.columns).into_iter().map(|x| x.character).collect();
+            let s: String = row.columns.iter().map(|x| x.character).collect();
             viewport.push(s);
         }
         let mut contents = if get_full_scrollback {
             let mut lines_above_viewport: Vec<String> = Vec::with_capacity(self.lines_above.len());
             for row in &self.lines_above {
-                let s: String = (&row.columns).into_iter().map(|x| x.character).collect();
+                let s: String = row.columns.iter().map(|x| x.character).collect();
                 lines_above_viewport.push(s);
             }
             // Truncate to last N lines if max specified (Some(0) means "all" — no truncation)
@@ -3861,7 +3845,7 @@ impl Grid {
             }
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
-                let s: String = (&row.columns).into_iter().map(|x| x.character).collect();
+                let s: String = row.columns.iter().map(|x| x.character).collect();
                 lines_below_viewport.push(s);
             }
             PaneContents::new_with_scrollback(
@@ -3984,7 +3968,7 @@ impl Perform for Grid {
                 // tab
                 self.advance_to_next_tabstop(self.cursor.pending_styles.clone());
             },
-            10 | 11 | 12 => {
+            10..=12 => {
                 // 0a, newline
                 // 0b, vertical tabulation
                 // 0c, form feed
@@ -4055,7 +4039,7 @@ impl Perform for Grid {
             self.create_sixel_image();
         } else if let Some(mut ui_component_bytes) = self.ui_component_bytes.take() {
             let component_bytes = ui_component_bytes.drain(..);
-            let style = self.style.clone();
+            let style = self.style;
             let arrow_fonts = self.arrow_fonts;
             UiComponentParser::new(self, style, arrow_fonts)
                 .parse(component_bytes.collect())
@@ -4103,7 +4087,7 @@ impl Perform for Grid {
             // Set color index.
             b"4" => {
                 for chunk in params[1..].chunks(2) {
-                    let index = chunk.get(0).and_then(|index| parse_number(index));
+                    let index = chunk.first().and_then(|index| parse_number(index));
                     let color = chunk.get(1).and_then(|color| xparse_color(color));
                     if let (Some(i), Some(c)) = (index, color) {
                         if self.changed_colors.is_none() {
@@ -4111,7 +4095,7 @@ impl Perform for Grid {
                         }
                         self.changed_colors.as_mut().unwrap()[i as usize] = Some(c);
                         return;
-                    } else if chunk.get(1).as_ref().and_then(|c| c.get(0)) == Some(&b'?') {
+                    } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?') {
                         if let Some(index) = index {
                             // Forward palette-register queries to the
                             // host — apps want the actual host palette,
@@ -4249,7 +4233,7 @@ impl Perform for Grid {
                     return;
                 }
 
-                let _clipboard = params[1].get(0).unwrap_or(&b'c');
+                let _clipboard = params[1].first().unwrap_or(&b'c');
                 match params[2] {
                     b"?" => {
                         // TBD: paste from own clipboard - currently unsupported
@@ -4275,8 +4259,8 @@ impl Perform for Grid {
                 // Reset color indexes given as parameters.
                 for param in &params[1..] {
                     if let Some(index) = parse_number(param) {
-                        if self.changed_colors.is_some() {
-                            self.changed_colors.as_mut().unwrap()[index as usize] = None
+                        if let Some(changed_colors) = &mut self.changed_colors {
+                            changed_colors[index as usize] = None
                         }
                     }
                 }
@@ -4411,17 +4395,17 @@ impl Perform for Grid {
         } else if c == 'A' {
             // move cursor up until edge of screen
             let move_up_count = next_param_or(1);
-            self.move_cursor_up(move_up_count as usize);
+            self.move_cursor_up(move_up_count);
         } else if c == 'B' || c == 'e' {
             // move cursor down until edge of screen
             let move_down_count = next_param_or(1);
             let pad_character = EMPTY_TERMINAL_CHARACTER;
-            self.move_cursor_down_until_edge_of_screen(move_down_count as usize, pad_character);
+            self.move_cursor_down_until_edge_of_screen(move_down_count, pad_character);
         } else if c == 'D' {
             let move_back_count = next_param_or(1);
             self.move_cursor_back(move_back_count);
         } else if c == 'l' {
-            let first_intermediate_is_questionmark = match intermediates.get(0) {
+            let first_intermediate_is_questionmark = match intermediates.first() {
                 Some(b'?') => true,
                 None => false,
                 _ => false,
@@ -4521,7 +4505,7 @@ impl Perform for Grid {
                 }
             }
         } else if c == 'h' {
-            let first_intermediate_is_questionmark = match intermediates.get(0) {
+            let first_intermediate_is_questionmark = match intermediates.first() {
                 Some(b'?') => true,
                 None => false,
                 _ => false,
@@ -4541,8 +4525,7 @@ impl Perform for Grid {
                         },
                         1049 => {
                             // enter alternate buffer
-                            let current_lines_above =
-                                std::mem::replace(&mut self.lines_above, VecDeque::new());
+                            let current_lines_above = std::mem::take(&mut self.lines_above);
                             let current_viewport = std::mem::replace(
                                 &mut self.viewport,
                                 VecDeque::from(vec![Row::new().canonical()]),
@@ -4635,7 +4618,7 @@ impl Perform for Grid {
                 }
             }
         } else if c == 'p' {
-            let first_intermediate_is_questionmark = match intermediates.get(0) {
+            let first_intermediate_is_questionmark = match intermediates.first() {
                 Some(b'?') => true,
                 None => false,
                 _ => false,
@@ -4663,7 +4646,7 @@ impl Perform for Grid {
             }
         } else if c == 'r' {
             if params.len() > 1 {
-                let top = (next_param_or(1) as usize).saturating_sub(1);
+                let top = next_param_or(1).saturating_sub(1);
                 let bottom = params_iter
                     .next()
                     .map(|param| param[0] as usize)
@@ -4724,9 +4707,9 @@ impl Perform for Grid {
              * [4T = Scroll down 4, bring previous lines back into view
              */
             let line_count = next_param_or(1);
-            self.rotate_scroll_region_up(line_count as usize);
+            self.rotate_scroll_region_up(line_count);
         } else if c == 'S' {
-            let first_intermediate_is_questionmark = match intermediates.get(0) {
+            let first_intermediate_is_questionmark = match intermediates.first() {
                 Some(b'?') => true,
                 None => false,
                 _ => false,
@@ -4777,25 +4760,21 @@ impl Perform for Grid {
             }
         } else if c == 's' {
             self.save_cursor_position();
-        } else if c == 'u' && intermediates == &[b'>'] {
+        } else if c == 'u' && intermediates == b">" {
             // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
             // protocol
             // 0 disables, everything else enables.
             let count = next_param_or(0);
             if !self.explicitly_disable_kitty_keyboard_protocol {
-                if count > 0 {
-                    self.supports_kitty_keyboard_protocol = true;
-                } else {
-                    self.supports_kitty_keyboard_protocol = false;
-                }
+                self.supports_kitty_keyboard_protocol = count > 0;
             }
-        } else if c == 'u' && intermediates == &[b'<'] {
+        } else if c == 'u' && intermediates == b"<" {
             // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
             // protocol
             if !self.explicitly_disable_kitty_keyboard_protocol {
                 self.supports_kitty_keyboard_protocol = false;
             }
-        } else if c == 'u' && intermediates == &[b'?'] {
+        } else if c == 'u' && intermediates == b"?" {
             // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
             // protocol
             let reply = if self.supports_kitty_keyboard_protocol {
@@ -4804,16 +4783,12 @@ impl Perform for Grid {
                 "\u{1b}[?0u"
             };
             self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
-        } else if c == 'u' && intermediates == &[b'='] {
+        } else if c == 'u' && intermediates == b"=" {
             // kitty keyboard protocol without the stack, just setting.
             // 0 disables, everything else enables.
             let count = next_param_or(0);
             if !self.explicitly_disable_kitty_keyboard_protocol {
-                if count > 0 {
-                    self.supports_kitty_keyboard_protocol = true;
-                } else {
-                    self.supports_kitty_keyboard_protocol = false;
-                }
+                self.supports_kitty_keyboard_protocol = count > 0;
             }
         } else if c == 'u' {
             self.restore_cursor_position();
@@ -4846,7 +4821,7 @@ impl Perform for Grid {
                 self.advance_to_next_tabstop(self.cursor.pending_styles.clone());
             }
         } else if c == 'q' {
-            let first_intermediate_is_space = matches!(intermediates.get(0), Some(b' '));
+            let first_intermediate_is_space = matches!(intermediates.first(), Some(b' '));
             if first_intermediate_is_space {
                 // DECSCUSR (CSI Ps SP q) -- Set Cursor Style.
                 let cursor_style_id = next_param_or(0);
@@ -4863,7 +4838,7 @@ impl Perform for Grid {
                 if let Some(cursor_shape) = shape {
                     self.cursor.change_shape(cursor_shape);
                 }
-            } else if matches!(intermediates.get(0), Some(b'>')) {
+            } else if matches!(intermediates.first(), Some(b'>')) {
                 let version = version_number(VERSION);
                 let xtversion = format!("\u{1b}P>|Zellij({})\u{1b}\\", version);
                 self.pending_messages_to_pty
@@ -4876,7 +4851,7 @@ impl Perform for Grid {
         } else if c == 'c' {
             // identify terminal
             // https://vt100.net/docs/vt510-rm/DA1.html
-            match intermediates.get(0) {
+            match intermediates.first() {
                 None | Some(0) => {
                     // primary device attributes - VT220 with OSC 52 clipboard, advertising
                     // sixel (attribute 4) only if the attached terminal supports it
@@ -4899,7 +4874,7 @@ impl Perform for Grid {
         } else if c == 'n' {
             // DSR - device status report
             // https://vt100.net/docs/vt510-rm/DSR.html
-            let first_intermediate_is_questionmark = match intermediates.get(0) {
+            let first_intermediate_is_questionmark = match intermediates.first() {
                 Some(b'?') => true,
                 None => false,
                 _ => false,
@@ -4965,7 +4940,7 @@ impl Perform for Grid {
                 _ => {},
             }
         } else if c == 't' {
-            match next_param_or(1) as usize {
+            match next_param_or(1) {
                 14 => {
                     // Forward to host: apps asking for text-area pixels
                     // want the real window size, not Zellij's synthesised
@@ -5002,7 +4977,7 @@ impl Perform for Grid {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        match (byte, intermediates.get(0)) {
+        match (byte, intermediates.first()) {
             (b'A', charset_index_symbol) => {
                 let charset_index: CharsetIndex = match charset_index_symbol {
                     Some(b'(') => CharsetIndex::G0,
@@ -5157,6 +5132,7 @@ impl Debug for Row {
 }
 
 impl Row {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Row {
             columns: VecDeque::new(),
@@ -5198,8 +5174,8 @@ impl Row {
         self
     }
     pub fn width_cached(&mut self) -> usize {
-        if self.width.is_some() {
-            self.width.unwrap()
+        if let Some(width) = self.width {
+            width
         } else {
             let mut width = 0;
             for terminal_character in &self.columns {
@@ -5553,7 +5529,7 @@ impl Row {
                     None
                 }
             })
-            .unwrap_or_else(|| self.columns.len())
+            .unwrap_or(self.columns.len())
     }
 }
 

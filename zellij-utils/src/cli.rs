@@ -120,7 +120,7 @@ impl CliArgs {
     }
     pub fn options(&self) -> Option<Options> {
         if let Some(Command::Options(options)) = &self.command {
-            return Some(options.clone());
+            return Some((**options).clone());
         }
         None
     }
@@ -130,7 +130,7 @@ impl CliArgs {
 pub enum Command {
     /// Change the behaviour of zellij
     #[clap(name = "options", value_parser)]
-    Options(Options),
+    Options(Box<Options>),
 
     /// Setup zellij and check its configuration
     #[clap(name = "setup", value_parser)]

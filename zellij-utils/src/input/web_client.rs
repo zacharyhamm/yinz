@@ -36,11 +36,13 @@ pub struct WebClientTheme {
 }
 
 impl WebClientTheme {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl: &KdlNode) -> Result<Self, ConfigError> {
         let mut theme = WebClientTheme::default();
         let colors = kdl_children_or_error!(kdl, "empty theme");
 
         // Helper function to extract colors
+        #[allow(clippy::result_large_err)]
         let extract_color = |name: &str| -> Result<Option<String>, ConfigError> {
             if colors.get(name).is_some() {
                 let color = PaletteColor::try_from((name, colors))?;
@@ -146,6 +148,7 @@ impl std::fmt::Display for CursorInactiveStyle {
 }
 
 impl CursorInactiveStyle {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl: &KdlNode) -> Result<Self, ConfigError> {
         match kdl_first_entry_as_string!(kdl) {
             Some("block") => Ok(CursorInactiveStyle::Block),
@@ -154,7 +157,7 @@ impl CursorInactiveStyle {
             Some("outline") => Ok(CursorInactiveStyle::Outline),
             Some("no_style") => Ok(CursorInactiveStyle::NoStyle),
             _ => Err(ConfigError::new_kdl_error(
-                format!("Must be 'block', 'bar', 'underline', 'outline' or 'no_style'"),
+                "Must be 'block', 'bar', 'underline', 'outline' or 'no_style'".to_string(),
                 kdl.span().offset(),
                 kdl.span().len(),
             )),
@@ -201,13 +204,14 @@ impl std::fmt::Display for CursorStyle {
 }
 
 impl CursorStyle {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl: &KdlNode) -> Result<Self, ConfigError> {
         match kdl_first_entry_as_string!(kdl) {
             Some("block") => Ok(CursorStyle::Block),
             Some("bar") => Ok(CursorStyle::Bar),
             Some("underline") => Ok(CursorStyle::Underline),
             _ => Err(ConfigError::new_kdl_error(
-                format!("Must be 'block', 'bar' or 'underline'"),
+                "Must be 'block', 'bar' or 'underline'".to_string(),
                 kdl.span().offset(),
                 kdl.span().len(),
             )),
@@ -258,6 +262,7 @@ impl Default for WebClientConfig {
 }
 
 impl WebClientConfig {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl: &KdlNode) -> Result<Self, ConfigError> {
         let mut web_client_config = WebClientConfig::default();
 

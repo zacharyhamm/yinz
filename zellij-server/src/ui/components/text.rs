@@ -1,3 +1,7 @@
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::single_match)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::useless_format)]
 use super::{
     is_too_wide, parse_disabled, parse_indices, parse_opaque, parse_selected, Coordinates,
 };

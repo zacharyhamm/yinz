@@ -26,6 +26,7 @@ impl TryFrom<ProtobufStyle> for Style {
 }
 
 #[allow(deprecated)]
+#[allow(clippy::unnecessary_fallible_conversions)]
 impl TryFrom<Style> for ProtobufStyle {
     type Error = &'static str;
     fn try_from(style: Style) -> Result<Self, &'static str> {
@@ -105,7 +106,7 @@ impl TryFrom<ProtobufStyling> for Styling {
     type Error = &'static str;
 
     fn try_from(proto: ProtobufStyling) -> std::result::Result<Self, Self::Error> {
-        let frame_unselected = if proto.frame_unselected.len() > 0 {
+        let frame_unselected = if !proto.frame_unselected.is_empty() {
             Some(color_definitions!(proto, frame_unselected, 6))
         } else {
             None
@@ -197,8 +198,10 @@ impl TryFrom<Styling> for ProtobufStyling {
 impl TryFrom<ProtobufPalette> for Palette {
     type Error = &'static str;
     fn try_from(protobuf_palette: ProtobufPalette) -> Result<Self, &'static str> {
+        #[allow(clippy::needless_update)]
         Ok(Palette {
-            theme_hue: ProtobufThemeHue::from_i32(protobuf_palette.theme_hue)
+            theme_hue: ProtobufThemeHue::try_from(protobuf_palette.theme_hue)
+                .ok()
                 .ok_or("malformed theme_hue payload for Palette")?
                 .try_into()?,
             fg: protobuf_palette
@@ -281,6 +284,7 @@ impl TryFrom<Palette> for ProtobufPalette {
             .theme_hue
             .try_into()
             .map_err(|_| "malformed payload for palette")?;
+        #[allow(clippy::needless_update)]
         Ok(ProtobufPalette {
             theme_hue: theme_hue as i32,
             fg: Some(palette.fg.try_into()?),
@@ -308,8 +312,8 @@ impl TryFrom<Palette> for ProtobufPalette {
 impl TryFrom<ProtobufColor> for PaletteColor {
     type Error = &'static str;
     fn try_from(protobuf_color: ProtobufColor) -> Result<Self, &'static str> {
-        match ProtobufColorType::from_i32(protobuf_color.color_type) {
-            Some(ProtobufColorType::Rgb) => match protobuf_color.payload {
+        match ProtobufColorType::try_from(protobuf_color.color_type) {
+            Ok(ProtobufColorType::Rgb) => match protobuf_color.payload {
                 Some(ProtobufColorPayload::RgbColorPayload(rgb_color_payload)) => {
                     Ok(PaletteColor::Rgb((
                         rgb_color_payload.red as u8,
@@ -319,13 +323,13 @@ impl TryFrom<ProtobufColor> for PaletteColor {
                 },
                 _ => Err("malformed payload for Rgb color"),
             },
-            Some(ProtobufColorType::EightBit) => match protobuf_color.payload {
+            Ok(ProtobufColorType::EightBit) => match protobuf_color.payload {
                 Some(ProtobufColorPayload::EightBitColorPayload(eight_bit_payload)) => {
                     Ok(PaletteColor::EightBit(eight_bit_payload as u8))
                 },
                 _ => Err("malformed payload for 8bit color"),
             },
-            None => Err("malformed payload for Color"),
+            Err(_) => Err("malformed payload for Color"),
         }
     }
 }

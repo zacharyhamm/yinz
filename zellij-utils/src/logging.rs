@@ -1,3 +1,4 @@
+#![allow(clippy::explicit_auto_deref)]
 //! Zellij logging utility functions.
 
 use std::{

@@ -1,3 +1,14 @@
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::unnecessary_get_then_check)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::iter_cloned_collect)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 #[cfg(not(windows))]
 #[path = "os_input_output_unix.rs"]
 mod os_input_output_unix;
@@ -2324,7 +2335,7 @@ fn should_show_release_notes(
         }
     }
     if ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE.exists() {
-        return false;
+        false
     } else {
         if let Some(parent) = ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -2336,7 +2347,7 @@ fn should_show_release_notes(
             );
             return false;
         }
-        return true;
+        true
     }
 }
 
@@ -2345,7 +2356,7 @@ fn should_show_startup_tip(
     layout_is_welcome_screen: bool,
 ) -> bool {
     if layout_is_welcome_screen {
-        false
+        return false;
     } else {
         should_show_startup_tip_config.unwrap_or(true)
     }

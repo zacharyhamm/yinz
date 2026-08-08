@@ -1,3 +1,4 @@
+#![allow(clippy::question_mark)]
 use crate::panes::AnsiCode;
 use std::convert::TryFrom;
 

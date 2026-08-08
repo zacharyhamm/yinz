@@ -1,3 +1,12 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::unnecessary_fallible_conversions)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::borrowed_box)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::option_as_ref_deref)]
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
@@ -2493,7 +2502,7 @@ pub(crate) fn route_thread_main(
                                     action,
                                     client_id,
                                     Some(cli_client_id),
-                                    maybe_pane_id.map(|p| PaneId::Terminal(p)),
+                                    maybe_pane_id.map(PaneId::Terminal),
                                     senders,
                                     default_shell,
                                     Some(&mut seen_cli_pipes),
@@ -3232,12 +3241,7 @@ fn extract_command(entry: &PaneListEntry) -> String {
 }
 
 fn extract_cwd(entry: &PaneListEntry) -> String {
-    entry
-        .pane_cwd
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or("-")
-        .to_string()
+    entry.pane_cwd.as_deref().unwrap_or("-").to_string()
 }
 
 fn format_tabs_as_json(tab_infos: &[TabInfo]) -> Vec<String> {

@@ -202,6 +202,7 @@ fn guest_modal_wrap_words(
     lines
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn guest_modal_chunks(
     columns: usize,
     rows: usize,

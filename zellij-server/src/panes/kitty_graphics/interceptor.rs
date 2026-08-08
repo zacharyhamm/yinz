@@ -52,6 +52,7 @@ pub enum InterceptorResult {
 }
 
 impl KittyApcInterceptor {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         KittyApcInterceptor {
             state: State::Ground,

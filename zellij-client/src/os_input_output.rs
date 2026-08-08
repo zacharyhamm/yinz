@@ -52,6 +52,12 @@ impl AsyncStdinReader {
     }
 }
 
+impl Default for AsyncStdinReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl AsyncStdin for AsyncStdinReader {
     async fn read(&mut self) -> io::Result<Vec<u8>> {

@@ -793,7 +793,7 @@ mod not_wasm {
 -> To help us fix this, please open an issue: https://github.com/zellij-org/zellij/issues
 
 ",
-                crate::consts::ZELLIJ_TMP_LOG_FILE.display().to_string()
+                crate::consts::ZELLIJ_TMP_LOG_FILE.display()
             )
         }
     }
@@ -838,14 +838,11 @@ mod not_wasm {
         ));
 
         error!(
-            "{}",
-            format!(
-                "Panic occured:
+            "Panic occured:
              thread: {}
              location: {}
              message: {}",
-                thread, location_string, msg
-            )
+            thread, location_string, msg
         );
 
         if thread == "main" || sender.is_none() {
@@ -854,8 +851,8 @@ mod not_wasm {
             // to get os_input here
             println!("\u{1b}[2J{}", fmt_report(report));
             process::exit(1);
-        } else {
-            let _ = sender.unwrap().send(T::error(fmt_report(report)));
+        } else if let Some(sender) = sender {
+            let _ = sender.send(T::error(fmt_report(report)));
         }
     }
 

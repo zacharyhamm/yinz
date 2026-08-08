@@ -1,3 +1,5 @@
+#![allow(clippy::useless_format)]
+#![allow(clippy::derivable_impls)]
 use std::convert::From;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::{Index, IndexMut};
@@ -186,14 +188,14 @@ impl std::ops::Deref for RcCharacterStyles {
     fn deref(&self) -> &Self::Target {
         match self {
             RcCharacterStyles::Reset => &RESET_STYLES,
-            RcCharacterStyles::Rc(styles) => &*styles,
+            RcCharacterStyles::Rc(styles) => styles,
         }
     }
 }
 
 impl Display for RcCharacterStyles {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let styles: &CharacterStyles = &*self;
+        let styles: &CharacterStyles = self;
         Display::fmt(&styles, f)
     }
 }

@@ -1,3 +1,8 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::iter_overeager_cloned)]
 use super::{PinnedExecutor, PluginId, PluginInstruction};
 use crate::global_async_runtime::get_tokio_runtime;
 use crate::plugins::pipes::{
@@ -130,7 +135,7 @@ impl LoadingContext {
             .join(make_plugin_url_path_safe(
                 Url::from(&plugin_config.location).to_string(),
             ))
-            .join(format!("plugin_cache"));
+            .join("plugin_cache");
         let default_mode = wasm_bridge
             .base_modes
             .get(&client_id)
@@ -224,7 +229,7 @@ impl WasmBridge {
             Arc::new(Mutex::new(HashMap::new()));
         let watcher = None;
         let downloader = Downloader::new(ZELLIJ_CACHE_DIR.to_path_buf());
-        let max_threads = num_cpus::get().max(4).min(16);
+        let max_threads = num_cpus::get().clamp(4, 16);
         let plugin_executor = Arc::new(PinnedExecutor::new(
             max_threads,
             &senders,
@@ -274,7 +279,7 @@ impl WasmBridge {
         skip_cache: bool,
         client_id: Option<ClientId>,
     ) -> Result<(PluginId, ClientId)> {
-        let _err_context = move || format!("failed to load plugin");
+        let _err_context = move || "failed to load plugin".to_string();
 
         let client_id = client_id
             .and_then(|client_id| {
@@ -491,7 +496,7 @@ impl WasmBridge {
         Ok((plugin_id, client_id))
     }
     pub fn unload_plugin(&mut self, pid: PluginId) -> Result<()> {
-        info!("Bye from plugin {}", &pid);
+        info!("Bye from plugin {}", pid);
 
         // Remove from plugin_map on main thread
         let plugins_to_cleanup: Vec<_> = {
@@ -581,7 +586,7 @@ impl WasmBridge {
         Ok(())
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: u32) -> Result<()> {
-        let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id).map(|r| r.clone()) else {
+        let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
             log::error!("Failed to find plugin with id: {}", plugin_id);
             return Ok(());
         };
@@ -690,8 +695,7 @@ impl WasmBridge {
             new_plugins.insert(plugin_id);
         }
         for plugin_id in new_plugins {
-            let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id).map(|r| r.clone())
-            else {
+            let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
                 log::error!("Failed to find plugin with id: {}", plugin_id);
                 return Ok(());
             };
@@ -1003,9 +1007,7 @@ impl WasmBridge {
             .lock()
             .unwrap()
             .running_plugins_and_subscriptions()
-            .iter()
-            .cloned()
-            .collect();
+            .to_vec();
 
         // Execute directly on pinned thread (no async I/O needed for directory check/change)
         self.plugin_executor
@@ -1451,7 +1453,7 @@ impl WasmBridge {
         plugin_id: PluginId,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
-        let err_context = || format!("Failed to apply cached events to plugin");
+        let err_context = || "Failed to apply cached events to plugin".to_string();
         if let Some(events_or_pipe_messages) =
             self.cached_events_for_pending_plugins.remove(&plugin_id)
         {
@@ -1794,7 +1796,7 @@ impl WasmBridge {
             .insert(plugin_id);
         self.cached_events_for_pending_plugins
             .entry(plugin_id)
-            .or_insert_with(Default::default);
+            .or_default();
     }
 
     // gets all running plugins details matching this run_plugin, if none are running, loads one and

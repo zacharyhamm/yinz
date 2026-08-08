@@ -65,15 +65,15 @@ use std::time::Duration;
 impl TryFrom<ProtobufEvent> for Event {
     type Error = &'static str;
     fn try_from(protobuf_event: ProtobufEvent) -> Result<Self, &'static str> {
-        match ProtobufEventType::from_i32(protobuf_event.name) {
-            Some(ProtobufEventType::ModeUpdate) => match protobuf_event.payload {
+        match ProtobufEventType::try_from(protobuf_event.name) {
+            Ok(ProtobufEventType::ModeUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::ModeUpdatePayload(protobuf_mode_update_payload)) => {
                     let mode_info: ModeInfo = protobuf_mode_update_payload.try_into()?;
                     Ok(Event::ModeUpdate(mode_info))
                 },
                 _ => Err("Malformed payload for the ModeUpdate Event"),
             },
-            Some(ProtobufEventType::TabUpdate) => match protobuf_event.payload {
+            Ok(ProtobufEventType::TabUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::TabUpdatePayload(protobuf_tab_info_payload)) => {
                     let mut tab_infos: Vec<TabInfo> = vec![];
                     for protobuf_tab_info in protobuf_tab_info_payload.tab_info {
@@ -83,7 +83,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the TabUpdate Event"),
             },
-            Some(ProtobufEventType::PaneUpdate) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PaneUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PaneUpdatePayload(protobuf_pane_update_payload)) => {
                     let mut pane_manifest: HashMap<usize, Vec<PaneInfo>> = HashMap::new();
                     for protobuf_pane_manifest in protobuf_pane_update_payload.pane_manifest {
@@ -109,50 +109,50 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the PaneUpdate Event"),
             },
-            Some(ProtobufEventType::Key) => match protobuf_event.payload {
+            Ok(ProtobufEventType::Key) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::KeyPayload(protobuf_key)) => {
                     Ok(Event::Key(protobuf_key.try_into()?))
                 },
                 _ => Err("Malformed payload for the Key Event"),
             },
-            Some(ProtobufEventType::Mouse) => match protobuf_event.payload {
+            Ok(ProtobufEventType::Mouse) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::MouseEventPayload(protobuf_mouse)) => {
                     Ok(Event::Mouse(protobuf_mouse.try_into()?))
                 },
                 _ => Err("Malformed payload for the Mouse Event"),
             },
-            Some(ProtobufEventType::Timer) => match protobuf_event.payload {
+            Ok(ProtobufEventType::Timer) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::TimerPayload(seconds)) => {
                     Ok(Event::Timer(seconds as f64))
                 },
                 _ => Err("Malformed payload for the Timer Event"),
             },
-            Some(ProtobufEventType::CopyToClipboard) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CopyToClipboard) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CopyToClipboardPayload(copy_to_clipboard)) => {
                     let protobuf_copy_to_clipboard =
-                        ProtobufCopyDestination::from_i32(copy_to_clipboard)
-                            .ok_or("Malformed copy to clipboard payload")?;
+                        ProtobufCopyDestination::try_from(copy_to_clipboard)
+                            .map_err(|_| "Malformed copy to clipboard payload")?;
                     Ok(Event::CopyToClipboard(
                         protobuf_copy_to_clipboard.try_into()?,
                     ))
                 },
                 _ => Err("Malformed payload for the Copy To Clipboard Event"),
             },
-            Some(ProtobufEventType::SystemClipboardFailure) => match protobuf_event.payload {
+            Ok(ProtobufEventType::SystemClipboardFailure) => match protobuf_event.payload {
                 None => Ok(Event::SystemClipboardFailure),
                 _ => Err("Malformed payload for the system clipboard failure Event"),
             },
-            Some(ProtobufEventType::InputReceived) => match protobuf_event.payload {
+            Ok(ProtobufEventType::InputReceived) => match protobuf_event.payload {
                 None => Ok(Event::InputReceived),
                 _ => Err("Malformed payload for the input received Event"),
             },
-            Some(ProtobufEventType::Visible) => match protobuf_event.payload {
+            Ok(ProtobufEventType::Visible) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::VisiblePayload(is_visible)) => {
                     Ok(Event::Visible(is_visible))
                 },
                 _ => Err("Malformed payload for the visible Event"),
             },
-            Some(ProtobufEventType::CustomMessage) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CustomMessage) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CustomMessagePayload(custom_message_payload)) => {
                     Ok(Event::CustomMessage(
                         custom_message_payload.message_name,
@@ -161,7 +161,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the custom message Event"),
             },
-            Some(ProtobufEventType::FileSystemCreate) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FileSystemCreate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FileListPayload(file_list_payload)) => {
                     let file_paths = file_list_payload
                         .paths
@@ -173,7 +173,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the file system create Event"),
             },
-            Some(ProtobufEventType::FileSystemRead) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FileSystemRead) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FileListPayload(file_list_payload)) => {
                     let file_paths = file_list_payload
                         .paths
@@ -185,7 +185,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the file system read Event"),
             },
-            Some(ProtobufEventType::FileSystemUpdate) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FileSystemUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FileListPayload(file_list_payload)) => {
                     let file_paths = file_list_payload
                         .paths
@@ -197,7 +197,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the file system update Event"),
             },
-            Some(ProtobufEventType::FileSystemDelete) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FileSystemDelete) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FileListPayload(file_list_payload)) => {
                     let file_paths = file_list_payload
                         .paths
@@ -209,7 +209,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the file system delete Event"),
             },
-            Some(ProtobufEventType::PermissionRequestResult) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PermissionRequestResult) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PermissionRequestResultPayload(payload)) => {
                     if payload.granted {
                         Ok(Event::PermissionRequestResult(PermissionStatus::Granted))
@@ -219,7 +219,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the file system delete Event"),
             },
-            Some(ProtobufEventType::SessionUpdate) => match protobuf_event.payload {
+            Ok(ProtobufEventType::SessionUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::SessionUpdatePayload(
                     protobuf_session_update_payload,
                 )) => {
@@ -233,14 +233,11 @@ impl TryFrom<ProtobufEvent> for Event {
                     {
                         resurrectable_sessions.push(protobuf_resurrectable_session.into());
                     }
-                    Ok(Event::SessionUpdate(
-                        session_infos,
-                        resurrectable_sessions.into(),
-                    ))
+                    Ok(Event::SessionUpdate(session_infos, resurrectable_sessions))
                 },
                 _ => Err("Malformed payload for the SessionUpdate Event"),
             },
-            Some(ProtobufEventType::RunCommandResult) => match protobuf_event.payload {
+            Ok(ProtobufEventType::RunCommandResult) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::RunCommandResultPayload(run_command_result_payload)) => {
                     Ok(Event::RunCommandResult(
                         run_command_result_payload.exit_code,
@@ -255,7 +252,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the RunCommandResult Event"),
             },
-            Some(ProtobufEventType::WebRequestResult) => match protobuf_event.payload {
+            Ok(ProtobufEventType::WebRequestResult) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::WebRequestResultPayload(web_request_result_payload)) => {
                     Ok(Event::WebRequestResult(
                         web_request_result_payload.status as u16,
@@ -274,7 +271,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the WebRequestResult Event"),
             },
-            Some(ProtobufEventType::WebRequestStreamChunk) => match protobuf_event.payload {
+            Ok(ProtobufEventType::WebRequestStreamChunk) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::WebRequestStreamChunkPayload(payload)) => {
                     Ok(Event::WebRequestStreamChunk {
                         stream_id: payload.stream_id,
@@ -285,7 +282,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the WebRequestStreamChunk Event"),
             },
-            Some(ProtobufEventType::CommandPaneOpened) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CommandPaneOpened) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandPaneOpenedPayload(
                     command_pane_opened_payload,
                 )) => Ok(Event::CommandPaneOpened(
@@ -298,7 +295,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 )),
                 _ => Err("Malformed payload for the CommandPaneOpened Event"),
             },
-            Some(ProtobufEventType::CommandPaneExited) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CommandPaneExited) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandPaneExitedPayload(
                     command_pane_exited_payload,
                 )) => Ok(Event::CommandPaneExited(
@@ -312,7 +309,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 )),
                 _ => Err("Malformed payload for the CommandPaneExited Event"),
             },
-            Some(ProtobufEventType::PaneClosed) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PaneClosed) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PaneClosedPayload(pane_closed_payload)) => {
                     let pane_id = pane_closed_payload
                         .pane_id
@@ -321,7 +318,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the PaneClosed Event"),
             },
-            Some(ProtobufEventType::EditPaneOpened) => match protobuf_event.payload {
+            Ok(ProtobufEventType::EditPaneOpened) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::EditPaneOpenedPayload(command_pane_opened_payload)) => {
                     Ok(Event::EditPaneOpened(
                         command_pane_opened_payload.terminal_pane_id,
@@ -334,7 +331,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the EditPaneOpened Event"),
             },
-            Some(ProtobufEventType::EditPaneExited) => match protobuf_event.payload {
+            Ok(ProtobufEventType::EditPaneExited) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::EditPaneExitedPayload(command_pane_exited_payload)) => {
                     Ok(Event::EditPaneExited(
                         command_pane_exited_payload.terminal_pane_id,
@@ -348,7 +345,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the EditPaneExited Event"),
             },
-            Some(ProtobufEventType::CommandPaneReRun) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CommandPaneReRun) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandPaneRerunPayload(command_pane_rerun_payload)) => {
                     Ok(Event::CommandPaneReRun(
                         command_pane_rerun_payload.terminal_pane_id,
@@ -361,7 +358,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the CommandPaneReRun Event"),
             },
-            Some(ProtobufEventType::FailedToWriteConfigToDisk) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FailedToWriteConfigToDisk) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FailedToWriteConfigToDiskPayload(
                     failed_to_write_configuration_payload,
                 )) => Ok(Event::FailedToWriteConfigToDisk(
@@ -369,7 +366,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 )),
                 _ => Err("Malformed payload for the FailedToWriteConfigToDisk Event"),
             },
-            Some(ProtobufEventType::ListClients) => match protobuf_event.payload {
+            Ok(ProtobufEventType::ListClients) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::ListClientsPayload(mut list_clients_payload)) => {
                     Ok(Event::ListClients(
                         list_clients_payload
@@ -381,7 +378,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the FailedToWriteConfigToDisk Event"),
             },
-            Some(ProtobufEventType::HostFolderChanged) => match protobuf_event.payload {
+            Ok(ProtobufEventType::HostFolderChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HostFolderChangedPayload(
                     host_folder_changed_payload,
                 )) => Ok(Event::HostFolderChanged(PathBuf::from(
@@ -389,7 +386,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 ))),
                 _ => Err("Malformed payload for the HostFolderChanged Event"),
             },
-            Some(ProtobufEventType::FailedToChangeHostFolder) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FailedToChangeHostFolder) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FailedToChangeHostFolderPayload(
                     failed_to_change_host_folder_payload,
                 )) => Ok(Event::FailedToChangeHostFolder(
@@ -397,27 +394,27 @@ impl TryFrom<ProtobufEvent> for Event {
                 )),
                 _ => Err("Malformed payload for the FailedToChangeHostFolder Event"),
             },
-            Some(ProtobufEventType::PastedText) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PastedText) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PastedTextPayload(pasted_text_payload)) => {
                     Ok(Event::PastedText(pasted_text_payload.pasted_text))
                 },
                 _ => Err("Malformed payload for the PastedText Event"),
             },
-            Some(ProtobufEventType::ConfigWasWrittenToDisk) => match protobuf_event.payload {
+            Ok(ProtobufEventType::ConfigWasWrittenToDisk) => match protobuf_event.payload {
                 None => Ok(Event::ConfigWasWrittenToDisk),
                 _ => Err("Malformed payload for the ConfigWasWrittenToDisk Event"),
             },
-            Some(ProtobufEventType::WebServerStatus) => match protobuf_event.payload {
+            Ok(ProtobufEventType::WebServerStatus) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::WebServerStatusPayload(web_server_status)) => {
                     Ok(Event::WebServerStatus(web_server_status.try_into()?))
                 },
                 _ => Err("Malformed payload for the WebServerStatus Event"),
             },
-            Some(ProtobufEventType::BeforeClose) => match protobuf_event.payload {
+            Ok(ProtobufEventType::BeforeClose) => match protobuf_event.payload {
                 None => Ok(Event::BeforeClose),
                 _ => Err("Malformed payload for the BeforeClose Event"),
             },
-            Some(ProtobufEventType::FailedToStartWebServer) => match protobuf_event.payload {
+            Ok(ProtobufEventType::FailedToStartWebServer) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FailedToStartWebServerPayload(
                     failed_to_start_web_server_payload,
                 )) => Ok(Event::FailedToStartWebServer(
@@ -425,19 +422,19 @@ impl TryFrom<ProtobufEvent> for Event {
                 )),
                 _ => Err("Malformed payload for the FailedToStartWebServer Event"),
             },
-            Some(ProtobufEventType::InterceptedKeyPress) => match protobuf_event.payload {
+            Ok(ProtobufEventType::InterceptedKeyPress) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::KeyPayload(protobuf_key)) => {
                     Ok(Event::InterceptedKeyPress(protobuf_key.try_into()?))
                 },
                 _ => Err("Malformed payload for the InterceptedKeyPress Event"),
             },
-            Some(ProtobufEventType::PaneRenderReport) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PaneRenderReport) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PaneRenderReportPayload(protobuf_payload)) => {
                     Ok(Event::PaneRenderReport(protobuf_payload.try_into()?))
                 },
                 _ => Err("Malformed payload for the PaneRenderReport Event"),
             },
-            Some(ProtobufEventType::UserAction) => match protobuf_event.payload {
+            Ok(ProtobufEventType::UserAction) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::UserActionPayload(protobuf_payload)) => {
                     let action: Action = protobuf_payload
                         .action
@@ -456,7 +453,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the UserAction Event"),
             },
-            Some(ProtobufEventType::ActionComplete) => match protobuf_event.payload {
+            Ok(ProtobufEventType::ActionComplete) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::ActionCompletePayload(protobuf_payload)) => {
                     let action: Action = protobuf_payload
                         .action
@@ -477,7 +474,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the ActionComplete Event"),
             },
-            Some(ProtobufEventType::CwdChanged) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CwdChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CwdChangedPayload(protobuf_payload)) => {
                     let pane_id: PaneId = protobuf_payload
                         .pane_id
@@ -494,7 +491,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the CwdChanged Event"),
             },
-            Some(ProtobufEventType::CommandChanged) => match protobuf_event.payload {
+            Ok(ProtobufEventType::CommandChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandChangedPayload(p)) => {
                     let pane_id: PaneId = p
                         .pane_id
@@ -515,7 +512,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the CommandChanged Event"),
             },
-            Some(ProtobufEventType::AvailableLayoutInfo) => match protobuf_event.payload {
+            Ok(ProtobufEventType::AvailableLayoutInfo) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::AvailableLayoutInfoPayload(
                     available_layout_info_payload,
                 )) => {
@@ -538,7 +535,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the AvailableLayoutInfo Event"),
             },
-            Some(ProtobufEventType::PluginConfigurationChanged) => match protobuf_event.payload {
+            Ok(ProtobufEventType::PluginConfigurationChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PluginConfigurationChangedPayload(payload)) => {
                     let configuration = payload
                         .configuration
@@ -549,7 +546,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for PluginConfigurationChanged Event"),
             },
-            Some(ProtobufEventType::HighlightClicked) => match protobuf_event.payload {
+            Ok(ProtobufEventType::HighlightClicked) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HighlightClickedPayload(p)) => {
                     let pane_id = p
                         .pane_id
@@ -569,14 +566,16 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for HighlightClicked Event"),
             },
-            Some(ProtobufEventType::InitialKeybinds) => match protobuf_event.payload {
+            Ok(ProtobufEventType::InitialKeybinds) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::InitialKeybindsPayload(p)) => {
                     let keybinds = p
                         .keybinds
                         .into_iter()
                         .filter_map(|imk| {
-                            let mode: InputMode =
-                                ProtobufInputMode::from_i32(imk.mode)?.try_into().ok()?;
+                            let mode: InputMode = ProtobufInputMode::try_from(imk.mode)
+                                .ok()?
+                                .try_into()
+                                .ok()?;
                             let key_binds: Vec<(KeyWithModifier, Vec<Action>)> = imk
                                 .key_bind
                                 .into_iter()
@@ -597,23 +596,21 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for InitialKeybinds Event"),
             },
-            Some(ProtobufEventType::HostTerminalThemeChanged) => match protobuf_event.payload {
+            Ok(ProtobufEventType::HostTerminalThemeChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HostTerminalThemeChangedPayload(p)) => {
-                    let mode = ProtobufHostTerminalThemeIndication::from_i32(p.mode)
-                        .ok_or("Unknown HostTerminalThemeIndication")?;
+                    let mode = ProtobufHostTerminalThemeIndication::try_from(p.mode)
+                        .map_err(|_| "Unknown HostTerminalThemeIndication")?;
                     Ok(Event::HostTerminalThemeChanged(mode.into()))
                 },
                 _ => Err("Malformed payload for HostTerminalThemeChanged Event"),
             },
-            Some(ProtobufEventType::SoftKeyboardVisibilityChanged) => {
-                match protobuf_event.payload {
-                    Some(ProtobufEventPayload::SoftKeyboardVisibilityChangedPayload(p)) => {
-                        Ok(Event::SoftKeyboardVisibilityChanged(p.visible))
-                    },
-                    _ => Err("Malformed payload for SoftKeyboardVisibilityChanged Event"),
-                }
+            Ok(ProtobufEventType::SoftKeyboardVisibilityChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::SoftKeyboardVisibilityChangedPayload(p)) => {
+                    Ok(Event::SoftKeyboardVisibilityChanged(p.visible))
+                },
+                _ => Err("Malformed payload for SoftKeyboardVisibilityChanged Event"),
             },
-            Some(ProtobufEventType::HintText) => match protobuf_event.payload {
+            Ok(ProtobufEventType::HintText) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HintTextPayload(p)) => {
                     let mut hint_text = BTreeMap::new();
                     for (width, styled_text) in p.hint_text {
@@ -623,7 +620,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for HintText Event"),
             },
-            Some(ProtobufEventType::ActivePaneScroll) => match protobuf_event.payload {
+            Ok(ProtobufEventType::ActivePaneScroll) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::ActivePaneScrollPayload(p)) => {
                     let scroll = match (p.position, p.length) {
                         (Some(position), Some(length)) => {
@@ -635,7 +632,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for ActivePaneScroll Event"),
             },
-            None => Err("Unknown Protobuf Event"),
+            Err(_) => Err("Unknown Protobuf Event"),
         }
     }
 }
@@ -1304,19 +1301,19 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             plugins: session_info
                 .plugins
                 .into_iter()
-                .map(|p| ProtobufPluginInfo::from(p))
+                .map(ProtobufPluginInfo::from)
                 .collect(),
             web_clients_allowed: session_info.web_clients_allowed,
             web_client_count: session_info.web_client_count as u32,
             tab_history: session_info
                 .tab_history
                 .into_iter()
-                .map(|t| ProtobufClientTabHistory::from(t))
+                .map(ProtobufClientTabHistory::from)
                 .collect(),
             pane_history: session_info
                 .pane_history
                 .into_iter()
-                .map(|p| ProtobufClientPaneHistory::from(p))
+                .map(ProtobufClientPaneHistory::from)
                 .collect(),
             creation_time: session_info.creation_time.as_secs(),
             global_panes,
@@ -1691,70 +1688,62 @@ impl TryFrom<ProtobufCopyDestination> for CopyDestination {
 impl TryFrom<MouseEventPayload> for Mouse {
     type Error = &'static str;
     fn try_from(mouse_event_payload: MouseEventPayload) -> Result<Self, &'static str> {
-        match MouseEventName::from_i32(mouse_event_payload.mouse_event_name) {
-            Some(MouseEventName::MouseScrollUp) => match mouse_event_payload.mouse_event_payload {
+        match MouseEventName::try_from(mouse_event_payload.mouse_event_name) {
+            Ok(MouseEventName::MouseScrollUp) => match mouse_event_payload.mouse_event_payload {
                 Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
                     Ok(Mouse::ScrollUp(line_count as usize))
                 },
                 _ => Err("Malformed payload for mouse scroll up"),
             },
-            Some(MouseEventName::MouseScrollDown) => {
-                match mouse_event_payload.mouse_event_payload {
-                    Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
-                        Ok(Mouse::ScrollDown(line_count as usize))
-                    },
-                    _ => Err("Malformed payload for mouse scroll down"),
-                }
+            Ok(MouseEventName::MouseScrollDown) => match mouse_event_payload.mouse_event_payload {
+                Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
+                    Ok(Mouse::ScrollDown(line_count as usize))
+                },
+                _ => Err("Malformed payload for mouse scroll down"),
             },
-            Some(MouseEventName::MouseLeftClick) => match mouse_event_payload.mouse_event_payload {
+            Ok(MouseEventName::MouseLeftClick) => match mouse_event_payload.mouse_event_payload {
                 Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
                     Mouse::LeftClick(position.line as isize, position.column as usize),
                 ),
                 _ => Err("Malformed payload for mouse left click"),
             },
-            Some(MouseEventName::MouseRightClick) => {
-                match mouse_event_payload.mouse_event_payload {
-                    Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
-                        Mouse::RightClick(position.line as isize, position.column as usize),
-                    ),
-                    _ => Err("Malformed payload for mouse right click"),
-                }
+            Ok(MouseEventName::MouseRightClick) => match mouse_event_payload.mouse_event_payload {
+                Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
+                    Mouse::RightClick(position.line as isize, position.column as usize),
+                ),
+                _ => Err("Malformed payload for mouse right click"),
             },
-            Some(MouseEventName::MouseHold) => match mouse_event_payload.mouse_event_payload {
+            Ok(MouseEventName::MouseHold) => match mouse_event_payload.mouse_event_payload {
                 Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
                     Mouse::Hold(position.line as isize, position.column as usize),
                 ),
                 _ => Err("Malformed payload for mouse hold"),
             },
-            Some(MouseEventName::MouseRelease) => match mouse_event_payload.mouse_event_payload {
+            Ok(MouseEventName::MouseRelease) => match mouse_event_payload.mouse_event_payload {
                 Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
                     Mouse::Release(position.line as isize, position.column as usize),
                 ),
                 _ => Err("Malformed payload for mouse release"),
             },
-            Some(MouseEventName::MouseHover) => match mouse_event_payload.mouse_event_payload {
+            Ok(MouseEventName::MouseHover) => match mouse_event_payload.mouse_event_payload {
                 Some(mouse_event_payload::MouseEventPayload::Position(position)) => Ok(
                     Mouse::Hover(position.line as isize, position.column as usize),
                 ),
                 _ => Err("Malformed payload for mouse hover"),
             },
-            Some(MouseEventName::MouseScrollLeft) => {
-                match mouse_event_payload.mouse_event_payload {
-                    Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
-                        Ok(Mouse::ScrollLeft(line_count as usize))
-                    },
-                    _ => Err("Malformed payload for mouse scroll left"),
-                }
+            Ok(MouseEventName::MouseScrollLeft) => match mouse_event_payload.mouse_event_payload {
+                Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
+                    Ok(Mouse::ScrollLeft(line_count as usize))
+                },
+                _ => Err("Malformed payload for mouse scroll left"),
             },
-            Some(MouseEventName::MouseScrollRight) => {
-                match mouse_event_payload.mouse_event_payload {
-                    Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
-                        Ok(Mouse::ScrollRight(line_count as usize))
-                    },
-                    _ => Err("Malformed payload for mouse scroll right"),
-                }
+            Ok(MouseEventName::MouseScrollRight) => match mouse_event_payload.mouse_event_payload {
+                Some(mouse_event_payload::MouseEventPayload::LineCount(line_count)) => {
+                    Ok(Mouse::ScrollRight(line_count as usize))
+                },
+                _ => Err("Malformed payload for mouse scroll right"),
             },
-            None => Err("Malformed payload for MouseEventName"),
+            Err(_) => Err("Malformed payload for MouseEventName"),
         }
     }
 }
@@ -2004,22 +1993,20 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
         mut protobuf_mode_update_payload: ProtobufModeUpdatePayload,
     ) -> Result<Self, &'static str> {
         let current_mode: InputMode =
-            ProtobufInputMode::from_i32(protobuf_mode_update_payload.current_mode)
-                .ok_or("Malformed InputMode in the ModeUpdate Event")?
+            ProtobufInputMode::try_from(protobuf_mode_update_payload.current_mode)
+                .map_err(|_| "Malformed InputMode in the ModeUpdate Event")?
                 .try_into()?;
         let base_mode: Option<InputMode> = protobuf_mode_update_payload
             .base_mode
-            .and_then(|b_m| ProtobufInputMode::from_i32(b_m)?.try_into().ok());
+            .and_then(|b_m| ProtobufInputMode::try_from(b_m).ok()?.try_into().ok());
+        #[allow(clippy::type_complexity)]
         let keybinds: Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)> =
             protobuf_mode_update_payload
                 .keybinds
                 .iter_mut()
                 .filter_map(|k| {
-                    let input_mode: InputMode = ProtobufInputMode::from_i32(k.mode)
-                        .ok_or("Malformed InputMode in the ModeUpdate Event")
-                        .ok()?
-                        .try_into()
-                        .ok()?;
+                    let input_mode: InputMode =
+                        ProtobufInputMode::try_from(k.mode).ok()?.try_into().ok()?;
                     let mut keybinds: Vec<(KeyWithModifier, Vec<Action>)> = vec![];
                     for mut protobuf_keybind in k.key_bind.drain(..) {
                         let key: KeyWithModifier = protobuf_keybind.key.unwrap().try_into().ok()?;
@@ -2039,14 +2026,12 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
             .and_then(|m| m.try_into().ok())
             .ok_or("malformed payload for mode_info")?;
         let session_name = protobuf_mode_update_payload.session_name;
-        let editor = protobuf_mode_update_payload
-            .editor
-            .map(|e| PathBuf::from(e));
-        let shell = protobuf_mode_update_payload.shell.map(|s| PathBuf::from(s));
+        let editor = protobuf_mode_update_payload.editor.map(PathBuf::from);
+        let shell = protobuf_mode_update_payload.shell.map(PathBuf::from);
         let web_clients_allowed = protobuf_mode_update_payload.web_clients_allowed;
         let web_sharing = protobuf_mode_update_payload
             .web_sharing
-            .and_then(|w| ProtobufWebSharing::from_i32(w))
+            .and_then(|w| ProtobufWebSharing::try_from(w).ok())
             .map(|w| w.into());
         let capabilities = PluginCapabilities {
             arrow_fonts: protobuf_mode_update_payload.arrow_fonts_support,
@@ -2068,7 +2053,7 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
 
         let pane_frame_style = protobuf_mode_update_payload
             .pane_frame_style
-            .and_then(|p| ProtobufPaneFrameStyle::from_i32(p))
+            .and_then(|p| ProtobufPaneFrameStyle::try_from(p).ok())
             .map(|p| p.into());
 
         let session_dimmed = protobuf_mode_update_payload.session_dimmed;
@@ -2213,7 +2198,7 @@ impl TryFrom<ProtobufEventNameList> for HashSet<EventType> {
         let event_types: Vec<ProtobufEventType> = protobuf_event_name_list
             .event_types
             .iter()
-            .filter_map(|i| ProtobufEventType::from_i32(*i))
+            .filter_map(|i| ProtobufEventType::try_from(*i).ok())
             .collect();
         let event_types: Vec<EventType> = event_types
             .iter()
@@ -3213,10 +3198,10 @@ fn serialize_session_update_event_with_non_default_values() {
 impl TryFrom<ProtobufPaneId> for PaneId {
     type Error = &'static str;
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
-        match ProtobufPaneType::from_i32(protobuf_pane_id.pane_type) {
-            Some(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(protobuf_pane_id.id)),
-            Some(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(protobuf_pane_id.id)),
-            None => Err("Failed to convert PaneId"),
+        match ProtobufPaneType::try_from(protobuf_pane_id.pane_type) {
+            Ok(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(protobuf_pane_id.id)),
+            Ok(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(protobuf_pane_id.id)),
+            Err(_) => Err("Failed to convert PaneId"),
         }
     }
 }
@@ -3240,6 +3225,7 @@ impl TryFrom<PaneId> for ProtobufPaneId {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<ProtobufWebSharing> for WebSharing {
     fn into(self) -> ProtobufWebSharing {
         match self {
@@ -3250,6 +3236,7 @@ impl Into<ProtobufWebSharing> for WebSharing {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<WebSharing> for ProtobufWebSharing {
     fn into(self) -> WebSharing {
         match self {
@@ -3260,6 +3247,7 @@ impl Into<WebSharing> for ProtobufWebSharing {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<ProtobufPaneFrameStyle> for crate::input::options::PaneFrameStyle {
     fn into(self) -> ProtobufPaneFrameStyle {
         match self {
@@ -3270,6 +3258,7 @@ impl Into<ProtobufPaneFrameStyle> for crate::input::options::PaneFrameStyle {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<crate::input::options::PaneFrameStyle> for ProtobufPaneFrameStyle {
     fn into(self) -> crate::input::options::PaneFrameStyle {
         match self {
@@ -3290,7 +3279,7 @@ impl TryFrom<WebServerStatus> for ProtobufWebServerStatusPayload {
             }),
             WebServerStatus::DifferentVersion(version) => Ok(ProtobufWebServerStatusPayload {
                 web_server_status_indication: WebServerStatusIndication::DifferentVersion as i32,
-                payload: Some(format!("{}", version)),
+                payload: Some(version.to_string()),
             }),
             WebServerStatus::Offline => Ok(ProtobufWebServerStatusPayload {
                 web_server_status_indication: WebServerStatusIndication::Offline as i32,
@@ -3305,23 +3294,23 @@ impl TryFrom<ProtobufWebServerStatusPayload> for WebServerStatus {
     fn try_from(
         protobuf_web_server_status: ProtobufWebServerStatusPayload,
     ) -> Result<Self, &'static str> {
-        match WebServerStatusIndication::from_i32(
+        match WebServerStatusIndication::try_from(
             protobuf_web_server_status.web_server_status_indication,
         ) {
-            Some(WebServerStatusIndication::Online) => {
+            Ok(WebServerStatusIndication::Online) => {
                 let payload = protobuf_web_server_status
                     .payload
                     .ok_or("payload_not_found")?;
                 Ok(WebServerStatus::Online(payload))
             },
-            Some(WebServerStatusIndication::DifferentVersion) => {
+            Ok(WebServerStatusIndication::DifferentVersion) => {
                 let payload = protobuf_web_server_status
                     .payload
                     .ok_or("payload_not_found")?;
                 Ok(WebServerStatus::DifferentVersion(payload))
             },
-            Some(WebServerStatusIndication::Offline) => Ok(WebServerStatus::Offline),
-            None => Err("Unknown status"),
+            Ok(WebServerStatusIndication::Offline) => Ok(WebServerStatus::Offline),
+            Err(_) => Err("Unknown status"),
         }
     }
 }

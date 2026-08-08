@@ -91,7 +91,7 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
             return;
         };
 
-        let _ = client_connection.send_to_server(client_msg);
+        client_connection.send_to_server(client_msg);
     };
 
     while let Some(Ok(msg)) = control_socket_rx.next().await {

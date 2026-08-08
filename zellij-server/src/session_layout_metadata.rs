@@ -1,3 +1,12 @@
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::useless_conversion)]
+#![allow(clippy::bind_instead_of_map)]
+#![allow(clippy::from_over_into)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::format_in_format_args)]
 use crate::panes::PaneId;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
@@ -86,7 +95,7 @@ impl SessionLayoutMetadata {
                     clients_metadata.insert(
                         *focused_client,
                         ClientMetadata {
-                            pane_id: pane.id.clone(),
+                            pane_id: pane.id,
                             command: pane.run.clone(),
                         },
                     );
@@ -120,7 +129,7 @@ impl SessionLayoutMetadata {
                     clients_metadata.insert(
                         *focused_client,
                         ClientMetadata {
-                            pane_id: pane.id.clone(),
+                            pane_id: pane.id,
                             command: pane.run.clone(),
                         },
                     );

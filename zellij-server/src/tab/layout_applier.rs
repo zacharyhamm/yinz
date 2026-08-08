@@ -1,3 +1,11 @@
+#![allow(clippy::borrowed_box)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::question_mark)]
 use zellij_utils::errors::prelude::*;
 
 use crate::resize_pty;
@@ -83,7 +91,7 @@ impl<'a> LayoutApplier<'a> {
         let terminal_emulator_color_codes = terminal_emulator_color_codes.clone();
         let character_cell_size = character_cell_size.clone();
         let connected_clients = connected_clients.clone();
-        let style = style.clone();
+        let style = *style;
         let display_area = display_area.clone();
         let os_api = os_api.clone();
         LayoutApplier {
@@ -129,7 +137,7 @@ impl<'a> LayoutApplier<'a> {
             &mut new_plugin_ids,
         )?;
         let should_show_floating_panes = layout_has_floating_panes && !hide_floating_panes;
-        return Ok(should_show_floating_panes);
+        Ok(should_show_floating_panes)
     }
     pub fn override_layout(
         &mut self,
@@ -161,7 +169,7 @@ impl<'a> LayoutApplier<'a> {
             retain_existing_plugin_panes,
         )?;
         let should_show_floating_panes = layout_has_floating_panes && !hide_floating_panes;
-        return Ok(should_show_floating_panes);
+        Ok(should_show_floating_panes)
     }
     pub fn apply_tiled_panes_layout_to_existing_panes(
         &mut self,
@@ -371,7 +379,7 @@ impl<'a> LayoutApplier<'a> {
         } else {
             None
         };
-        let focus_layout_if_not_focused = if has_existing_panes { false } else { true };
+        let focus_layout_if_not_focused = !has_existing_panes;
         let mut positions_in_layout = layout
             .position_panes_in_space(
                 &free_space,
@@ -406,7 +414,7 @@ impl<'a> LayoutApplier<'a> {
         mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
         client_id: ClientId,
     ) -> Result<()> {
-        let err_context = || format!("failed to apply tiled panes layout");
+        let err_context = || "failed to apply tiled panes layout".to_string();
         let mut positions_in_layout = self.flatten_layout(&layout, false)?;
         let run_instructions_without_a_location = self.position_run_instructions_to_ignore(
             &layout.run_instructions_to_ignore,
@@ -517,7 +525,7 @@ impl<'a> LayoutApplier<'a> {
         position_and_size: &PaneGeom,
         layout: &TiledPaneLayout,
     ) -> Result<u32> {
-        let err_context = || format!("Failed to start new plugin pane");
+        let err_context = || "Failed to start new plugin pane".to_string();
         let pane_title = run.location_string();
         let pid = new_plugin_ids
             .get_mut(&run)
@@ -567,7 +575,7 @@ impl<'a> LayoutApplier<'a> {
         floating_pane_layout: &FloatingPaneLayout,
     ) -> Result<Option<PaneId>> {
         let mut pid_to_focus = None;
-        let err_context = || format!("Failed to create new floating plugin pane");
+        let err_context = || "Failed to create new floating plugin pane".to_string();
         let pane_title = run.location_string();
         let pid = new_plugin_ids
             .get_mut(&run)
@@ -1194,9 +1202,8 @@ impl ExistingTabState {
         if let Some(current_pane_id_with_same_logical_position) =
             self.find_pane_id_with_same_logical_position(&candidates, logical_position)
         {
-            return self
-                .existing_panes
-                .remove(&current_pane_id_with_same_logical_position);
+            self.existing_panes
+                .remove(&current_pane_id_with_same_logical_position)
         } else {
             return None;
         }
@@ -1209,11 +1216,10 @@ impl ExistingTabState {
         if let Some(current_pane_id_with_same_logical_position) =
             self.find_pane_id_with_same_logical_position(&candidates, logical_position)
         {
-            return self
-                .existing_panes
-                .remove(&current_pane_id_with_same_logical_position);
+            self.existing_panes
+                .remove(&current_pane_id_with_same_logical_position)
         } else {
-            match candidates.iter().next().map(|(pid, _p)| *pid).copied() {
+            match candidates.first().map(|(pid, _p)| *pid).copied() {
                 Some(first_candidate) => self.existing_panes.remove(&first_candidate),
                 None => None,
             }
@@ -1233,7 +1239,7 @@ impl ExistingTabState {
             if a_logical_position != b_logical_position {
                 a_logical_position.cmp(&b_logical_position)
             } else {
-                a_id.cmp(&b_id)
+                a_id.cmp(b_id)
             }
         });
         candidates
@@ -1259,15 +1265,13 @@ impl ExistingTabState {
                 .copied()
                 .or_else(|| {
                     panes_with_same_contents
-                        .iter()
-                        .next()
+                        .first()
                         .map(|(pid, _p)| *pid)
                         .copied()
                 })
         } else {
             panes_with_same_contents
-                .iter()
-                .next()
+                .first()
                 .map(|(pid, _p)| *pid)
                 .copied()
         }

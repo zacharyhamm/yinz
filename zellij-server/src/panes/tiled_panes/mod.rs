@@ -1,3 +1,9 @@
+#![allow(clippy::needless_return)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::option_map_unit_fn)]
+#![allow(clippy::manual_inspect)]
 mod pane_resizer;
 mod stacked_panes;
 mod tiled_pane_grid;
@@ -95,6 +101,7 @@ fn is_ui_pane(pane: &dyn Pane) -> bool {
     !pane.selectable() || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)))
 }
 
+#[allow(dead_code)]
 pub struct TiledPanes {
     pub panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
@@ -618,13 +625,13 @@ impl TiledPanes {
         );
         match direction {
             SplitDirection::Horizontal => {
-                pane_grid.layout(direction, (*self.display_area.borrow()).cols)
+                pane_grid.layout(direction, self.display_area.borrow().cols)
             },
             SplitDirection::Vertical => {
-                pane_grid.layout(direction, (*self.display_area.borrow()).rows)
+                pane_grid.layout(direction, self.display_area.borrow().rows)
             },
         }
-        .or_else(|e| Err(anyError::msg(e)))
+        .map_err(anyError::msg)
         .with_context(|| format!("{:?} relayout of tab failed", direction))
         .non_fatal();
 
@@ -703,7 +710,7 @@ impl TiledPanes {
         let position_and_sizes_of_stacks = {
             StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
                 .positions_and_sizes_of_all_stacks()
-                .unwrap_or_else(|| Default::default())
+                .unwrap_or_default()
         };
         let reserved_top_rows = if self.fullscreen_is_active.is_some() {
             HashMap::new()
@@ -1128,7 +1135,7 @@ impl TiledPanes {
         self.reset_boundaries();
     }
     pub fn focus_pane_if_exists(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
-        if self.panes.get(&pane_id).is_some() {
+        if self.panes.contains_key(&pane_id) {
             self.focus_pane(pane_id, client_id);
             Ok(())
         } else {
@@ -1213,6 +1220,7 @@ impl TiledPanes {
     pub fn has_panes(&self) -> bool {
         !self.panes.is_empty()
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         output: &mut Output,
@@ -1536,7 +1544,7 @@ impl TiledPanes {
         new_screen_size.rows != display_area.rows || new_screen_size.cols != display_area.cols
     }
     pub fn force_resize(&mut self) {
-        let display_area = self.display_area.borrow().clone();
+        let display_area = *self.display_area.borrow();
         self.resize(display_area);
     }
 
@@ -1641,11 +1649,9 @@ impl TiledPanes {
         // true - successfully resized
         let mut strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Up));
         strategy.invert_on_boundaries = false;
-        let successfully_resized_up =
-            match self.resize_pane_with_id(strategy, pane_id, Some(resize_percent)) {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+        let successfully_resized_up = self
+            .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
+            .is_ok();
         if successfully_resized_up {
             return true;
         } else {
@@ -1671,11 +1677,9 @@ impl TiledPanes {
         // true - successfully resized
         let mut strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Down));
         strategy.invert_on_boundaries = false;
-        let successfully_resized_up =
-            match self.resize_pane_with_id(strategy, pane_id, Some(resize_percent)) {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+        let successfully_resized_up = self
+            .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
+            .is_ok();
         if successfully_resized_up {
             return true;
         } else {
@@ -1701,11 +1705,9 @@ impl TiledPanes {
         // true - successfully resized
         let mut strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Left));
         strategy.invert_on_boundaries = false;
-        let successfully_resized_up =
-            match self.resize_pane_with_id(strategy, pane_id, Some(resize_percent)) {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+        let successfully_resized_up = self
+            .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
+            .is_ok();
         if successfully_resized_up {
             return true;
         } else {
@@ -1731,11 +1733,9 @@ impl TiledPanes {
         // true - successfully resized
         let mut strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Right));
         strategy.invert_on_boundaries = false;
-        let successfully_resized_up =
-            match self.resize_pane_with_id(strategy, pane_id, Some(resize_percent)) {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+        let successfully_resized_up = self
+            .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
+            .is_ok();
         if successfully_resized_up {
             return true;
         } else {
@@ -2926,9 +2926,8 @@ impl TiledPanes {
                 .panes
                 .keys()
                 .copied()
-                .into_iter()
                 .filter(|id| {
-                    !is_inside_viewport(&*self.viewport.borrow(), self.get_pane(*id).unwrap())
+                    !is_inside_viewport(&self.viewport.borrow(), self.get_pane(*id).unwrap())
                 })
                 .collect();
             for pid in viewport_pane_ids {
@@ -3008,7 +3007,7 @@ impl TiledPanes {
             .filter(|&id| {
                 id != fullscreen_pane_id
                     && (covers_ui
-                        || is_inside_viewport(&*self.viewport.borrow(), self.get_pane(id).unwrap()))
+                        || is_inside_viewport(&self.viewport.borrow(), self.get_pane(id).unwrap()))
             })
             .collect()
     }
@@ -3018,7 +3017,7 @@ impl TiledPanes {
             .panes
             .keys()
             .copied()
-            .filter(|id| !is_inside_viewport(&*self.viewport.borrow(), self.get_pane(*id).unwrap()))
+            .filter(|id| !is_inside_viewport(&self.viewport.borrow(), self.get_pane(*id).unwrap()))
             .collect();
         for pane_id in pane_ids_outside_viewport {
             if let Some(pane) = self.get_pane_mut(pane_id) {

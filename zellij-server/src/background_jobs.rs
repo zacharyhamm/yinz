@@ -685,9 +685,11 @@ pub(crate) fn background_jobs_main(
                     .send_to_screen(ScreenInstruction::SetTabBellFlash(tab_id, false));
             },
             BackgroundJob::StartNestedGuestPing(pane_id) => {
-                if !nested_guest_pings.contains_key(&pane_id) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    nested_guest_pings.entry(pane_id)
+                {
                     let is_pinging = Arc::new(AtomicBool::new(true));
-                    nested_guest_pings.insert(pane_id, is_pinging.clone());
+                    e.insert(is_pinging.clone());
                     runtime.spawn({
                         let senders = bus.senders.clone();
                         let flag = is_pinging.clone();
@@ -783,6 +785,7 @@ async fn buffered_web_request(
 /// socket. Never emits the terminating chunk itself: it reports back with
 /// `BackgroundJob::WebRequestStreamFinished` so the terminator is emitted from a single place
 /// even when this task is aborted mid-read by a cancellation.
+#[allow(clippy::too_many_arguments)]
 async fn streamed_web_request(
     key: StreamKey,
     generation: u64,
@@ -890,7 +893,7 @@ fn finish_stream(
     if generation.is_some_and(|generation| {
         active_streams
             .get(&key)
-            .map_or(true, |stream| stream.generation != generation)
+            .is_none_or(|stream| stream.generation != generation)
     }) {
         return;
     }
@@ -1032,8 +1035,8 @@ pub fn scan_session_list_default_dirs(
         current_session_name,
         available_layouts,
         current_session_plugin_list,
-        &*ZELLIJ_SOCK_DIR,
-        &*ZELLIJ_SESSION_INFO_CACHE_DIR,
+        &ZELLIJ_SOCK_DIR,
+        &ZELLIJ_SESSION_INFO_CACHE_DIR,
     )
 }
 

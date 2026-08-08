@@ -291,6 +291,7 @@ impl GlobalPaneManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn insert(
         &mut self,
         pane: Box<dyn Pane>,
@@ -897,11 +898,12 @@ impl GlobalPaneManager {
                     }
                 });
         }
-        if event.right && event.event_type == MouseEventType::Press {
-            if matches!(pane_id, PaneId::Plugin(_)) {
-                pane.handle_right_click(&relative_event.position, client_id);
-                return None;
-            }
+        if event.right
+            && event.event_type == MouseEventType::Press
+            && matches!(pane_id, PaneId::Plugin(_))
+        {
+            pane.handle_right_click(&relative_event.position, client_id);
+            return None;
         }
         if event.left && event.event_type == MouseEventType::Press {
             if pane.terminal_emulator_wants_mouse() {

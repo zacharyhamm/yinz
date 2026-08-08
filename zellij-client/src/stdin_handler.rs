@@ -174,7 +174,7 @@ pub(crate) fn stdin_loop(
                                     if send_input_instructions
                                         .send(InputInstruction::KeyWithModifierEvent(
                                             key_with_modifier,
-                                            current_buffer.drain(..).collect(),
+                                            std::mem::take(&mut current_buffer),
                                             true,
                                         ))
                                         .is_err()

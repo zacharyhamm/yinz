@@ -1,3 +1,9 @@
+#![allow(clippy::wrong_self_convention)]
+#![allow(clippy::drain_collect)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::useless_borrows_in_formatting)]
+#![allow(clippy::same_item_push)]
+#![allow(clippy::unnecessary_to_owned)]
 use crate::output::CharacterChunk;
 use crate::panes::{
     AnsiCode, CharacterStyles, RcCharacterStyles, TerminalCharacter, EMPTY_TERMINAL_CHARACTER,
@@ -245,8 +251,8 @@ impl PaneFrame {
                     Some((mut pin_indication, pin_indication_len)),
                     Some((mut scroll_indication, scroll_indication_len)),
                 ) => {
-                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
-                    let mut separator = foreground_color(&format!("|"), self.color);
+                    let mut characters: Vec<_> = std::mem::take(&mut scroll_indication);
+                    let mut separator = foreground_color("|", self.color);
                     characters.append(&mut separator);
                     characters.append(&mut pin_indication);
                     Some((characters, pin_indication_len + scroll_indication_len + 1))

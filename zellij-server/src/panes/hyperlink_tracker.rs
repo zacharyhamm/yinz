@@ -1,3 +1,4 @@
+#![allow(clippy::clone_on_copy)]
 use crate::panes::grid::Row;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_character::{Cursor, LinkAnchor};
@@ -34,6 +35,7 @@ pub struct HyperlinkTracker {
 }
 
 impl HyperlinkTracker {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             buffer: String::new(),

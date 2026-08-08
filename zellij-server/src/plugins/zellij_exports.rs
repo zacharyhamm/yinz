@@ -1,3 +1,12 @@
+#![allow(clippy::result_large_err)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::useless_borrows_in_formatting)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::manual_flatten)]
+#![allow(clippy::useless_conversion)]
+#![allow(clippy::let_unit_value)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::redundant_closure)]
 use super::PluginInstruction;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime;
@@ -163,7 +172,7 @@ pub fn zellij_exports(linker: &mut Linker<PluginEnv>) {
 }
 
 fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
-    let mut env = caller.data_mut();
+    let env = caller.data_mut();
     let plugin_command = env.name();
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     wasi_read_bytes(env)
@@ -172,7 +181,7 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
             let command: PluginCommand = command
                 .try_into()
                 .map_err(|e| anyhow!("failed to convert serialized command: {}", e))?;
-            match check_command_permission(&env, &command) {
+            match check_command_permission(env, &command) {
                 (PermissionStatus::Granted, _) => match command {
                     PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,
                     PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
@@ -199,21 +208,19 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         floating_pane_coordinates,
                         context,
                     ) => open_file_floating(env, file_to_open, floating_pane_coordinates, context),
-                    PluginCommand::OpenTerminal(cwd) => open_terminal(env, cwd.path.try_into()?),
+                    PluginCommand::OpenTerminal(cwd) => open_terminal(env, cwd.path),
                     PluginCommand::OpenTerminalNearPlugin(cwd) => {
-                        open_terminal_near_plugin(env, cwd.path.try_into()?)
+                        open_terminal_near_plugin(env, cwd.path)
                     },
                     PluginCommand::OpenTerminalFloating(cwd, floating_pane_coordinates) => {
-                        open_terminal_floating(env, cwd.path.try_into()?, floating_pane_coordinates)
+                        open_terminal_floating(env, cwd.path, floating_pane_coordinates)
                     },
                     PluginCommand::OpenTerminalFloatingNearPlugin(
                         cwd,
                         floating_pane_coordinates,
-                    ) => open_terminal_floating_near_plugin(
-                        env,
-                        cwd.path.try_into()?,
-                        floating_pane_coordinates,
-                    ),
+                    ) => {
+                        open_terminal_floating_near_plugin(env, cwd.path, floating_pane_coordinates)
+                    },
                     PluginCommand::OpenCommandPane(command_to_run, context) => {
                         open_command_pane(env, command_to_run, context)
                     },
@@ -262,9 +269,7 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::ShowSelf(should_float_if_hidden) => {
                         show_self(env, should_float_if_hidden)
                     },
-                    PluginCommand::SwitchToMode(input_mode) => {
-                        switch_to_mode(env, input_mode.try_into()?)
-                    },
+                    PluginCommand::SwitchToMode(input_mode) => switch_to_mode(env, input_mode),
                     PluginCommand::NewTabsWithLayout(raw_layout) => {
                         new_tabs_with_layout(env, &raw_layout)?
                     },
@@ -415,14 +420,10 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         open_file_in_place(env, file_to_open, context)
                     },
                     PluginCommand::OpenTerminalInPlace(cwd) => {
-                        open_terminal_in_place(env, cwd.path.try_into()?)
+                        open_terminal_in_place(env, cwd.path)
                     },
                     PluginCommand::OpenTerminalInPlaceOfPlugin(cwd, close_plugin_after_replace) => {
-                        open_terminal_in_place_of_plugin(
-                            env,
-                            cwd.path.try_into()?,
-                            close_plugin_after_replace,
-                        )
+                        open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)
                     },
                     PluginCommand::OpenCommandPaneInPlace(command_to_run, context) => {
                         open_command_pane_in_place(env, command_to_run, context)
@@ -704,21 +705,19 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::RenameWebLoginToken(old_name, new_name) => {
                         rename_web_login_token(env, old_name, new_name);
                     },
-                    PluginCommand::InterceptKeyPresses => intercept_key_presses(&mut env),
-                    PluginCommand::ClearKeyPressesIntercepts => {
-                        clear_key_presses_intercepts(&mut env)
-                    },
+                    PluginCommand::InterceptKeyPresses => intercept_key_presses(env),
+                    PluginCommand::ClearKeyPressesIntercepts => clear_key_presses_intercepts(env),
                     PluginCommand::ReplacePaneWithExistingPane(
                         pane_id_to_replace,
                         existing_pane_id,
                         suppress_replaced_pane,
                     ) => replace_pane_with_existing_pane(
-                        &mut env,
+                        env,
                         pane_id_to_replace.into(),
                         existing_pane_id.into(),
                         suppress_replaced_pane,
                     ),
-                    PluginCommand::RunAction(action, context) => run_action(&env, action, context),
+                    PluginCommand::RunAction(action, context) => run_action(env, action, context),
                     PluginCommand::GetSessionEnvironmentVariables => {
                         get_session_environment_variables(env);
                     },
@@ -846,7 +845,7 @@ fn cli_pipe_output(env: &PluginEnv, pipe_name: String, output: String) -> Result
 }
 
 fn message_to_plugin(env: &PluginEnv, mut message_to_plugin: MessageToPlugin) -> Result<()> {
-    if message_to_plugin.plugin_url.as_ref().map(|s| s.as_str()) == Some("zellij:OWN_URL") {
+    if message_to_plugin.plugin_url.as_deref() == Some("zellij:OWN_URL") {
         message_to_plugin.plugin_url = Some(env.plugin.location.display());
     }
     if !message_to_plugin.has_cwd() {
@@ -1090,7 +1089,7 @@ fn open_command_pane_in_new_tab(
         initial_panes,
         first_pane_unblock_condition: None,
     };
-    let error_msg = || format!("Failed to open command pane in new tab");
+    let error_msg = || "Failed to open command pane in new tab".to_string();
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
@@ -1101,7 +1100,7 @@ fn open_command_pane_in_new_tab(
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_in_new_tab response"))
+        .with_context(|| "failed to write open_command_pane_in_new_tab response".to_string())
         .non_fatal();
 }
 
@@ -1125,7 +1124,7 @@ fn open_plugin_pane_in_new_tab(
                 ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse::default());
             wasi_write_object(env, &response.encode_to_vec())
                 .with_context(|| {
-                    format!("failed to write open_plugin_pane_in_new_tab error response")
+                    "failed to write open_plugin_pane_in_new_tab error response".to_string()
                 })
                 .non_fatal();
             return;
@@ -1144,7 +1143,7 @@ fn open_plugin_pane_in_new_tab(
         initial_panes,
         first_pane_unblock_condition: None,
     };
-    let error_msg = || format!("Failed to open plugin pane in new tab");
+    let error_msg = || "Failed to open plugin pane in new tab".to_string();
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
@@ -1155,7 +1154,7 @@ fn open_plugin_pane_in_new_tab(
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_plugin_pane_in_new_tab response"))
+        .with_context(|| "failed to write open_plugin_pane_in_new_tab response".to_string())
         .non_fatal();
 }
 
@@ -1181,7 +1180,7 @@ fn open_plugin_pane_floating(
             );
             wasi_write_object(env, &response.encode_to_vec())
                 .with_context(|| {
-                    format!("failed to write open_plugin_pane_floating error response")
+                    "failed to write open_plugin_pane_floating error response".to_string()
                 })
                 .non_fatal();
             return;
@@ -1197,14 +1196,14 @@ fn open_plugin_pane_floating(
         no_focus: false,
         tab_id: None,
     };
-    let error_msg = || format!("Failed to open floating plugin pane");
+    let error_msg = || "Failed to open floating plugin pane".to_string();
     let result = apply_action!(action, error_msg, env);
 
     let pane_id: OpenPluginPaneFloatingResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
     let response = ProtobufOpenPluginPaneFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_plugin_pane_floating response"))
+        .with_context(|| "failed to write open_plugin_pane_floating response".to_string())
         .non_fatal();
 }
 
@@ -1236,7 +1235,7 @@ fn open_editor_pane_in_new_tab(
         initial_panes,
         first_pane_unblock_condition: None,
     };
-    let error_msg = || format!("Failed to open editor pane in new tab");
+    let error_msg = || "Failed to open editor pane in new tab".to_string();
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
@@ -1247,7 +1246,7 @@ fn open_editor_pane_in_new_tab(
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_editor_pane_in_new_tab response"))
+        .with_context(|| "failed to write open_editor_pane_in_new_tab response".to_string())
         .non_fatal();
 }
 
@@ -1358,14 +1357,11 @@ fn parse_layout(env: &PluginEnv, layout_string: String) {
                     log::error!("Failed to convert metadata to protobuf: {}", e);
                     // Fallback to SyntaxError if conversion fails
                     let error = LayoutParsingError::SyntaxError;
-                    let protobuf_error =
-                        error
-                            .try_into()
-                            .unwrap_or_else(|_| ProtobufLayoutParsingError {
-                                error_type: Some(ProtobufLayoutParsingErrorType::SyntaxError(
-                                    ProtobufSyntaxError {},
-                                )),
-                            });
+                    let protobuf_error = error.try_into().unwrap_or(ProtobufLayoutParsingError {
+                        error_type: Some(ProtobufLayoutParsingErrorType::SyntaxError(
+                            ProtobufSyntaxError {},
+                        )),
+                    });
                     ProtobufParseLayoutResponse {
                         result: Some(parse_layout_response::Result::Error(protobuf_error)),
                     }
@@ -1447,7 +1443,7 @@ fn open_file(env: &PluginEnv, file_to_open: FileToOpen, context: BTreeMap<String
     // Write response to plugin
     let response = ProtobufOpenFileResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file response"))
+        .with_context(|| "failed to write open_file response".to_string())
         .non_fatal();
 }
 
@@ -1463,7 +1459,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
     let plugin_id = env.plugin_id;
     let senders = env.senders.clone();
     let default_shell = env.default_shell.clone();
-    let default_mode = env.default_mode.clone();
+    let default_mode = env.default_mode;
     let plugin_name = env.name().to_string();
 
     // Spawn a new thread to execute the action
@@ -1545,7 +1541,7 @@ fn open_file_floating(
     // Write response to plugin
     let response = ProtobufOpenFileFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file_floating response"))
+        .with_context(|| "failed to write open_file_floating response".to_string())
         .non_fatal();
 }
 
@@ -1588,7 +1584,7 @@ fn open_file_in_place(
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file_in_place response"))
+        .with_context(|| "failed to write open_file_in_place response".to_string())
         .non_fatal();
 }
 
@@ -1631,7 +1627,7 @@ fn open_file_near_plugin(
     // Write response to plugin
     let response = ProtobufOpenFileNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file_near_plugin response"))
+        .with_context(|| "failed to write open_file_near_plugin response".to_string())
         .non_fatal();
 }
 
@@ -1675,7 +1671,7 @@ fn open_file_floating_near_plugin(
     // Write response to plugin
     let response = ProtobufOpenFileFloatingNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file_floating_near_plugin response"))
+        .with_context(|| "failed to write open_file_floating_near_plugin response".to_string())
         .non_fatal();
 }
 
@@ -1715,7 +1711,7 @@ fn open_file_in_place_of_plugin(
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceOfPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_file_in_place_of_plugin response"))
+        .with_context(|| "failed to write open_file_in_place_of_plugin response".to_string())
         .non_fatal();
 }
 
@@ -1752,7 +1748,7 @@ fn open_terminal(env: &PluginEnv, cwd: PathBuf) {
     // Write response to plugin
     let response = ProtobufOpenTerminalResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal response"))
+        .with_context(|| "failed to write open_terminal response".to_string())
         .non_fatal();
 }
 
@@ -1791,7 +1787,7 @@ fn open_terminal_near_plugin(env: &PluginEnv, cwd: PathBuf) {
     // Write response to plugin
     let response = ProtobufOpenTerminalNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_near_plugin response"))
+        .with_context(|| "failed to write open_terminal_near_plugin response".to_string())
         .non_fatal();
 }
 
@@ -1832,7 +1828,7 @@ fn open_terminal_floating(
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_floating response"))
+        .with_context(|| "failed to write open_terminal_floating response".to_string())
         .non_fatal();
 }
 
@@ -1873,7 +1869,7 @@ fn open_terminal_floating_near_plugin(
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_floating_near_plugin response"))
+        .with_context(|| "failed to write open_terminal_floating_near_plugin response".to_string())
         .non_fatal();
 }
 
@@ -1911,7 +1907,7 @@ fn open_terminal_in_place(env: &PluginEnv, cwd: PathBuf) {
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_in_place response"))
+        .with_context(|| "failed to write open_terminal_in_place response".to_string())
         .non_fatal();
 }
 
@@ -1951,7 +1947,7 @@ fn open_terminal_in_place_of_plugin(
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceOfPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_in_place_of_plugin response"))
+        .with_context(|| "failed to write open_terminal_in_place_of_plugin response".to_string())
         .non_fatal();
 }
 
@@ -2007,7 +2003,9 @@ fn open_command_pane_in_place_of_plugin(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_in_place_of_plugin response"))
+        .with_context(|| {
+            "failed to write open_command_pane_in_place_of_plugin response".to_string()
+        })
         .non_fatal();
 }
 
@@ -2049,7 +2047,9 @@ fn open_terminal_pane_in_place_of_pane_id(
 
     let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_terminal_pane_in_place_of_pane_id response"))
+        .with_context(|| {
+            "failed to write open_terminal_pane_in_place_of_pane_id response".to_string()
+        })
         .non_fatal();
 }
 
@@ -2106,7 +2106,9 @@ fn open_command_pane_in_place_of_pane_id(
 
     let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_in_place_of_pane_id response"))
+        .with_context(|| {
+            "failed to write open_command_pane_in_place_of_pane_id response".to_string()
+        })
         .non_fatal();
 }
 
@@ -2145,7 +2147,7 @@ fn open_edit_pane_in_place_of_pane_id(
 
     let response = ProtobufOpenEditPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_edit_pane_in_place_of_pane_id response"))
+        .with_context(|| "failed to write open_edit_pane_in_place_of_pane_id response".to_string())
         .non_fatal();
 }
 
@@ -2198,7 +2200,7 @@ fn open_command_pane(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane response"))
+        .with_context(|| "failed to write open_command_pane response".to_string())
         .non_fatal();
 }
 
@@ -2256,7 +2258,7 @@ fn open_command_pane_near_plugin(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_near_plugin response"))
+        .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
         .non_fatal();
 }
 
@@ -2309,7 +2311,7 @@ fn open_command_pane_floating(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_floating response"))
+        .with_context(|| "failed to write open_command_pane_floating response".to_string())
         .non_fatal();
 }
 
@@ -2370,7 +2372,9 @@ fn open_command_pane_floating_near_plugin(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_floating_near_plugin response"))
+        .with_context(|| {
+            "failed to write open_command_pane_floating_near_plugin response".to_string()
+        })
         .non_fatal();
 }
 
@@ -2423,7 +2427,7 @@ fn open_command_pane_in_place(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_in_place response"))
+        .with_context(|| "failed to write open_command_pane_in_place response".to_string())
         .non_fatal();
 }
 
@@ -2480,7 +2484,7 @@ fn open_command_pane_background(
     // Write response to plugin
     let response = ProtobufOpenCommandPaneBackgroundResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write open_command_pane_background response"))
+        .with_context(|| "failed to write open_command_pane_background response".to_string())
         .non_fatal();
 }
 
@@ -2659,13 +2663,13 @@ fn hide_self(env: &PluginEnv) -> Result<()> {
             PaneId::Plugin(env.plugin_id),
             env.client_id,
         ))
-        .with_context(|| format!("failed to hide self"))
+        .with_context(|| "failed to hide self".to_string())
 }
 
 fn hide_pane_with_id(env: &PluginEnv, pane_id: PaneId) -> Result<()> {
     env.senders
         .send_to_screen(ScreenInstruction::SuppressPane(pane_id, env.client_id))
-        .with_context(|| format!("failed to hide self"))
+        .with_context(|| "failed to hide self".to_string())
 }
 
 fn show_self(env: &PluginEnv, should_float_if_hidden: bool) {
@@ -2674,7 +2678,7 @@ fn show_self(env: &PluginEnv, should_float_if_hidden: bool) {
         should_float_if_hidden,
         should_be_in_place_if_hidden: false,
     };
-    let error_msg = || format!("Failed to show self for plugin");
+    let error_msg = || "Failed to show self for plugin".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -2712,11 +2716,11 @@ fn close_self(env: &PluginEnv) {
             None,
             None,
         ))
-        .with_context(|| format!("failed to close self"))
+        .with_context(|| "failed to close self".to_string())
         .non_fatal();
     env.senders
         .send_to_plugin(PluginInstruction::Unload(env.plugin_id))
-        .with_context(|| format!("failed to close self"))
+        .with_context(|| "failed to close self".to_string())
         .non_fatal();
 }
 
@@ -2761,7 +2765,7 @@ fn switch_to_mode(env: &PluginEnv, input_mode: InputMode) {
 fn new_tabs_with_layout(env: &PluginEnv, raw_layout: &str) -> Result<()> {
     // TODO: cwd
     let layout = Layout::from_str(
-        &raw_layout,
+        raw_layout,
         format!("Layout from plugin: {}", env.name()),
         None,
         None,
@@ -2823,7 +2827,7 @@ fn apply_layout(env: &PluginEnv, layout: Layout) {
     let mut tab_ids = Vec::new();
 
     for action in tabs_to_open {
-        let error_msg = || format!("Failed to create layout tab");
+        let error_msg = || "Failed to create layout tab".to_string();
         let result = apply_action!(action, error_msg, env);
 
         // Collect tab ID from each action
@@ -2835,7 +2839,7 @@ fn apply_layout(env: &PluginEnv, layout: Layout) {
     // Write response
     let response = ProtobufNewTabsResponse::from(tab_ids);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write layout tabs response"))
+        .with_context(|| "failed to write layout tabs response".to_string())
         .non_fatal();
 }
 
@@ -2852,7 +2856,7 @@ fn new_tab(env: &PluginEnv, name: Option<String>, cwd: Option<String>) {
         initial_panes: None,
         first_pane_unblock_condition: None,
     };
-    let error_msg = || format!("Failed to open new tab");
+    let error_msg = || "Failed to open new tab".to_string();
     let result = apply_action!(action, error_msg, env);
 
     // Extract tab_id from result - return None if not present
@@ -2861,7 +2865,7 @@ fn new_tab(env: &PluginEnv, name: Option<String>, cwd: Option<String>) {
     // Write response to plugin
     let response = ProtobufNewTabResponse::from(tab_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write new_tab response"))
+        .with_context(|| "failed to write new_tab response".to_string())
         .non_fatal();
 }
 
@@ -2878,14 +2882,14 @@ fn new_tab_unfocused(env: &PluginEnv, name: Option<String>, cwd: Option<String>)
         initial_panes: None,
         first_pane_unblock_condition: None,
     };
-    let error_msg = || format!("Failed to open new tab (unfocused)");
+    let error_msg = || "Failed to open new tab (unfocused)".to_string();
     let result = apply_action!(action, error_msg, env);
 
     let tab_id: NewTabUnfocusedResponse = result.and_then(|r| r.affected_tab_id);
 
     let response = ProtobufNewTabUnfocusedResponse::from(tab_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write new_tab_unfocused response"))
+        .with_context(|| "failed to write new_tab_unfocused response".to_string())
         .non_fatal();
 }
 
@@ -2919,19 +2923,19 @@ fn new_tiled_pane_in_tab(env: &PluginEnv, tab_position: usize) {
 
     let response = ProtobufNewTiledPaneInTabResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to write new_tiled_pane_in_tab response"))
+        .with_context(|| "failed to write new_tiled_pane_in_tab response".to_string())
         .non_fatal();
 }
 
 fn go_to_next_tab(env: &PluginEnv) {
     let action = Action::GoToNextTab;
-    let error_msg = || format!("Failed to go to next tab");
+    let error_msg = || "Failed to go to next tab".to_string();
     apply_action!(action, error_msg, env);
 }
 
 fn go_to_previous_tab(env: &PluginEnv) {
     let action = Action::GoToPreviousTab;
-    let error_msg = || format!("Failed to go to previous tab");
+    let error_msg = || "Failed to go to previous tab".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -2955,19 +2959,19 @@ fn resize_with_direction(env: &PluginEnv, resize: ResizeStrategy) {
 
 fn focus_next_pane(env: &PluginEnv) {
     let action = Action::FocusNextPane;
-    let error_msg = || format!("Failed to focus next pane");
+    let error_msg = || "Failed to focus next pane".to_string();
     apply_action!(action, error_msg, env);
 }
 
 fn focus_previous_pane(env: &PluginEnv) {
     let action = Action::FocusPreviousPane;
-    let error_msg = || format!("Failed to focus previous pane");
+    let error_msg = || "Failed to focus previous pane".to_string();
     apply_action!(action, error_msg, env);
 }
 
 fn focus_last_pane(env: &PluginEnv) {
     let action = Action::FocusLastPane;
-    let error_msg = || format!("Failed to focus last pane");
+    let error_msg = || "Failed to focus last pane".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -2985,7 +2989,7 @@ fn move_focus_or_tab(env: &PluginEnv, direction: Direction) {
 
 fn detach(env: &PluginEnv) {
     let action = Action::Detach;
-    let error_msg = || format!("Failed to detach");
+    let error_msg = || "Failed to detach".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -2998,11 +3002,11 @@ fn switch_session(
     cwd: Option<PathBuf>,
 ) -> Result<()> {
     // pane_id is (id, is_plugin)
-    let err_context = || format!("Failed to switch session");
+    let err_context = || "Failed to switch session".to_string();
     if let Some(LayoutInfo::Stringified(stringified_layout)) = layout.as_ref() {
         // we verify the stringified layout here to fail early rather than when parsing it at the
         // session-switching phase
-        if let Err(e) = Layout::from_kdl(&stringified_layout, None, None, None) {
+        if let Err(e) = Layout::from_kdl(stringified_layout, None, None, None) {
             return Err(anyhow!("Failed to deserialize layout: {}", e));
         }
     }
@@ -3043,7 +3047,7 @@ fn switch_session(
 
 fn delete_dead_session(session_name: String) -> Result<()> {
     std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name))
-        .with_context(|| format!("Failed to delete dead session: {:?}", &session_name))
+        .with_context(|| format!("Failed to delete dead session: {:?}", session_name))
 }
 
 fn delete_all_dead_sessions() -> Result<()> {
@@ -3089,7 +3093,7 @@ fn delete_all_dead_sessions() -> Result<()> {
 
 fn edit_scrollback(env: &PluginEnv) {
     let action = Action::EditScrollback { ansi: false };
-    let error_msg = || format!("Failed to edit scrollback");
+    let error_msg = || "Failed to edit scrollback".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -3118,7 +3122,7 @@ fn copy_to_clipboard(env: &PluginEnv, text: String) -> Result<()> {
 }
 
 fn toggle_tab(env: &PluginEnv) {
-    let error_msg = || format!("Failed to toggle tab");
+    let error_msg = || "Failed to toggle tab".to_string();
     let action = Action::ToggleTab;
     apply_action!(action, error_msg, env);
 }
@@ -3375,7 +3379,7 @@ fn focus_terminal_pane(
         should_float_if_hidden,
         should_be_in_place_if_hidden,
     };
-    let error_msg = || format!("Failed to focus terminal pane");
+    let error_msg = || "Failed to focus terminal pane".to_string();
     apply_action!(action, error_msg, env);
 }
 
@@ -3390,12 +3394,12 @@ fn focus_plugin_pane(
         should_float_if_hidden,
         should_be_in_place_if_hidden,
     };
-    let error_msg = || format!("Failed to focus plugin pane");
+    let error_msg = || "Failed to focus plugin pane".to_string();
     apply_action!(action, error_msg, env);
 }
 
 fn rename_terminal_pane(env: &PluginEnv, terminal_pane_id: u32, new_name: &str) {
-    let error_msg = || format!("Failed to rename terminal pane");
+    let error_msg = || "Failed to rename terminal pane".to_string();
     let rename_pane_action = Action::RenameTerminalPane {
         pane_id: terminal_pane_id,
         name: new_name.as_bytes().to_vec(),
@@ -3404,7 +3408,7 @@ fn rename_terminal_pane(env: &PluginEnv, terminal_pane_id: u32, new_name: &str) 
 }
 
 fn rename_plugin_pane(env: &PluginEnv, plugin_pane_id: u32, new_name: &str) {
-    let error_msg = || format!("Failed to rename plugin pane");
+    let error_msg = || "Failed to rename plugin pane".to_string();
     let rename_pane_action = Action::RenamePluginPane {
         pane_id: plugin_pane_id,
         name: new_name.as_bytes().to_vec(),
@@ -3413,7 +3417,7 @@ fn rename_plugin_pane(env: &PluginEnv, plugin_pane_id: u32, new_name: &str) {
 }
 
 fn rename_tab(env: &PluginEnv, tab_index: u32, new_name: &str) {
-    let error_msg = || format!("Failed to rename tab");
+    let error_msg = || "Failed to rename tab".to_string();
     let rename_tab_action = Action::RenameTab {
         tab_index,
         name: new_name.as_bytes().to_vec(),
@@ -4025,18 +4029,16 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
                     thread::spawn({
                         move || {
                             let mut paths_in_folder = vec![];
-                            for entry in reading_folder {
-                                if let Ok(entry) = entry {
-                                    let entry_metadata = entry.metadata().ok().map(|m| m.into());
-                                    paths_in_folder.push((
-                                        PathBuf::from("/host").join(
-                                            entry.path().strip_prefix(&plugin_host_folder).unwrap(),
-                                        ),
-                                        entry_metadata.into(),
-                                    ));
-                                }
+                            for entry in reading_folder.flatten() {
+                                let entry_metadata = entry.metadata().ok().map(|m| m.into());
+                                paths_in_folder.push((
+                                    PathBuf::from("/host").join(
+                                        entry.path().strip_prefix(&plugin_host_folder).unwrap(),
+                                    ),
+                                    entry_metadata,
+                                ));
                             }
-                            let _ = send_plugin_instructions
+                            send_plugin_instructions
                                 .ok_or(anyhow!("found no sender to send plugin instruction to"))
                                 .map(|sender| {
                                     let _ = sender.send(PluginInstruction::Update(vec![(
@@ -4584,7 +4586,7 @@ fn try_save_layout(
                                                                       // it
                                                                       // nicer
     parsed_layout.fmt();
-    std::fs::write(&file_path, &parsed_layout.to_string())
+    std::fs::write(&file_path, parsed_layout.to_string())
         .map_err(|io_error| format!("Failed to write layout file: {}", io_error))?;
 
     Ok(())
@@ -4595,7 +4597,7 @@ fn delete_layout(env: &PluginEnv, layout_name: String) {
 
     let response = try_delete_layout(env, &layout_name)
         .map(|_| DeleteLayoutResponse::Ok(()))
-        .unwrap_or_else(|e| DeleteLayoutResponse::Err(e));
+        .unwrap_or_else(DeleteLayoutResponse::Err);
 
     let protobuf_response: ProtobufDeleteLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
@@ -5428,7 +5430,7 @@ fn report_panic(env: &PluginEnv, msg: &str) {
 // Helper Functions ---------------------------------------------------------------------------------------------------
 
 pub fn wasi_read_string(plugin_env: &PluginEnv) -> Result<String> {
-    let err_context = || format!("failed to read string from WASI env");
+    let err_context = || "failed to read string from WASI env".to_string();
 
     let mut buf = vec![];
     plugin_env
@@ -5448,20 +5450,20 @@ pub fn wasi_write_string(plugin_env: &PluginEnv, buf: &str) -> Result<()> {
     let mut stdin = plugin_env.stdin_pipe.lock().unwrap();
     writeln!(stdin, "{}\r", buf)
         .map_err(anyError::new)
-        .with_context(|| format!("failed to write string to WASI env"))
+        .with_context(|| "failed to write string to WASI env".to_string())
 }
 
 pub fn wasi_write_object(plugin_env: &PluginEnv, object: &(impl Serialize + ?Sized)) -> Result<()> {
     serde_json::to_string(&object)
         .map_err(anyError::new)
         .and_then(|string| wasi_write_string(plugin_env, &string))
-        .with_context(|| format!("failed to serialize object for WASI env"))
+        .with_context(|| "failed to serialize object for WASI env".to_string())
 }
 
 pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
     wasi_read_string(plugin_env)
         .and_then(|string| serde_json::from_str(&string).map_err(anyError::new))
-        .with_context(|| format!("failed to deserialize object from WASI env"))
+        .with_context(|| "failed to deserialize object from WASI env".to_string())
 }
 
 // TODO: move to permissions?

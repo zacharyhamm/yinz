@@ -29,7 +29,7 @@ pub fn start_cli_client(
         sock_dir
     };
     crate::check_ipc_pipe_length(&zellij_ipc_pipe);
-    os_input.connect_to_server(&*zellij_ipc_pipe);
+    os_input.connect_to_server(&zellij_ipc_pipe);
     let pane_id = os_input
         .env_variable("ZELLIJ_PANE_ID")
         .and_then(|e| e.trim().parse().ok());
@@ -80,6 +80,7 @@ pub fn start_cli_client(
     0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pipe_client(
     os_input: &mut Box<dyn ClientOsApi>,
     pipe_id: String,
@@ -271,7 +272,7 @@ pub fn start_subscribe_client(
         sock_dir
     };
     crate::check_ipc_pipe_length(&zellij_ipc_pipe);
-    os_input.connect_to_server(&*zellij_ipc_pipe);
+    os_input.connect_to_server(&zellij_ipc_pipe);
 
     // Parse pane IDs
     let pane_ids: Vec<PaneId> = subscribe_cli

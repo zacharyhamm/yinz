@@ -130,6 +130,7 @@ pub fn from_termwiz(old_event: &mut MouseEvent, event: TermwizMouseEvent) -> Mou
 
 impl InputHandler {
     /// Returns a new [`InputHandler`] with the attributes specified as arguments.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         os_input: Box<dyn ClientOsApi>,
         command_is_executing: CommandIsExecuting,
@@ -484,6 +485,7 @@ impl InputHandler {
 
 /// Entry point to the module. Instantiates an [`InputHandler`] and starts
 /// its [`InputHandler::handle_input()`] loop.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn input_loop(
     os_input: Box<dyn ClientOsApi>,
     config: Config,
@@ -494,7 +496,7 @@ pub(crate) fn input_loop(
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
     nested_reannounce: Option<NestedReannounce>,
 ) {
-    let _handler = InputHandler::new(
+    InputHandler::new(
         os_input,
         command_is_executing,
         config,

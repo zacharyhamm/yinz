@@ -1,3 +1,5 @@
+#![allow(clippy::match_ref_pats)]
+#![allow(clippy::needless_borrow)]
 use super::is_inside_viewport;
 use super::pane_resizer::PaneResizer;
 use super::stacked_panes::StackedPanes;
@@ -66,7 +68,7 @@ impl<'a> TiledPaneGrid<'a> {
         let pane_geom = pane_to_check.current_geom();
         if pane_geom.is_stacked() {
             let mut stack_geom =
-                StackedPanes::new(self.panes.clone()).position_and_size_of_stack(&pane_id);
+                StackedPanes::new(self.panes.clone()).position_and_size_of_stack(pane_id);
             if let Some(stack_geom) = stack_geom.as_mut() {
                 stack_geom.stacked = pane_geom.stacked; // to get the stack id
             }
@@ -91,7 +93,7 @@ impl<'a> TiledPaneGrid<'a> {
         .is_fixed())
     }
     fn neighbor_pane_ids(&self, pane_id: &PaneId, direction: Direction) -> Result<Vec<PaneId>> {
-        let err_context = || format!("Failed to get neighboring panes");
+        let err_context = || "Failed to get neighboring panes".to_string();
         // Shorthand
         use Direction as Dir;
         let mut neighbor_terminals = self
@@ -193,7 +195,7 @@ impl<'a> TiledPaneGrid<'a> {
                     Resize::Increase => {
                         for id in pane_ids {
                             if !self
-                                .can_reduce_pane_width(&id, change_by.0 as f64)
+                                .can_reduce_pane_width(&id, change_by.0)
                                 .with_context(err_context)?
                             {
                                 return Ok(false);
@@ -202,7 +204,7 @@ impl<'a> TiledPaneGrid<'a> {
                         Ok(true)
                     },
                     Resize::Decrease => self
-                        .can_reduce_pane_width(pane_id, change_by.0 as f64)
+                        .can_reduce_pane_width(pane_id, change_by.0)
                         .with_context(err_context),
                 }
             } else {
@@ -210,7 +212,7 @@ impl<'a> TiledPaneGrid<'a> {
                     Resize::Increase => {
                         for id in pane_ids {
                             if !self
-                                .can_reduce_pane_height(&id, change_by.1 as f64)
+                                .can_reduce_pane_height(&id, change_by.1)
                                 .with_context(err_context)?
                             {
                                 return Ok(false);
@@ -219,7 +221,7 @@ impl<'a> TiledPaneGrid<'a> {
                         Ok(true)
                     },
                     Resize::Decrease => self
-                        .can_reduce_pane_height(pane_id, change_by.1 as f64)
+                        .can_reduce_pane_height(pane_id, change_by.1)
                         .with_context(err_context),
                 }
             }
@@ -585,7 +587,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .current_geom()
                 .is_stacked();
             if current_pane_is_stacked {
-                let _ = StackedPanes::new(self.panes.clone()).reduce_stack_height(&id, percent);
+                let _ = StackedPanes::new(self.panes.clone()).reduce_stack_height(id, percent);
             } else {
                 let mut panes = self.panes.borrow_mut();
                 let terminal = panes.get_mut(id).unwrap();
@@ -602,7 +604,7 @@ impl<'a> TiledPaneGrid<'a> {
             .current_geom()
             .is_stacked();
         if current_pane_is_stacked {
-            let _ = StackedPanes::new(self.panes.clone()).increase_stack_height(&id, percent);
+            let _ = StackedPanes::new(self.panes.clone()).increase_stack_height(id, percent);
         } else {
             let mut panes = self.panes.borrow_mut();
             let terminal = panes.get_mut(id).unwrap();
@@ -618,7 +620,7 @@ impl<'a> TiledPaneGrid<'a> {
             .current_geom()
             .is_stacked();
         if current_pane_is_stacked {
-            let _ = StackedPanes::new(self.panes.clone()).increase_stack_width(&id, percent);
+            let _ = StackedPanes::new(self.panes.clone()).increase_stack_width(id, percent);
         } else {
             let mut panes = self.panes.borrow_mut();
             let pane = panes.get_mut(id).unwrap();
@@ -635,7 +637,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .current_geom()
                 .is_stacked();
             if current_pane_is_stacked {
-                let _ = StackedPanes::new(self.panes.clone()).reduce_stack_width(&id, percent);
+                let _ = StackedPanes::new(self.panes.clone()).reduce_stack_width(id, percent);
             } else {
                 let mut panes = self.panes.borrow_mut();
                 let terminal = panes.get_mut(id).unwrap();
@@ -702,7 +704,7 @@ impl<'a> TiledPaneGrid<'a> {
 
         let panes = self.panes.borrow();
         let mut seen = HashSet::new();
-        for (pid, _pane) in panes.iter() {
+        for pid in panes.keys() {
             let pane = self
                 .get_pane_geom(pid)
                 .with_context(|| no_pane_id(pane_id))
@@ -752,11 +754,11 @@ impl<'a> TiledPaneGrid<'a> {
         let mut result = vec![];
         let mut aligned_panes: Vec<_> = self
             .pane_ids_aligned_with(id, alignment)
-            .and_then(|pane_ids| {
-                Ok(pane_ids
+            .map(|pane_ids| {
+                pane_ids
                     .iter()
                     .filter_map(|p_id| self.get_pane_geom(p_id).map(|pane_geom| (*p_id, pane_geom)))
-                    .collect())
+                    .collect()
             })
             .with_context(err_context)?;
 
@@ -912,7 +914,7 @@ impl<'a> TiledPaneGrid<'a> {
 
         let next_active_pane_id = panes
             .get(active_pane_position + 1)
-            .or_else(|| panes.get(0))
+            .or_else(|| panes.first())
             .copied()
             .unwrap();
         next_active_pane_id
@@ -1410,9 +1412,7 @@ impl<'a> TiledPaneGrid<'a> {
             },
         );
         pane_id_to_split.and_then(|t_id_to_split| {
-            let Some(pane_to_split) = panes.get(t_id_to_split) else {
-                return None;
-            };
+            let pane_to_split = panes.get(t_id_to_split)?;
             let direction = if pane_to_split.rows()
                 * cursor_height_width_ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO)
                 > pane_to_split.cols()
@@ -1437,9 +1437,7 @@ impl<'a> TiledPaneGrid<'a> {
         // number, but we might want to change this to be a percentage of the current screen if it
         // feels better
         let panes = self.panes.borrow();
-        let Some(pane_to_split) = panes.get(active_pane_id) else {
-            return None;
-        };
+        let pane_to_split = panes.get(active_pane_id)?;
         let direction = if pane_to_split.rows()
             * cursor_height_width_ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO)
             > pane_to_split.cols()
@@ -1732,7 +1730,7 @@ impl<'a> TiledPaneGrid<'a> {
         // height of the holes by the pane_ids_to_expand (squeeze them upwards)
         // we expect the pane_ids_to_expand to all have the same y and height and for the holes to
         // all be higher
-        let err_context = || format!("Failed to fill_geom_holes_horizontally_upwards");
+        let err_context = || "Failed to fill_geom_holes_horizontally_upwards".to_string();
         let mut panes_to_expand = vec![];
         let mut hole_panes = vec![];
         for p_id in pane_ids_to_expand {
@@ -1745,8 +1743,8 @@ impl<'a> TiledPaneGrid<'a> {
             let pane = panes.get(&p_id).with_context(err_context)?;
             hole_panes.push((p_id, pane.position_and_size()));
         }
-        panes_to_expand.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.x.cmp(&b_geom.x));
-        hole_panes.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.x.cmp(&b_geom.x));
+        panes_to_expand.sort_by_key(|(_a_id, a_geom)| a_geom.x);
+        hole_panes.sort_by_key(|(_a_id, a_geom)| a_geom.x);
         let mut uncovered_hole = None;
         for (hole_id, mut hole_geom) in hole_panes {
             let hole_x = hole_geom.x;
@@ -1816,7 +1814,7 @@ impl<'a> TiledPaneGrid<'a> {
         // count (squeeze them downwards)
         // we expect the pane_ids_to_expand to all have the same y and height and for the holes to
         // all be higher and have the same y
-        let err_context = || format!("Failed to fill_geom_holes_horizontally_downwards");
+        let err_context = || "Failed to fill_geom_holes_horizontally_downwards".to_string();
         let mut panes_to_expand = vec![];
         let mut hole_panes = vec![];
         for p_id in pane_ids_to_expand {
@@ -1829,8 +1827,8 @@ impl<'a> TiledPaneGrid<'a> {
             let pane = panes.get(&p_id).with_context(err_context)?;
             hole_panes.push((p_id, pane.position_and_size()));
         }
-        panes_to_expand.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.x.cmp(&b_geom.x));
-        hole_panes.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.x.cmp(&b_geom.x));
+        panes_to_expand.sort_by_key(|(_a_id, a_geom)| a_geom.x);
+        hole_panes.sort_by_key(|(_a_id, a_geom)| a_geom.x);
         let mut uncovered_hole = None;
         for (hole_id, mut hole_geom) in hole_panes {
             let hole_x = hole_geom.x;
@@ -1902,7 +1900,7 @@ impl<'a> TiledPaneGrid<'a> {
         // count (squeeze them to the right)
         // we expect the pane_ids_to_expand to all have the same x and width and for the holes to
         // all be wider and have the same x
-        let err_context = || format!("Failed to fill_geom_holes_vertically_to_the_right");
+        let err_context = || "Failed to fill_geom_holes_vertically_to_the_right".to_string();
         let mut panes_to_expand = vec![];
         let mut hole_panes = vec![];
         for p_id in pane_ids_to_expand {
@@ -1915,8 +1913,8 @@ impl<'a> TiledPaneGrid<'a> {
             let pane = panes.get(&p_id).with_context(err_context)?;
             hole_panes.push((p_id, pane.position_and_size()));
         }
-        panes_to_expand.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.y.cmp(&b_geom.y));
-        hole_panes.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.y.cmp(&b_geom.y));
+        panes_to_expand.sort_by_key(|(_a_id, a_geom)| a_geom.y);
+        hole_panes.sort_by_key(|(_a_id, a_geom)| a_geom.y);
         let mut uncovered_hole = None;
         for (hole_id, mut hole_geom) in hole_panes {
             let hole_y = hole_geom.y;
@@ -1987,7 +1985,7 @@ impl<'a> TiledPaneGrid<'a> {
         // width of the holes by the pane_ids_to_expand's width (squeeze them to the right)
         // we expect the pane_ids_to_expand to all have the same x and width and for the holes to
         // all be wider
-        let err_context = || format!("Failed to fill_geom_holes_vertically_to_the_left");
+        let err_context = || "Failed to fill_geom_holes_vertically_to_the_left".to_string();
         let mut panes_to_expand = vec![];
         let mut hole_panes = vec![];
         for p_id in pane_ids_to_expand {
@@ -2000,8 +1998,8 @@ impl<'a> TiledPaneGrid<'a> {
             let pane = panes.get(&p_id).with_context(err_context)?;
             hole_panes.push((p_id, pane.position_and_size()));
         }
-        panes_to_expand.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.y.cmp(&b_geom.y));
-        hole_panes.sort_by(|(_a_id, a_geom), (_b_id, b_geom)| a_geom.y.cmp(&b_geom.y));
+        panes_to_expand.sort_by_key(|(_a_id, a_geom)| a_geom.y);
+        hole_panes.sort_by_key(|(_a_id, a_geom)| a_geom.y);
         let mut uncovered_hole = None;
         for (hole_id, mut hole_geom) in hole_panes {
             let hole_y = hole_geom.y;

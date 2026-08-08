@@ -1,3 +1,8 @@
+#![allow(clippy::unnecessary_to_owned)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::op_ref)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::needless_borrow)]
 mod component_coordinates;
 mod nested_list;
 mod ribbon;

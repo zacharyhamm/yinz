@@ -182,7 +182,7 @@ impl PluginConfig {
             }
         }
 
-        return last_err;
+        last_err
     }
 
     pub fn is_builtin(&self) -> bool {

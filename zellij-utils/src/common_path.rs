@@ -46,10 +46,9 @@ pub fn common_path_all<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
     let mut path_iter = paths.into_iter();
     let mut result = path_iter.next()?.to_path_buf();
     for path in path_iter {
-        if let Some(r) = common_path(&result, &path) {
+        {
+            let r = common_path(&result, path)?;
             result = r;
-        } else {
-            return None;
         }
     }
     Some(result.to_path_buf())

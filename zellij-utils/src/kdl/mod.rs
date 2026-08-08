@@ -359,6 +359,7 @@ macro_rules! actions_from_kdl {
     };
 }
 
+#[allow(clippy::result_large_err)]
 pub fn kdl_arguments_that_are_strings<'a>(
     arguments: impl Iterator<Item = &'a KdlEntry>,
 ) -> Result<Vec<String>, ConfigError> {
@@ -368,7 +369,7 @@ pub fn kdl_arguments_that_are_strings<'a>(
             Some(string_value) => args.push(string_value.to_string()),
             None => {
                 return Err(ConfigError::new_kdl_error(
-                    format!("Argument must be a string"),
+                    "Argument must be a string".to_string(),
                     kdl_entry.span().offset(),
                     kdl_entry.span().len(),
                 ));
@@ -378,6 +379,7 @@ pub fn kdl_arguments_that_are_strings<'a>(
     Ok(args)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn kdl_arguments_that_are_digits<'a>(
     arguments: impl Iterator<Item = &'a KdlEntry>,
 ) -> Result<Vec<i64>, ConfigError> {
@@ -389,7 +391,7 @@ pub fn kdl_arguments_that_are_digits<'a>(
             },
             None => {
                 return Err(ConfigError::new_kdl_error(
-                    format!("Argument must be a digit"),
+                    "Argument must be a digit".to_string(),
                     kdl_entry.span().offset(),
                     kdl_entry.span().len(),
                 ));
@@ -419,6 +421,7 @@ pub fn kdl_child_bool_value_for_entry<'a>(
         .and_then(|cwd_value| cwd_value.value().as_bool())
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_global_pane_placement(
     command_metadata: Option<&KdlDocument>,
     action_node: &KdlNode,
@@ -462,6 +465,7 @@ fn parse_global_pane_placement(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_global_plugin_pane_placement(
     command_metadata: Option<&KdlDocument>,
     action_node: &KdlNode,
@@ -511,6 +515,7 @@ fn append_global_pane_placement(
 }
 
 impl Action {
+    #[allow(clippy::result_large_err)]
     pub fn new_from_bytes(
         action_name: &str,
         bytes: Vec<u8>,
@@ -526,9 +531,9 @@ impl Action {
             "TabNameInput" => Ok(Action::TabNameInput { input: bytes }),
             "SearchInput" => Ok(Action::SearchInput { input: bytes }),
             "GoToTab" => {
-                let tab_index = *bytes.get(0).ok_or_else(|| {
+                let tab_index = *bytes.first().ok_or_else(|| {
                     ConfigError::new_kdl_error(
-                        format!("Missing tab index"),
+                        "Missing tab index".to_string(),
                         action_node.span().offset(),
                         action_node.span().len(),
                     )
@@ -542,6 +547,7 @@ impl Action {
             )),
         }
     }
+    #[allow(clippy::result_large_err)]
     pub fn new_from_string(
         action_name: &str,
         string: String,
@@ -561,13 +567,11 @@ impl Action {
             },
             "SwitchToMode" => match InputMode::from_str(string.as_str()) {
                 Ok(input_mode) => Ok(Action::SwitchToMode { input_mode }),
-                Err(_e) => {
-                    return Err(ConfigError::new_kdl_error(
-                        format!("Unknown InputMode '{}'", string),
-                        action_node.span().offset(),
-                        action_node.span().len(),
-                    ))
-                },
+                Err(_e) => Err(ConfigError::new_kdl_error(
+                    format!("Unknown InputMode '{}'", string),
+                    action_node.span().offset(),
+                    action_node.span().len(),
+                )),
             },
             "Resize" => {
                 let mut resize: Option<Resize> = None;
@@ -633,7 +637,7 @@ impl Action {
             },
             "MovePane" => {
                 if string.is_empty() {
-                    return Ok(Action::MovePane { direction: None });
+                    Ok(Action::MovePane { direction: None })
                 } else {
                     let direction = Direction::from_str(string.as_str()).map_err(|_| {
                         ConfigError::new_kdl_error(
@@ -657,21 +661,21 @@ impl Action {
             "DumpLayout" => Ok(Action::DumpLayout),
             "NewPane" => {
                 if string.is_empty() {
-                    return Ok(Action::NewPane {
+                    Ok(Action::NewPane {
                         direction: None,
                         pane_name: None,
                         start_suppressed: false,
                         global_placement: None,
-                    });
+                    })
                 } else if string == "stacked" {
-                    return Ok(Action::NewStackedPane {
+                    Ok(Action::NewStackedPane {
                         command: None,
                         pane_name: None,
                         near_current_pane: false,
                         no_focus: false,
                         tab_id: None,
                         global_placement: None,
-                    });
+                    })
                 } else {
                     let direction = Direction::from_str(string.as_str()).map_err(|_| {
                         ConfigError::new_kdl_error(
@@ -763,7 +767,7 @@ impl Action {
                     };
                     node.push(format!("{} {}", resize, resize_direction));
                 } else {
-                    node.push(format!("{}", resize));
+                    node.push(resize.to_string());
                 }
                 Some(node)
             },
@@ -1165,7 +1169,6 @@ impl Action {
             Action::NewStackedPane {
                 command: run_command_action,
                 pane_name: name,
-                near_current_pane: _,
                 ..
             } => match run_command_action {
                 Some(run_command_action) => {
@@ -1510,17 +1513,17 @@ impl TryFrom<(&str, &KdlDocument)> for PaletteColor {
         if is_rgb() {
             let mut channels = kdl_entries_as_i64!(color);
             let r = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                format!("invalid rgb color"),
+                "invalid rgb color".to_string(),
                 color.span().offset(),
                 color.span().len(),
             ))? as u8;
             let g = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                format!("invalid rgb color"),
+                "invalid rgb color".to_string(),
                 color.span().offset(),
                 color.span().len(),
             ))? as u8;
             let b = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                format!("invalid rgb color"),
+                "invalid rgb color".to_string(),
                 color.span().offset(),
                 color.span().len(),
             ))? as u8;
@@ -1877,10 +1880,8 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     action_arguments,
                     kdl_action
                 )?;
-                let global_placement = parse_global_pane_placement(
-                    action_children.iter().next().copied(),
-                    kdl_action,
-                )?;
+                let global_placement =
+                    parse_global_pane_placement(action_children.first().copied(), kdl_action)?;
                 match &mut action {
                     Action::NewPane {
                         global_placement: placement,
@@ -1900,7 +1901,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 parse_kdl_action_u8_arguments!(action_name, action_arguments, kdl_action)
             },
             "NewTab" => {
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 if command_metadata.is_none() {
                     return Ok(Action::NewTab {
                         tiled_layout: None,
@@ -1919,11 +1920,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
 
                 let layout = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "layout"))
-                    .map(|layout_string| PathBuf::from(layout_string))
+                    .map(PathBuf::from)
                     .or_else(|| config_options.default_layout.clone());
                 let cwd = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "cwd"))
-                    .map(|cwd_string| PathBuf::from(cwd_string))
+                    .map(PathBuf::from)
                     .map(|cwd| current_dir.join(cwd));
                 let name = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "name"))
@@ -1962,6 +1963,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
 
                 let mut tabs = layout.tabs();
+                #[allow(clippy::needless_return)]
                 if tabs.len() > 1 {
                     return Err(ConfigError::new_kdl_error(
                         "Tab layout cannot itself have tabs".to_string(),
@@ -2002,7 +2004,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 }
             },
             "OverrideLayout" => {
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 if command_metadata.is_none() {
                     return Ok(Action::OverrideLayout {
                         tabs: vec![],
@@ -2016,11 +2018,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
 
                 let layout = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "layout"))
-                    .map(|layout_string| PathBuf::from(layout_string))
+                    .map(PathBuf::from)
                     .or_else(|| config_options.default_layout.clone());
                 let cwd = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "cwd"))
-                    .map(|cwd_string| PathBuf::from(cwd_string))
+                    .map(PathBuf::from)
                     .map(|cwd| current_dir.join(cwd));
                 let name = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "name"))
@@ -2072,6 +2074,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
 
                 let mut tabs = layout.tabs();
+                #[allow(clippy::needless_return)]
                 if tabs.len() > 1 {
                     return Err(ConfigError::new_kdl_error(
                         "Tab layout cannot itself have tabs".to_string(),
@@ -2140,10 +2143,10 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     ));
                 }
                 let command = args.remove(0);
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 let cwd = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "cwd"))
-                    .map(|cwd_string| PathBuf::from(cwd_string));
+                    .map(PathBuf::from);
                 let name = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "name"))
                     .map(|name_string| name_string.to_string());
@@ -2152,7 +2155,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .and_then(|direction_string| Direction::from_str(direction_string).ok());
                 let hold_on_close = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "close_on_exit"))
-                    .and_then(|close_on_exit| Some(!close_on_exit))
+                    .map(|close_on_exit| !close_on_exit)
                     .unwrap_or(true);
                 let hold_on_start = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "start_suspended"))
@@ -2259,7 +2262,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 }
                 let plugin_path = args.remove(0);
 
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 let should_float = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "floating"))
                     .unwrap_or(false);
@@ -2286,7 +2289,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     ));
                 }
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let configuration = KdlLayoutParser::parse_plugin_user_configuration(&kdl_action)?;
+                let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 let configuration = if global_placement.is_some() {
                     PluginUserConfiguration::new(
                         configuration
@@ -2299,8 +2302,8 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 } else {
                     configuration
                 };
-                let initial_cwd = kdl_get_string_property_or_child_value!(kdl_action, "cwd")
-                    .map(|s| PathBuf::from(s));
+                let initial_cwd =
+                    kdl_get_string_property_or_child_value!(kdl_action, "cwd").map(PathBuf::from);
                 let run_plugin_or_alias = RunPluginOrAlias::from_url(
                     &plugin_path,
                     &Some(configuration.inner().clone()),
@@ -2338,7 +2341,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 }
                 let plugin_path = args.remove(0);
 
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 let should_float = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "floating"))
                     .unwrap_or(false);
@@ -2360,7 +2363,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     ));
                 }
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let configuration = KdlLayoutParser::parse_plugin_user_configuration(&kdl_action)?;
+                let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 let configuration = if global_placement.is_some() {
                     PluginUserConfiguration::new(
                         configuration
@@ -2418,7 +2421,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     Some(args.remove(0))
                 };
 
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 let launch_new = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "launch_new"))
                     .unwrap_or(false);
@@ -2437,14 +2440,14 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let title = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "title"))
                     .map(|t| t.to_owned());
-                let configuration = KdlLayoutParser::parse_plugin_user_configuration(&kdl_action)?;
+                let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 let configuration = if configuration.inner().is_empty() {
                     None
                 } else {
                     Some(configuration.inner().clone())
                 };
-                let cwd = kdl_get_string_property_or_child_value!(kdl_action, "cwd")
-                    .map(|s| PathBuf::from(s));
+                let cwd =
+                    kdl_get_string_property_or_child_value!(kdl_action, "cwd").map(PathBuf::from);
 
                 let name = name
                     // first we try to take the explicitly supplied message name
@@ -2477,7 +2480,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     Some(args.remove(0) as u32)
                 };
 
-                let command_metadata = action_children.iter().next();
+                let command_metadata = action_children.first();
                 let launch_new = false;
                 let skip_cache = false;
                 let name = command_metadata
@@ -2511,7 +2514,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
             "TogglePaneInGroup" => Ok(Action::TogglePaneInGroup),
             "ToggleGroupMarking" => Ok(Action::ToggleGroupMarking),
             _ => Err(ConfigError::new_kdl_error(
-                format!("Unsupported action: {}", action_name).into(),
+                format!("Unsupported action: {}", action_name),
                 kdl_action.span().offset(),
                 kdl_action.span().len(),
             )),
@@ -2913,6 +2916,7 @@ macro_rules! kdl_get_int_entry {
 }
 
 impl Options {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Self, ConfigError> {
         let on_force_close =
             match kdl_property_first_arg_as_string_or_error!(kdl_options, "on_force_close") {
@@ -3174,7 +3178,8 @@ impl Options {
             nested_session_handling,
         })
     }
-    pub fn from_string(stringified_keybindings: &String) -> Result<Self, ConfigError> {
+    #[allow(clippy::result_large_err)]
+    pub fn from_string(stringified_keybindings: &str) -> Result<Self, ConfigError> {
         let document: KdlDocument = stringified_keybindings.parse()?;
         Options::from_kdl(&document)
     }
@@ -3825,7 +3830,7 @@ impl Options {
             node
         };
         if let Some(session_name) = &self.session_name {
-            let mut node = create_node(&session_name);
+            let mut node = create_node(session_name);
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -4623,7 +4628,7 @@ impl Options {
             node
         };
         if let Some(post_command_discovery_hook) = &self.post_command_discovery_hook {
-            let mut node = create_node(&post_command_discovery_hook);
+            let mut node = create_node(post_command_discovery_hook);
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -4874,6 +4879,7 @@ impl Options {
 }
 
 impl Layout {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(
         raw_layout: &str,
         file_name: Option<String>,
@@ -4941,14 +4947,13 @@ fn kdl_layout_error(kdl_error: kdl::KdlError, file_name: String, raw_layout: &st
 }
 
 impl EnvironmentVariables {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_env_variables: &KdlNode) -> Result<Self, ConfigError> {
         let mut env: HashMap<String, String> = HashMap::new();
         for env_var in kdl_children_nodes_or_error!(kdl_env_variables, "empty env variable block") {
             let env_var_name = kdl_name!(env_var);
-            let env_var_str_value =
-                kdl_first_entry_as_string!(env_var).map(|s| format!("{}", s.to_string()));
-            let env_var_int_value =
-                kdl_first_entry_as_i64!(env_var).map(|s| format!("{}", s.to_string()));
+            let env_var_str_value = kdl_first_entry_as_string!(env_var).map(|s| s.to_string());
+            let env_var_int_value = kdl_first_entry_as_i64!(env_var).map(|s| s.to_string());
             let env_var_value =
                 env_var_str_value
                     .or(env_var_int_value)
@@ -4987,6 +4992,7 @@ impl EnvironmentVariables {
 }
 
 impl Keybinds {
+    #[allow(clippy::result_large_err)]
     fn bind_keys_in_block(
         block: &KdlNode,
         input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -5013,6 +5019,7 @@ impl Keybinds {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(
         kdl_keybinds: &KdlNode,
         base_keybinds: Keybinds,
@@ -5040,8 +5047,8 @@ impl Keybinds {
                     if modes_to_exclude.contains(&mode) {
                         continue;
                     }
-                    let mut input_mode_keybinds = keybinds_from_config.get_input_mode_mut(&mode);
-                    Keybinds::bind_keys_in_block(block, &mut input_mode_keybinds, config_options)?;
+                    let input_mode_keybinds = keybinds_from_config.get_input_mode_mut(&mode);
+                    Keybinds::bind_keys_in_block(block, input_mode_keybinds, config_options)?;
                 }
             }
             if kdl_name!(block) == "shared_among" {
@@ -5053,8 +5060,8 @@ impl Keybinds {
                     if !modes_to_include.contains(&mode) {
                         continue;
                     }
-                    let mut input_mode_keybinds = keybinds_from_config.get_input_mode_mut(&mode);
-                    Keybinds::bind_keys_in_block(block, &mut input_mode_keybinds, config_options)?;
+                    let input_mode_keybinds = keybinds_from_config.get_input_mode_mut(&mode);
+                    Keybinds::bind_keys_in_block(block, input_mode_keybinds, config_options)?;
                 }
             }
         }
@@ -5066,15 +5073,16 @@ impl Keybinds {
             {
                 continue;
             }
-            let mut input_mode_keybinds =
+            let input_mode_keybinds =
                 Keybinds::input_mode_keybindings(mode, &mut keybinds_from_config)?;
-            Keybinds::bind_keys_in_block(mode, &mut input_mode_keybinds, config_options)?;
+            Keybinds::bind_keys_in_block(mode, input_mode_keybinds, config_options)?;
         }
         if let Some(global_unbind) = kdl_keybinds.children().and_then(|c| c.get("unbind")) {
             Keybinds::unbind_keys_in_all_modes(global_unbind, &mut keybinds_from_config)?;
         };
         Ok(keybinds_from_config)
     }
+    #[allow(clippy::result_large_err)]
     fn bind_actions_for_each_key(
         key_block: &KdlNode,
         input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -5087,6 +5095,7 @@ impl Keybinds {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn unbind_keys(
         key_block: &KdlNode,
         input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -5097,6 +5106,7 @@ impl Keybinds {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn unbind_keys_in_all_modes(
         global_unbind: &KdlNode,
         keybinds_from_config: &mut Keybinds,
@@ -5104,11 +5114,12 @@ impl Keybinds {
         let keys: Vec<KeyWithModifier> = keys_from_kdl!(global_unbind);
         for mode in keybinds_from_config.0.values_mut() {
             for key in &keys {
-                mode.remove(&key);
+                mode.remove(key);
             }
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn input_mode_keybindings<'a>(
         mode: &KdlNode,
         keybinds_from_config: &'a mut Keybinds,
@@ -5128,6 +5139,7 @@ impl Keybinds {
         }
         Ok(input_mode_keybinds)
     }
+    #[allow(clippy::result_large_err)]
     pub fn from_string(
         stringified_keybindings: String,
         base_keybinds: Keybinds,
@@ -5135,10 +5147,10 @@ impl Keybinds {
     ) -> Result<Self, ConfigError> {
         let document: KdlDocument = stringified_keybindings.parse()?;
         if let Some(kdl_keybinds) = document.get("keybinds") {
-            Keybinds::from_kdl(&kdl_keybinds, base_keybinds, config_options)
+            Keybinds::from_kdl(kdl_keybinds, base_keybinds, config_options)
         } else {
             Err(ConfigError::new_kdl_error(
-                format!("Could not find keybinds node"),
+                "Could not find keybinds node".to_string(),
                 document.span().offset(),
                 document.span().len(),
             ))
@@ -5153,8 +5165,8 @@ impl Keybinds {
             BTreeMap::new();
         let mut flattened: Vec<BTreeMap<KeyWithModifier, Vec<Action>>> = self
             .0
-            .iter()
-            .map(|(_input_mode, keybind)| keybind.clone().into_iter().collect())
+            .values()
+            .map(|keybind| keybind.clone().into_iter().collect())
             .collect();
         for keybind in flattened.drain(..) {
             for (key, actions) in keybind.into_iter() {
@@ -5166,7 +5178,7 @@ impl Keybinds {
                 }
                 minimized
                     .entry(appears_in_modes)
-                    .or_insert_with(Default::default)
+                    .or_default()
                     .insert(key, actions);
             }
         }
@@ -5297,36 +5309,37 @@ impl KeyWithModifier {
 impl BareKey {
     pub fn to_kdl(&self) -> String {
         match self {
-            BareKey::PageDown => format!("PageDown"),
-            BareKey::PageUp => format!("PageUp"),
-            BareKey::Left => format!("left"),
-            BareKey::Down => format!("down"),
-            BareKey::Up => format!("up"),
-            BareKey::Right => format!("right"),
-            BareKey::Home => format!("home"),
-            BareKey::End => format!("end"),
-            BareKey::Backspace => format!("backspace"),
-            BareKey::Delete => format!("del"),
-            BareKey::Insert => format!("insert"),
+            BareKey::PageDown => "PageDown".to_string(),
+            BareKey::PageUp => "PageUp".to_string(),
+            BareKey::Left => "left".to_string(),
+            BareKey::Down => "down".to_string(),
+            BareKey::Up => "up".to_string(),
+            BareKey::Right => "right".to_string(),
+            BareKey::Home => "home".to_string(),
+            BareKey::End => "end".to_string(),
+            BareKey::Backspace => "backspace".to_string(),
+            BareKey::Delete => "del".to_string(),
+            BareKey::Insert => "insert".to_string(),
             BareKey::F(index) => format!("F{}", index),
-            BareKey::Char(' ') => format!("space"),
+            BareKey::Char(' ') => "space".to_string(),
             BareKey::Char(character) => format!("{}", character),
-            BareKey::Tab => format!("tab"),
-            BareKey::Esc => format!("esc"),
-            BareKey::Enter => format!("enter"),
-            BareKey::CapsLock => format!("capslock"),
-            BareKey::ScrollLock => format!("scrolllock"),
-            BareKey::NumLock => format!("numlock"),
-            BareKey::PrintScreen => format!("printscreen"),
-            BareKey::Pause => format!("pause"),
-            BareKey::Menu => format!("menu"),
+            BareKey::Tab => "tab".to_string(),
+            BareKey::Esc => "esc".to_string(),
+            BareKey::Enter => "enter".to_string(),
+            BareKey::CapsLock => "capslock".to_string(),
+            BareKey::ScrollLock => "scrolllock".to_string(),
+            BareKey::NumLock => "numlock".to_string(),
+            BareKey::PrintScreen => "printscreen".to_string(),
+            BareKey::Pause => "pause".to_string(),
+            BareKey::Menu => "menu".to_string(),
         }
     }
 }
 
 impl Config {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_config: &str, base_config: Option<Config>) -> Result<Config, ConfigError> {
-        let mut config = base_config.unwrap_or_else(|| Config::default());
+        let mut config = base_config.unwrap_or_default();
         let kdl_config: KdlDocument = kdl_config.parse()?;
 
         let config_options = Options::from_kdl(&kdl_config)?;
@@ -5335,7 +5348,7 @@ impl Config {
         // TODO: handle cases where we have more than one of these blocks (eg. two "keybinds")
         // this should give an informative parsing error
         if let Some(kdl_keybinds) = kdl_config.get("keybinds") {
-            config.keybinds = Keybinds::from_kdl(&kdl_keybinds, config.keybinds, &config.options)?;
+            config.keybinds = Keybinds::from_kdl(kdl_keybinds, config.keybinds, &config.options)?;
         }
         if let Some(kdl_themes) = kdl_config.get("themes") {
             let sourced_from_external_file = false;
@@ -5351,15 +5364,15 @@ impl Config {
             config.background_plugins = load_plugins;
         }
         if let Some(kdl_ui_config) = kdl_config.get("ui") {
-            let config_ui = UiConfig::from_kdl(&kdl_ui_config)?;
+            let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
         }
         if let Some(env_config) = kdl_config.get("env") {
-            let config_env = EnvironmentVariables::from_kdl(&env_config)?;
+            let config_env = EnvironmentVariables::from_kdl(env_config)?;
             config.env = config.env.merge(config_env);
         }
         if let Some(web_client_config) = kdl_config.get("web_client") {
-            let config_web_client = WebClientConfig::from_kdl(&web_client_config)?;
+            let config_web_client = WebClientConfig::from_kdl(web_client_config)?;
             config.web_client = config.web_client.merge(config_web_client);
         }
         Ok(config)
@@ -5400,6 +5413,7 @@ impl Config {
 }
 
 impl PluginAliases {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigError> {
         let mut aliases: BTreeMap<String, RunPlugin> = BTreeMap::new();
         if let Some(kdl_plugin_aliases) = kdl_children_nodes!(kdl_plugin_aliases) {
@@ -5409,10 +5423,10 @@ impl PluginAliases {
                     kdl_get_string_property_or_child_value!(alias_definition, "location")
                 {
                     let configuration =
-                        KdlLayoutParser::parse_plugin_user_configuration(&alias_definition)?;
+                        KdlLayoutParser::parse_plugin_user_configuration(alias_definition)?;
                     let initial_cwd =
                         kdl_get_string_property_or_child_value!(alias_definition, "cwd")
-                            .map(|s| PathBuf::from(s));
+                            .map(PathBuf::from);
                     let run_plugin = RunPlugin::from_url(string_url)?
                         .with_configuration(configuration.inner().clone())
                         .with_initial_cwd(initial_cwd);
@@ -5538,6 +5552,7 @@ pub fn load_plugins_to_kdl(
     load_plugins
 }
 
+#[allow(clippy::result_large_err)]
 fn load_plugins_from_kdl(
     kdl_load_plugins: &KdlNode,
 ) -> Result<HashSet<RunPluginOrAlias>, ConfigError> {
@@ -5546,11 +5561,11 @@ fn load_plugins_from_kdl(
         for plugin_block in kdl_load_plugins {
             let url_node = plugin_block.name();
             let string_url = url_node.value();
-            let configuration = KdlLayoutParser::parse_plugin_user_configuration(&plugin_block)?;
-            let cwd = kdl_get_string_property_or_child_value!(&plugin_block, "cwd")
-                .map(|s| PathBuf::from(s));
+            let configuration = KdlLayoutParser::parse_plugin_user_configuration(plugin_block)?;
+            let cwd =
+                kdl_get_string_property_or_child_value!(&plugin_block, "cwd").map(PathBuf::from);
             let run_plugin_or_alias = RunPluginOrAlias::from_url(
-                &string_url,
+                string_url,
                 &Some(configuration.inner().clone()),
                 None,
                 cwd.clone(),
@@ -5570,6 +5585,7 @@ fn load_plugins_from_kdl(
 }
 
 impl UiConfig {
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_ui_config: &KdlNode) -> Result<UiConfig, ConfigError> {
         let mut ui_config = UiConfig::default();
         if let Some(pane_frames) = kdl_get_child!(kdl_ui_config, "pane_frames") {
@@ -5616,6 +5632,7 @@ impl UiConfig {
 }
 
 impl Themes {
+    #[allow(clippy::result_large_err)]
     fn style_declaration_from_node(
         style_node: &KdlNode,
         style_descriptor: &str,
@@ -5641,6 +5658,7 @@ impl Themes {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn multiplayer_colors(style_node: &KdlNode) -> Result<MultiplayerColors, ConfigError> {
         let descriptor_node = kdl_child_with_name!(style_node, "multiplayer_user_colors");
         match descriptor_node {
@@ -5676,6 +5694,7 @@ impl Themes {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn from_kdl(
         themes_from_kdl: &KdlNode,
         sourced_from_external_file: bool,
@@ -5800,8 +5819,9 @@ impl Themes {
         Ok(themes)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn from_string(
-        raw_string: &String,
+        raw_string: &str,
         sourced_from_external_file: bool,
     ) -> Result<Self, ConfigError> {
         let kdl_config: KdlDocument = raw_string.parse()?;
@@ -5814,6 +5834,7 @@ impl Themes {
         Ok(all_themes_in_file)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn from_path(path_to_theme_file: PathBuf) -> Result<Self, ConfigError> {
         // String is the theme name
         let kdl_config = std::fs::read_to_string(&path_to_theme_file)
@@ -5827,6 +5848,7 @@ impl Themes {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn from_dir(path_to_theme_dir: PathBuf) -> Result<Self, ConfigError> {
         let mut themes = Themes::default();
         for entry in std::fs::read_dir(&path_to_theme_dir)
@@ -5927,6 +5949,7 @@ impl Themes {
 }
 
 impl PermissionCache {
+    #[allow(clippy::result_large_err)]
     pub fn from_string(raw_string: String) -> Result<GrantedPermission, ConfigError> {
         let kdl_document: KdlDocument = raw_string.parse()?;
 
@@ -6006,7 +6029,7 @@ impl SessionInfo {
         let panes: PaneManifest = kdl_document
             .get("panes")
             .and_then(|p| p.children())
-            .map(|p| PaneManifest::decode_from_kdl(p))
+            .map(PaneManifest::decode_from_kdl)
             .ok_or("Failed to parse panes")?;
         let available_layouts: Vec<LayoutInfo> = kdl_document
             .get("available_layouts")
@@ -6135,6 +6158,7 @@ impl SessionInfo {
             creation_time,
         })
     }
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         let mut kdl_document = KdlDocument::new();
 
@@ -6172,7 +6196,7 @@ impl SessionInfo {
                 LayoutInfo::Url(url) => (url.clone(), "url"),
                 LayoutInfo::Stringified(_stringified) => ("stringified-layout".to_owned(), "N/A"),
             };
-            let mut layout_node = KdlNode::new(format!("{}", layout_name));
+            let mut layout_node = KdlNode::new(layout_name.to_string());
             let layout_source = KdlEntry::new_prop("source", layout_source);
             layout_node.entries_mut().push(layout_source);
             available_layouts_children.nodes_mut().push(layout_node);
@@ -6439,8 +6463,7 @@ impl PaneManifest {
                     if let Ok((Some(tab_position), pane_info)) =
                         PaneInfo::decode_from_kdl(pane_document)
                     {
-                        let panes_in_tab_position =
-                            panes.entry(tab_position).or_insert_with(Vec::new);
+                        let panes_in_tab_position = panes.entry(tab_position).or_default();
                         panes_in_tab_position.push(pane_info);
                     }
                 }
@@ -6708,6 +6731,7 @@ impl PaneInfo {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub fn parse_plugin_user_configuration(
     plugin_block: &KdlNode,
 ) -> Result<BTreeMap<String, String>, ConfigError> {
@@ -6726,18 +6750,18 @@ pub fn parse_plugin_user_configuration(
     if let Some(user_config) = kdl_children_nodes!(plugin_block) {
         for user_configuration_entry in user_config {
             let config_entry_name = kdl_name!(user_configuration_entry);
-            if KdlLayoutParser::is_a_reserved_plugin_property(&config_entry_name) {
+            if KdlLayoutParser::is_a_reserved_plugin_property(config_entry_name) {
                 continue;
             }
-            let config_entry_str_value = kdl_first_entry_as_string!(user_configuration_entry)
-                .map(|s| format!("{}", s.to_string()));
-            let config_entry_int_value = kdl_first_entry_as_i64!(user_configuration_entry)
-                .map(|s| format!("{}", s.to_string()));
-            let config_entry_bool_value = kdl_first_entry_as_bool!(user_configuration_entry)
-                .map(|s| format!("{}", s.to_string()));
+            let config_entry_str_value =
+                kdl_first_entry_as_string!(user_configuration_entry).map(|s| s.to_string());
+            let config_entry_int_value =
+                kdl_first_entry_as_i64!(user_configuration_entry).map(|s| s.to_string());
+            let config_entry_bool_value =
+                kdl_first_entry_as_bool!(user_configuration_entry).map(|s| s.to_string());
             let config_entry_children = user_configuration_entry
                 .children()
-                .map(|s| format!("{}", s.to_string().trim()));
+                .map(|s| s.to_string().trim().to_string());
             let config_entry_value = config_entry_str_value
                 .or(config_entry_int_value)
                 .or(config_entry_bool_value)
@@ -7984,7 +8008,6 @@ fn config_options_to_string_without_options() {
     insta::assert_snapshot!(fake_document.to_string());
 }
 
-#[test]
 #[test]
 fn nested_session_handling_kdl_round_trip_for_every_variant() {
     use crate::input::options::NestedSessionHandling;

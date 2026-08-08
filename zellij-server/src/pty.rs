@@ -1,3 +1,10 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::needless_borrow)]
 use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
@@ -67,6 +74,7 @@ pub enum ClientTabIndexOrPaneId {
     PaneId(PaneId),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn new_terminal_screen_instruction(
     pane_id: PaneId,
     pane_title: Option<String>,
@@ -326,7 +334,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                     Some(TerminalAction::OpenFile(payload)) => Some(Run::EditFile(
                         payload.path.clone(),
-                        payload.line_number.clone(),
+                        payload.line_number,
                         payload.cwd.clone(),
                     )),
                     _ => None,
@@ -461,7 +469,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                     Some(TerminalAction::OpenFile(payload)) => Some(Run::EditFile(
                         payload.path.clone(),
-                        payload.line_number.clone(),
+                        payload.line_number,
                         payload.cwd.clone(),
                     )),
                     _ => None,
@@ -525,7 +533,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_tab_index_or_pane_id,
                 _completion_tx,
             ) => {
-                let err_context = || format!("failed to open in-place editor for client");
+                let err_context = || "failed to open in-place editor for client".to_string();
 
                 match pty.spawn_terminal(
                     Some(TerminalAction::OpenFile(OpenFilePayload::new(
@@ -719,7 +727,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 // this otherwise (also look for a place that turns get_default_shell into a
                 // RunCommand, we might have done this before)
                 let run_command = RunCommand {
-                    command: shell.unwrap_or_else(|| get_default_shell()),
+                    command: shell.unwrap_or_else(get_default_shell),
                     hold_on_close: false,
                     hold_on_start: false,
                     cwd: working_dir,
@@ -760,7 +768,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 }
             },
             PtyInstruction::DumpLayout(mut session_layout_metadata, client_id, completion_tx) => {
-                let err_context = || format!("Failed to dump layout");
+                let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
                 match session_serialization::serialize_session_layout(
                     session_layout_metadata.into(),
@@ -794,7 +802,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_id,
                 completion_tx,
             ) => {
-                let err_context = || format!("Failed to dump layout");
+                let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
                 pty.bus
                     .senders
@@ -814,7 +822,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 plugin_id,
                 response_channel,
             } => {
-                let err_context = || format!("Failed to dump layout");
+                let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
                 pty.bus
                     .senders
@@ -831,7 +839,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 plugin_id,
                 client_id,
             ) => {
-                let err_context = || format!("Failed to dump layout");
+                let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
                 pty.bus
                     .senders
@@ -847,7 +855,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 pty.plugin_cwds.insert(plugin_id, cwd);
             },
             PtyInstruction::LogLayoutToHd(mut session_layout_metadata) => {
-                let err_context = || format!("Failed to dump layout");
+                let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
                 if session_layout_metadata.is_dirty() {
                     match session_serialization::serialize_session_layout(
@@ -1249,7 +1257,7 @@ impl Pty {
         client_id_and_is_web_client: (ClientId, bool),
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        let err_context = || format!("failed to spawn terminals for layout for");
+        let err_context = || "failed to spawn terminals for layout for".to_string();
 
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
@@ -1476,7 +1484,7 @@ impl Pty {
         _retain_existing_terminal_panes: bool,
         _retain_existing_plugin_panes: bool,
     ) -> Result<TabOverrideResult> {
-        let err_context = || format!("failed to spawn terminals for layout for");
+        let err_context = || "failed to spawn terminals for layout for".to_string();
 
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
@@ -1666,7 +1674,7 @@ impl Pty {
         // starts_held,
         // command
         // successfully opened
-        let err_context = || format!("failed to apply run instruction");
+        let err_context = || "failed to apply run instruction".to_string();
         let quit_cb = Box::new({
             let senders = self.bus.senders.clone();
             move |pane_id, exit_status, _command| {

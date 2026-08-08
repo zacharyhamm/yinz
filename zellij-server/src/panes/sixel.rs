@@ -1,3 +1,4 @@
+#![allow(clippy::iter_kv_map)]
 use crate::output::SixelImageChunk;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -237,7 +238,7 @@ impl SixelGrid {
             (self.previous_cell_size, *self.character_cell_size.borrow())
         {
             if previous_cell_size != character_cell_size {
-                for (_image_id, pixel_rect) in self.sixel_image_locations.iter_mut() {
+                for pixel_rect in self.sixel_image_locations.values_mut() {
                     pixel_rect.x =
                         (pixel_rect.x / previous_cell_size.width) * character_cell_size.width;
                     pixel_rect.y = (pixel_rect.y / previous_cell_size.height as isize)
@@ -314,12 +315,13 @@ impl SixelGrid {
                     };
                     let image_height = image_height_in_pixels as usize / character_cell_size.height;
                     let image_width = pixel_rect.width / character_cell_size.width;
-                    let height_remainder =
-                        if image_height_in_pixels as usize % character_cell_size.height > 0 {
-                            1
-                        } else {
-                            0
-                        };
+                    let height_remainder = if !(image_height_in_pixels as usize)
+                        .is_multiple_of(character_cell_size.height)
+                    {
+                        1
+                    } else {
+                        0
+                    };
                     let width_remainder = if pixel_rect.width % character_cell_size.width > 0 {
                         1
                     } else {
@@ -391,8 +393,7 @@ impl SixelGrid {
                     let sixel_image_pixel_x = 0;
                     // if the image is above the rect top, this will be 0
                     let sixel_image_pixel_y = (changed_rect_top_edge as usize)
-                        .saturating_sub(sixel_image_top_edge as usize)
-                        as usize;
+                        .saturating_sub(sixel_image_top_edge as usize);
                     let sixel_image_pixel_height = std::cmp::min(
                         (std::cmp::min(changed_rect_bottom_edge, sixel_image_bottom_edge)
                             - std::cmp::max(changed_rect_top_edge, sixel_image_top_edge))

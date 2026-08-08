@@ -457,7 +457,7 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
             Some(c) => format!("{}: {}", msg, c),
             None => msg.to_string(),
         };
-        Err(io::Error::new(io::ErrorKind::Other, err_msg))
+        Err(io::Error::other(err_msg))
     }
 }
 
@@ -501,9 +501,8 @@ impl ClientInfo {
         }
     }
     pub fn set_layout_info(&mut self, new_layout_info: LayoutInfo) {
-        match self {
-            ClientInfo::New(_, layout_info, _) => *layout_info = Some(new_layout_info),
-            _ => {},
+        if let ClientInfo::New(_, layout_info, _) = self {
+            *layout_info = Some(new_layout_info)
         }
     }
     pub fn set_cwd(&mut self, new_cwd: PathBuf) {
@@ -550,7 +549,7 @@ pub async fn run_remote_client_terminal_loop(
     let mut async_stdin: Box<dyn AsyncStdin> = os_input.get_async_stdin_reader();
     let mut async_signals: Box<dyn AsyncSignals> = os_input
         .get_async_signal_listener()
-        .map_err(|e| RemoteClientError::IoError(e))?;
+        .map_err(RemoteClientError::IoError)?;
 
     let create_resize_message = |size: Size| {
         Message::Text(
@@ -780,6 +779,7 @@ pub async fn run_remote_client_terminal_loop(
 }
 
 #[cfg(feature = "web_server_capability")]
+#[allow(clippy::too_many_arguments)]
 pub fn start_remote_client(
     mut os_input: Box<dyn ClientOsApi>,
     remote_session_url: &str,
@@ -908,6 +908,7 @@ pub fn start_remote_client(
     Ok(reconnect_to_session)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_client(
     mut os_input: Box<dyn ClientOsApi>,
     cli_args: CliArgs,
@@ -935,7 +936,7 @@ pub fn start_client(
     let support_kitty_graphics_protocol = config_options
         .support_kitty_graphics_protocol
         .unwrap_or(true);
-    let should_start_web_server = config_options.web_server.map(|w| w).unwrap_or(false);
+    let should_start_web_server = config_options.web_server.unwrap_or(false);
     let mut reconnect_to_session = None;
     os_input.unset_raw_mode().unwrap();
 
@@ -970,7 +971,7 @@ pub fn start_client(
     let web_server_ip = config_options
         .web_server_ip
         .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-    let web_server_port = config_options.web_server_port.unwrap_or_else(|| 8082);
+    let web_server_port = config_options.web_server_port.unwrap_or(8082);
     let has_certificate =
         config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
     let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
@@ -1067,7 +1068,7 @@ pub fn start_client(
             os_input.update_session_name(name);
             let ipc_pipe = create_ipc_pipe(Some(terminal_teardown));
 
-            if let Err(e) = os_input.spawn_server(&*ipc_pipe, cli_args.debug) {
+            if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
                 exit_after_startup_error(Some(terminal_teardown), spawn_server_error_message(e));
             }
             if should_start_web_server {
@@ -1123,7 +1124,7 @@ pub fn start_client(
             os_input.update_session_name(name);
             let ipc_pipe = create_ipc_pipe(Some(terminal_teardown));
 
-            if let Err(e) = os_input.spawn_server(&*ipc_pipe, cli_args.debug) {
+            if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
                 exit_after_startup_error(Some(terminal_teardown), spawn_server_error_message(e));
             }
             if should_start_web_server {
@@ -1144,7 +1145,7 @@ pub fn start_client(
         },
     };
 
-    os_input.connect_to_server(&*ipc_pipe);
+    os_input.connect_to_server(&ipc_pipe);
     os_input.send_to_server(first_msg);
 
     let mut command_is_executing = CommandIsExecuting::new();
@@ -1424,13 +1425,13 @@ pub fn start_client(
                 );
                 match spawn_web_server(&cli_args) {
                     Ok(_) => {
-                        let _ = os_input.send_to_server(ClientToServerMsg::WebServerStarted {
+                        os_input.send_to_server(ClientToServerMsg::WebServerStarted {
                             base_url: web_server_base_url,
                         });
                     },
                     Err(e) => {
                         log::error!("Failed to start web_server: {}", e);
-                        let _ = os_input
+                        os_input
                             .send_to_server(ClientToServerMsg::FailedToStartWebServer { error: e });
                     },
                 }
@@ -1494,6 +1495,7 @@ pub fn start_client(
                 let _ = out.write_all(&blob);
                 let _ = out.flush();
             },
+            #[allow(clippy::collapsible_match)]
             ClientInstruction::EmitNestedSessionFrame(payload_bytes) => {
                 if is_nested_inside_zellij_pane {
                     let frame = nested_session::encode_frame_from_payload(&payload_bytes);
@@ -1556,7 +1558,7 @@ pub fn start_server_detached(
     envs::set_zellij("0".to_string());
     config.env.set_vars();
 
-    let should_start_web_server = config_options.web_server.map(|w| w).unwrap_or(false);
+    let should_start_web_server = config_options.web_server.unwrap_or(false);
 
     let (first_msg, ipc_pipe) = match info {
         ClientInfo::Resurrect(name, path_to_layout, force_run_commands, cwd) => {
@@ -1583,7 +1585,7 @@ pub fn start_server_detached(
             os_input.update_session_name(name);
             let ipc_pipe = create_ipc_pipe(None);
 
-            if let Err(e) = os_input.spawn_server(&*ipc_pipe, cli_args.debug) {
+            if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
                 exit_after_startup_error(None, spawn_server_error_message(e));
             }
             if should_start_web_server {
@@ -1640,7 +1642,7 @@ pub fn start_server_detached(
             os_input.update_session_name(name);
             let ipc_pipe = create_ipc_pipe(None);
 
-            if let Err(e) = os_input.spawn_server(&*ipc_pipe, cli_args.debug) {
+            if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
                 exit_after_startup_error(None, spawn_server_error_message(e));
             }
             if should_start_web_server {
@@ -1664,7 +1666,7 @@ pub fn start_server_detached(
         },
     };
 
-    os_input.connect_to_server(&*ipc_pipe);
+    os_input.connect_to_server(&ipc_pipe);
     os_input.send_to_server(first_msg);
 }
 

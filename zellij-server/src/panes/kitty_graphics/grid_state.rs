@@ -228,7 +228,7 @@ impl KittyGrid {
         if let Some(image_number) = command.image_number {
             self.image_numbers
                 .entry(image_number)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(pane_image_id);
         }
         self.image_ids.insert(pane_image_id, internal);
@@ -295,7 +295,7 @@ impl KittyGrid {
         }
         let off_x = std::cmp::min(command.cell_offset_x as usize, cell.width - 1);
         let off_y = std::cmp::min(command.cell_offset_y as usize, cell.height - 1);
-        let ceil_div = |a: usize, b: usize| (a + b - 1) / b;
+        let ceil_div = |a: usize, b: usize| a.div_ceil(b);
         let (dst_w, dst_h, cols, rows, is_scaled) =
             match (command.columns as usize, command.rows as usize) {
                 (0, 0) => (
@@ -944,12 +944,13 @@ impl KittyGrid {
                     };
                     let image_height = image_height_in_pixels as usize / character_cell_size.height;
                     let image_width = pixel_rect.width / character_cell_size.width;
-                    let height_remainder =
-                        if image_height_in_pixels as usize % character_cell_size.height > 0 {
-                            1
-                        } else {
-                            0
-                        };
+                    let height_remainder = if !(image_height_in_pixels as usize)
+                        .is_multiple_of(character_cell_size.height)
+                    {
+                        1
+                    } else {
+                        0
+                    };
                     let width_remainder = if pixel_rect.width % character_cell_size.width > 0 {
                         1
                     } else {
@@ -1104,12 +1105,12 @@ pub fn scale_rgba(src: &[u8], src_w: usize, src_h: usize, dst_w: usize, dst_h: u
         let fy = (dy as f64 + 0.5) * (src_h as f64) / (dst_h as f64) - 0.5;
         let y0 = fy.floor().max(0.0).min((src_h - 1) as f64) as usize;
         let y1 = std::cmp::min(y0 + 1, src_h - 1);
-        let ty = (fy - y0 as f64).max(0.0).min(1.0);
+        let ty = (fy - y0 as f64).clamp(0.0, 1.0);
         for dx in 0..dst_w {
             let fx = (dx as f64 + 0.5) * (src_w as f64) / (dst_w as f64) - 0.5;
             let x0 = fx.floor().max(0.0).min((src_w - 1) as f64) as usize;
             let x1 = std::cmp::min(x0 + 1, src_w - 1);
-            let tx = (fx - x0 as f64).max(0.0).min(1.0);
+            let tx = (fx - x0 as f64).clamp(0.0, 1.0);
             for channel in 0..4 {
                 let p00 = src[(y0 * src_w + x0) * 4 + channel] as f64;
                 let p10 = src[(y0 * src_w + x1) * 4 + channel] as f64;
@@ -1117,7 +1118,7 @@ pub fn scale_rgba(src: &[u8], src_w: usize, src_h: usize, dst_w: usize, dst_h: u
                 let p11 = src[(y1 * src_w + x1) * 4 + channel] as f64;
                 let value =
                     (1.0 - ty) * ((1.0 - tx) * p00 + tx * p10) + ty * ((1.0 - tx) * p01 + tx * p11);
-                out.push(value.round().max(0.0).min(255.0) as u8);
+                out.push(value.round().clamp(0.0, 255.0) as u8);
             }
         }
     }

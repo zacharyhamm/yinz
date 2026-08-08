@@ -1,3 +1,6 @@
+#![allow(clippy::useless_format)]
+#![allow(clippy::unwrap_or_default)]
+#![allow(clippy::needless_borrow)]
 use super::{is_too_high, is_too_wide, stringify_text, Coordinates, Text};
 use crate::panes::{
     terminal_character::{AnsiCode, RESET_STYLES},
@@ -58,7 +61,7 @@ pub fn table(
         let next_row_instruction = coordinates
             .as_ref()
             .map(|c| c.stringify_with_y_offset(row_index + 1))
-            .unwrap_or_else(|| format!("\n\r"));
+            .unwrap_or_else(|| "\n\r".to_string());
         stringified.push_str(&next_row_instruction);
     }
     if let Some(coordinates) = coordinates {
@@ -76,7 +79,7 @@ fn stringify_table_columns(contents: Vec<Text>, columns: usize) -> BTreeMap<usiz
         let column_index = i % columns;
         stringified_columns
             .entry(column_index)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(cell);
     }
     stringified_columns
@@ -107,10 +110,7 @@ fn stringify_table_rows(
         row_width += max_column_width + 1;
         for (row_index, mut cell) in column.into_iter().enumerate() {
             cell.pad_text(max_column_width);
-            stringified_rows
-                .entry(row_index)
-                .or_insert_with(Vec::new)
-                .push(cell);
+            stringified_rows.entry(row_index).or_default().push(cell);
         }
     }
     stringified_rows

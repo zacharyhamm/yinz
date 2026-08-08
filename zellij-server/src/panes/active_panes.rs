@@ -1,3 +1,7 @@
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::for_kv_map)]
+#![allow(clippy::borrow_deref_ref)]
+#![allow(clippy::ptr_arg)]
 use crate::tab::Pane;
 
 use crate::{os_input_output::ServerOsApi, panes::PaneId, ClientId};
@@ -17,6 +21,7 @@ impl std::fmt::Debug for ActivePanes {
 }
 
 impl ActivePanes {
+    #[allow(clippy::borrowed_box)]
     pub fn new(os_api: &Box<dyn ServerOsApi>) -> Self {
         let os_api = os_api.clone();
         ActivePanes {
@@ -26,7 +31,7 @@ impl ActivePanes {
         }
     }
     pub fn get(&self, client_id: &ClientId) -> Option<&PaneId> {
-        self.active_panes.get(client_id)
+        self.active_panes.get(&client_id)
     }
     pub fn get_last(&self, client_id: &ClientId) -> Option<&PaneId> {
         self.last_panes.get(client_id)

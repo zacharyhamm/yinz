@@ -1,3 +1,4 @@
+#![allow(clippy::large_enum_variant)]
 use serde::{Deserialize, Serialize};
 use zellij_utils::{input::config::Config, ipc::MobileStatePayload, pane_size::Size};
 

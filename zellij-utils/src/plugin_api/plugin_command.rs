@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_fallible_conversions)]
 pub use super::generated_api::api::{
     action::{
         Action as ProtobufAction, GlobalPanePlacement as ProtobufGlobalPanePlacement,
@@ -154,12 +155,13 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 
+#[allow(clippy::from_over_into)]
 impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
     fn into(self) -> FloatingPaneCoordinates {
         FloatingPaneCoordinates {
             x: self
                 .x
-                .and_then(|x| match ProtobufFixedOrPercent::from_i32(x.r#type) {
+                .and_then(|x| match ProtobufFixedOrPercent::try_from(x.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(x.value as usize))
                     },
@@ -170,7 +172,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                 }),
             y: self
                 .y
-                .and_then(|y| match ProtobufFixedOrPercent::from_i32(y.r#type) {
+                .and_then(|y| match ProtobufFixedOrPercent::try_from(y.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(y.value as usize))
                     },
@@ -180,7 +182,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                     None => None,
                 }),
             width: self.width.and_then(|width| {
-                match ProtobufFixedOrPercent::from_i32(width.r#type) {
+                match ProtobufFixedOrPercent::try_from(width.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(width.value as usize))
                     },
@@ -191,7 +193,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                 }
             }),
             height: self.height.and_then(|height| {
-                match ProtobufFixedOrPercent::from_i32(height.r#type) {
+                match ProtobufFixedOrPercent::try_from(height.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(height.value as usize))
                     },
@@ -207,6 +209,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
     fn into(self) -> ProtobufFloatingPaneCoordinates {
         ProtobufFloatingPaneCoordinates {
@@ -260,6 +263,7 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<HttpVerb> for ProtobufHttpVerb {
     fn into(self) -> HttpVerb {
         match self {
@@ -271,6 +275,7 @@ impl Into<HttpVerb> for ProtobufHttpVerb {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<ProtobufHttpVerb> for HttpVerb {
     fn into(self) -> ProtobufHttpVerb {
         match self {
@@ -285,7 +290,7 @@ impl Into<ProtobufHttpVerb> for HttpVerb {
 impl TryFrom<ProtobufPaneId> for PaneId {
     type Error = &'static str;
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
-        match ProtobufPaneType::from_i32(protobuf_pane_id.pane_type) {
+        match ProtobufPaneType::try_from(protobuf_pane_id.pane_type).ok() {
             Some(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(protobuf_pane_id.id)),
             Some(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(protobuf_pane_id.id)),
             None => Err("Failed to convert PaneId"),
@@ -360,7 +365,7 @@ impl From<GetSessionListResponse> for ProtobufGetSessionListResponse {
                 let resurrectable_sessions = snapshot
                     .resurrectable_sessions
                     .into_iter()
-                    .map(|entry| ProtobufResurrectableSession::from(entry))
+                    .map(ProtobufResurrectableSession::from)
                     .collect();
                 ProtobufGetSessionListResponse {
                     result: Some(get_session_list_response::Result::Snapshot(
@@ -644,7 +649,8 @@ fn key_to_rebind_to_plugin_command_assets(
     key_to_rebind: KeyToRebind,
 ) -> Option<(InputMode, KeyWithModifier, Vec<Action>)> {
     Some((
-        ProtobufInputMode::from_i32(key_to_rebind.input_mode)?
+        ProtobufInputMode::try_from(key_to_rebind.input_mode)
+            .ok()?
             .try_into()
             .ok()?,
         key_to_rebind.key?.try_into().ok()?,
@@ -660,7 +666,8 @@ fn key_to_unbind_to_plugin_command_assets(
     key_to_unbind: KeyToUnbind,
 ) -> Option<(InputMode, KeyWithModifier)> {
     Some((
-        ProtobufInputMode::from_i32(key_to_unbind.input_mode)?
+        ProtobufInputMode::try_from(key_to_unbind.input_mode)
+            .ok()?
             .try_into()
             .ok()?,
         key_to_unbind.key?.try_into().ok()?,
@@ -670,7 +677,7 @@ fn key_to_unbind_to_plugin_command_assets(
 impl TryFrom<ProtobufPluginCommand> for PluginCommand {
     type Error = &'static str;
     fn try_from(protobuf_plugin_command: ProtobufPluginCommand) -> Result<Self, &'static str> {
-        match CommandName::from_i32(protobuf_plugin_command.name) {
+        match CommandName::try_from(protobuf_plugin_command.name).ok() {
             Some(CommandName::Subscribe) => match protobuf_plugin_command.payload {
                 Some(Payload::SubscribePayload(subscribe_payload)) => {
                     let protobuf_event_list = subscribe_payload.subscriptions;
@@ -829,9 +836,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for OpenCommandPaneFloating"),
             },
             Some(CommandName::SwitchTabTo) => match protobuf_plugin_command.payload {
-                Some(Payload::SwitchTabToPayload(switch_to_tab_payload)) => Ok(
-                    PluginCommand::SwitchTabTo(switch_to_tab_payload.tab_index as u32),
-                ),
+                Some(Payload::SwitchTabToPayload(switch_to_tab_payload)) => {
+                    Ok(PluginCommand::SwitchTabTo(switch_to_tab_payload.tab_index))
+                },
                 _ => Err("Mismatched payload for SwitchToTab"),
             },
             Some(CommandName::SetTimeout) => match protobuf_plugin_command.payload {
@@ -880,7 +887,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::SwitchToMode) => match protobuf_plugin_command.payload {
                 Some(Payload::SwitchToModePayload(switch_to_mode_payload)) => {
-                    match ProtobufInputMode::from_i32(switch_to_mode_payload.input_mode) {
+                    match ProtobufInputMode::try_from(switch_to_mode_payload.input_mode).ok() {
                         Some(protobuf_input_mode) => {
                             Ok(PluginCommand::SwitchToMode(protobuf_input_mode.try_into()?))
                         },
@@ -1116,7 +1123,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::SetPaneFrameStyle) => match protobuf_plugin_command.payload {
                 Some(Payload::SetPaneFrameStylePayload(payload)) => {
-                    match ProtobufPaneFrameStyle::from_i32(payload.pane_frame_style) {
+                    match ProtobufPaneFrameStyle::try_from(payload.pane_frame_style).ok() {
                         Some(protobuf_pane_frame_style) => Ok(PluginCommand::SetPaneFrameStyle(
                             protobuf_pane_frame_style.try_into()?,
                         )),
@@ -1192,9 +1199,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for FocusOrCreateTab"),
             },
             Some(CommandName::GoToTab) => match protobuf_plugin_command.payload {
-                Some(Payload::GoToTabPayload(tab_index)) => {
-                    Ok(PluginCommand::GoToTab(tab_index as u32))
-                },
+                Some(Payload::GoToTabPayload(tab_index)) => Ok(PluginCommand::GoToTab(tab_index)),
                 _ => Err("Mismatched payload for GoToTab"),
             },
             Some(CommandName::StartOrReloadPlugin) => match protobuf_plugin_command.payload {
@@ -1205,19 +1210,19 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::CloseTerminalPane) => match protobuf_plugin_command.payload {
                 Some(Payload::CloseTerminalPanePayload(pane_id)) => {
-                    Ok(PluginCommand::CloseTerminalPane(pane_id as u32))
+                    Ok(PluginCommand::CloseTerminalPane(pane_id))
                 },
                 _ => Err("Mismatched payload for CloseTerminalPane"),
             },
             Some(CommandName::ClosePluginPane) => match protobuf_plugin_command.payload {
                 Some(Payload::ClosePluginPanePayload(pane_id)) => {
-                    Ok(PluginCommand::ClosePluginPane(pane_id as u32))
+                    Ok(PluginCommand::ClosePluginPane(pane_id))
                 },
                 _ => Err("Mismatched payload for ClosePluginPane"),
             },
             Some(CommandName::FocusTerminalPane) => match protobuf_plugin_command.payload {
                 Some(Payload::FocusTerminalPanePayload(payload)) => {
-                    let pane_id = payload.pane_id as u32;
+                    let pane_id = payload.pane_id;
                     let should_float = payload.should_float;
                     let should_be_in_place = payload.should_be_in_place;
                     Ok(PluginCommand::FocusTerminalPane(
@@ -1230,7 +1235,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::FocusPluginPane) => match protobuf_plugin_command.payload {
                 Some(Payload::FocusPluginPanePayload(payload)) => {
-                    let pane_id = payload.pane_id as u32;
+                    let pane_id = payload.pane_id;
                     let should_float = payload.should_float;
                     let should_be_in_place = payload.should_be_in_place;
                     Ok(PluginCommand::FocusPluginPane(
@@ -1243,7 +1248,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::RenameTerminalPane) => match protobuf_plugin_command.payload {
                 Some(Payload::RenameTerminalPanePayload(payload)) => {
-                    let pane_id = payload.id as u32;
+                    let pane_id = payload.id;
                     let new_name = payload.new_name;
                     Ok(PluginCommand::RenameTerminalPane(pane_id, new_name))
                 },
@@ -1251,7 +1256,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::RenamePluginPane) => match protobuf_plugin_command.payload {
                 Some(Payload::RenamePluginPanePayload(payload)) => {
-                    let pane_id = payload.id as u32;
+                    let pane_id = payload.id;
                     let new_name = payload.new_name;
                     Ok(PluginCommand::RenamePluginPane(pane_id, new_name))
                 },
@@ -1259,7 +1264,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::RenameTab) => match protobuf_plugin_command.payload {
                 Some(Payload::RenameTabPayload(payload)) => {
-                    let tab_index = payload.id as u32;
+                    let tab_index = payload.id;
                     let name = payload.new_name;
                     Ok(PluginCommand::RenameTab(tab_index, name))
                 },
@@ -1277,7 +1282,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         payload
                             .permissions
                             .iter()
-                            .filter_map(|p| ProtobufPermissionType::from_i32(*p))
+                            .filter_map(|p| ProtobufPermissionType::try_from(*p).ok())
                             .filter_map(|p| PermissionType::try_from(p).ok())
                             .collect(),
                     ))
@@ -1298,7 +1303,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         tab_position: payload.tab_position.map(|p| p as usize),
                         pane_id,
                         layout: payload.layout.and_then(|l| l.try_into().ok()),
-                        cwd: payload.cwd.map(|c| PathBuf::from(c)),
+                        cwd: payload.cwd.map(PathBuf::from),
                     }))
                 },
                 _ => Err("Mismatched payload for SwitchSession"),
@@ -1385,7 +1390,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .into_iter()
                         .map(|e| (e.name, e.value))
                         .collect();
-                    let verb = match ProtobufHttpVerb::from_i32(web_request_payload.verb) {
+                    let verb = match ProtobufHttpVerb::try_from(web_request_payload.verb).ok() {
                         Some(verb) => verb.into(),
                         None => {
                             return Err("Unrecognized http verb");
@@ -1464,17 +1469,17 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         message_name,
                         message_payload,
                         message_args,
-                        new_plugin_args: new_plugin_args.and_then(|protobuf_new_plugin_args| {
-                            Some(NewPluginArgs {
+                        new_plugin_args: new_plugin_args.map(|protobuf_new_plugin_args| {
+                            NewPluginArgs {
                                 should_float: protobuf_new_plugin_args.should_float,
                                 pane_id_to_replace: protobuf_new_plugin_args
                                     .pane_id_to_replace
                                     .and_then(|p_id| PaneId::try_from(p_id).ok()),
                                 pane_title: protobuf_new_plugin_args.pane_title,
-                                cwd: protobuf_new_plugin_args.cwd.map(|cwd| PathBuf::from(cwd)),
+                                cwd: protobuf_new_plugin_args.cwd.map(PathBuf::from),
                                 skip_cache: protobuf_new_plugin_args.skip_cache,
                                 should_focus: protobuf_new_plugin_args.should_focus,
-                            })
+                            }
                         }),
                         destination_plugin_id,
                         floating_pane_coordinates: floating_pane_coordinates
@@ -2009,12 +2014,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         keys_to_rebind: rebind_keys_payload
                             .keys_to_rebind
                             .into_iter()
-                            .filter_map(|k| key_to_rebind_to_plugin_command_assets(k))
+                            .filter_map(key_to_rebind_to_plugin_command_assets)
                             .collect(),
                         keys_to_unbind: rebind_keys_payload
                             .keys_to_unbind
                             .into_iter()
-                            .filter_map(|k| key_to_unbind_to_plugin_command_assets(k))
+                            .filter_map(key_to_unbind_to_plugin_command_assets)
                             .collect(),
                         write_config_to_disk: rebind_keys_payload.write_config_to_disk,
                     })
@@ -2945,7 +2950,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::SwitchTabTo(tab_index) => Ok(ProtobufPluginCommand {
                 name: CommandName::SwitchTabTo as i32,
                 payload: Some(Payload::SwitchTabToPayload(SwitchTabToPayload {
-                    tab_index: tab_index,
+                    tab_index,
                 })),
             }),
             PluginCommand::SetTimeout(seconds) => Ok(ProtobufPluginCommand {
@@ -3209,7 +3214,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             ) => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusTerminalPane as i32,
                 payload: Some(Payload::FocusTerminalPanePayload(PaneIdAndShouldFloat {
-                    pane_id: pane_id,
+                    pane_id,
                     should_float: should_float_if_hidden,
                     should_be_in_place: should_be_in_place_if_hidden,
                 })),
@@ -3221,7 +3226,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             ) => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusPluginPane as i32,
                 payload: Some(Payload::FocusPluginPanePayload(PaneIdAndShouldFloat {
-                    pane_id: pane_id,
+                    pane_id,
                     should_float: should_float_if_hidden,
                     should_be_in_place: should_be_in_place_if_hidden,
                 })),

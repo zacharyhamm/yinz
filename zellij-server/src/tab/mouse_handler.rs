@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 use std::time::Instant;
 use zellij_utils::data::{Direction, Resize, ResizeStrategy};
 use zellij_utils::errors::prelude::*;
@@ -609,7 +610,7 @@ impl MouseHandler {
         let start_geom = tab
             .pane_being_resized_with_mouse
             .as_ref()
-            .map(|p| p.start_geom.clone());
+            .map(|p| p.start_geom);
         let pane_id = tab
             .pane_being_resized_with_mouse
             .as_ref()
@@ -1009,9 +1010,7 @@ impl MouseHandler {
             let mut relative_position = pane_with_selection.relative_position(&position);
 
             relative_position.change_column(
-                (relative_position.column())
-                    .max(0)
-                    .min(pane_with_selection.get_content_columns()),
+                (relative_position.column()).min(pane_with_selection.get_content_columns()),
             );
 
             relative_position.change_line(
@@ -1236,7 +1235,7 @@ impl MouseHandler {
                 .get_pane_with_id(pane_id)
                 .ok_or_else(|| anyhow!("Failed to find pane {pane_id:?}"))?;
             let relative_position = pane.relative_position(&event.position);
-            let mut event_for_pane = event.clone();
+            let mut event_for_pane = event;
             event_for_pane.position = relative_position;
             if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
                 if !pane.position_is_on_frame(&event.position) {

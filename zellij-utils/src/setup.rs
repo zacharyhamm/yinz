@@ -1,3 +1,4 @@
+#![allow(clippy::needless_borrow)]
 #[cfg(not(target_family = "wasm"))]
 use crate::consts::ASSET_MAP;
 use crate::input::theme::Themes;
@@ -18,7 +19,14 @@ use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::{convert::TryFrom, fmt::Write as FmtWrite, fs, io::Write, path::PathBuf, process};
+use std::{
+    convert::TryFrom,
+    fmt::Write as FmtWrite,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process,
+};
 
 const CONFIG_NAME: &str = "config.kdl";
 static ARROW_SEPARATOR: &str = "";
@@ -29,9 +37,8 @@ pub fn get_default_themes() -> Themes {
     for file in ZELLIJ_DEFAULT_THEMES.files() {
         if let Some(content) = file.contents_utf8() {
             let sourced_from_external_file = true;
-            match Themes::from_string(&content.to_string(), sourced_from_external_file) {
-                Ok(theme) => themes = themes.merge(theme),
-                Err(_) => {},
+            if let Ok(theme) = Themes::from_string(content, sourced_from_external_file) {
+                themes = themes.merge(theme)
             }
         }
     }
@@ -186,7 +193,7 @@ pub fn dump_specified_layout(layout: &str) -> std::io::Result<()> {
                 },
                 _ => {
                     log::error!("No layout named {custom} found");
-                    return Ok(());
+                    Ok(())
                 },
             }
         },
@@ -199,15 +206,15 @@ pub fn dump_specified_swap_layout(swap_layout: &str) -> std::io::Result<()> {
         "default" => dump_asset(DEFAULT_SWAP_LAYOUT),
         "compact" => dump_asset(COMPACT_BAR_SWAP_LAYOUT),
         "classic" => dump_asset(CLASSIC_SWAP_LAYOUT),
-        not_found => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Swap Layout not found for: {}", not_found),
-        )),
+        not_found => Err(std::io::Error::other(format!(
+            "Swap Layout not found for: {}",
+            not_found
+        ))),
     }
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn dump_builtin_plugins(path: &PathBuf) -> Result<()> {
+pub fn dump_builtin_plugins(path: &Path) -> Result<()> {
     for (asset_path, bytes) in ASSET_MAP.iter() {
         let plugin_path = path.join(asset_path);
         plugin_path
@@ -293,6 +300,7 @@ impl Setup {
     /// 2. layout options
     ///    (`layout.kdl` / `zellij --layout`)
     /// 3. config options (`config.kdl`)
+    #[allow(clippy::result_large_err)]
     pub fn from_cli_args(
         cli_args: &CliArgs,
     ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {
@@ -301,14 +309,14 @@ impl Setup {
         let config = Config::try_from(cli_args)?;
         let cli_config_options: Option<Options> =
             if let Some(Command::Options(options)) = cli_args.command.clone() {
-                Some(options.into())
+                Some(*options)
             } else {
                 None
             };
 
         // the attach CLI command can also have its own Options, we need to merge them if they
         // exist
-        let cli_config_options = merge_attach_command_options(cli_config_options, &cli_args);
+        let cli_config_options = merge_attach_command_options(cli_config_options, cli_args);
 
         let mut config_without_layout = config.clone();
         let (layout_info, mut config) =
@@ -318,6 +326,7 @@ impl Setup {
             apply_themes_to_config(&mut config, cli_config_options.clone(), cli_args)?;
         let config_options_without_layout =
             apply_themes_to_config(&mut config_without_layout, cli_config_options, cli_args)?;
+        #[allow(clippy::result_large_err)]
         fn apply_themes_to_config(
             config: &mut Config,
             cli_config_options: Option<Options>,
@@ -382,7 +391,7 @@ impl Setup {
         }
 
         if let Some(layout) = &self.dump_layout {
-            dump_specified_layout(&layout)?;
+            dump_specified_layout(layout)?;
             std::process::exit(0);
         }
 
@@ -615,6 +624,7 @@ impl Setup {
             _ => {},
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_layout_and_override_config(
         cli_config_options: Option<&Options>,
         config: Config,
@@ -684,9 +694,9 @@ fn merge_attach_command_options(
         match options.clone().as_deref() {
             Some(SessionCommand::Options(options)) => match cli_config_options {
                 Some(cli_config_options) => {
-                    Some(cli_config_options.merge_from_cli(options.to_owned().into()))
+                    Some(cli_config_options.merge_from_cli(options.to_owned()))
                 },
-                None => Some(options.to_owned().into()),
+                None => Some(options.to_owned()),
             },
             _ => cli_config_options,
         }
@@ -703,7 +713,7 @@ mod setup_test {
     use crate::data::LayoutInfo;
     use crate::input::options::Options;
     use insta::assert_snapshot;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn default_config_with_no_cli_arguments() {
@@ -716,10 +726,10 @@ mod setup_test {
     #[test]
     fn cli_arguments_override_config_options() {
         let mut cli_args = CliArgs::default();
-        cli_args.command = Some(Command::Options(Options {
+        cli_args.command = Some(Command::Options(Box::new(Options {
             simplified_ui: Some(true),
             ..Default::default()
-        }));
+        })));
         let (_config, _layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
         assert_snapshot!(format!("{:#?}", options));
     }
@@ -750,10 +760,10 @@ mod setup_test {
             "{}/src/test-fixtures/layout-with-options.kdl",
             env!("CARGO_MANIFEST_DIR")
         )));
-        cli_args.command = Some(Command::Options(Options {
+        cli_args.command = Some(Command::Options(Box::new(Options {
             pane_frames: Some(true),
             ..Default::default()
-        }));
+        })));
         let (_config, layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
         assert_snapshot!(format!("{:#?}", options));
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {

@@ -108,7 +108,7 @@ use std::path::PathBuf;
 impl TryFrom<ProtobufAction> for Action {
     type Error = &'static str;
     fn try_from(protobuf_action: ProtobufAction) -> Result<Self, &'static str> {
-        match ProtobufActionName::from_i32(protobuf_action.name) {
+        match ProtobufActionName::try_from(protobuf_action.name).ok() {
             Some(ProtobufActionName::Quit) => match protobuf_action.optional_payload {
                 Some(_) => Err("The Quit Action should not have a payload"),
                 None => Ok(Action::Quit),
@@ -137,7 +137,8 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::SwitchToMode) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::SwitchToModePayload(switch_to_mode_payload)) => {
                     let input_mode: InputMode =
-                        ProtobufInputMode::from_i32(switch_to_mode_payload.input_mode)
+                        ProtobufInputMode::try_from(switch_to_mode_payload.input_mode)
+                            .ok()
                             .ok_or("Malformed input mode for SwitchToMode Action")?
                             .try_into()?;
                     Ok(Action::SwitchToMode { input_mode })
@@ -150,7 +151,8 @@ impl TryFrom<ProtobufAction> for Action {
                         switch_to_mode_payload,
                     )) => {
                         let input_mode: InputMode =
-                            ProtobufInputMode::from_i32(switch_to_mode_payload.input_mode)
+                            ProtobufInputMode::try_from(switch_to_mode_payload.input_mode)
+                                .ok()
                                 .ok_or("Malformed input mode for SwitchToMode Action")?
                                 .try_into()?;
                         Ok(Action::SwitchModeForAllClients { input_mode })
@@ -187,7 +189,8 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::MoveFocus) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::MoveFocusPayload(move_focus_payload)) => {
                     let direction: Direction =
-                        ProtobufResizeDirection::from_i32(move_focus_payload)
+                        ProtobufResizeDirection::try_from(move_focus_payload)
+                            .ok()
                             .ok_or("Malformed resize direction for Action::MoveFocus")?
                             .try_into()?;
                     Ok(Action::MoveFocus { direction })
@@ -197,7 +200,8 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::MoveFocusOrTab) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::MoveFocusOrTabPayload(move_focus_or_tab_payload)) => {
                     let direction: Direction =
-                        ProtobufResizeDirection::from_i32(move_focus_or_tab_payload)
+                        ProtobufResizeDirection::try_from(move_focus_or_tab_payload)
+                            .ok()
                             .ok_or("Malformed resize direction for Action::MoveFocusOrTab")?
                             .try_into()?;
                     Ok(Action::MoveFocusOrTab { direction })
@@ -208,7 +212,7 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(OptionalPayload::MovePanePayload(payload)) => {
                     let direction: Option<Direction> = payload
                         .direction
-                        .and_then(|d| ProtobufResizeDirection::from_i32(d))
+                        .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
                         .and_then(|d| d.try_into().ok());
                     Ok(Action::MovePane { direction })
                 },
@@ -316,7 +320,7 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::SetPaneFrameStyle) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::SetPaneFrameStylePayload(payload)) => {
-                    match ProtobufPaneFrameStyle::from_i32(payload.pane_frame_style) {
+                    match ProtobufPaneFrameStyle::try_from(payload.pane_frame_style).ok() {
                         Some(protobuf_pane_frame_style) => Ok(Action::SetPaneFrameStyle(
                             protobuf_pane_frame_style.try_into()?,
                         )),
@@ -335,7 +339,7 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(OptionalPayload::NewPanePayload(payload)) => {
                     let direction: Option<Direction> = payload
                         .direction
-                        .and_then(|d| ProtobufResizeDirection::from_i32(d))
+                        .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
                         .and_then(|d| d.try_into().ok());
                     let pane_name = payload.pane_name;
                     let global_placement = payload
@@ -355,10 +359,10 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(OptionalPayload::EditFilePayload(payload)) => {
                     let file_to_edit = PathBuf::from(payload.file_to_edit);
                     let line_number: Option<usize> = payload.line_number.map(|l| l as usize);
-                    let cwd: Option<PathBuf> = payload.cwd.map(|p| PathBuf::from(p));
+                    let cwd: Option<PathBuf> = payload.cwd.map(PathBuf::from);
                     let direction: Option<Direction> = payload
                         .direction
-                        .and_then(|d| ProtobufResizeDirection::from_i32(d))
+                        .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
                         .and_then(|d| d.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
                     let should_float = payload.should_float;
@@ -420,7 +424,7 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(OptionalPayload::NewTiledPanePayload(payload)) => {
                     let direction: Option<Direction> = payload
                         .direction
-                        .and_then(|d| ProtobufResizeDirection::from_i32(d))
+                        .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
                         .and_then(|d| d.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
                     let borderless = payload.borderless;
@@ -566,7 +570,7 @@ impl TryFrom<ProtobufAction> for Action {
 
                         let first_pane_unblock_condition = payload
                             .first_pane_unblock_condition
-                            .and_then(|uc| ProtobufUnblockCondition::from_i32(uc))
+                            .and_then(|uc| ProtobufUnblockCondition::try_from(uc).ok())
                             .and_then(|uc| uc.try_into().ok());
 
                         Ok(Action::NewTab {
@@ -646,8 +650,8 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::MoveTab) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::MoveTabPayload(move_tab_payload)) => {
-                    let direction: Direction = ProtobufMoveTabDirection::from_i32(move_tab_payload)
-                        .ok_or("Malformed move tab direction for Action::MoveTab")?
+                    let direction: Direction = ProtobufMoveTabDirection::try_from(move_tab_payload)
+                        .map_err(|_| "Malformed move tab direction for Action::MoveTab")?
                         .try_into()?;
                     Ok(Action::MoveTab { direction })
                 },
@@ -721,7 +725,7 @@ impl TryFrom<ProtobufAction> for Action {
                             .and_then(|p| PluginUserConfiguration::try_from(p).ok())
                             .unwrap_or_default();
                         let run_plugin_or_alias = RunPluginOrAlias::from_url(
-                            &payload.plugin_url.as_str(),
+                            payload.plugin_url.as_str(),
                             &Some(configuration.inner().clone()),
                             None,
                             None,
@@ -756,7 +760,7 @@ impl TryFrom<ProtobufAction> for Action {
                         .and_then(|p| PluginUserConfiguration::try_from(p).ok())
                         .unwrap_or_default();
                     let run_plugin_or_alias = RunPluginOrAlias::from_url(
-                        &payload.plugin_url.as_str(),
+                        payload.plugin_url.as_str(),
                         &Some(configuration.inner().clone()),
                         None,
                         None,
@@ -829,8 +833,8 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::Search) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::SearchPayload(search_direction)) => Ok(Action::Search {
-                    direction: ProtobufSearchDirection::from_i32(search_direction)
-                        .ok_or("Malformed payload for Action::Search")?
+                    direction: ProtobufSearchDirection::try_from(search_direction)
+                        .map_err(|_| "Malformed payload for Action::Search")?
                         .try_into()?,
                 }),
                 _ => Err("Wrong payload for Action::Search"),
@@ -839,8 +843,8 @@ impl TryFrom<ProtobufAction> for Action {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::SearchToggleOptionPayload(search_option)) => {
                         Ok(Action::SearchToggleOption {
-                            option: ProtobufSearchOption::from_i32(search_option)
-                                .ok_or("Malformed payload for Action::SearchToggleOption")?
+                            option: ProtobufSearchOption::try_from(search_option)
+                                .map_err(|_| "Malformed payload for Action::SearchToggleOption")?
                                 .try_into()?,
                         })
                     },
@@ -938,7 +942,7 @@ impl TryFrom<ProtobufAction> for Action {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::StartOrReloadPluginPayload(payload)) => {
                         let run_plugin_or_alias =
-                            RunPluginOrAlias::from_url(&payload.as_str(), &None, None, None)
+                            RunPluginOrAlias::from_url(payload.as_str(), &None, None, None)
                                 .map_err(|_| "Malformed LaunchOrFocusPlugin payload")?;
 
                         Ok(Action::StartOrReloadPlugin {
@@ -1109,7 +1113,7 @@ impl TryFrom<ProtobufAction> for Action {
                     let command = payload.command.and_then(|c| c.try_into().ok());
                     let unblock_condition = payload
                         .unblock_condition
-                        .and_then(|uc| ProtobufUnblockCondition::from_i32(uc))
+                        .and_then(|uc| ProtobufUnblockCondition::try_from(uc).ok())
                         .and_then(|uc| uc.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
                     let global_placement = payload
@@ -1544,7 +1548,6 @@ impl TryFrom<Action> for ProtobufAction {
                 let command = run_command_action.and_then(|r| {
                     let mut protobuf_run_command_action: ProtobufRunCommandAction =
                         r.try_into().ok()?;
-                    let pane_name = pane_name.and_then(|n| n.try_into().ok());
                     protobuf_run_command_action.pane_name = pane_name;
                     Some(protobuf_run_command_action)
                 });
@@ -1664,12 +1667,11 @@ impl TryFrom<Action> for ProtobufAction {
                     .transpose()?
                     .unwrap_or_default();
 
-                let protobuf_first_pane_unblock_condition = first_pane_unblock_condition
-                    .map(|uc| {
+                let protobuf_first_pane_unblock_condition =
+                    first_pane_unblock_condition.and_then(|uc| {
                         let protobuf_uc: ProtobufUnblockCondition = uc.try_into().ok()?;
                         Some(protobuf_uc as i32)
-                    })
-                    .flatten();
+                    });
 
                 Ok(ProtobufAction {
                     name: ProtobufActionName::NewTab as i32,
@@ -2013,15 +2015,15 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::KeybindPipe as i32,
                 optional_payload: None,
             }),
-            Action::TogglePanePinned { .. } => Ok(ProtobufAction {
+            Action::TogglePanePinned => Ok(ProtobufAction {
                 name: ProtobufActionName::TogglePanePinned as i32,
                 optional_payload: None,
             }),
-            Action::TogglePaneInGroup { .. } => Ok(ProtobufAction {
+            Action::TogglePaneInGroup => Ok(ProtobufAction {
                 name: ProtobufActionName::TogglePaneInGroup as i32,
                 optional_payload: None,
             }),
-            Action::ToggleGroupMarking { .. } => Ok(ProtobufAction {
+            Action::ToggleGroupMarking => Ok(ProtobufAction {
                 name: ProtobufActionName::ToggleGroupMarking as i32,
                 optional_payload: None,
             }),
@@ -2057,12 +2059,10 @@ impl TryFrom<Action> for ProtobufAction {
                     let protobuf_command: ProtobufRunCommandAction = c.try_into().ok()?;
                     Some(protobuf_command)
                 });
-                let unblock_condition = unblock_condition
-                    .map(|uc| {
-                        let protobuf_uc: ProtobufUnblockCondition = uc.try_into().ok()?;
-                        Some(protobuf_uc as i32)
-                    })
-                    .flatten();
+                let unblock_condition = unblock_condition.and_then(|uc| {
+                    let protobuf_uc: ProtobufUnblockCondition = uc.try_into().ok()?;
+                    Some(protobuf_uc as i32)
+                });
                 Ok(ProtobufAction {
                     name: ProtobufActionName::NewBlockingPane as i32,
                     optional_payload: Some(OptionalPayload::NewBlockingPanePayload(
@@ -2091,7 +2091,6 @@ impl TryFrom<Action> for ProtobufAction {
                 let command = run_command_action.and_then(|r| {
                     let mut protobuf_run_command_action: ProtobufRunCommandAction =
                         r.try_into().ok()?;
-                    let pane_name = pane_name.and_then(|n| n.try_into().ok());
                     protobuf_run_command_action.pane_name = pane_name;
                     Some(protobuf_run_command_action)
                 });
@@ -2135,13 +2134,7 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::NoOp
             | Action::Confirm
-            | Action::NewInPlacePluginPane {
-                plugin: _,
-                pane_name: _,
-                skip_cache: _,
-                close_replaced_pane: _,
-                ..
-            }
+            | Action::NewInPlacePluginPane { .. }
             | Action::Deny
             | Action::Copy
             | Action::DumpLayout
@@ -2237,10 +2230,10 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
     ) -> Result<Self, &'static str> {
         let command = PathBuf::from(protobuf_run_command_action.command);
         let args: Vec<String> = protobuf_run_command_action.args;
-        let cwd: Option<PathBuf> = protobuf_run_command_action.cwd.map(|c| PathBuf::from(c));
+        let cwd: Option<PathBuf> = protobuf_run_command_action.cwd.map(PathBuf::from);
         let direction: Option<Direction> = protobuf_run_command_action
             .direction
-            .and_then(|d| ProtobufResizeDirection::from_i32(d))
+            .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
             .and_then(|d| d.try_into().ok());
         let hold_on_close = protobuf_run_command_action.hold_on_close;
         let hold_on_start = protobuf_run_command_action.hold_on_start;
@@ -2375,21 +2368,21 @@ impl TryFrom<ProtobufMouseEventPayload> for MouseEvent {
     type Error = &'static str;
     fn try_from(protobuf_event: ProtobufMouseEventPayload) -> Result<Self, &'static str> {
         Ok(MouseEvent {
-            event_type: match protobuf_event.event_type as u32 {
+            event_type: match protobuf_event.event_type {
                 0 => MouseEventType::Press,
                 1 => MouseEventType::Release,
                 _ => MouseEventType::Motion,
             },
-            left: protobuf_event.left as bool,
-            right: protobuf_event.right as bool,
-            middle: protobuf_event.middle as bool,
-            wheel_up: protobuf_event.wheel_up as bool,
-            wheel_down: protobuf_event.wheel_down as bool,
-            wheel_left: protobuf_event.wheel_left as bool,
-            wheel_right: protobuf_event.wheel_right as bool,
-            shift: protobuf_event.shift as bool,
-            alt: protobuf_event.alt as bool,
-            ctrl: protobuf_event.ctrl as bool,
+            left: protobuf_event.left,
+            right: protobuf_event.right,
+            middle: protobuf_event.middle,
+            wheel_up: protobuf_event.wheel_up,
+            wheel_down: protobuf_event.wheel_down,
+            wheel_left: protobuf_event.wheel_left,
+            wheel_right: protobuf_event.wheel_right,
+            shift: protobuf_event.shift,
+            alt: protobuf_event.alt,
+            ctrl: protobuf_event.ctrl,
             position: Position::new(protobuf_event.line as i32, protobuf_event.column as u16),
         })
     }
@@ -2404,16 +2397,16 @@ impl TryFrom<MouseEvent> for ProtobufMouseEventPayload {
                 MouseEventType::Release => 1,
                 MouseEventType::Motion => 2,
             } as u32,
-            left: event.left as bool,
-            right: event.right as bool,
-            middle: event.middle as bool,
-            wheel_up: event.wheel_up as bool,
-            wheel_down: event.wheel_down as bool,
-            wheel_left: event.wheel_left as bool,
-            wheel_right: event.wheel_right as bool,
-            shift: event.shift as bool,
-            alt: event.alt as bool,
-            ctrl: event.ctrl as bool,
+            left: event.left,
+            right: event.right,
+            middle: event.middle,
+            wheel_up: event.wheel_up,
+            wheel_down: event.wheel_down,
+            wheel_left: event.wheel_left,
+            wheel_right: event.wheel_right,
+            shift: event.shift,
+            alt: event.alt,
+            ctrl: event.ctrl,
             line: event.position.line.0 as i64,
             column: event.position.column.0 as i64,
         })
@@ -2465,7 +2458,7 @@ impl TryFrom<&ProtobufPluginConfiguration> for BTreeMap<String, String> {
 impl TryFrom<ProtobufKeyWithModifier> for KeyWithModifier {
     type Error = &'static str;
     fn try_from(protobuf_key: ProtobufKeyWithModifier) -> Result<Self, &'static str> {
-        let bare_key = match ProtobufBareKey::from_i32(protobuf_key.bare_key) {
+        let bare_key = match ProtobufBareKey::try_from(protobuf_key.bare_key).ok() {
             Some(ProtobufBareKey::PageDown) => crate::data::BareKey::PageDown,
             Some(ProtobufBareKey::PageUp) => crate::data::BareKey::PageUp,
             Some(ProtobufBareKey::Left) => crate::data::BareKey::Left,
@@ -2514,11 +2507,11 @@ impl TryFrom<ProtobufKeyWithModifier> for KeyWithModifier {
 
         let mut key_modifiers = std::collections::BTreeSet::new();
         for modifier in protobuf_key.key_modifiers {
-            let key_modifier = match ProtobufKeyModifier::from_i32(modifier) {
-                Some(ProtobufKeyModifier::Ctrl) => crate::data::KeyModifier::Ctrl,
-                Some(ProtobufKeyModifier::Alt) => crate::data::KeyModifier::Alt,
-                Some(ProtobufKeyModifier::Shift) => crate::data::KeyModifier::Shift,
-                Some(ProtobufKeyModifier::Super) => crate::data::KeyModifier::Super,
+            let key_modifier = match ProtobufKeyModifier::try_from(modifier) {
+                Ok(ProtobufKeyModifier::Ctrl) => crate::data::KeyModifier::Ctrl,
+                Ok(ProtobufKeyModifier::Alt) => crate::data::KeyModifier::Alt,
+                Ok(ProtobufKeyModifier::Shift) => crate::data::KeyModifier::Shift,
+                Ok(ProtobufKeyModifier::Super) => crate::data::KeyModifier::Super,
                 _ => continue,
             };
             key_modifiers.insert(key_modifier);
@@ -2616,9 +2609,9 @@ impl TryFrom<UnblockCondition> for ProtobufUnblockCondition {
 impl TryFrom<i32> for UnblockCondition {
     type Error = &'static str;
     fn try_from(value: i32) -> Result<Self, &'static str> {
-        match ProtobufUnblockCondition::from_i32(value) {
-            Some(uc) => uc.try_into(),
-            None => Err("Invalid UnblockCondition value"),
+        match ProtobufUnblockCondition::try_from(value) {
+            Ok(uc) => uc.try_into(),
+            Err(_) => Err("Invalid UnblockCondition value"),
         }
     }
 }
@@ -2745,7 +2738,7 @@ impl TryFrom<ProtobufNewPanePlacement> for NewPanePlacement {
             Some(PlacementVariant::Tiled(tiled)) => {
                 let direction = tiled
                     .direction
-                    .and_then(|d| ProtobufResizeDirection::from_i32(d))
+                    .and_then(|d| ProtobufResizeDirection::try_from(d).ok())
                     .and_then(|d| d.try_into().ok());
                 Ok(NewPanePlacement::Tiled {
                     direction,
@@ -2911,8 +2904,8 @@ impl TryFrom<LayoutConstraint> for ProtobufLayoutConstraint {
 impl TryFrom<ProtobufLayoutConstraintWithValue> for LayoutConstraint {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufLayoutConstraintWithValue) -> Result<Self, Self::Error> {
-        let constraint_type = ProtobufLayoutConstraint::from_i32(protobuf.constraint_type)
-            .ok_or("Invalid constraint type")?;
+        let constraint_type = ProtobufLayoutConstraint::try_from(protobuf.constraint_type)
+            .map_err(|_| "Invalid constraint type")?;
         match constraint_type {
             ProtobufLayoutConstraint::MaxPanes => Ok(LayoutConstraint::MaxPanes(
                 protobuf.value.unwrap_or(0) as usize,
@@ -3280,8 +3273,8 @@ impl TryFrom<ProtobufTiledPaneLayout> for TiledPaneLayout {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufTiledPaneLayout) -> Result<Self, Self::Error> {
         let children_split_direction =
-            ProtobufSplitDirection::from_i32(protobuf.children_split_direction)
-                .ok_or("Invalid split direction")?
+            ProtobufSplitDirection::try_from(protobuf.children_split_direction)
+                .map_err(|_| "Invalid split direction")?
                 .try_into()?;
         let children = protobuf
             .children

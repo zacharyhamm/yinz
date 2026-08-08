@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::unwrap_or_default)]
 use super::{text::stringify_text, Coordinates, Text};
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
 use zellij_utils::data::{PaletteColor, Style};
@@ -38,7 +40,7 @@ pub fn ribbon(
         );
         let mut stringified = component_coordinates
             .map(|c| c.to_string())
-            .unwrap_or_else(|| String::new());
+            .unwrap_or_default();
         stringified.push_str(&format!(
             "{}{}{}{} {} {}{}{}",
             RESET_STYLES,
@@ -79,7 +81,7 @@ pub fn ribbon(
     );
     let mut stringified = component_coordinates
         .map(|c| c.to_string())
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
     stringified.push_str(&format!(
         "{}{}{}{} {} {}{}{}",
         RESET_STYLES,

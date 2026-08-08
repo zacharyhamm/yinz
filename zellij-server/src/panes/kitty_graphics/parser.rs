@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use base64::engine::{DecodePaddingMode, Engine as _};
@@ -177,6 +178,7 @@ struct PendingUpload {
 }
 
 impl KittyCommandParser {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         KittyCommandParser { pending: None }
     }

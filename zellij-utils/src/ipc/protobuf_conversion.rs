@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
 
 use crate::{
@@ -316,8 +317,8 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 })
             },
             Some(client_to_server_msg::Message::HostTerminalThemeChanged(msg)) => {
-                let proto_mode = ProtoHostTerminalThemeIndication::from_i32(msg.mode)
-                    .ok_or_else(|| anyhow!("Unknown HostTerminalThemeIndication: {}", msg.mode))?;
+                let proto_mode = ProtoHostTerminalThemeIndication::try_from(msg.mode)
+                    .map_err(|_| anyhow!("Unknown HostTerminalThemeIndication: {}", msg.mode))?;
                 Ok(ClientToServerMsg::HostTerminalThemeChanged {
                     mode: proto_mode.into(),
                 })
@@ -587,8 +588,8 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::UnblockInputThread)
             },
             Some(server_to_client_msg::Message::Exit(exit)) => {
-                let proto_exit_reason = ProtoExitReason::from_i32(exit.exit_reason)
-                    .ok_or_else(|| anyhow!("Invalid exit_reason"))?;
+                let proto_exit_reason = ProtoExitReason::try_from(exit.exit_reason)
+                    .map_err(|_| anyhow!("Invalid exit_reason"))?;
 
                 let exit_reason = match proto_exit_reason {
                     ProtoExitReason::Error => {
@@ -876,7 +877,7 @@ impl From<crate::input::options::Options>
             theme: options.theme,
             theme_dark: options.theme_dark,
             theme_light: options.theme_light,
-            default_mode: options.default_mode.map(|m| input_mode_to_proto_i32(m)),
+            default_mode: options.default_mode.map(input_mode_to_proto_i32),
             default_shell: options
                 .default_shell
                 .map(|p| p.to_string_lossy().to_string()),
@@ -982,7 +983,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             theme_light: options.theme_light,
             default_mode: options
                 .default_mode
-                .map(|m| proto_i32_to_input_mode(m))
+                .map(proto_i32_to_input_mode)
                 .transpose()?,
             default_shell: options.default_shell.map(std::path::PathBuf::from),
             default_cwd: options.default_cwd.map(std::path::PathBuf::from),
@@ -1000,9 +1001,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             mirror_session: options.mirror_session,
             on_force_close: options
                 .on_force_close
-                .map(|o| match ProtoOnForceClose::from_i32(o) {
-                    Some(ProtoOnForceClose::Quit) => Ok(crate::input::options::OnForceClose::Quit),
-                    Some(ProtoOnForceClose::Detach) => {
+                .map(|o| match ProtoOnForceClose::try_from(o) {
+                    Ok(ProtoOnForceClose::Quit) => Ok(crate::input::options::OnForceClose::Quit),
+                    Ok(ProtoOnForceClose::Detach) => {
                         Ok(crate::input::options::OnForceClose::Detach)
                     },
                     _ => Err(anyhow!("Invalid OnForceClose value: {}", o)),
@@ -1012,9 +1013,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             copy_command: options.copy_command,
             copy_clipboard: options
                 .copy_clipboard
-                .map(|c| match ProtoClipboard::from_i32(c) {
-                    Some(ProtoClipboard::System) => Ok(crate::input::options::Clipboard::System),
-                    Some(ProtoClipboard::Primary) => Ok(crate::input::options::Clipboard::Primary),
+                .map(|c| match ProtoClipboard::try_from(c) {
+                    Ok(ProtoClipboard::System) => Ok(crate::input::options::Clipboard::System),
+                    Ok(ProtoClipboard::Primary) => Ok(crate::input::options::Clipboard::Primary),
                     _ => Err(anyhow!("Invalid Clipboard value: {}", c)),
                 })
                 .transpose()?,
@@ -1037,10 +1038,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             web_server: options.web_server,
             web_sharing: options
                 .web_sharing
-                .map(|w| match ProtoWebSharing::from_i32(w) {
-                    Some(ProtoWebSharing::On) => Ok(crate::data::WebSharing::On),
-                    Some(ProtoWebSharing::Off) => Ok(crate::data::WebSharing::Off),
-                    Some(ProtoWebSharing::Disabled) => Ok(crate::data::WebSharing::Disabled),
+                .map(|w| match ProtoWebSharing::try_from(w) {
+                    Ok(ProtoWebSharing::On) => Ok(crate::data::WebSharing::On),
+                    Ok(ProtoWebSharing::Off) => Ok(crate::data::WebSharing::Off),
+                    Ok(ProtoWebSharing::Disabled) => Ok(crate::data::WebSharing::Disabled),
                     _ => Err(anyhow!("Invalid WebSharing value: {}", w)),
                 })
                 .transpose()?,
@@ -1067,17 +1068,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             mouse_click_through: options.mouse_click_through,
             nested_session_handling: options
                 .nested_session_handling
-                .map(|n| match ProtoNestedSessionHandling::from_i32(n) {
-                    Some(ProtoNestedSessionHandling::Ask) => {
+                .map(|n| match ProtoNestedSessionHandling::try_from(n) {
+                    Ok(ProtoNestedSessionHandling::Ask) => {
                         Ok(crate::input::options::NestedSessionHandling::Ask)
                     },
-                    Some(ProtoNestedSessionHandling::Fullscreen) => {
+                    Ok(ProtoNestedSessionHandling::Fullscreen) => {
                         Ok(crate::input::options::NestedSessionHandling::Fullscreen)
                     },
-                    Some(ProtoNestedSessionHandling::Descend) => {
+                    Ok(ProtoNestedSessionHandling::Descend) => {
                         Ok(crate::input::options::NestedSessionHandling::Descend)
                     },
-                    Some(ProtoNestedSessionHandling::Never) => {
+                    Ok(ProtoNestedSessionHandling::Never) => {
                         Ok(crate::input::options::NestedSessionHandling::Never)
                     },
                     _ => Err(anyhow!("Invalid NestedSessionHandling value: {}", n)),
@@ -1294,7 +1295,7 @@ impl TryFrom<crate::input::actions::Action>
             crate::input::actions::Action::Resize { resize, direction } => {
                 ActionType::Resize(ResizeAction {
                     resize: resize_to_proto_i32(resize),
-                    direction: direction.map(|d| direction_to_proto_i32(d)),
+                    direction: direction.map(direction_to_proto_i32),
                 })
             },
             crate::input::actions::Action::FocusNextPane => {
@@ -1330,7 +1331,7 @@ impl TryFrom<crate::input::actions::Action>
             },
             crate::input::actions::Action::MovePane { direction } => {
                 ActionType::MovePane(MovePaneAction {
-                    direction: direction.map(|d| direction_to_proto_i32(d)),
+                    direction: direction.map(direction_to_proto_i32),
                 })
             },
             crate::input::actions::Action::MovePaneBackwards => {
@@ -1420,7 +1421,7 @@ impl TryFrom<crate::input::actions::Action>
                 start_suppressed,
                 global_placement,
             } => ActionType::NewPane(NewPaneAction {
-                direction: direction.map(|d| direction_to_proto_i32(d)),
+                direction: direction.map(direction_to_proto_i32),
                 pane_name,
                 start_suppressed,
                 near_current_pane: false,
@@ -1440,7 +1441,7 @@ impl TryFrom<crate::input::actions::Action>
                 global_placement,
             } => ActionType::EditFile(EditFileAction {
                 payload: Some(payload.into()),
-                direction: direction.map(|d| direction_to_proto_i32(d)),
+                direction: direction.map(direction_to_proto_i32),
                 floating,
                 in_place,
                 close_replaced_pane,
@@ -1478,7 +1479,7 @@ impl TryFrom<crate::input::actions::Action>
                 tab_id,
                 global_placement,
             } => ActionType::NewTiledPane(NewTiledPaneAction {
-                direction: direction.map(|d| direction_to_proto_i32(d)),
+                direction: direction.map(direction_to_proto_i32),
                 command: command.map(|c| c.into()),
                 pane_name,
                 near_current_pane,
@@ -1534,7 +1535,7 @@ impl TryFrom<crate::input::actions::Action>
                 placement: Some(placement.into()),
                 pane_name,
                 command: command.map(|c| c.into()),
-                unblock_condition: unblock_condition.map(|c| unblock_condition_to_proto_i32(c)),
+                unblock_condition: unblock_condition.map(unblock_condition_to_proto_i32),
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
@@ -1598,7 +1599,7 @@ impl TryFrom<crate::input::actions::Action>
                     .map(|panes| panes.into_iter().map(|p| p.into()).collect())
                     .unwrap_or_default(),
                 first_pane_unblock_condition: first_pane_unblock_condition
-                    .map(|c| unblock_condition_to_proto_i32(c)),
+                    .map(unblock_condition_to_proto_i32),
             }),
             crate::input::actions::Action::NoOp => ActionType::NoOp(NoOpAction {}),
             crate::input::actions::Action::GoToNextTab => {
@@ -1660,7 +1661,7 @@ impl TryFrom<crate::input::actions::Action>
                 tab_position: tab_position.map(|p| p as u32),
                 pane_id: pane_id.map(|(id, is_plugin)| PaneIdWithPlugin {
                     pane_id: id,
-                    is_plugin: is_plugin,
+                    is_plugin,
                 }),
                 layout: layout.as_ref().map(|l| l.clone().into()),
                 cwd: cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -2068,13 +2069,13 @@ impl TryFrom<crate::input::actions::Action>
                 pane_id: Some(pane_id.into()),
                 resize_action: Some(ResizeAction {
                     resize: resize_to_proto_i32(resize),
-                    direction: direction.map(|d| direction_to_proto_i32(d)),
+                    direction: direction.map(direction_to_proto_i32),
                 }),
             }),
             crate::input::actions::Action::MovePaneByPaneId { pane_id, direction } => {
                 ActionType::MovePaneByPaneId(MovePaneByPaneIdAction {
                     pane_id: Some(pane_id.into()),
-                    direction: direction.map(|d| direction_to_proto_i32(d)),
+                    direction: direction.map(direction_to_proto_i32),
                 })
             },
             crate::input::actions::Action::MovePaneBackwardsByPaneId { pane_id } => {
@@ -2234,7 +2235,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 resize: proto_i32_to_resize(resize_action.resize)?,
                 direction: resize_action
                     .direction
-                    .map(|d| proto_i32_to_direction(d))
+                    .map(proto_i32_to_direction)
                     .transpose()?,
             }),
             ActionType::FocusNextPane(_) => Ok(crate::input::actions::Action::FocusNextPane),
@@ -2256,7 +2257,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::MovePane(move_pane_action) => Ok(crate::input::actions::Action::MovePane {
                 direction: move_pane_action
                     .direction
-                    .map(|d| proto_i32_to_direction(d))
+                    .map(proto_i32_to_direction)
                     .transpose()?,
             }),
             ActionType::MovePaneBackwards(_) => {
@@ -2329,7 +2330,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::NewPane(new_pane_action) => Ok(crate::input::actions::Action::NewPane {
                 direction: new_pane_action
                     .direction
-                    .map(|d| proto_i32_to_direction(d))
+                    .map(proto_i32_to_direction)
                     .transpose()?,
                 pane_name: new_pane_action.pane_name,
                 start_suppressed: new_pane_action.start_suppressed,
@@ -2345,7 +2346,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     .try_into()?,
                 direction: edit_file_action
                     .direction
-                    .map(|d| proto_i32_to_direction(d))
+                    .map(proto_i32_to_direction)
                     .transpose()?,
                 floating: edit_file_action.floating,
                 in_place: edit_file_action.in_place,
@@ -2387,7 +2388,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(crate::input::actions::Action::NewTiledPane {
                     direction: new_tiled_action
                         .direction
-                        .map(|d| proto_i32_to_direction(d))
+                        .map(proto_i32_to_direction)
                         .transpose()?,
                     command: new_tiled_action.command.map(|c| c.try_into()).transpose()?,
                     pane_name: new_tiled_action.pane_name,
@@ -2450,7 +2451,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .transpose()?,
                     unblock_condition: new_blocking_action
                         .unblock_condition
-                        .map(|c| proto_i32_to_unblock_condition(c))
+                        .map(proto_i32_to_unblock_condition)
                         .transpose()?,
                     near_current_pane: new_blocking_action.near_current_pane,
                     no_focus: new_blocking_action.no_focus,
@@ -2542,7 +2543,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
 
                 first_pane_unblock_condition: new_tab_action
                     .first_pane_unblock_condition
-                    .map(|c| proto_i32_to_unblock_condition(c))
+                    .map(proto_i32_to_unblock_condition)
                     .transpose()?,
             }),
             ActionType::NoOp(_) => Ok(crate::input::actions::Action::NoOp),
@@ -3043,7 +3044,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 let resize = proto_i32_to_resize(resize_action.resize)?;
                 let direction = resize_action
                     .direction
-                    .map(|d| proto_i32_to_direction(d))
+                    .map(proto_i32_to_direction)
                     .transpose()?;
                 Ok(crate::input::actions::Action::ResizeByPaneId {
                     pane_id: a
@@ -3055,7 +3056,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 })
             },
             ActionType::MovePaneByPaneId(a) => {
-                let direction = a.direction.map(|d| proto_i32_to_direction(d)).transpose()?;
+                let direction = a.direction.map(proto_i32_to_direction).transpose()?;
                 Ok(crate::input::actions::Action::MovePaneByPaneId {
                     pane_id: a
                         .pane_id
@@ -3200,7 +3201,7 @@ impl From<crate::data::KeyWithModifier>
             key_modifiers: key
                 .key_modifiers
                 .into_iter()
-                .map(|modifier| key_modifier_to_proto_i32(modifier))
+                .map(key_modifier_to_proto_i32)
                 .collect(),
             character: char_data,
         }
@@ -3236,7 +3237,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::KeyWithModif
         let key_modifiers: Result<BTreeSet<_>> = key
             .key_modifiers
             .into_iter()
-            .map(|modifier| key_modifier_from_proto_i32(modifier))
+            .map(key_modifier_from_proto_i32)
             .collect();
 
         Ok(Self {
@@ -3475,21 +3476,21 @@ fn input_mode_to_proto_i32(mode: InputMode) -> i32 {
 }
 
 fn proto_i32_to_input_mode(i: i32) -> Result<InputMode> {
-    match ProtoInputMode::from_i32(i) {
-        Some(ProtoInputMode::Normal) => Ok(InputMode::Normal),
-        Some(ProtoInputMode::Locked) => Ok(InputMode::Locked),
-        Some(ProtoInputMode::Resize) => Ok(InputMode::Resize),
-        Some(ProtoInputMode::Pane) => Ok(InputMode::Pane),
-        Some(ProtoInputMode::Tab) => Ok(InputMode::Tab),
-        Some(ProtoInputMode::Scroll) => Ok(InputMode::Scroll),
-        Some(ProtoInputMode::EnterSearch) => Ok(InputMode::EnterSearch),
-        Some(ProtoInputMode::Search) => Ok(InputMode::Search),
-        Some(ProtoInputMode::RenameTab) => Ok(InputMode::RenameTab),
-        Some(ProtoInputMode::RenamePane) => Ok(InputMode::RenamePane),
-        Some(ProtoInputMode::Session) => Ok(InputMode::Session),
-        Some(ProtoInputMode::Move) => Ok(InputMode::Move),
-        Some(ProtoInputMode::Prompt) => Ok(InputMode::Prompt),
-        Some(ProtoInputMode::Tmux) => Ok(InputMode::Tmux),
+    match ProtoInputMode::try_from(i) {
+        Ok(ProtoInputMode::Normal) => Ok(InputMode::Normal),
+        Ok(ProtoInputMode::Locked) => Ok(InputMode::Locked),
+        Ok(ProtoInputMode::Resize) => Ok(InputMode::Resize),
+        Ok(ProtoInputMode::Pane) => Ok(InputMode::Pane),
+        Ok(ProtoInputMode::Tab) => Ok(InputMode::Tab),
+        Ok(ProtoInputMode::Scroll) => Ok(InputMode::Scroll),
+        Ok(ProtoInputMode::EnterSearch) => Ok(InputMode::EnterSearch),
+        Ok(ProtoInputMode::Search) => Ok(InputMode::Search),
+        Ok(ProtoInputMode::RenameTab) => Ok(InputMode::RenameTab),
+        Ok(ProtoInputMode::RenamePane) => Ok(InputMode::RenamePane),
+        Ok(ProtoInputMode::Session) => Ok(InputMode::Session),
+        Ok(ProtoInputMode::Move) => Ok(InputMode::Move),
+        Ok(ProtoInputMode::Prompt) => Ok(InputMode::Prompt),
+        Ok(ProtoInputMode::Tmux) => Ok(InputMode::Tmux),
         _ => Err(anyhow!("Invalid InputMode value: {}", i)),
     }
 }
@@ -4111,7 +4112,7 @@ impl From<crate::input::command::RunCommandAction>
             command: action.command.to_string_lossy().to_string(),
             args: action.args,
             cwd: action.cwd.map(|p| p.to_string_lossy().to_string()),
-            direction: action.direction.map(|d| direction_to_proto_i32(d)),
+            direction: action.direction.map(direction_to_proto_i32),
             hold_on_close: action.hold_on_close,
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin.map(|op| op.into()),
@@ -4126,8 +4127,7 @@ impl From<crate::data::OriginatingPlugin>
 {
     fn from(orig: crate::data::OriginatingPlugin) -> Self {
         use std::collections::HashMap;
-        let context: HashMap<String, String> =
-            orig.context.into_iter().map(|(k, v)| (k, v)).collect();
+        let context: HashMap<String, String> = orig.context.into_iter().collect();
 
         Self {
             plugin_id: orig.plugin_id,

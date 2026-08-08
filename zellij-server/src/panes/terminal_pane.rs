@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::if_same_then_else)]
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
@@ -106,6 +108,7 @@ impl From<ZellijUtilsPaneId> for PaneId {
     }
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<ZellijUtilsPaneId> for PaneId {
     fn into(self) -> ZellijUtilsPaneId {
         match self {
@@ -507,9 +510,9 @@ impl Pane for TerminalPane {
             match self.grid.render(content_x, content_y, &self.style) {
                 Ok(rendered_assets) => {
                     self.set_should_render(false);
-                    return Ok(rendered_assets);
+                    Ok(rendered_assets)
                 },
-                e => return e,
+                e => e,
             }
         } else {
             Ok(None)
@@ -640,7 +643,7 @@ impl Pane for TerminalPane {
                 "\u{1b}[{};{}H\u{1b}[m{}",           // goto row column and clear styles
                 self.get_content_y() + cursor_y + 1, // + 1 because goto is 1 indexed
                 self.get_content_x() + cursor_x + 1,
-                &character_under_cursor.styles,
+                character_under_cursor.styles,
             );
             fake_cursor.push(character_under_cursor.character);
             vte_output = Some(fake_cursor);
@@ -1177,7 +1180,7 @@ impl Pane for TerminalPane {
         })
     }
     fn update_theme(&mut self, theme: Styling) {
-        self.style.colors = theme.clone();
+        self.style.colors = theme;
         self.grid.update_theme(theme);
         if self.banner.is_some() {
             // we do this so that the banner will be updated with the new theme colors
@@ -1358,7 +1361,7 @@ impl TerminalPane {
             character_cell_size,
             sixel_image_store,
             kitty_image_store,
-            style.clone(),
+            style,
             debug,
             arrow_fonts,
             styled_underlines,
@@ -1492,7 +1495,7 @@ impl TerminalPane {
         raw_input_bytes_are_kitty: bool,
     ) -> Option<AdjustedInput> {
         if self.grid.new_line_mode {
-            let key_is_enter = raw_input_bytes.as_slice() == &[13]
+            let key_is_enter = raw_input_bytes.as_slice() == [13]
                 || key
                     .as_ref()
                     .map(|k| k.is_key_without_modifier(BareKey::Enter))

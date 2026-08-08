@@ -57,7 +57,7 @@ impl<'a> KdlLayoutParser<'a> {
             default_tab_template: None,
             new_tab_template: None,
             global_cwd,
-            file_name: file_name.map(|f| PathBuf::from(f)),
+            file_name: file_name.map(PathBuf::from),
         }
     }
     fn is_a_reserved_word(&self, word: &str) -> bool {
@@ -145,11 +145,13 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "exact_panes"
             || property_name == "hide_floating_panes"
     }
+    #[allow(clippy::result_large_err)]
     pub fn is_a_reserved_plugin_property(property_name: &str) -> bool {
         property_name == "location"
             || property_name == "_allow_exec_host_cmd"
             || property_name == "path"
     }
+    #[allow(clippy::result_large_err)]
     fn assert_legal_node_name(&self, name: &str, kdl_node: &KdlNode) -> Result<(), ConfigError> {
         if name.contains(char::is_whitespace) {
             Err(ConfigError::new_layout_kdl_error(
@@ -157,7 +159,7 @@ impl<'a> KdlLayoutParser<'a> {
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ))
-        } else if self.is_a_reserved_word(&name) {
+        } else if self.is_a_reserved_word(name) {
             Err(ConfigError::new_layout_kdl_error(
                 format!("Node name '{}' is a reserved word.", name),
                 kdl_node.span().offset(),
@@ -167,6 +169,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(())
         }
     }
+    #[allow(clippy::result_large_err)]
     fn assert_legal_template_name(
         &self,
         name: &str,
@@ -174,13 +177,13 @@ impl<'a> KdlLayoutParser<'a> {
     ) -> Result<(), ConfigError> {
         if name.is_empty() {
             Err(ConfigError::new_layout_kdl_error(
-                format!("Template names cannot be empty"),
+                "Template names cannot be empty".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ))
         } else if name.contains(')') || name.contains('(') {
             Err(ConfigError::new_layout_kdl_error(
-                format!("Template names cannot contain parantheses"),
+                "Template names cannot contain parantheses".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ))
@@ -191,7 +194,7 @@ impl<'a> KdlLayoutParser<'a> {
             .unwrap_or(false)
         {
             Err(ConfigError::new_layout_kdl_error(
-                format!("Template names cannot start with numbers"),
+                "Template names cannot start with numbers".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ))
@@ -199,6 +202,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(())
         }
     }
+    #[allow(clippy::result_large_err)]
     fn assert_no_grandchildren_in_stack(
         &self,
         children: &[KdlNode],
@@ -209,7 +213,7 @@ impl<'a> KdlLayoutParser<'a> {
                 if kdl_name!(child) == "pane" || self.pane_templates.get(kdl_name!(child)).is_some()
                 {
                     return Err(ConfigError::new_layout_kdl_error(
-                        format!("Stacked panes cannot have children"),
+                        "Stacked panes cannot have children".to_string(),
                         child.span().offset(),
                         child.span().len(),
                     ));
@@ -218,6 +222,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn parse_split_size(&self, kdl_node: &KdlNode) -> Result<Option<SplitSize>, ConfigError> {
         if let Some(size) = kdl_get_string_property_or_child_value!(kdl_node, "size") {
             match SplitSize::from_str(size) {
@@ -253,6 +258,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(None)
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_percent_or_fixed(
         &self,
         kdl_node: &KdlNode,
@@ -307,6 +313,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(None)
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_plugin_block(&self, plugin_block: &KdlNode) -> Result<Option<Run>, ConfigError> {
         let _allow_exec_host_cmd =
             kdl_get_bool_property_or_child_value_with_error!(plugin_block, "_allow_exec_host_cmd")
@@ -326,12 +333,12 @@ impl<'a> KdlLayoutParser<'a> {
                 plugin_block.span().len(),
             ),
         )?;
-        let configuration = KdlLayoutParser::parse_plugin_user_configuration(&plugin_block)?;
+        let configuration = KdlLayoutParser::parse_plugin_user_configuration(plugin_block)?;
         let initial_cwd =
-            kdl_get_string_property_or_child_value!(&plugin_block, "cwd").map(|s| PathBuf::from(s));
+            kdl_get_string_property_or_child_value!(&plugin_block, "cwd").map(PathBuf::from);
         let cwd = self.cwd_prefix(initial_cwd.as_ref())?;
         let run_plugin_or_alias = RunPluginOrAlias::from_url(
-            &string_url,
+            string_url,
             &Some(configuration.inner().clone()),
             None,
             cwd.clone(),
@@ -346,6 +353,7 @@ impl<'a> KdlLayoutParser<'a> {
         .with_initial_cwd(cwd);
         Ok(Some(Run::Plugin(run_plugin_or_alias)))
     }
+    #[allow(clippy::result_large_err)]
     pub fn parse_plugin_user_configuration(
         plugin_block: &KdlNode,
     ) -> Result<PluginUserConfiguration, ConfigError> {
@@ -366,18 +374,18 @@ impl<'a> KdlLayoutParser<'a> {
         if let Some(user_config) = kdl_children_nodes!(plugin_block) {
             for user_configuration_entry in user_config {
                 let config_entry_name = kdl_name!(user_configuration_entry);
-                if KdlLayoutParser::is_a_reserved_plugin_property(&config_entry_name) {
+                if KdlLayoutParser::is_a_reserved_plugin_property(config_entry_name) {
                     continue;
                 }
-                let config_entry_str_value = kdl_first_entry_as_string!(user_configuration_entry)
-                    .map(|s| format!("{}", s.to_string()));
-                let config_entry_int_value = kdl_first_entry_as_i64!(user_configuration_entry)
-                    .map(|s| format!("{}", s.to_string()));
-                let config_entry_bool_value = kdl_first_entry_as_bool!(user_configuration_entry)
-                    .map(|s| format!("{}", s.to_string()));
+                let config_entry_str_value =
+                    kdl_first_entry_as_string!(user_configuration_entry).map(|s| s.to_string());
+                let config_entry_int_value =
+                    kdl_first_entry_as_i64!(user_configuration_entry).map(|s| s.to_string());
+                let config_entry_bool_value =
+                    kdl_first_entry_as_bool!(user_configuration_entry).map(|s| s.to_string());
                 let config_entry_children = user_configuration_entry
                     .children()
-                    .map(|s| format!("{}", s.to_string().trim()));
+                    .map(|s| s.to_string().trim().to_string());
                 let config_entry_value = config_entry_str_value
                     .or(config_entry_int_value)
                     .or(config_entry_bool_value)
@@ -395,6 +403,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(PluginUserConfiguration::new(configuration))
     }
+    #[allow(clippy::result_large_err)]
     fn parse_args(&self, pane_node: &KdlNode) -> Result<Option<Vec<String>>, ConfigError> {
         match kdl_get_child!(pane_node, "args") {
             Some(kdl_args) => {
@@ -411,6 +420,7 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(None),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn cwd_prefix(&self, tab_cwd: Option<&PathBuf>) -> Result<Option<PathBuf>, ConfigError> {
         Ok(match (&self.global_cwd, tab_cwd) {
             (Some(global_cwd), Some(tab_cwd)) => Some(global_cwd.join(tab_cwd)),
@@ -419,6 +429,7 @@ impl<'a> KdlLayoutParser<'a> {
             (None, None) => None,
         })
     }
+    #[allow(clippy::result_large_err)]
     fn parse_path(
         &self,
         kdl_node: &KdlNode,
@@ -432,6 +443,7 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(None),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_pane_command(
         &self,
         pane_node: &KdlNode,
@@ -455,12 +467,12 @@ impl<'a> KdlLayoutParser<'a> {
             )?;
         }
         let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
-        let hold_on_start = start_suspended.map(|c| c).unwrap_or(false);
+        let hold_on_start = start_suspended.unwrap_or(false);
         match (command, edit, cwd) {
             (None, None, Some(cwd)) => Ok(Some(Run::Cwd(cwd))),
             (Some(command), None, cwd) => Ok(Some(Run::Command(RunCommand {
                 command,
-                args: args.unwrap_or_else(|| vec![]),
+                args: args.unwrap_or_default(),
                 cwd,
                 hold_on_close,
                 hold_on_start,
@@ -478,18 +490,14 @@ impl<'a> KdlLayoutParser<'a> {
             _ => Ok(None),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_command_plugin_or_edit_block(
         &self,
         kdl_node: &KdlNode,
     ) -> Result<Option<Run>, ConfigError> {
         let mut run = self.parse_pane_command(kdl_node, false)?;
         if let Some(plugin_block) = kdl_get_child!(kdl_node, "plugin") {
-            let has_non_cwd_run_prop = run
-                .map(|r| match r {
-                    Run::Cwd(_) => false,
-                    _ => true,
-                })
-                .unwrap_or(false);
+            let has_non_cwd_run_prop = run.map(|r| !matches!(r, Run::Cwd(_))).unwrap_or(false);
             if has_non_cwd_run_prop {
                 return Err(ConfigError::new_layout_kdl_error(
                     "Cannot have both a command/edit and a plugin block for a single pane".into(),
@@ -501,18 +509,14 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(run)
     }
+    #[allow(clippy::result_large_err)]
     fn parse_command_plugin_or_edit_block_for_template(
         &self,
         kdl_node: &KdlNode,
     ) -> Result<Option<Run>, ConfigError> {
         let mut run = self.parse_pane_command(kdl_node, true)?;
         if let Some(plugin_block) = kdl_get_child!(kdl_node, "plugin") {
-            let has_non_cwd_run_prop = run
-                .map(|r| match r {
-                    Run::Cwd(_) => false,
-                    _ => true,
-                })
-                .unwrap_or(false);
+            let has_non_cwd_run_prop = run.map(|r| !matches!(r, Run::Cwd(_))).unwrap_or(false);
             if has_non_cwd_run_prop {
                 return Err(ConfigError::new_layout_kdl_error(
                     "Cannot have both a command/edit and a plugin block for a single pane".into(),
@@ -524,6 +528,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(run)
     }
+    #[allow(clippy::result_large_err)]
     fn parse_pane_node(
         &self,
         kdl_node: &KdlNode,
@@ -547,26 +552,26 @@ impl<'a> KdlLayoutParser<'a> {
         let children_split_direction = self.parse_split_direction(kdl_node)?;
         let (external_children_index, children) = match kdl_children_nodes!(kdl_node) {
             Some(children) => {
-                self.assert_no_grandchildren_in_stack(&children, is_part_of_stack)?;
-                self.parse_child_pane_nodes_for_pane(&children, children_are_stacked)?
+                self.assert_no_grandchildren_in_stack(children, is_part_of_stack)?;
+                self.parse_child_pane_nodes_for_pane(children, children_are_stacked)?
             },
             None => (None, vec![]),
         };
         if children_are_stacked && external_children_index.is_none() && children.is_empty() {
             return Err(ConfigError::new_layout_kdl_error(
-                format!("A stacked pane must have children nodes or possibly a \"children\" node if in a swap_layout"),
+                "A stacked pane must have children nodes or possibly a \"children\" node if in a swap_layout".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ));
         } else if children_are_stacked && children_split_direction == SplitDirection::Vertical {
             return Err(ConfigError::new_layout_kdl_error(
-                format!("Stacked panes cannot be vertical"),
+                "Stacked panes cannot be vertical".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ));
         } else if is_expanded_in_stack && !is_part_of_stack {
             return Err(ConfigError::new_layout_kdl_error(
-                format!("An expanded pane must be part of a stack"),
+                "An expanded pane must be part of a stack".to_string(),
                 kdl_node.span().offset(),
                 kdl_node.span().len(),
             ));
@@ -602,6 +607,7 @@ impl<'a> KdlLayoutParser<'a> {
             ..Default::default()
         })
     }
+    #[allow(clippy::result_large_err)]
     fn parse_floating_pane_node(
         &self,
         kdl_node: &KdlNode,
@@ -649,6 +655,7 @@ impl<'a> KdlLayoutParser<'a> {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn parse_global_panes(
         &self,
         global_panes_node: &KdlNode,
@@ -735,6 +742,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(global_panes)
     }
+    #[allow(clippy::result_large_err)]
     fn insert_children_to_pane_template(
         &self,
         kdl_node: &KdlNode,
@@ -750,11 +758,11 @@ impl<'a> KdlLayoutParser<'a> {
         let children_split_direction = self.parse_split_direction(kdl_node)?;
         let (external_children_index, pane_parts) = match kdl_children_nodes!(kdl_node) {
             Some(children) => {
-                self.parse_child_pane_nodes_for_pane(&children, children_are_stacked)?
+                self.parse_child_pane_nodes_for_pane(children, children_are_stacked)?
             },
             None => (None, vec![]),
         };
-        if pane_parts.len() > 0 {
+        if !pane_parts.is_empty() {
             let child_panes_layout = TiledPaneLayout {
                 children_split_direction,
                 children: pane_parts,
@@ -763,7 +771,7 @@ impl<'a> KdlLayoutParser<'a> {
                 is_expanded_in_stack,
                 ..Default::default()
             };
-            self.assert_one_children_block(&pane_template, pane_template_kdl_node)?;
+            self.assert_one_children_block(pane_template, pane_template_kdl_node)?;
             self.insert_layout_children_or_error(
                 pane_template,
                 child_panes_layout,
@@ -772,6 +780,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_external_children_index(
         &self,
         kdl_node: &KdlNode,
@@ -798,8 +807,9 @@ impl<'a> KdlLayoutParser<'a> {
                 }
             }
         }
-        return Ok(None);
+        Ok(None)
     }
+    #[allow(clippy::result_large_err)]
     fn parse_pane_node_with_template(
         &self,
         kdl_node: &KdlNode,
@@ -902,6 +912,7 @@ impl<'a> KdlLayoutParser<'a> {
             },
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_floating_pane_node_with_template(
         &self,
         kdl_node: &KdlNode,
@@ -1032,6 +1043,7 @@ impl<'a> KdlLayoutParser<'a> {
             },
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_split_direction(&self, kdl_node: &KdlNode) -> Result<SplitDirection, ConfigError> {
         match kdl_get_string_property_or_child_value_with_error!(kdl_node, "split_direction") {
             Some(direction) => match SplitDirection::from_str(direction) {
@@ -1047,6 +1059,7 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(SplitDirection::default()),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn has_only_neutral_pane_template_properties(
         &self,
         kdl_node: &KdlNode,
@@ -1083,6 +1096,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(true)
         }
     }
+    #[allow(clippy::result_large_err)]
     fn differentiate_pane_and_floating_pane_template(
         &self,
         kdl_node: &KdlNode,
@@ -1167,6 +1181,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(false)
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_pane_template_node(&mut self, kdl_node: &KdlNode) -> Result<(), ConfigError> {
         let template_name = kdl_get_string_property_or_child_value!(kdl_node, "name")
             .map(|s| s.to_string())
@@ -1180,9 +1195,9 @@ impl<'a> KdlLayoutParser<'a> {
         let focus = kdl_get_bool_property_or_child_value_with_error!(kdl_node, "focus");
         let run = self.parse_command_plugin_or_edit_block(kdl_node)?;
 
-        let is_floating = self.differentiate_pane_and_floating_pane_template(&kdl_node)?;
+        let is_floating = self.differentiate_pane_and_floating_pane_template(kdl_node)?;
         let can_be_either_floating_or_tiled =
-            self.has_only_neutral_pane_template_properties(&kdl_node)?;
+            self.has_only_neutral_pane_template_properties(kdl_node)?;
         if can_be_either_floating_or_tiled {
             self.assert_valid_pane_or_floating_pane_properties(kdl_node)?;
             self.pane_templates.insert(
@@ -1235,7 +1250,7 @@ impl<'a> KdlLayoutParser<'a> {
             let children_split_direction = self.parse_split_direction(kdl_node)?;
             let (external_children_index, pane_parts) = match kdl_children_nodes!(kdl_node) {
                 Some(children) => {
-                    self.parse_child_pane_nodes_for_pane(&children, children_are_stacked)?
+                    self.parse_child_pane_nodes_for_pane(children, children_are_stacked)?
                 },
                 None => (None, vec![]),
             };
@@ -1262,6 +1277,7 @@ impl<'a> KdlLayoutParser<'a> {
 
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn parse_tab_node(
         &mut self,
         kdl_node: &KdlNode,
@@ -1302,13 +1318,14 @@ impl<'a> KdlLayoutParser<'a> {
             ..Default::default()
         };
         if let Some(cwd_prefix) = &self.cwd_prefix(tab_cwd.as_ref())? {
-            pane_layout.add_cwd_to_layout(&cwd_prefix);
+            pane_layout.add_cwd_to_layout(cwd_prefix);
             for floating_pane in child_floating_panes.iter_mut() {
-                floating_pane.add_cwd_to_layout(&cwd_prefix);
+                floating_pane.add_cwd_to_layout(cwd_prefix);
             }
         }
         Ok((is_focused, tab_name, pane_layout, child_floating_panes))
     }
+    #[allow(clippy::result_large_err)]
     fn parse_child_pane_nodes_for_tab(
         &self,
         children: &[KdlNode],
@@ -1350,6 +1367,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(nodes)
     }
+    #[allow(clippy::result_large_err)]
     fn parse_child_pane_nodes_for_pane(
         &self,
         children: &[KdlNode],
@@ -1408,7 +1426,7 @@ impl<'a> KdlLayoutParser<'a> {
                 }
             }
         }
-        return false;
+        false
     }
     fn has_child_panes_tabs_or_templates(&self, kdl_node: &KdlNode) -> bool {
         if let Some(children) = kdl_children_nodes!(kdl_node) {
@@ -1429,6 +1447,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         false
     }
+    #[allow(clippy::result_large_err)]
     fn assert_no_bare_attributes_in_pane_node_with_template(
         &self,
         pane_run: &Option<Run>,
@@ -1458,6 +1477,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_no_bare_attributes_in_pane_node(
         &self,
         command: &Option<PathBuf>,
@@ -1491,6 +1511,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_one_children_block(
         &self,
         layout: &TiledPaneLayout,
@@ -1502,6 +1523,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_valid_pane_properties(&self, pane_node: &KdlNode) -> Result<(), ConfigError> {
         for entry in pane_node.entries() {
             match entry
@@ -1529,6 +1551,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_valid_floating_pane_properties(
         &self,
         pane_node: &KdlNode,
@@ -1559,6 +1582,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_valid_pane_or_floating_pane_properties(
         &self,
         pane_node: &KdlNode,
@@ -1591,6 +1615,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_valid_tab_properties(&self, pane_node: &KdlNode) -> Result<(), ConfigError> {
         let all_property_names = kdl_property_names!(pane_node);
         for name in all_property_names {
@@ -1604,6 +1629,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn assert_no_mixed_children_and_properties(
         &self,
         kdl_node: &KdlNode,
@@ -1613,10 +1639,7 @@ impl<'a> KdlLayoutParser<'a> {
         let has_cwd_prop = self.parse_path(kdl_node, "cwd")?.is_some();
         let has_non_cwd_run_prop = self
             .parse_command_plugin_or_edit_block(kdl_node)?
-            .map(|r| match r {
-                Run::Cwd(_) => false,
-                _ => true,
-            })
+            .map(|r| !matches!(r, Run::Cwd(_)))
             .unwrap_or(false);
         let has_nested_nodes_or_children_block = self.has_child_panes_tabs_or_templates(kdl_node);
         if has_nested_nodes_or_children_block
@@ -1644,6 +1667,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(())
         }
     }
+    #[allow(clippy::result_large_err)]
     fn insert_layout_children_or_error(
         &self,
         layout: &mut TiledPaneLayout,
@@ -1661,6 +1685,7 @@ impl<'a> KdlLayoutParser<'a> {
             Ok(())
         }
     }
+    #[allow(clippy::result_large_err)]
     fn parse_tab_node_with_template(
         &self,
         kdl_node: &KdlNode,
@@ -1695,11 +1720,11 @@ impl<'a> KdlLayoutParser<'a> {
                     children: child_panes,
                     ..Default::default()
                 };
-                self.assert_one_children_block(&tab_layout, &tab_layout_kdl_node)?;
+                self.assert_one_children_block(&tab_layout, tab_layout_kdl_node)?;
                 self.insert_layout_children_or_error(
                     &mut tab_layout,
                     child_panes_layout,
-                    &tab_layout_kdl_node,
+                    tab_layout_kdl_node,
                 )?;
             },
             None => {
@@ -1724,6 +1749,7 @@ impl<'a> KdlLayoutParser<'a> {
             tab_template_floating_panes,
         ))
     }
+    #[allow(clippy::result_large_err)]
     fn populate_one_tab_template(&mut self, kdl_node: &KdlNode) -> Result<(), ConfigError> {
         let template_name = kdl_get_string_property_or_child_value_with_error!(kdl_node, "name")
             .map(|s| s.to_string())
@@ -1758,18 +1784,21 @@ impl<'a> KdlLayoutParser<'a> {
         );
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_default_tab_template(&mut self, kdl_node: &KdlNode) -> Result<(), ConfigError> {
         let (tab_template, tab_template_floating_panes) = self.parse_tab_template_node(kdl_node)?;
         self.default_tab_template =
             Some((tab_template, tab_template_floating_panes, kdl_node.clone()));
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_new_tab_template(&mut self, kdl_node: &KdlNode) -> Result<(), ConfigError> {
         let (_is_focused, _tab_name, tab_template, tab_template_floating_panes) =
             self.parse_tab_node(kdl_node)?;
         self.new_tab_template = Some((tab_template, tab_template_floating_panes));
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn parse_tab_template_node(
         &self,
         kdl_node: &KdlNode,
@@ -1791,7 +1820,7 @@ impl<'a> KdlLayoutParser<'a> {
                     let node_has_entries = !child.entries().is_empty();
                     if node_has_child_nodes || node_has_entries {
                         return Err(ConfigError::new_layout_kdl_error(
-                            format!("The `children` node must be bare. All properties should be places on the node consuming this template."),
+                            "The `children` node must be bare. All properties should be places on the node consuming this template.".to_string(),
                             child.span().offset(),
                             child.span().len(),
                         ));
@@ -1835,6 +1864,7 @@ impl<'a> KdlLayoutParser<'a> {
             tab_floating_children,
         ))
     }
+    #[allow(clippy::result_large_err)]
     fn default_template(&self) -> Result<Option<TiledPaneLayout>, ConfigError> {
         match &self.default_tab_template {
             Some((template, _template_floating_panes, _kdl_node)) => {
@@ -1850,6 +1880,7 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(None),
         }
     }
+    #[allow(clippy::result_large_err)]
     pub fn get_pane_template_dependency_tree(
         &self,
         kdl_children: &'a [KdlNode],
@@ -1880,11 +1911,12 @@ impl<'a> KdlLayoutParser<'a> {
             }
         }
         let all_pane_template_names: HashSet<&str> = dependency_tree.keys().cloned().collect();
-        for (_pane_template_name, dependencies) in dependency_tree.iter_mut() {
+        for dependencies in dependency_tree.values_mut() {
             dependencies.retain(|d| all_pane_template_names.contains(d));
         }
         Ok(dependency_tree)
     }
+    #[allow(clippy::result_large_err)]
     fn get_pane_template_dependencies(
         &self,
         node: &'a KdlNode,
@@ -1903,6 +1935,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     pub fn parse_pane_template_by_name(
         &mut self,
         pane_template_name: &str,
@@ -1919,6 +1952,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_global_cwd(&mut self, layout_node: &KdlNode) -> Result<(), ConfigError> {
         // we only populate global cwd from the layout file if another wasn't explicitly passed to us
         if self.global_cwd.is_none() {
@@ -1926,6 +1960,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_pane_templates(
         &mut self,
         layout_children: &[KdlNode],
@@ -1952,7 +1987,7 @@ impl<'a> KdlLayoutParser<'a> {
             }
             for candidate_to_remove in candidates {
                 pane_template_dependency_tree.remove(candidate_to_remove);
-                for (_pane_tempalte, dependencies) in pane_template_dependency_tree.iter_mut() {
+                for dependencies in pane_template_dependency_tree.values_mut() {
                     dependencies.remove(candidate_to_remove);
                 }
                 pane_template_names_to_parse.push(candidate_to_remove);
@@ -1960,10 +1995,11 @@ impl<'a> KdlLayoutParser<'a> {
         }
         // once we've toposorted, parse the sorted list in order
         for pane_template_name in pane_template_names_to_parse {
-            self.parse_pane_template_by_name(pane_template_name, &layout_children)?;
+            self.parse_pane_template_by_name(pane_template_name, layout_children)?;
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_tab_templates(&mut self, layout_children: &[KdlNode]) -> Result<(), ConfigError> {
         for child in layout_children.iter() {
             let child_name = kdl_name!(child);
@@ -1977,6 +2013,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_swap_tiled_layouts(
         &mut self,
         layout_children: &[KdlNode],
@@ -1986,7 +2023,7 @@ impl<'a> KdlLayoutParser<'a> {
             let child_name = kdl_name!(child);
             if child_name == "swap_tiled_layout" {
                 let swap_layout_name =
-                    kdl_get_string_property_or_child_value!(child, "name").map(|n| String::from(n));
+                    kdl_get_string_property_or_child_value!(child, "name").map(String::from);
                 if let Some(swap_tiled_layout_group) = kdl_children_nodes!(child) {
                     let mut swap_tiled_layout = BTreeMap::new();
                     for layout in swap_tiled_layout_group {
@@ -2041,6 +2078,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_swap_floating_layouts(
         &mut self,
         layout_children: &[KdlNode],
@@ -2050,7 +2088,7 @@ impl<'a> KdlLayoutParser<'a> {
             let child_name = kdl_name!(child);
             if child_name == "swap_floating_layout" {
                 let swap_layout_name =
-                    kdl_get_string_property_or_child_value!(child, "name").map(|n| String::from(n));
+                    kdl_get_string_property_or_child_value!(child, "name").map(String::from);
                 if let Some(swap_floating_layout_group) = kdl_children_nodes!(child) {
                     let mut swap_floating_layout = BTreeMap::new();
                     for layout in swap_floating_layout_group {
@@ -2087,6 +2125,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn parse_constraint(&mut self, layout_node: &KdlNode) -> Result<LayoutConstraint, ConfigError> {
         if let Some(max_panes) = kdl_get_string_property_or_child_value!(layout_node, "max_panes") {
             return Err(kdl_parsing_error!(
@@ -2142,6 +2181,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(constraint.unwrap_or(LayoutConstraint::NoConstraint))
     }
+    #[allow(clippy::result_large_err)]
     fn populate_one_swap_tiled_layout(
         &self,
         layout_node: &KdlNode,
@@ -2167,6 +2207,7 @@ impl<'a> KdlLayoutParser<'a> {
         };
         Ok(pane_layout)
     }
+    #[allow(clippy::result_large_err)]
     fn populate_one_swap_tiled_layout_with_template(
         &self,
         layout_node: &KdlNode,
@@ -2183,6 +2224,7 @@ impl<'a> KdlLayoutParser<'a> {
         )?;
         Ok(layout.2)
     }
+    #[allow(clippy::result_large_err)]
     fn populate_one_swap_floating_layout(
         &self,
         layout_node: &KdlNode,
@@ -2192,6 +2234,7 @@ impl<'a> KdlLayoutParser<'a> {
         self.populate_floating_pane_children(layout_node, &mut floating_panes)?;
         Ok(floating_panes)
     }
+    #[allow(clippy::result_large_err)]
     fn populate_one_swap_floating_layout_with_template(
         &self,
         layout_node: &KdlNode,
@@ -2209,6 +2252,7 @@ impl<'a> KdlLayoutParser<'a> {
         )?;
         Ok(layout.3)
     }
+    #[allow(clippy::result_large_err)]
     fn layout_with_tabs(
         &self,
         tabs: Vec<(Option<String>, TiledPaneLayout, Vec<FloatingPaneLayout>)>,
@@ -2221,7 +2265,7 @@ impl<'a> KdlLayoutParser<'a> {
         } else {
             let default_tab_tiled_panes_template = self
                 .default_template()?
-                .unwrap_or_else(|| TiledPaneLayout::default());
+                .unwrap_or_else(TiledPaneLayout::default);
             Some((default_tab_tiled_panes_template, vec![]))
         };
 
@@ -2234,6 +2278,8 @@ impl<'a> KdlLayoutParser<'a> {
             ..Default::default()
         })
     }
+    #[allow(clippy::result_large_err)]
+    #[allow(clippy::too_many_arguments)]
     fn layout_with_one_tab(
         &self,
         panes: Vec<TiledPaneLayout>,
@@ -2262,7 +2308,7 @@ impl<'a> KdlLayoutParser<'a> {
         // Check if any tab properties are specified that would require creating an explicit tab
         let has_tab_properties = tab_name.is_some()
             || split_direction != SplitDirection::default()
-            || hide_floating_panes != false
+            || hide_floating_panes
             || tab_cwd.is_some();
         let tabs =
             if default_template.is_none() && self.new_tab_template.is_none() && !has_tab_properties
@@ -2286,6 +2332,8 @@ impl<'a> KdlLayoutParser<'a> {
             ..Default::default()
         })
     }
+    #[allow(clippy::result_large_err)]
+    #[allow(clippy::too_many_arguments)]
     fn layout_with_one_pane(
         &self,
         child_floating_panes: Vec<FloatingPaneLayout>,
@@ -2302,7 +2350,7 @@ impl<'a> KdlLayoutParser<'a> {
         } else {
             let mut default_tab_tiled_panes_template = self
                 .default_template()?
-                .unwrap_or_else(|| TiledPaneLayout::default());
+                .unwrap_or_else(TiledPaneLayout::default);
 
             default_tab_tiled_panes_template.children_split_direction = split_direction;
             default_tab_tiled_panes_template.hide_floating_panes = hide_floating_panes;
@@ -2322,7 +2370,7 @@ impl<'a> KdlLayoutParser<'a> {
         // Check if any tab properties are specified that would require creating an explicit tab
         let has_tab_properties = tab_name.is_some()
             || split_direction != SplitDirection::default()
-            || hide_floating_panes != false
+            || hide_floating_panes
             || tab_cwd.is_some();
         let tabs = if has_tab_properties {
             // If we have tab properties, we need to create a tab with those properties
@@ -2342,6 +2390,7 @@ impl<'a> KdlLayoutParser<'a> {
             ..Default::default()
         })
     }
+    #[allow(clippy::result_large_err)]
     fn populate_layout_child(
         &mut self,
         child: &KdlNode,
@@ -2366,7 +2415,7 @@ impl<'a> KdlLayoutParser<'a> {
             let is_part_of_stack = false;
             let mut pane_node = self.parse_pane_node(child, is_part_of_stack)?;
             if let Some(global_cwd) = &self.global_cwd {
-                pane_node.add_cwd_to_layout(&global_cwd);
+                pane_node.add_cwd_to_layout(global_cwd);
             }
             child_panes.push(pane_node);
         } else if child_name == "floating_panes" {
@@ -2435,7 +2484,7 @@ impl<'a> KdlLayoutParser<'a> {
                 &pane_template_kdl_node,
             )?;
             if let Some(cwd_prefix) = &self.cwd_prefix(None)? {
-                pane_template.add_cwd_to_layout(&cwd_prefix);
+                pane_template.add_cwd_to_layout(cwd_prefix);
             }
             child_panes.push(pane_template);
         } else if !self.is_a_reserved_word(child_name) {
@@ -2447,6 +2496,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn populate_floating_pane_children(
         &self,
         child: &KdlNode,
@@ -2457,7 +2507,7 @@ impl<'a> KdlLayoutParser<'a> {
                 if kdl_name!(child) == "pane" {
                     let mut pane_node = self.parse_floating_pane_node(child)?;
                     if let Some(global_cwd) = &self.global_cwd {
-                        pane_node.add_cwd_to_layout(&global_cwd);
+                        pane_node.add_cwd_to_layout(global_cwd);
                     }
                     child_floating_panes.push(pane_node);
                 } else if let Some((pane_template, pane_template_kdl_node)) =
@@ -2483,6 +2533,7 @@ impl<'a> KdlLayoutParser<'a> {
         };
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     pub fn parse_external_swap_layouts(
         &mut self,
         raw_swap_layouts: &str,
@@ -2501,13 +2552,13 @@ impl<'a> KdlLayoutParser<'a> {
             {
                 continue;
             } else if node_name == "layout" {
-                return Err(ConfigError::new_layout_kdl_error(
+                Err(ConfigError::new_layout_kdl_error(
                     "Swap layouts should not have their own layout node".into(),
                     node.span().offset(),
                     node.span().len(),
                 ))?;
             } else if self.is_a_reserved_word(node_name) {
-                return Err(ConfigError::new_layout_kdl_error(
+                Err(ConfigError::new_layout_kdl_error(
                     format!(
                         "Swap layouts should not contain bare nodes of type: {}",
                         node_name
@@ -2531,6 +2582,7 @@ impl<'a> KdlLayoutParser<'a> {
             .append(&mut swap_floating_layouts);
         Ok(existing_layout)
     }
+    #[allow(clippy::result_large_err)]
     pub fn parse(&mut self) -> Result<Layout, ConfigError> {
         let kdl_layout: KdlDocument = self.raw_layout.parse()?;
         let layout_node = kdl_layout

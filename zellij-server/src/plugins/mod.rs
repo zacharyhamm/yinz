@@ -1,3 +1,10 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::option_map_unit_fn)]
+#![allow(clippy::manual_inspect)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::redundant_pattern_matching)]
 mod pinned_executor;
 mod pipes;
 mod plugin_loader;
@@ -293,6 +300,7 @@ impl From<&PluginInstruction> for PluginContext {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plugin_thread_main(
     bus: Bus<PluginInstruction>,
     engine: Engine,
@@ -590,17 +598,16 @@ pub(crate) fn plugin_thread_main(
                     }
                 }
 
-                tab_layout.as_mut().map(|t| {
+                if let Some(t) = tab_layout.as_mut() {
                     t.populate_plugin_aliases_in_layout(&plugin_aliases);
                     if let Some(cwd) = cwd.as_ref() {
                         t.add_cwd_to_layout(cwd);
                     }
-                    t
-                });
+                }
                 floating_panes_layout.iter_mut().for_each(|f| {
-                    f.run
-                        .as_mut()
-                        .map(|f| f.populate_run_plugin_if_needed(&plugin_aliases));
+                    if let Some(f) = f.run.as_mut() {
+                        f.populate_run_plugin_if_needed(&plugin_aliases)
+                    }
                 });
                 let extracted_run_instructions = tab_layout
                     .clone()
@@ -688,9 +695,9 @@ pub(crate) fn plugin_thread_main(
                         .tiled_layout
                         .populate_plugin_aliases_in_layout(&plugin_aliases);
                     tab_layout_info.floating_layouts.iter_mut().for_each(|f| {
-                        f.run
-                            .as_mut()
-                            .map(|r| r.populate_run_plugin_if_needed(&plugin_aliases));
+                        if let Some(r) = f.run.as_mut() {
+                            r.populate_run_plugin_if_needed(&plugin_aliases)
+                        }
                     });
 
                     // Extract run instructions from tiled layout
@@ -903,7 +910,7 @@ pub(crate) fn plugin_thread_main(
                         wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
                     },
                     Err(e) => {
-                        let error_msg = format!("{}", e);
+                        let error_msg = e.to_string();
                         let response = DumpSessionLayoutResponse {
                             layout_result: Err(error_msg.clone()),
                             metadata: None,
@@ -1222,11 +1229,10 @@ pub(crate) fn plugin_thread_main(
                 wasm_bridge.start_fs_watcher_if_not_started();
             },
             PluginInstruction::ChangePluginHostDir(new_host_folder, plugin_id, client_id) => {
-                if let Ok(_) = wasm_bridge.change_plugin_host_dir(
-                    new_host_folder.clone(),
-                    plugin_id,
-                    client_id,
-                ) {
+                if wasm_bridge
+                    .change_plugin_host_dir(new_host_folder.clone(), plugin_id, client_id)
+                    .is_ok()
+                {
                     drop(
                         bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
                             plugin_id,
@@ -1378,7 +1384,7 @@ fn pipe_to_all_plugins(
         pipe_messages.push((
             Some(plugin_id),
             Some(client_id),
-            PipeMessage::new(pipe_source.clone(), name, payload, &args, is_private),
+            PipeMessage::new(pipe_source.clone(), name, payload, args, is_private),
         ));
     }
 }

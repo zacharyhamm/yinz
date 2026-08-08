@@ -48,7 +48,7 @@ pub enum MouseEventType {
 
 impl MouseEvent {
     pub fn new() -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: false,
             right: false,
@@ -61,11 +61,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position: Position::new(0, 0),
-        };
-        event
+        }
     }
     pub fn new_buttonless_motion(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: false,
             right: false,
@@ -78,11 +77,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_press_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: true,
             right: false,
@@ -95,11 +93,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_right_press_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: true,
@@ -112,11 +109,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_middle_press_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: false,
@@ -129,11 +125,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_middle_release_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Release,
             left: false,
             right: false,
@@ -146,11 +141,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_release_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Release,
             left: true,
             right: false,
@@ -163,11 +157,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_motion_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: true,
             right: false,
@@ -180,11 +173,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_right_release_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Release,
             left: false,
             right: true,
@@ -197,11 +189,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_right_motion_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: false,
             right: true,
@@ -214,11 +205,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_middle_motion_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: false,
             right: false,
@@ -231,11 +221,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_press_with_alt_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: true,
             right: false,
@@ -248,11 +237,10 @@ impl MouseEvent {
             alt: true,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_right_press_with_alt_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: true,
@@ -265,11 +253,10 @@ impl MouseEvent {
             alt: true,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_press_with_ctrl_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: true,
             right: false,
@@ -282,11 +269,10 @@ impl MouseEvent {
             alt: false,
             ctrl: true,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_motion_with_ctrl_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: true,
             right: false,
@@ -299,11 +285,10 @@ impl MouseEvent {
             alt: false,
             ctrl: true,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_release_with_ctrl_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Release,
             left: true,
             right: false,
@@ -316,11 +301,10 @@ impl MouseEvent {
             alt: false,
             ctrl: true,
             position,
-        };
-        event
+        }
     }
     pub fn new_left_motion_with_alt_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Motion,
             left: true,
             right: false,
@@ -333,11 +317,10 @@ impl MouseEvent {
             alt: true,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_scroll_up_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: false,
@@ -350,11 +333,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_scroll_down_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: false,
@@ -367,11 +349,10 @@ impl MouseEvent {
             alt: false,
             ctrl: false,
             position,
-        };
-        event
+        }
     }
     pub fn new_ctrl_scroll_up_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: false,
@@ -384,11 +365,10 @@ impl MouseEvent {
             alt: false,
             ctrl: true,
             position,
-        };
-        event
+        }
     }
     pub fn new_ctrl_scroll_down_event(position: Position) -> Self {
-        let event = MouseEvent {
+        MouseEvent {
             event_type: MouseEventType::Press,
             left: false,
             right: false,
@@ -401,8 +381,7 @@ impl MouseEvent {
             alt: false,
             ctrl: true,
             position,
-        };
-        event
+        }
     }
     pub fn new_scroll_left_event(position: Position) -> Self {
         MouseEvent {

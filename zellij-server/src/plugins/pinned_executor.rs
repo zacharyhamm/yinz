@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use crate::plugins::plugin_map::PluginMap;
 use crate::plugins::wasm_bridge::PluginCache;
 use crate::ClientId;
@@ -198,7 +199,7 @@ impl PinnedExecutor {
         assignments.insert(plugin_id, thread_idx);
         thread_plugins
             .entry(thread_idx)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(plugin_id);
 
         thread_idx
@@ -257,7 +258,7 @@ impl PinnedExecutor {
 
         // Send work
         let job = Job::Work(Box::new(f));
-        if let Err(_) = thread.sender.send(job) {
+        if thread.sender.send(job).is_err() {
             // Thread died unexpectedly - this is a critical error
             thread.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
             log::error!("Plugin executor thread {} has died", thread_idx);
@@ -381,10 +382,8 @@ impl Drop for PinnedExecutor {
         let mut threads = self.execution_threads.lock().unwrap();
 
         // Send shutdown to all threads
-        for thread_opt in threads.iter_mut() {
-            if let Some(thread) = thread_opt {
-                let _ = thread.sender.send(Job::Shutdown);
-            }
+        for thread in threads.iter_mut().flatten() {
+            let _ = thread.sender.send(Job::Shutdown);
         }
     }
 }

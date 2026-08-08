@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+#![allow(clippy::type_complexity)]
 use crate::{panes::PaneId, ClientId};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -112,7 +114,7 @@ fn separate_command_arguments(command: &mut PathBuf, args: &mut Vec<String>) {
             let _ = current_part.pop();
             current_part.push(' ');
         } else {
-            let current_part = std::mem::replace(&mut current_part, String::new());
+            let current_part = std::mem::take(&mut current_part);
             parts.push(current_part);
         }
     }
@@ -257,14 +259,14 @@ impl ClientSender {
 
         self.client_buffer_sender
             .try_send(msg)
-            .or_else(|err| {
+            .map_err(|err| {
                 if let TrySendError::Full(_) = err {
                     log::warn!(
                         "client {} is processing server messages too slow",
                         self.client_id
                     );
                 }
-                Err(err)
+                err
             })
             .with_context(err_context)
     }
@@ -692,8 +694,8 @@ impl ServerOsApi for ServerOsInputOutput {
                     *terminal_id,
                     *cols,
                     *rows,
-                    width_in_pixels.clone(),
-                    height_in_pixels.clone(),
+                    *width_in_pixels,
+                    *height_in_pixels,
                 );
             }
         }

@@ -1,3 +1,7 @@
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::chars_next_cmp)]
+#![allow(clippy::ptr_arg)]
 use super::{
     is_too_high, parse_indices, parse_opaque, parse_selected, parse_text, stringify_text,
     Coordinates, Text,
@@ -58,7 +62,7 @@ pub fn nested_list(
             .map(|c| c.stringify_with_y_offset(line_index))
             .unwrap_or_else(|| {
                 if line_index != 0 {
-                    format!("\n\r")
+                    "\n\r".to_string()
                 } else {
                     "".to_owned()
                 }
@@ -106,7 +110,7 @@ fn parse_indentation_level(stringified: &mut String) -> usize {
         if stringified.is_empty() {
             break;
         }
-        if stringified.chars().next() == Some('|') {
+        if stringified.starts_with('|') {
             stringified.remove(0);
             indentation_level += 1;
         } else {
@@ -116,7 +120,7 @@ fn parse_indentation_level(stringified: &mut String) -> usize {
     indentation_level
 }
 
-fn max_nested_item_width(contents: &Vec<NestedListItem>) -> usize {
+fn max_nested_item_width(contents: &[NestedListItem]) -> usize {
     let mut width_of_longest_line = 0;
     for line_item in contents.iter() {
         let mut line_item_text_width = 0;

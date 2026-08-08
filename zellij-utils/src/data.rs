@@ -115,7 +115,7 @@ impl PartialEq for KeyWithModifier {
     fn eq(&self, other: &Self) -> bool {
         match (self.bare_key, other.bare_key) {
             (BareKey::Char(self_char), BareKey::Char(other_char))
-                if self_char.to_ascii_lowercase() == other_char.to_ascii_lowercase() =>
+                if self_char.eq_ignore_ascii_case(&other_char) =>
             {
                 let mut self_cloned = self.clone();
                 let mut other_cloned = other.clone();
@@ -173,9 +173,9 @@ impl fmt::Display for KeyWithModifier {
 }
 
 #[cfg(not(target_family = "wasm"))]
-impl Into<Modifiers> for &KeyModifier {
-    fn into(self) -> Modifiers {
-        match self {
+impl From<&KeyModifier> for Modifiers {
+    fn from(val: &KeyModifier) -> Self {
+        match val {
             KeyModifier::Shift => Modifiers::SHIFT,
             KeyModifier::Alt => Modifiers::ALT,
             KeyModifier::Ctrl => Modifiers::CTRL,
@@ -353,7 +353,8 @@ impl BareKey {
             Ok("57424") => Some(BareKey::End),
             Ok("57425") => Some(BareKey::Insert),
             Ok("57426") => Some(BareKey::Delete),
-            Ok(num) => u32::from_str_radix(num, 10)
+            Ok(num) => num
+                .parse::<u32>()
                 .ok()
                 .and_then(char::from_u32)
                 .map(BareKey::Char),
@@ -419,9 +420,9 @@ impl KeyModifier {
     pub fn from_bytes(bytes: &[u8]) -> BTreeSet<KeyModifier> {
         let modifier_flags = str::from_utf8(bytes)
             .ok() // convert to string: (eg. "16")
-            .and_then(|s| u8::from_str_radix(&s, 10).ok()) // convert to u8: (eg. 16)
+            .and_then(|s| s.parse::<u8>().ok()) // convert to u8: (eg. 16)
             .map(|s| s.saturating_sub(1)) // subtract 1: (eg. 15)
-            .and_then(|b| ModifierFlags::from_bits(b)); // bitflags: (0b0000_1111: Shift, Alt, Control, Super)
+            .and_then(ModifierFlags::from_bits); // bitflags: (0b0000_1111: Shift, Alt, Control, Super)
         let mut key_modifiers = BTreeSet::new();
         if let Some(modifier_flags) = modifier_flags {
             for name in modifier_flags.iter() {
@@ -512,10 +513,10 @@ impl KeyWithModifier {
             _ => None,
         }
     }
-    pub fn strip_common_modifiers(&self, common_modifiers: &Vec<KeyModifier>) -> Self {
-        let common_modifiers: BTreeSet<&KeyModifier> = common_modifiers.into_iter().collect();
+    pub fn strip_common_modifiers(&self, common_modifiers: &[KeyModifier]) -> Self {
+        let common_modifiers: BTreeSet<&KeyModifier> = common_modifiers.iter().collect();
         KeyWithModifier {
-            bare_key: self.bare_key.clone(),
+            bare_key: self.bare_key,
             key_modifiers: self
                 .key_modifiers
                 .iter()
@@ -632,18 +633,15 @@ impl KeyWithModifier {
     }
 }
 
-#[derive(Eq, Clone, Copy, Debug, PartialEq, Hash, Deserialize, Serialize, PartialOrd, Ord)]
+#[derive(
+    Eq, Clone, Copy, Debug, PartialEq, Hash, Deserialize, Serialize, PartialOrd, Ord, Default,
+)]
 pub enum Direction {
+    #[default]
     Left,
     Right,
     Up,
     Down,
-}
-
-impl Default for Direction {
-    fn default() -> Self {
-        Direction::Left
-    }
 }
 
 impl Direction {
@@ -693,16 +691,11 @@ impl FromStr for Direction {
 }
 
 /// Resize operation to perform.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Deserialize, Serialize, Default)]
 pub enum Resize {
+    #[default]
     Increase,
     Decrease,
-}
-
-impl Default for Resize {
-    fn default() -> Self {
-        Resize::Increase
-    }
 }
 
 impl Resize {
@@ -797,10 +790,7 @@ impl ResizeStrategy {
             Resize::Increase => Resize::Decrease,
             Resize::Decrease => Resize::Increase,
         };
-        let direction = match self.direction {
-            Some(direction) => Some(direction.invert()),
-            None => None,
-        };
+        let direction = self.direction.map(|direction| direction.invert());
 
         ResizeStrategy::new(resize, direction)
     }
@@ -865,11 +855,11 @@ impl ResizeStrategy {
     }
 
     pub fn move_all_borders_out(&self) -> bool {
-        (self.resize == Resize::Increase) && (self.direction == None)
+        (self.resize == Resize::Increase) && self.direction.is_none()
     }
 
     pub fn move_all_borders_in(&self) -> bool {
-        (self.resize == Resize::Decrease) && (self.direction == None)
+        (self.resize == Resize::Decrease) && self.direction.is_none()
     }
 }
 
@@ -911,11 +901,11 @@ impl Mouse {
     pub fn position(&self) -> Option<(usize, usize)> {
         // (line, column)
         match self {
-            Mouse::LeftClick(line, column) => Some((*line as usize, *column as usize)),
-            Mouse::RightClick(line, column) => Some((*line as usize, *column as usize)),
-            Mouse::Hold(line, column) => Some((*line as usize, *column as usize)),
-            Mouse::Release(line, column) => Some((*line as usize, *column as usize)),
-            Mouse::Hover(line, column) => Some((*line as usize, *column as usize)),
+            Mouse::LeftClick(line, column) => Some((*line as usize, *column)),
+            Mouse::RightClick(line, column) => Some((*line as usize, *column)),
+            Mouse::Hold(line, column) => Some((*line as usize, *column)),
+            Mouse::Release(line, column) => Some((*line as usize, *column)),
+            Mouse::Hover(line, column) => Some((*line as usize, *column)),
             _ => None,
         }
     }
@@ -1165,10 +1155,12 @@ impl PluginPermission {
     ValueEnum,
     PartialOrd,
     Ord,
+    Default,
 )]
 pub enum InputMode {
     /// In `Normal` mode, input is always written to the terminal, except for the shortcuts leading
     /// to other modes
+    #[default]
     #[serde(alias = "normal")]
     Normal,
     /// In `Locked` mode, input is always written to the terminal and all shortcuts are disabled
@@ -1213,21 +1205,11 @@ pub enum InputMode {
     Tmux,
 }
 
-impl Default for InputMode {
-    fn default() -> InputMode {
-        InputMode::Normal
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum ThemeHue {
     Light,
+    #[default]
     Dark,
-}
-impl Default for ThemeHue {
-    fn default() -> ThemeHue {
-        ThemeHue::Dark
-    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -1245,17 +1227,14 @@ impl Default for PaletteColor {
 /// Higher-priority layers take visual precedence over lower ones
 /// when highlights overlap.  Built-in highlights (mouse selection,
 /// search results) always take precedence over all plugin layers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
 pub enum HighlightLayer {
-    Hint,           // lowest: pure pattern matching (paths, URLs, IPs)
+    #[default]
+    Hint, // lowest: pure pattern matching (paths, URLs, IPs)
     Tool,           // middle: backed by runtime domain knowledge (git, docker, k8s)
     ActionFeedback, // highest: result of an explicit user action (search, bookmarks)
-}
-
-impl Default for HighlightLayer {
-    fn default() -> Self {
-        HighlightLayer::Hint
-    }
 }
 
 /// Style for a plugin-supplied regex highlight.
@@ -1361,15 +1340,11 @@ impl FromStr for InputMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum PaletteSource {
+    #[default]
     Default,
     Xresources,
-}
-impl Default for PaletteSource {
-    fn default() -> PaletteSource {
-        PaletteSource::Default
-    }
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub struct Palette {
@@ -1790,7 +1765,7 @@ impl ModeInfo {
         self.base_mode = Some(new_default_mode);
     }
     pub fn update_theme(&mut self, theme: Styling) {
-        self.style.colors = theme.into();
+        self.style.colors = theme;
     }
     pub fn update_rounded_corners(&mut self, rounded_corners: bool) {
         self.style.rounded_corners = rounded_corners;
@@ -1902,7 +1877,7 @@ impl From<&PathBuf> for LayoutMetadata {
 
                         // Get file metadata for creation and modification times as Unix epochs
                         let (creation_time, update_time) =
-                            LayoutMetadata::creation_and_update_times(&path);
+                            LayoutMetadata::creation_and_update_times(path);
 
                         LayoutMetadata {
                             tabs,
@@ -1980,7 +1955,7 @@ impl
 
         // Collect panes from tiled layout (only leaf nodes are real panes)
         let mut panes = Vec::new();
-        collect_leaf_panes(&tiled_pane_layout, &mut panes);
+        collect_leaf_panes(tiled_pane_layout, &mut panes);
 
         // Collect panes from floating panes
         for floating_pane in floating_panes {
@@ -2102,10 +2077,10 @@ fn collect_leaf_panes(
 impl LayoutInfo {
     pub fn name(&self) -> &str {
         match self {
-            LayoutInfo::BuiltIn(name) => &name,
-            LayoutInfo::File(name, _) => &name,
-            LayoutInfo::Url(url) => &url,
-            LayoutInfo::Stringified(layout) => &layout,
+            LayoutInfo::BuiltIn(name) => name,
+            LayoutInfo::File(name, _) => name,
+            LayoutInfo::Url(url) => url,
+            LayoutInfo::Stringified(layout) => layout,
         }
     }
     pub fn is_builtin(&self) -> bool {
@@ -2145,11 +2120,7 @@ impl LayoutInfo {
             // Attempt to interpret the layout as bare layout name from the layout application
             // directory. This is described in the docs:
             // <https://zellij.dev/documentation/layouts.html#layout-default-directory>
-            if let Some(layout_dir) = layout_dir
-                .as_ref()
-                .map(|l| l.clone())
-                .or_else(default_layout_dir)
-            {
+            if let Some(layout_dir) = layout_dir.clone().or_else(default_layout_dir) {
                 let file_path = layout_dir.join(&layout_path);
                 if file_path.exists() {
                     return Some(LayoutInfo::File(
@@ -2186,13 +2157,7 @@ impl LayoutInfo {
         if layout_path.starts_with("http://") || layout_path.starts_with("https://") {
             Some(LayoutInfo::Url(layout_path.display().to_string()))
         } else if layout_path.extension().is_some() || layout_path.components().count() > 1 {
-            let Some(layout_dir) = layout_dir
-                .as_ref()
-                .map(|l| l.clone())
-                .or_else(default_layout_dir)
-            else {
-                return None;
-            };
+            let layout_dir = layout_dir.clone().or_else(default_layout_dir)?;
             let file_path = layout_dir.join(layout_path);
             Some(LayoutInfo::File(
                 // layout_dir.join(layout_path).display().to_string(),
@@ -2203,11 +2168,7 @@ impl LayoutInfo {
             // Attempt to interpret the layout as bare layout name from the layout application
             // directory. This is described in the docs:
             // <https://zellij.dev/documentation/layouts.html#layout-default-directory>
-            if let Some(layout_dir) = layout_dir
-                .as_ref()
-                .map(|l| l.clone())
-                .or_else(default_layout_dir)
-            {
+            if let Some(layout_dir) = layout_dir.clone().or_else(default_layout_dir) {
                 let file_path = layout_dir.join(&layout_path);
                 if file_path.exists() {
                     return Some(LayoutInfo::File(
@@ -2229,7 +2190,7 @@ impl LayoutInfo {
     }
 }
 
-#[allow(clippy::derive_hash_xor_eq)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl Hash for SessionInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
@@ -2439,10 +2400,7 @@ impl PaneRenderReport {
         pane_contents: PaneContents,
     ) {
         for client_id in client_ids {
-            let p = self
-                .all_pane_contents
-                .entry(*client_id)
-                .or_insert_with(|| HashMap::new());
+            let p = self.all_pane_contents.entry(*client_id).or_default();
             p.insert(pane_id, pane_contents.clone());
         }
     }
@@ -2456,7 +2414,7 @@ impl PaneRenderReport {
             let p = self
                 .all_pane_contents_with_ansi
                 .entry(*client_id)
-                .or_insert_with(|| HashMap::new());
+                .or_default();
             p.insert(pane_id, pane_contents.clone());
         }
     }
@@ -2903,16 +2861,19 @@ impl FromStr for PaneId {
     type Err = Box<dyn std::error::Error>;
     fn from_str(stringified_pane_id: &str) -> Result<Self, Self::Err> {
         if let Some(terminal_stringified_pane_id) = stringified_pane_id.strip_prefix("terminal_") {
-            u32::from_str_radix(terminal_stringified_pane_id, 10)
-                .map(|id| PaneId::Terminal(id))
+            terminal_stringified_pane_id
+                .parse::<u32>()
+                .map(PaneId::Terminal)
                 .map_err(|e| e.into())
         } else if let Some(plugin_pane_id) = stringified_pane_id.strip_prefix("plugin_") {
-            u32::from_str_radix(plugin_pane_id, 10)
-                .map(|id| PaneId::Plugin(id))
+            plugin_pane_id
+                .parse::<u32>()
+                .map(PaneId::Plugin)
                 .map_err(|e| e.into())
         } else {
-            u32::from_str_radix(&stringified_pane_id, 10)
-                .map(|id| PaneId::Terminal(id))
+            stringified_pane_id
+                .parse::<u32>()
+                .map(PaneId::Terminal)
                 .map_err(|e| e.into())
         }
     }
@@ -3012,7 +2973,7 @@ pub struct ConnectToSession {
 }
 
 impl ConnectToSession {
-    pub fn apply_layout_dir(&mut self, layout_dir: &PathBuf) {
+    pub fn apply_layout_dir(&mut self, layout_dir: &Path) {
         if let Some(LayoutInfo::File(file_path, _layout_metadata)) = self.layout.as_mut() {
             *file_path = Path::join(layout_dir, &file_path)
                 .to_string_lossy()
@@ -3081,7 +3042,7 @@ impl PipeMessage {
             source,
             name: name.into(),
             payload: payload.clone(),
-            args: args.clone().unwrap_or_else(|| Default::default()),
+            args: args.clone().unwrap_or_default(),
             is_private,
         }
     }
@@ -3229,40 +3190,26 @@ impl OriginatingPlugin {
     }
 }
 
-#[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WebSharing {
     #[serde(alias = "on")]
     On,
     #[serde(alias = "off")]
+    #[default]
     Off,
     #[serde(alias = "disabled")]
     Disabled,
 }
 
-impl Default for WebSharing {
-    fn default() -> Self {
-        Self::Off
-    }
-}
-
 impl WebSharing {
     pub fn is_on(&self) -> bool {
-        match self {
-            WebSharing::On => true,
-            _ => false,
-        }
+        matches!(self, WebSharing::On)
     }
     pub fn web_clients_allowed(&self) -> bool {
-        match self {
-            WebSharing::On => true,
-            _ => false,
-        }
+        matches!(self, WebSharing::On)
     }
     pub fn sharing_is_disabled(&self) -> bool {
-        match self {
-            WebSharing::Disabled => true,
-            _ => false,
-        }
+        matches!(self, WebSharing::Disabled)
     }
     pub fn set_sharing(&mut self) -> bool {
         // returns true if successfully set sharing
@@ -3374,10 +3321,7 @@ impl NewPanePlacement {
         }
     }
     pub fn should_stack(&self) -> bool {
-        match self {
-            NewPanePlacement::Stacked { .. } => true,
-            _ => false,
-        }
+        matches!(self, NewPanePlacement::Stacked { .. })
     }
     pub fn id_of_stack_root(&self) -> Option<PaneId> {
         match self {
@@ -3404,6 +3348,7 @@ type Context = BTreeMap<String, String>;
 #[derive(Debug, Clone, EnumDiscriminants, Display)]
 #[strum_discriminants(derive(EnumString, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(CommandType))]
+#[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
     Subscribe(HashSet<EventType>),
     Unsubscribe(HashSet<EventType>),
