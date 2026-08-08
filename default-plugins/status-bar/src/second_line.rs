@@ -610,6 +610,147 @@ mod tests {
         string.to_string()
     }
 
+    mod props {
+        use super::*;
+        use hegel::generators;
+
+        fn all_input_modes() -> Vec<InputMode> {
+            vec![
+                InputMode::Normal,
+                InputMode::Locked,
+                InputMode::Resize,
+                InputMode::Pane,
+                InputMode::Tab,
+                InputMode::Scroll,
+                InputMode::EnterSearch,
+                InputMode::Search,
+                InputMode::RenameTab,
+                InputMode::RenamePane,
+                InputMode::Session,
+                InputMode::Move,
+                InputMode::Prompt,
+                InputMode::Tmux,
+            ]
+        }
+
+        fn all_tip_names() -> Vec<&'static str> {
+            vec![
+                "quicknav",
+                "compact_layout",
+                "edit_scrollbuffer",
+                "floating_panes_mouse",
+                "move_focus_hjkl_tab_switch",
+                "move_tabs",
+                "send_mouse_clicks_to_terminal",
+                "sync_tab",
+                "use_mouse",
+                "zellij_setup_check",
+                // not a real tip: `keybinds` documents a fallback for this
+                "no_such_tip",
+            ]
+        }
+
+        #[hegel::composite]
+        fn any_mode_info(tc: &hegel::TestCase) -> ModeInfo {
+            let mode = tc.draw(generators::sampled_from(all_input_modes()));
+            let bindings = tc.draw(generators::vecs(generators::tuples!(
+                generators::characters(),
+                generators::sampled_from(all_input_modes()),
+                generators::booleans(),
+            )));
+            let keybinds = vec![(
+                mode,
+                bindings
+                    .into_iter()
+                    .map(|(key, target, ctrl)| {
+                        let bare = KeyWithModifier::new(BareKey::Char(key));
+                        let bare = if ctrl {
+                            bare.with_ctrl_modifier()
+                        } else {
+                            bare
+                        };
+                        (bare, vec![Action::SwitchToMode { input_mode: target }])
+                    })
+                    .collect(),
+            )];
+            ModeInfo {
+                mode,
+                keybinds,
+                ..ModeInfo::default()
+            }
+        }
+
+        /// The three `keybinds_*` tests this replaces were three points on this
+        /// curve (500 columns, a tight width, and one odd keyset). The status
+        /// bar overdrawing its budget corrupts the line below it, so the bound
+        /// has to hold at *every* width.
+        #[hegel::test]
+        fn keybinds_never_claims_more_columns_than_it_was_given(tc: hegel::TestCase) {
+            let mode_info = tc.draw(any_mode_info());
+            let tip_name = tc.draw(generators::sampled_from(all_tip_names()));
+            let max_width = tc.draw(generators::integers::<usize>().max_value(500));
+
+            let part = keybinds(&mode_info, tip_name, max_width);
+            assert!(
+                part.len <= max_width,
+                "keybinds claimed {} columns but was given {} (mode {:?}, tip {:?})",
+                part.len,
+                max_width,
+                mode_info.mode,
+                tip_name
+            );
+        }
+
+        /// `LinePart::len` is what the caller budgets with, so it has to match
+        /// what actually gets rendered - styles excluded.
+        #[hegel::test]
+        fn keybinds_reports_the_width_it_actually_renders(tc: hegel::TestCase) {
+            let mode_info = tc.draw(any_mode_info());
+            let tip_name = tc.draw(generators::sampled_from(all_tip_names()));
+            let max_width = tc.draw(generators::integers::<usize>().max_value(500));
+
+            let part = keybinds(&mode_info, tip_name, max_width);
+            let claimed = part.len;
+            let rendered = unstyle(part);
+            assert_eq!(
+                claimed,
+                rendered.chars().count(),
+                "keybinds claimed {} columns but rendered {:?} (mode {:?}, tip {:?}, max {})",
+                claimed,
+                rendered,
+                mode_info.mode,
+                tip_name,
+                max_width
+            );
+        }
+
+        /// Widening the terminal must never render *less*. This is the property
+        /// the "note how it leaves out elements" / "note how Move focus becomes
+        /// Move" comments on the old tests were gesturing at.
+        #[hegel::test]
+        fn a_wider_budget_never_renders_fewer_columns(tc: hegel::TestCase) {
+            let mode_info = tc.draw(any_mode_info());
+            let tip_name = tc.draw(generators::sampled_from(all_tip_names()));
+            let narrow = tc.draw(generators::integers::<usize>().max_value(500));
+            let extra = tc.draw(generators::integers::<usize>().max_value(500));
+            let wide = narrow + extra;
+
+            let narrow_part = keybinds(&mode_info, tip_name, narrow);
+            let wide_part = keybinds(&mode_info, tip_name, wide);
+            assert!(
+                wide_part.len >= narrow_part.len,
+                "keybinds rendered {} columns at width {} but only {} at width {} \
+                 (mode {:?}, tip {:?})",
+                narrow_part.len,
+                narrow,
+                wide_part.len,
+                wide,
+                mode_info.mode,
+                tip_name
+            );
+        }
+    }
+
     #[test]
     fn full_length_shortcut_with_key() {
         let keyvec = vec![KeyWithModifier::new(BareKey::Char('a'))];

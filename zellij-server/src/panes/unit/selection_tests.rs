@@ -32,176 +32,6 @@ fn selection_end() {
 }
 
 #[test]
-fn contains() {
-    struct TestCase<'a> {
-        selection: &'a Selection,
-        position: Position,
-        result: bool,
-    }
-
-    let selection = Selection {
-        start: Position::new(10, 5),
-        end: Position::new(40, 20),
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    let test_cases = vec![
-        TestCase {
-            selection: &selection,
-            position: Position::new(10, 5),
-            result: true,
-        },
-        TestCase {
-            selection: &selection,
-            position: Position::new(10, 4),
-            result: false,
-        },
-        TestCase {
-            selection: &selection,
-            position: Position::new(20, 0),
-            result: true,
-        },
-        TestCase {
-            selection: &selection,
-            position: Position::new(20, 21),
-            result: true,
-        },
-        TestCase {
-            selection: &selection,
-            position: Position::new(40, 19),
-            result: true,
-        },
-        TestCase {
-            selection: &selection,
-            position: Position::new(40, 20),
-            result: false,
-        },
-    ];
-
-    for test_case in test_cases {
-        let result = test_case.selection.contains(
-            test_case.position.line.0 as usize,
-            test_case.position.column.0,
-        );
-        assert_eq!(result, test_case.result)
-    }
-}
-
-#[test]
-fn sorted() {
-    let selection = Selection {
-        start: Position::new(1, 1),
-        end: Position::new(10, 2),
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-    let sorted_selection = selection.sorted();
-    assert_eq!(selection.start, sorted_selection.start);
-    assert_eq!(selection.end, sorted_selection.end);
-
-    let selection = Selection {
-        start: Position::new(10, 2),
-        end: Position::new(1, 1),
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-    let sorted_selection = selection.sorted();
-    assert_eq!(selection.end, sorted_selection.start);
-    assert_eq!(selection.start, sorted_selection.end);
-}
-
-#[test]
-fn line_indices() {
-    let selection = Selection {
-        start: Position::new(1, 1),
-        end: Position::new(10, 2),
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    assert_eq!(selection.line_indices(), (1..=10))
-}
-
-#[test]
-fn move_up_inactive() {
-    let start = Position::new(10, 1);
-    let end = Position::new(20, 2);
-    let mut inactive_selection = Selection {
-        start,
-        end,
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    inactive_selection.move_up(2);
-    assert_eq!(inactive_selection.start, Position::new(8, 1));
-    assert_eq!(inactive_selection.end, Position::new(18, 2));
-    inactive_selection.move_up(10);
-    assert_eq!(inactive_selection.start, Position::new(-2, 1));
-    assert_eq!(inactive_selection.end, Position::new(8, 2));
-}
-
-#[test]
-fn move_up_active() {
-    let start = Position::new(10, 1);
-    let end = Position::new(20, 2);
-    let mut inactive_selection = Selection {
-        start,
-        end,
-        active: true,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    inactive_selection.move_up(2);
-    assert_eq!(inactive_selection.start, Position::new(8, 1));
-    assert_eq!(inactive_selection.end, end);
-}
-
-#[test]
-fn move_down_inactive() {
-    let start = Position::new(10, 1);
-    let end = Position::new(20, 2);
-    let mut inactive_selection = Selection {
-        start,
-        end,
-        active: false,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    inactive_selection.move_down(2);
-    assert_eq!(inactive_selection.start, Position::new(12, 1));
-    assert_eq!(inactive_selection.end, Position::new(22, 2));
-    inactive_selection.move_down(10);
-    assert_eq!(inactive_selection.start, Position::new(22, 1));
-    assert_eq!(inactive_selection.end, Position::new(32, 2));
-}
-
-#[test]
-fn move_down_active() {
-    let start = Position::new(10, 1);
-    let end = Position::new(20, 2);
-    let mut inactive_selection = Selection {
-        start,
-        end,
-        active: true,
-        last_added_word_position: None,
-        last_added_line_index: None,
-    };
-
-    inactive_selection.move_down(2);
-    assert_eq!(inactive_selection.start, Position::new(12, 1));
-    assert_eq!(inactive_selection.end, end);
-}
-
-#[test]
 fn add_word_to_position_extend_line_above() {
     let selection_start = Position::new(10, 10);
     let selection_end = Position::new(20, 20);
@@ -530,4 +360,211 @@ fn set_start_and_end_without_finalize_only_moves_start() {
 
     assert_eq!(selection.start, Position::new(13, 5));
     assert_eq!(selection.end, word_end);
+}
+
+mod props {
+    use super::*;
+    use hegel::generators::{self, Generator};
+
+    #[hegel::composite]
+    fn positions(tc: &hegel::TestCase) -> Position {
+        // Lines are `isize` internally but `Position::new` takes i32/u16, and
+        // move_up/move_down shift lines without saturating — stay well inside
+        // the range so the *test* can't be what overflows.
+        let line = tc.draw(
+            generators::integers::<i32>()
+                .min_value(-100_000)
+                .max_value(100_000),
+        );
+        let column = tc.draw(generators::integers::<u16>());
+        Position::new(line, column)
+    }
+
+    #[hegel::composite]
+    fn selections(tc: &hegel::TestCase) -> Selection {
+        let start = tc.draw(positions());
+        let end = tc.draw(positions());
+        let active = tc.draw(generators::booleans());
+        Selection {
+            start,
+            end,
+            active,
+            last_added_word_position: None,
+            last_added_line_index: None,
+        }
+    }
+
+    /// Independent oracle for `contains`: a selection covers a contiguous run
+    /// of cells in reading order, from `start` inclusive to `end` exclusive.
+    /// The six hand-picked `TestCase` rows this replaced were points on it.
+    fn oracle_contains(selection: &Selection, row: usize, col: usize) -> bool {
+        let sorted = selection.sorted();
+        let cell = (row as isize, col);
+        let start = (sorted.start.line.0, sorted.start.column.0);
+        let end = (sorted.end.line.0, sorted.end.column.0);
+        cell >= start && cell < end
+    }
+
+    #[hegel::test]
+    fn contains_agrees_with_a_reading_order_range(tc: hegel::TestCase) {
+        let selection = tc.draw(selections());
+        // Query near the selection's own lines, otherwise almost every probe
+        // lands outside and the test proves nothing.
+        let sorted = selection.sorted();
+        let low = sorted.start.line.0.max(0);
+        let high = sorted.end.line.0.max(0);
+        let row = tc.draw(
+            generators::integers::<isize>()
+                .min_value((low - 2).max(0))
+                .max_value(high + 2),
+        ) as usize;
+        let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
+        assert_eq!(
+            selection.contains(row, col),
+            oracle_contains(&selection, row, col),
+            "contains({}, {}) disagreed with the oracle for {:?}",
+            row,
+            col,
+            selection
+        );
+    }
+
+    #[hegel::test]
+    fn sorted_orders_the_endpoints_and_is_idempotent(tc: hegel::TestCase) {
+        let selection = tc.draw(selections());
+        let once = selection.sorted();
+        assert!(
+            once.start <= once.end,
+            "{:?} sorted to {:?} which is still inverted",
+            selection,
+            once
+        );
+        assert_eq!(once, once.sorted(), "sorted() is not idempotent");
+    }
+
+    #[hegel::test]
+    fn line_indices_covers_exactly_the_rows_contains_row_accepts(tc: hegel::TestCase) {
+        let selection = tc.draw(selections());
+        let indices = selection.line_indices();
+        // `contains_row` takes a usize, so only non-negative rows are
+        // reachable; a wholly-negative selection leaves nothing to probe.
+        let lo = (*indices.start() - 2).max(0);
+        let hi = (indices.end() + 2).max(lo);
+        let row = tc.draw(generators::integers::<isize>().min_value(lo).max_value(hi));
+        assert_eq!(
+            selection.contains_row(row as usize),
+            indices.contains(&row),
+            "contains_row({}) disagreed with line_indices() {:?} for {:?}",
+            row,
+            selection.line_indices(),
+            selection
+        );
+    }
+
+    #[hegel::test]
+    fn a_contained_cell_is_always_on_a_contained_row(tc: hegel::TestCase) {
+        let selection = tc.draw(selections());
+        let sorted = selection.sorted();
+        let row = tc.draw(
+            generators::integers::<isize>()
+                .min_value(sorted.start.line.0.max(0))
+                .max_value(sorted.end.line.0.max(0)),
+        ) as usize;
+        let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
+        if selection.contains(row, col) {
+            assert!(
+                selection.contains_row(row),
+                "{:?} contains cell ({}, {}) but not row {}",
+                selection,
+                row,
+                col,
+                row
+            );
+        }
+    }
+
+    /// Replaces move_up_inactive / move_up_active / move_down_inactive /
+    /// move_down_active: scrolling up then back down restores the selection,
+    /// and an active selection anchors its end either way.
+    #[hegel::test]
+    fn scrolling_up_then_down_by_the_same_amount_restores_the_selection(tc: hegel::TestCase) {
+        let original = tc.draw(selections());
+        let lines = tc.draw(generators::integers::<usize>().max_value(100_000));
+        let mut selection = original;
+        selection.move_up(lines);
+        selection.move_down(lines);
+        assert_eq!(
+            (selection.start, selection.end),
+            (original.start, original.end),
+            "move_up({0}) then move_down({0}) did not restore {1:?}",
+            lines,
+            original
+        );
+    }
+
+    #[hegel::test]
+    fn an_active_selection_anchors_its_end_while_scrolling(tc: hegel::TestCase) {
+        let original = tc.draw(selections());
+        let lines = tc.draw(generators::integers::<usize>().max_value(100_000));
+        let mut selection = original;
+        selection.move_up(lines);
+        if original.active {
+            assert_eq!(
+                selection.end, original.end,
+                "active selection {:?} moved its end",
+                original
+            );
+        } else {
+            assert_eq!(
+                selection.end.line.0,
+                original.end.line.0 - lines as isize,
+                "inactive selection {:?} did not move its end",
+                original
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn offset_shifts_every_contained_cell_by_the_same_amount(tc: hegel::TestCase) {
+        let selection = tc.draw(selections());
+        let offset_x = tc.draw(generators::integers::<usize>().max_value(1_000));
+        let offset_y = tc.draw(generators::integers::<usize>().max_value(1_000));
+        let shifted = selection.offset(offset_x, offset_y);
+
+        let sorted = selection.sorted();
+        let row = tc.draw(
+            generators::integers::<isize>()
+                .min_value(sorted.start.line.0.max(0))
+                .max_value(sorted.end.line.0.max(0)),
+        ) as usize;
+        let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
+        assert_eq!(
+            selection.contains(row, col),
+            shifted.contains(row + offset_y, col + offset_x),
+            "cell ({}, {}) changed membership when {:?} was offset by ({}, {})",
+            row,
+            col,
+            selection,
+            offset_x,
+            offset_y
+        );
+    }
+
+    #[hegel::test]
+    fn an_empty_selection_contains_nothing(tc: hegel::TestCase) {
+        let mut selection = tc.draw(selections());
+        let position = tc.draw(positions());
+        selection.start = position;
+        selection.end = position;
+        assert!(selection.is_empty());
+        let row = tc.draw(generators::integers::<usize>().max_value(200_000));
+        let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
+        assert!(
+            !selection.contains(row, col),
+            "empty selection at {:?} claimed to contain ({}, {})",
+            position,
+            row,
+            col
+        );
+    }
 }

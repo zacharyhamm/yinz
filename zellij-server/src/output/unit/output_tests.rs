@@ -649,104 +649,133 @@ fn test_character_chunk_new() {
     );
 }
 
-#[test]
-fn test_character_chunk_width() {
-    let chunk = create_character_chunk_from_str("Hello", 0, 0);
-    assert_eq!(chunk.width(), 5, "Width should be 5 for 'Hello'");
+mod character_chunk_props {
+    use super::*;
+    use hegel::generators::{self, Generator};
+    use unicode_width::UnicodeWidthChar;
 
-    // Test with wide characters
-    let terminal_chars: Vec<TerminalCharacter> = vec![
-        TerminalCharacter::new('a'),
-        TerminalCharacter::new('中'),
-        TerminalCharacter::new('b'),
-    ];
-    let chunk_wide = CharacterChunk::new(terminal_chars, 0, 0);
-    assert_eq!(
-        chunk_wide.width(),
-        4,
-        "Width should be 4 (1 + 2 + 1) for mixed characters"
-    );
-}
+    #[hegel::composite]
+    fn chunks(tc: &hegel::TestCase) -> CharacterChunk {
+        // Full unicode: wide CJK, combining marks and zero-width characters are
+        // exactly where the width bookkeeping goes wrong.
+        let text = tc.draw(generators::text().max_size(40));
+        let x = tc.draw(generators::integers::<usize>().max_value(500));
+        let y = tc.draw(generators::integers::<usize>().max_value(500));
+        create_character_chunk_from_str(&text, x, y)
+    }
 
-#[test]
-fn test_character_chunk_drain_by_width() {
-    let mut chunk = create_character_chunk_from_str("Hello World", 0, 0);
-    assert_eq!(chunk.width(), 11, "Initial width should be 11");
+    /// Replaces `test_character_chunk_width`, which asserted this for "Hello"
+    /// and for one mixed-width string.
+    #[hegel::test]
+    fn width_is_the_sum_of_the_character_widths(tc: hegel::TestCase) {
+        let chunk = tc.draw(chunks());
+        let expected: usize = chunk
+            .terminal_characters
+            .iter()
+            .map(|c| c.character.width().unwrap_or(0))
+            .sum();
+        assert_eq!(
+            chunk.width(),
+            expected,
+            "width() disagreed with unicode-width for {:?}",
+            chunk.terminal_characters
+        );
+    }
 
-    // Drain first 5 characters
-    let drained: Vec<TerminalCharacter> = chunk.drain_by_width(5).collect();
-    assert_eq!(drained.len(), 5, "Should drain 5 characters");
-    assert_eq!(
-        chunk.terminal_characters.len(),
-        6,
-        "Should have 6 characters remaining"
-    );
+    /// Replaces `test_character_chunk_drain_by_width` and
+    /// `..._with_wide_chars`. Splitting a wide character substitutes blanks on
+    /// both sides, so the characters are not preserved - but the total width
+    /// always is, and that is the invariant the renderer depends on.
+    #[hegel::test]
+    fn draining_conserves_total_width(tc: hegel::TestCase) {
+        let mut chunk = tc.draw(chunks());
+        let original_width = chunk.width();
+        let x = tc.draw(generators::integers::<usize>().max_value(original_width + 5));
 
-    let drained_text: String = drained.iter().map(|c| c.character).collect();
-    assert_eq!(drained_text, "Hello", "Drained part should be 'Hello'");
+        let drained: Vec<TerminalCharacter> = chunk.drain_by_width(x).collect();
+        let drained_width: usize = drained.iter().map(|c| c.width()).sum();
 
-    let remaining_text: String = chunk
-        .terminal_characters
-        .iter()
-        .map(|c| c.character)
-        .collect();
-    assert_eq!(
-        remaining_text, " World",
-        "Remaining part should be ' World'"
-    );
-}
+        assert_eq!(
+            drained_width + chunk.width(),
+            original_width,
+            "draining {} lost or invented width: {} drained + {} left != {}",
+            x,
+            drained_width,
+            chunk.width(),
+            original_width
+        );
+        assert!(
+            drained_width <= x,
+            "drain_by_width({}) drained {} columns",
+            x,
+            drained_width
+        );
+    }
 
-#[test]
-fn test_character_chunk_drain_by_width_with_wide_chars() {
-    let terminal_chars: Vec<TerminalCharacter> = vec![
-        TerminalCharacter::new('a'),
-        TerminalCharacter::new('中'),
-        TerminalCharacter::new('b'),
-    ];
-    let mut chunk = CharacterChunk::new(terminal_chars, 0, 0);
+    /// Replaces `test_character_chunk_retain_by_width`: the point of retaining
+    /// is that the chunk then fits the budget, at any budget.
+    #[hegel::test]
+    fn retaining_never_leaves_more_than_the_budget(tc: hegel::TestCase) {
+        let mut chunk = tc.draw(chunks());
+        let original_width = chunk.width();
+        let x = tc.draw(generators::integers::<usize>().max_value(original_width + 5));
 
-    // Drain 2 characters - this cuts in the middle of wide char
-    let drained: Vec<TerminalCharacter> = chunk.drain_by_width(2).collect();
+        chunk.retain_by_width(x);
+        assert!(
+            chunk.width() <= x,
+            "retain_by_width({}) left {} columns",
+            x,
+            chunk.width()
+        );
+        if x >= original_width {
+            assert_eq!(
+                chunk.width(),
+                original_width,
+                "retain_by_width({}) shrank a chunk that already fit",
+                x
+            );
+        }
+    }
 
-    // Should have padding with EMPTY_TERMINAL_CHARACTER
-    assert!(
-        drained.len() >= 2,
-        "Drained part should have at least 2 characters"
-    );
-}
+    /// Replaces `test_character_chunk_cut_middle_out`, which cut one hardcoded
+    /// span out of one ASCII string. A floating pane can occlude any span.
+    #[hegel::test]
+    fn cutting_the_middle_out_never_panics_and_keeps_the_edges(tc: hegel::TestCase) {
+        let mut chunk = tc.draw(chunks());
+        let width = chunk.width();
+        let a = tc.draw(generators::integers::<usize>().max_value(width + 2));
+        let b = tc.draw(generators::integers::<usize>().max_value(width + 2));
+        let (middle_start, middle_end) = if a <= b { (a, b) } else { (b, a) };
 
-#[test]
-fn test_character_chunk_retain_by_width() {
-    let mut chunk = create_character_chunk_from_str("Hello World", 0, 0);
-
-    // Retain only first 5 characters
-    chunk.retain_by_width(5);
-
-    assert_eq!(
-        chunk.terminal_characters.len(),
-        5,
-        "Should have 5 characters"
-    );
-    let text: String = chunk
-        .terminal_characters
-        .iter()
-        .map(|c| c.character)
-        .collect();
-    assert_eq!(text, "Hello", "Should retain 'Hello'");
-}
-
-#[test]
-fn test_character_chunk_cut_middle_out() {
-    let mut chunk = create_character_chunk_from_str("Hello World", 0, 0);
-
-    // Cut middle (characters 5-8)
-    let (left, right) = chunk.cut_middle_out(5, 8).unwrap();
-
-    let left_text: String = left.iter().map(|c| c.character).collect();
-    assert_eq!(left_text, "Hello", "Left chunk should be 'Hello'");
-
-    let right_text: String = right.iter().map(|c| c.character).collect();
-    assert_eq!(right_text, "rld", "Right chunk should be 'rld'");
+        let Ok((left, right)) = chunk.cut_middle_out(middle_start, middle_end) else {
+            // Out-of-range spans are reported, not panicked on - that is the
+            // property for those inputs.
+            return;
+        };
+        let left_width: usize = left.iter().map(|c| c.width()).sum();
+        let right_width: usize = right.iter().map(|c| c.width()).sum();
+        // The left piece is rendered at the chunk's own x, so it may occupy at
+        // most the columns before the cut; likewise the right piece may occupy
+        // at most the columns after it. Anything more overdraws the pane that
+        // the cut was making room for.
+        assert!(
+            left_width <= middle_start,
+            "cutting {}..{} out of a {}-wide chunk left a {}-wide left piece, \
+             which overdraws the cut-out region",
+            middle_start,
+            middle_end,
+            width,
+            left_width
+        );
+        assert!(
+            right_width <= width.saturating_sub(middle_end),
+            "cutting {}..{} out of a {}-wide chunk left a {}-wide right piece",
+            middle_start,
+            middle_end,
+            width,
+            right_width
+        );
+    }
 }
 
 #[test]
