@@ -120,10 +120,13 @@ mod tests {
     use super::*;
     use crate::os_input_output::AsyncReader;
     use crate::session_recorder::{RecorderInstruction, SessionRecorderHandle};
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    use std::time::Instant;
     use async_trait::async_trait;
     use std::io;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Instant;
 
     struct FakeReader {
         data: Option<Vec<u8>>,
@@ -157,7 +160,9 @@ mod tests {
         senders.should_silently_fail = true;
         let mut terminal_bytes = TerminalBytes::new(
             1,
-            Box::new(FakeReader { data: Some(b"hello".to_vec()) }),
+            Box::new(FakeReader {
+                data: Some(b"hello".to_vec()),
+            }),
             senders,
             false,
             Arc::new(AtomicBool::new(false)),
@@ -176,7 +181,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].terminal_id, 1);
         assert_eq!(events[0].data, b"hello");
-        assert_eq!(events[0].kind, zellij_utils::session_recording::EventKind::Output);
+        assert_eq!(
+            events[0].kind,
+            zellij_utils::session_recording::EventKind::Output
+        );
         assert_eq!(closed, Some(1));
         Ok(())
     }

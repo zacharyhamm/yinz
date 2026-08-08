@@ -77,9 +77,8 @@ impl RecordingStore {
         capture_input: bool,
         started_at_us: i64,
     ) -> Result<Self> {
-        std::fs::create_dir_all(data_dir).map_err(|e| {
-            anyhow::anyhow!("failed to create data dir {:?}: {}", data_dir, e)
-        })?;
+        std::fs::create_dir_all(data_dir)
+            .map_err(|e| anyhow::anyhow!("failed to create data dir {:?}: {}", data_dir, e))?;
         let db_path = data_dir.join("session-recordings.db");
         let connection = rusqlite::Connection::open(&db_path)?;
         // pragmas
@@ -145,9 +144,9 @@ impl RecordingStore {
     }
 
     fn get_pane_id(&self, terminal_id: u32) -> Result<Option<i64>> {
-        let mut stmt = self.connection.prepare(
-            "SELECT id FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
-        )?;
+        let mut stmt = self
+            .connection
+            .prepare("SELECT id FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2")?;
         let mut rows = stmt.query(rusqlite::params![self.session_id, terminal_id as i64])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -184,7 +183,8 @@ impl RecordingStore {
                 let mut stmt = tx.prepare(
                     "SELECT id FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
-                let mut rows = stmt.query(rusqlite::params![self.session_id, event.terminal_id as i64])?;
+                let mut rows =
+                    stmt.query(rusqlite::params![self.session_id, event.terminal_id as i64])?;
                 if let Some(row) = rows.next()? {
                     row.get(0)?
                 } else {
@@ -216,7 +216,8 @@ impl RecordingStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT id, initial_cols, initial_rows FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
-                let mut rows = stmt.query(rusqlite::params![self.session_id, pane.terminal_id as i64])?;
+                let mut rows =
+                    stmt.query(rusqlite::params![self.session_id, pane.terminal_id as i64])?;
                 if let Some(row) = rows.next()? {
                     Some((row.get(0)?, row.get(1)?, row.get(2)?))
                 } else {
@@ -327,9 +328,7 @@ mod tests {
         let event_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM recording_events", [], |r| r.get(0))?;
         assert_eq!(event_count, 3);
-        let mut stmt = conn.prepare(
-            "SELECT code FROM recording_events ORDER BY elapsed_us, id",
-        )?;
+        let mut stmt = conn.prepare("SELECT code FROM recording_events ORDER BY elapsed_us, id")?;
         let codes: Vec<String> = stmt
             .query_map([], |r| r.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -416,11 +415,10 @@ mod tests {
             let event_count: i64 =
                 conn.query_row("SELECT COUNT(*) FROM recording_events", [], |r| r.get(0))?;
             assert_eq!(event_count, 1);
-            let data: Vec<u8> = conn.query_row(
-                "SELECT data FROM recording_events LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?;
+            let data: Vec<u8> =
+                conn.query_row("SELECT data FROM recording_events LIMIT 1", [], |r| {
+                    r.get(0)
+                })?;
             assert_eq!(data, b"hello");
         }
         Ok(())
@@ -556,16 +554,28 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     })?;
     let mut results = Vec::new();
     for row in pane_rows {
-        let (id, session_name, tab_name, terminal_id, pane_title, started_elapsed_us, session_started, ended_elapsed_us, capture_input_int, error, _s_started, _s_id) = row?;
+        let (
+            id,
+            session_name,
+            tab_name,
+            terminal_id,
+            pane_title,
+            started_elapsed_us,
+            session_started,
+            ended_elapsed_us,
+            capture_input_int,
+            error,
+            _s_started,
+            _s_id,
+        ) = row?;
         let pane_id = id;
         // duration: if pane has ended, duration = ended - started_elapsed
         // else use max event time, else 0
         let duration_us = if let Some(ended) = ended_elapsed_us {
             ended - started_elapsed_us
         } else {
-            let mut stmt2 = conn.prepare(
-                "SELECT MAX(elapsed_us) FROM recording_events WHERE pane_id = ?1",
-            )?;
+            let mut stmt2 =
+                conn.prepare("SELECT MAX(elapsed_us) FROM recording_events WHERE pane_id = ?1")?;
             let max: Option<i64> = stmt2
                 .query_row(rusqlite::params![pane_id], |r| r.get(0))
                 .unwrap_or(None);
@@ -627,7 +637,17 @@ pub fn export_recording(
             None
         }
     };
-    let (pane_id, _session_id, initial_cols, initial_rows, _started_elapsed, session_name, tab_name, session_started_us, pane_title_opt) = match pane {
+    let (
+        pane_id,
+        _session_id,
+        initial_cols,
+        initial_rows,
+        _started_elapsed,
+        session_name,
+        tab_name,
+        session_started_us,
+        pane_title_opt,
+    ) = match pane {
         Some(v) => v,
         None => anyhow::bail!("recording {} not found", recording_id),
     };
@@ -660,7 +680,7 @@ pub fn export_recording(
             None => elapsed_us,
         };
         // but spec example: events at 0, 500k, 1250k, 2000k with intervals 0.0, 0.5, 0.75, 0.75
-        // That suggests intervals are from prior event, first interval 0.0 if first event at 0? 
+        // That suggests intervals are from prior event, first interval 0.0 if first event at 0?
         // Our events are stored with absolute elapsed from pane start? In store, elapsed_us is absolute from session start? In test they use 0,500k etc as elapsed.
         // Need to handle first interval as elapsed_us - 0? Actually first event at 0 should be 0.0
         // For our implementation, first interval should be elapsed_us / 1_000_000? But spec shows intervals 0.0,0.5,0.75,0.75 for events at 0,500k,1250k,2000k where last interval is 0.75 not 0.75? Wait 2000k - 1250k = 750k =0.75 yep.

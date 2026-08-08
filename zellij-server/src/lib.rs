@@ -2058,29 +2058,26 @@ fn init_session(
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
 
-    let (session_recorder_handle, session_recorder_thread) = if config
-        .options
-        .session_recording
-        .unwrap_or(false)
-    {
-        let capture_input = config.options.session_recording.unwrap_or(false)
-            && config.options.session_recording_input.unwrap_or(false);
-        let session_name = config
-            .options
-            .session_name
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        match crate::session_recorder::spawn_session_recorder(
-            data_dir.clone(),
-            session_name,
-            capture_input,
-        ) {
-            Some((handle, thread)) => (Some(handle), Some(thread)),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
+    let (session_recorder_handle, session_recorder_thread) =
+        if config.options.session_recording.unwrap_or(false) {
+            let capture_input = config.options.session_recording.unwrap_or(false)
+                && config.options.session_recording_input.unwrap_or(false);
+            let session_name = config
+                .options
+                .session_name
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            match crate::session_recorder::spawn_session_recorder(
+                data_dir.clone(),
+                session_name,
+                capture_input,
+            ) {
+                Some((handle, thread)) => (Some(handle), Some(thread)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);

@@ -16226,14 +16226,17 @@ fn recorder_pane_metadata() {
         pane_content_columns: 80,
         ..Default::default()
     };
-    pane_manifest.panes.insert(0, vec![terminal_pane.clone(), plugin_pane]);
+    pane_manifest
+        .panes
+        .insert(0, vec![terminal_pane.clone(), plugin_pane]);
     let tab_info = TabInfo {
         position: 0,
         name: "my tab".to_string(),
         ..Default::default()
     };
     // Try to call conversion helper - will fail until implemented
-    let metadata = crate::screen::Screen::convert_pane_metadata(&pane_manifest, &[tab_info.clone()]);
+    let metadata =
+        crate::screen::Screen::convert_pane_metadata(&pane_manifest, &[tab_info.clone()]);
     assert_eq!(metadata.len(), 1, "should filter plugin panes");
     assert_eq!(metadata[0].terminal_id, 5);
     assert_eq!(metadata[0].tab_id, 0);

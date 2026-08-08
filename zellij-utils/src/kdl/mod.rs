@@ -8200,13 +8200,8 @@ fn session_recording_options_kdl_roundtrip() {
     let mut fake_document = KdlDocument::new();
     let mut serialized_clone2 = serialized.clone();
     fake_document.nodes_mut().append(&mut serialized_clone2);
-    let reparsed = Options::from_kdl(
-        &fake_document
-            .to_string()
-            .parse::<KdlDocument>()
-            .unwrap(),
-    )
-    .unwrap();
+    let reparsed =
+        Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
     assert_eq!(reparsed.session_recording, Some(true));
     assert_eq!(reparsed.session_recording_input, Some(true));
 }

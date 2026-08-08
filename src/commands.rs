@@ -1026,7 +1026,10 @@ pub fn get_config_options_from_cli_args(opts: &CliArgs) -> Result<Options, Strin
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn recordings(command: zellij_utils::cli::Recordings, data_dir: PathBuf) -> anyhow::Result<()> {
+pub(crate) fn recordings(
+    command: zellij_utils::cli::Recordings,
+    data_dir: PathBuf,
+) -> anyhow::Result<()> {
     use zellij_utils::cli::Recordings as RecordingsCli;
     use zellij_utils::home::get_default_data_dir;
     let _ = get_default_data_dir; // to satisfy use
@@ -1037,24 +1040,37 @@ pub(crate) fn recordings(command: zellij_utils::cli::Recordings, data_dir: PathB
             print!("{}", output);
             Ok(())
         },
-        RecordingsCli::Export { recording_id, output } => {
+        RecordingsCli::Export {
+            recording_id,
+            output,
+        } => {
             if let Some(ref path) = output {
                 if path.exists() {
                     anyhow::bail!("output file {:?} already exists", path);
                 }
                 let mut file = std::fs::File::create(path)?;
-                zellij_utils::session_recording::export_recording(&data_dir, recording_id, &mut file)?;
+                zellij_utils::session_recording::export_recording(
+                    &data_dir,
+                    recording_id,
+                    &mut file,
+                )?;
             } else {
                 let stdout = std::io::stdout();
                 let mut handle = stdout.lock();
-                zellij_utils::session_recording::export_recording(&data_dir, recording_id, &mut handle)?;
+                zellij_utils::session_recording::export_recording(
+                    &data_dir,
+                    recording_id,
+                    &mut handle,
+                )?;
             }
             Ok(())
         },
     }
 }
 
-pub(crate) fn format_recordings_list(summaries: &[zellij_utils::session_recording::RecordingSummary]) -> String {
+pub(crate) fn format_recordings_list(
+    summaries: &[zellij_utils::session_recording::RecordingSummary],
+) -> String {
     // Header as specified in plan
     let mut out = String::new();
     out.push_str("ID  SESSION  TAB  PANE  STARTED  DURATION  INPUT  STATE\n");

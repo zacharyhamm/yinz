@@ -36,7 +36,10 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::output(terminal_id, elapsed_us, data);
-        if let Err(_) = self.sender.try_send(RecorderInstruction::Events(vec![event])) {
+        if let Err(_) = self
+            .sender
+            .try_send(RecorderInstruction::Events(vec![event]))
+        {
             self.enabled.store(false, Ordering::Relaxed);
             log::error!("session recorder channel full or disconnected, disabling");
         }
@@ -51,7 +54,10 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::input(terminal_id, elapsed_us, data);
-        if let Err(_) = self.sender.try_send(RecorderInstruction::Events(vec![event])) {
+        if let Err(_) = self
+            .sender
+            .try_send(RecorderInstruction::Events(vec![event]))
+        {
             self.enabled.store(false, Ordering::Relaxed);
             log::error!("session recorder channel full or disconnected, disabling");
         }
@@ -63,7 +69,10 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::resize(terminal_id, elapsed_us, cols, rows);
-        if let Err(_) = self.sender.try_send(RecorderInstruction::Events(vec![event])) {
+        if let Err(_) = self
+            .sender
+            .try_send(RecorderInstruction::Events(vec![event]))
+        {
             self.enabled.store(false, Ordering::Relaxed);
             log::error!("session recorder channel full or disconnected, disabling");
         }
@@ -102,12 +111,19 @@ pub fn spawn_session_recorder(
 ) -> Option<(SessionRecorderHandle, std::thread::JoinHandle<()>)> {
     // validate data_dir can be created and is a directory
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        log::error!("failed to create session recording data_dir {:?}: {}", data_dir, e);
+        log::error!(
+            "failed to create session recording data_dir {:?}: {}",
+            data_dir,
+            e
+        );
         return None;
     }
     if let Ok(md) = std::fs::metadata(&data_dir) {
         if !md.is_dir() {
-            log::error!("session recording data_dir is not a directory: {:?}", data_dir);
+            log::error!(
+                "session recording data_dir is not a directory: {:?}",
+                data_dir
+            );
             return None;
         }
     }
@@ -122,7 +138,14 @@ pub fn spawn_session_recorder(
     let enabled_clone = enabled.clone();
     let started_at = handle.started_at;
     let thread = std::thread::spawn(move || {
-        recorder_thread(data_dir, session_name, capture_input, started_at, receiver, enabled_clone);
+        recorder_thread(
+            data_dir,
+            session_name,
+            capture_input,
+            started_at,
+            receiver,
+            enabled_clone,
+        );
     });
     Some((handle, thread))
 }
@@ -149,7 +172,7 @@ fn recorder_thread(
         Err(e) => {
             log::error!("failed to start session recorder: {}", e);
             return;
-        }
+        },
     };
     let mut batch: Vec<RecordedEvent> = Vec::new();
     let mut batch_start: Option<Instant> = None;
@@ -243,7 +266,10 @@ fn recorder_thread(
                                 }
                                 let _ = store.update_panes(&panes, elapsed_us);
                             },
-                            RecorderInstruction::PaneClosed { terminal_id, elapsed_us } => {
+                            RecorderInstruction::PaneClosed {
+                                terminal_id,
+                                elapsed_us,
+                            } => {
                                 if !batch.is_empty() {
                                     let _ = store.record_events(&batch);
                                     batch.clear();
@@ -288,7 +314,10 @@ fn recorder_thread(
                         }
                         let _ = store.update_panes(&panes, elapsed_us);
                     },
-                    RecorderInstruction::PaneClosed { terminal_id, elapsed_us } => {
+                    RecorderInstruction::PaneClosed {
+                        terminal_id,
+                        elapsed_us,
+                    } => {
                         if !batch.is_empty() {
                             let _ = store.record_events(&batch);
                             batch.clear();
@@ -328,7 +357,8 @@ mod tests {
     #[test]
     fn records_through_thread() -> anyhow::Result<()> {
         let dir = tempdir()?;
-        let (handle, thread) = spawn_session_recorder(dir.path().to_path_buf(), "test".to_string(), true).unwrap();
+        let (handle, thread) =
+            spawn_session_recorder(dir.path().to_path_buf(), "test".to_string(), true).unwrap();
         let metadata = PaneMetadata {
             terminal_id: 1,
             tab_id: 0,
@@ -348,15 +378,25 @@ mod tests {
         // open DB and assert
         let db_path = dir.path().join("session-recordings.db");
         let conn = rusqlite::Connection::open(&db_path)?;
-        let session_count: i64 = conn.query_row("SELECT COUNT(*) FROM recording_sessions", [], |r| r.get(0))?;
+        let session_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM recording_sessions", [], |r| r.get(0))?;
         assert_eq!(session_count, 1);
-        let pane_count: i64 = conn.query_row("SELECT COUNT(*) FROM recording_panes", [], |r| r.get(0))?;
+        let pane_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM recording_panes", [], |r| r.get(0))?;
         assert_eq!(pane_count, 1);
-        let event_count: i64 = conn.query_row("SELECT COUNT(*) FROM recording_events", [], |r| r.get(0))?;
+        let event_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM recording_events", [], |r| r.get(0))?;
         assert_eq!(event_count, 3);
-        let ended: Option<i64> = conn.query_row("SELECT ended_elapsed_us FROM recording_panes WHERE terminal_id = 1", [], |r| r.get(0))?;
+        let ended: Option<i64> = conn.query_row(
+            "SELECT ended_elapsed_us FROM recording_panes WHERE terminal_id = 1",
+            [],
+            |r| r.get(0),
+        )?;
         assert!(ended.is_some());
-        let sess_ended: Option<i64> = conn.query_row("SELECT ended_at_us FROM recording_sessions", [], |r| r.get(0))?;
+        let sess_ended: Option<i64> =
+            conn.query_row("SELECT ended_at_us FROM recording_sessions", [], |r| {
+                r.get(0)
+            })?;
         assert!(sess_ended.is_some());
         Ok(())
     }
@@ -366,7 +406,13 @@ mod tests {
         // Create a bounded channel with capacity 1 and a receiver that never reads
         let (sender, _receiver) = crossbeam::channel::bounded::<RecorderInstruction>(1);
         // fill it
-        sender.try_send(RecorderInstruction::Events(vec![RecordedEvent::output(1, 0, b"x".to_vec())])).unwrap();
+        sender
+            .try_send(RecorderInstruction::Events(vec![RecordedEvent::output(
+                1,
+                0,
+                b"x".to_vec(),
+            )]))
+            .unwrap();
         assert!(sender.is_full());
         let enabled = Arc::new(AtomicBool::new(true));
         let handle = SessionRecorderHandle {
@@ -406,7 +452,10 @@ mod tests {
             enabled: enabled.clone(),
         };
         handle.input(1, b"secret".to_vec());
-        assert!(receiver.is_empty(), "input should be ignored when capture_input false");
+        assert!(
+            receiver.is_empty(),
+            "input should be ignored when capture_input false"
+        );
         // output should still work
         handle.output(1, b"hello".to_vec());
         assert_eq!(receiver.len(), 1);
