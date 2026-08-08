@@ -5912,6 +5912,36 @@ impl Screen {
             false
         }
     }
+    pub(crate) fn convert_pane_metadata(
+        pane_manifest: &PaneManifest,
+        tab_infos: &[TabInfo],
+    ) -> Vec<zellij_utils::session_recording::PaneMetadata> {
+        use zellij_utils::session_recording::PaneMetadata;
+        let mut result = Vec::new();
+        // Build a map from tab position to TabInfo for quick lookup
+        let tab_by_position: std::collections::HashMap<usize, &TabInfo> =
+            tab_infos.iter().map(|t| (t.position, t)).collect();
+        for (tab_position_key, pane_infos) in &pane_manifest.panes {
+            if let Some(tab_info) = tab_by_position.get(tab_position_key) {
+                for pane in pane_infos {
+                    if pane.is_plugin {
+                        continue;
+                    }
+                    result.push(PaneMetadata {
+                        terminal_id: pane.id,
+                        tab_id: tab_info.tab_id,
+                        tab_position: tab_info.position,
+                        tab_name: tab_info.name.clone(),
+                        title: pane.title.clone(),
+                        cols: pane.pane_content_columns,
+                        rows: pane.pane_content_rows,
+                    });
+                }
+            }
+        }
+        result
+    }
+
     fn log_and_report_session_state(&mut self) -> Result<()> {
         let err_context = || "Failed to log and report session state".to_string();
 
@@ -5922,6 +5952,13 @@ impl Screen {
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;
         let tab_infos = self.generate_and_report_tab_state()?;
+        // send pane metadata to session recorder if enabled
+        {
+            let metadata = Self::convert_pane_metadata(&pane_manifest, &tab_infos);
+            if let Some(recorder) = &self.bus.senders.session_recorder {
+                recorder.pane_metadata(metadata);
+            }
+        }
 
         // Lazy-load layouts on first call if cache is empty
         // After that, cache is updated by watcher via UpdateAvailableLayouts instruction

@@ -16203,3 +16203,43 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
         "a later resize must not divide the stale text area by the new grid"
     );
 }
+
+#[test]
+fn recorder_pane_metadata() {
+    use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
+    use zellij_utils::session_recording::PaneMetadata;
+    // Create one tab with one terminal pane and one plugin pane
+    let mut pane_manifest = PaneManifest::default();
+    let terminal_pane = PaneInfo {
+        id: 5,
+        is_plugin: false,
+        title: "my terminal".to_string(),
+        pane_content_rows: 24,
+        pane_content_columns: 80,
+        ..Default::default()
+    };
+    let plugin_pane = PaneInfo {
+        id: 6,
+        is_plugin: true,
+        title: "plugin".to_string(),
+        pane_content_rows: 24,
+        pane_content_columns: 80,
+        ..Default::default()
+    };
+    pane_manifest.panes.insert(0, vec![terminal_pane.clone(), plugin_pane]);
+    let tab_info = TabInfo {
+        position: 0,
+        name: "my tab".to_string(),
+        ..Default::default()
+    };
+    // Try to call conversion helper - will fail until implemented
+    let metadata = crate::screen::Screen::convert_pane_metadata(&pane_manifest, &[tab_info.clone()]);
+    assert_eq!(metadata.len(), 1, "should filter plugin panes");
+    assert_eq!(metadata[0].terminal_id, 5);
+    assert_eq!(metadata[0].tab_id, 0);
+    assert_eq!(metadata[0].tab_position, 0);
+    assert_eq!(metadata[0].tab_name, "my tab");
+    assert_eq!(metadata[0].title, "my terminal");
+    assert_eq!(metadata[0].cols, 80);
+    assert_eq!(metadata[0].rows, 24);
+}
