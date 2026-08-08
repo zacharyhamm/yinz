@@ -179,6 +179,9 @@ impl<'a> PluginLoader<'a> {
             .get_typed_func::<(), ()>(&mut store, "load")
             .with_context(err_context)?;
         let mut workers = HashMap::new();
+        // Workers share the plugin's permission cell so grants (which can land
+        // after worker creation) apply to them too.
+        let plugin_permissions = store.data().permissions.clone();
         for function_name in instance
             .exports(&mut store)
             .filter_map(|export| export.clone().into_func().map(|_| export.name()))
@@ -186,6 +189,7 @@ impl<'a> PluginLoader<'a> {
             if function_name.ends_with("_worker") {
                 let (mut store, instance) =
                     self.create_plugin_instance_and_wasi_env_for_worker()?;
+                store.data_mut().permissions = plugin_permissions.clone();
                 let start_function_for_worker = instance
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .with_context(err_context)?;
