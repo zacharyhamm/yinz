@@ -1123,6 +1123,21 @@ mod search_tests {
 
         assert_eq!(indexed_lines(&[&stream]), indexed_lines(&chunks));
     }
+
+    /// The literal-phrase fallback exists so that anything a person pastes in — a log line
+    /// with a colon, an apostrophe, a stray quote — searches instead of erroring. So no
+    /// string at all may come back as an FTS5 syntax error.
+    #[hegel::test]
+    fn any_query_string_searches_rather_than_erroring(tc: hegel::TestCase) {
+        let query = tc.draw(generators::text());
+        let dir = tempdir().unwrap();
+        {
+            let mut store = open(dir.path());
+            record(&mut store, 100, b"error: can't connect to host\n");
+        }
+        let hits = search_recordings(dir.path(), &query, 10);
+        assert!(hits.is_ok(), "{:?} errored: {:?}", query, hits.err());
+    }
 }
 
 #[cfg(test)]
