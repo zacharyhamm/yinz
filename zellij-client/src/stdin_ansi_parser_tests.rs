@@ -1644,10 +1644,8 @@ fn chunk_splitting_does_not_change_what_is_parsed(tc: hegel::TestCase) {
     let bytes = tc.draw(stdin_bytes());
     // Split points are bounded by the buffer length so they land on real
     // boundaries instead of being folded modulo into a few low offsets.
-    let mut splits = tc.draw(
-        generators::vecs(generators::integers::<usize>().max_value(bytes.len()))
-            .max_size(8),
-    );
+    let mut splits = tc
+        .draw(generators::vecs(generators::integers::<usize>().max_value(bytes.len())).max_size(8));
     splits.sort_unstable();
     splits.dedup();
 
@@ -1662,10 +1660,8 @@ fn chunk_splitting_does_not_change_what_is_parsed(tc: hegel::TestCase) {
     let whole = drive(&[&bytes[..]]);
     let split = drive(&chunks);
     assert_eq!(
-        whole,
-        split,
+        whole, split,
         "feeding {:?} whole differs from feeding it split at {:?}",
-        bytes,
-        splits
+        bytes, splits
     );
 }

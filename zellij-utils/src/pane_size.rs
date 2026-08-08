@@ -301,20 +301,16 @@ impl PaneGeom {
         // arbitrarily large
         self.x = match &x {
             Some(x) => origin.0.saturating_add(x.to_fixed(viewport_cols)),
-            None if width.is_some() => {
-                origin
-                    .0
-                    .saturating_add(viewport_cols.saturating_sub(self.cols.as_usize()) / 2)
-            },
+            None if width.is_some() => origin
+                .0
+                .saturating_add(viewport_cols.saturating_sub(self.cols.as_usize()) / 2),
             None => self.x,
         };
         self.y = match &y {
             Some(y) => origin.1.saturating_add(y.to_fixed(viewport_rows)),
-            None if height.is_some() => {
-                origin
-                    .1
-                    .saturating_add(viewport_rows.saturating_sub(self.rows.as_usize()) / 2)
-            },
+            None if height.is_some() => origin
+                .1
+                .saturating_add(viewport_rows.saturating_sub(self.rows.as_usize()) / 2),
             None => self.y,
         };
     }

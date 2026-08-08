@@ -286,7 +286,7 @@ fn reverse_index_region_scroll_reaps_fully_below_margin() {
 
 // ---- property-based tests (hegel) ----
 
-use hegel::generators::{self, Generator};
+use hegel::generators;
 
 /// `crop_rgba` takes seven unrelated `usize`s and indexes `src` with the product of three of
 /// them. Sizes are capped only to keep allocation sane, not to dodge edge cases: 0 and 1 are

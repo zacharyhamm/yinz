@@ -295,11 +295,7 @@ mod tests {
             0..=15 => (0, 0, 0),
             16..=231 => {
                 let idx = (index - 16) as usize;
-                (
-                    LEVELS[idx / 36],
-                    LEVELS[(idx / 6) % 6],
-                    LEVELS[idx % 6],
-                )
+                (LEVELS[idx / 36], LEVELS[(idx / 6) % 6], LEVELS[idx % 6])
             },
             232..=255 => {
                 let v = 8 + 10 * (index - 232);

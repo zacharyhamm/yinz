@@ -150,7 +150,7 @@ fn rgb24_images_are_normalized_to_rgba_at_store_time() {
 
 // ---- property-based tests (hegel) ----
 
-use hegel::generators::{self, Generator};
+use hegel::generators;
 
 #[hegel::composite]
 fn any_decoded_image(tc: &hegel::TestCase) -> DecodedImage {
@@ -181,9 +181,8 @@ impl KittyImageStoreModel {
     /// (or have since been evicted), so every entry point is exercised with both.
     fn any_id(&self, tc: &hegel::TestCase) -> InternalImageId {
         if !self.known_ids.is_empty() && tc.draw(generators::booleans()) {
-            let index = tc.draw(
-                generators::integers::<usize>().max_value(self.known_ids.len() - 1),
-            );
+            let index =
+                tc.draw(generators::integers::<usize>().max_value(self.known_ids.len() - 1));
             self.known_ids[index]
         } else {
             tc.draw(generators::integers::<InternalImageId>().max_value(64))

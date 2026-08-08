@@ -934,7 +934,7 @@ fn spans_start_at_the_given_origin() {
 
 // ---- property-based tests (hegel) ----
 
-use hegel::generators::{self, Generator};
+use hegel::generators;
 
 /// Generated `PaneSpec`s for the class-B oracle.
 ///
@@ -983,7 +983,9 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
     // ids must be distinct: `run_layout` keys a `HashMap` by id, so duplicates would silently
     // drop panes and make `input_spec` lookups meaningless
     let pane_count = tc.draw(generators::integers::<u32>().max_value(6));
-    let specs: Vec<PaneSpec> = (0..pane_count).map(|id| tc.draw(any_pane_spec(id))).collect();
+    let specs: Vec<PaneSpec> = (0..pane_count)
+        .map(|id| tc.draw(any_pane_spec(id)))
+        .collect();
     let direction = tc.draw(generators::sampled_from(vec![
         SplitDirection::Horizontal,
         SplitDirection::Vertical,
@@ -1010,5 +1012,18 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
         space,
         origin
     );
+    // A layout that cannot fit the space it was given (say a `Fixed(1)` pane in 0 columns) is
+    // legitimately unsatisfiable. `PaneResizer::layout` bails before `apply_spans`, so the
+    // contract there is that nothing moved - the output invariants have no output to check.
+    if let Outcome::OtherErr(_) = run.outcome {
+        for snapshot in &run.panes {
+            assert_geom_field_eq(
+                &snapshot.current,
+                &input_spec(&specs, snapshot.id).geom(),
+                &format!("{:?} after a failed layout", snapshot.id),
+            );
+        }
+        return;
+    }
     assert_class_b_invariants(&fixture, &run);
 }

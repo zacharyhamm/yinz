@@ -500,7 +500,7 @@ mod tests {
 
     // ---- property-based tests (hegel) ----
 
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
 
     /// Small pools on purpose: `PaneGroups` is a per-client set, so the interesting behaviour
     /// (aliasing, re-adding, toggling something another rule already added) only shows up when the

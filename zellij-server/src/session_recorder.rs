@@ -263,7 +263,9 @@ fn recorder_thread(
             if elapsed >= Duration::from_millis(100) {
                 // flush batch
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                    if let Err(e) = store.record_events(&batch) {
+                        log::error!("failed to record events: {}", e);
+                    }
                     batch.clear();
                     batch_start = None;
                 }
@@ -276,7 +278,9 @@ fn recorder_thread(
         };
         // also flush on 256
         if batch.len() >= 256 {
-            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+            if let Err(e) = store.record_events(&batch) {
+                log::error!("failed to record events: {}", e);
+            }
             batch.clear();
             batch_start = None;
             continue;
@@ -288,7 +292,9 @@ fn recorder_thread(
                 }
                 batch.append(&mut events);
                 if batch.len() >= 256 {
-                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                    if let Err(e) = store.record_events(&batch) {
+                        log::error!("failed to record events: {}", e);
+                    }
                     batch.clear();
                     batch_start = None;
                 }
@@ -296,62 +302,84 @@ fn recorder_thread(
             Ok(RecorderInstruction::PaneMetadata { elapsed_us, panes }) => {
                 // flush batch before metadata
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                    if let Err(e) = store.record_events(&batch) {
+                        log::error!("failed to record events: {}", e);
+                    }
                     batch.clear();
                     batch_start = None;
                 }
-                if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
+                if let Err(e) = store.update_panes(&panes, elapsed_us) {
+                    log::error!("failed to update panes: {}", e);
+                }
             },
             Ok(RecorderInstruction::PaneClosed {
                 terminal_id,
                 elapsed_us,
             }) => {
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                    if let Err(e) = store.record_events(&batch) {
+                        log::error!("failed to record events: {}", e);
+                    }
                     batch.clear();
                     batch_start = None;
                 }
-                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
+                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
+                    log::error!("failed to finish pane {}: {}", terminal_id, e);
+                }
             },
             Ok(RecorderInstruction::Stop) => {
                 break;
             },
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                    if let Err(e) = store.record_events(&batch) {
+                        log::error!("failed to record events: {}", e);
+                    }
                     batch.clear();
                     batch_start = None;
                 }
                 // check enabled flag
                 if !enabled.load(Ordering::Relaxed) {
                     // mark incomplete but flush already done
-                    if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
+                    if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
+                        log::error!("failed to mark incomplete: {}", e);
+                    }
                     // drain remaining instructions without blocking?
                     while let Ok(instr) = receiver.try_recv() {
                         match instr {
                             RecorderInstruction::Events(mut ev) => {
                                 batch.append(&mut ev);
                                 if batch.len() >= 256 {
-                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                                    if let Err(e) = store.record_events(&batch) {
+                                        log::error!("failed to record events: {}", e);
+                                    }
                                     batch.clear();
                                 }
                             },
                             RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
                                 if !batch.is_empty() {
-                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                                    if let Err(e) = store.record_events(&batch) {
+                                        log::error!("failed to record events: {}", e);
+                                    }
                                     batch.clear();
                                 }
-                                if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
+                                if let Err(e) = store.update_panes(&panes, elapsed_us) {
+                                    log::error!("failed to update panes: {}", e);
+                                }
                             },
                             RecorderInstruction::PaneClosed {
                                 terminal_id,
                                 elapsed_us,
                             } => {
                                 if !batch.is_empty() {
-                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                                    if let Err(e) = store.record_events(&batch) {
+                                        log::error!("failed to record events: {}", e);
+                                    }
                                     batch.clear();
                                 }
-                                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
+                                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
+                                    log::error!("failed to finish pane {}: {}", terminal_id, e);
+                                }
                             },
                             RecorderInstruction::Stop => {
                                 break;
@@ -359,7 +387,9 @@ fn recorder_thread(
                         }
                     }
                     if !batch.is_empty() {
-                        if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                        if let Err(e) = store.record_events(&batch) {
+                            log::error!("failed to record events: {}", e);
+                        }
                     }
                     break;
                 }
@@ -371,43 +401,59 @@ fn recorder_thread(
         if !enabled.load(Ordering::Relaxed) {
             // flush and mark incomplete
             if !batch.is_empty() {
-                if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                if let Err(e) = store.record_events(&batch) {
+                    log::error!("failed to record events: {}", e);
+                }
                 batch.clear();
             }
-            if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
+            if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
+                log::error!("failed to mark incomplete: {}", e);
+            }
             // drain
             while let Ok(instr) = receiver.try_recv() {
                 match instr {
                     RecorderInstruction::Events(mut ev) => batch.append(&mut ev),
                     RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
                         if !batch.is_empty() {
-                            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                            if let Err(e) = store.record_events(&batch) {
+                                log::error!("failed to record events: {}", e);
+                            }
                             batch.clear();
                         }
-                        if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
+                        if let Err(e) = store.update_panes(&panes, elapsed_us) {
+                            log::error!("failed to update panes: {}", e);
+                        }
                     },
                     RecorderInstruction::PaneClosed {
                         terminal_id,
                         elapsed_us,
                     } => {
                         if !batch.is_empty() {
-                            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                            if let Err(e) = store.record_events(&batch) {
+                                log::error!("failed to record events: {}", e);
+                            }
                             batch.clear();
                         }
-                        if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
+                        if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
+                            log::error!("failed to finish pane {}: {}", terminal_id, e);
+                        }
                     },
                     RecorderInstruction::Stop => break,
                 }
             }
             if !batch.is_empty() {
-                if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+                if let Err(e) = store.record_events(&batch) {
+                    log::error!("failed to record events: {}", e);
+                }
             }
             break;
         }
     }
     // flush remaining
     if !batch.is_empty() {
-        if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
+        if let Err(e) = store.record_events(&batch) {
+            log::error!("failed to record events: {}", e);
+        }
     }
     let ended_at_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -513,7 +559,10 @@ mod tests {
         handle.output(1, b"y".to_vec());
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(100), "should not block");
-        assert!(enabled.load(Ordering::Relaxed), "should remain enabled on Full");
+        assert!(
+            enabled.load(Ordering::Relaxed),
+            "should remain enabled on Full"
+        );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
         // second call should also try and drop, not be no-op due to disabled
         handle.output(1, b"z".to_vec());
@@ -533,7 +582,10 @@ mod tests {
             dropped: dropped2.clone(),
         };
         handle2.output(1, b"a".to_vec());
-        assert!(!enabled2.load(Ordering::Relaxed), "disconnected should disable");
+        assert!(
+            !enabled2.load(Ordering::Relaxed),
+            "disconnected should disable"
+        );
     }
 
     #[test]

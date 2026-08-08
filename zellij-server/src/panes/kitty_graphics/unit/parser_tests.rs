@@ -388,7 +388,7 @@ fn temp_file_outside_temp_dir_with_magic_name_is_deleted() {
 
 // ---- property-based tests (hegel) ----
 
-use hegel::generators::{self, Generator};
+use hegel::generators;
 
 /// A plausible-looking kitty control string, so the generated chunks actually reach the parser's
 /// interesting paths instead of bouncing off `parse_control_data`.
@@ -404,8 +404,22 @@ fn any_control_chunk(tc: &hegel::TestCase) -> Vec<u8> {
         "X", "Y", "t", "o", "S", "O", "??",
     ];
     let values = vec![
-        "0", "1", "2", "24", "32", "T", "t", "d", "q", "-1", "a", "", "4294967296", "-99999999999",
-        "1.5", "\u{ff}",
+        "0",
+        "1",
+        "2",
+        "24",
+        "32",
+        "T",
+        "t",
+        "d",
+        "q",
+        "-1",
+        "a",
+        "",
+        "4294967296",
+        "-99999999999",
+        "1.5",
+        "\u{ff}",
     ];
     let mut control = String::new();
     for index in 0..pair_count {

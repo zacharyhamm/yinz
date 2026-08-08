@@ -205,7 +205,7 @@ mod logging_pipe_test {
 
     // ---- property-based tests (hegel) ----
 
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
 
     /// A write that is either arbitrary bytes or something shaped like real plugin output: text
     /// with lone `\n`, `\r\n`, and multi-byte UTF-8 deliberately split across the write boundary,

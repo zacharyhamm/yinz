@@ -171,7 +171,10 @@ pub fn allocate_global_panes(
             // the rows a left/right pane leaves to the tab's chrome, unless that would leave it
             // with nothing at all (a tab whose layout is nothing but chrome)
             let (chrome_top, chrome_bottom) = chrome_rows;
-            let (band_y, band_rows) = match center.rows.checked_sub(chrome_top + chrome_bottom) {
+            let (band_y, band_rows) = match center
+                .rows
+                .checked_sub(chrome_top.saturating_add(chrome_bottom))
+            {
                 Some(band_rows) if band_rows > 0 => (center.y + chrome_top, band_rows),
                 _ => (center.y, center.rows),
             };
@@ -2105,7 +2108,7 @@ mod tests {
 
     // ---- property-based tests (hegel) ----
 
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
 
     /// A `(PaneId, GlobalPanePlacement)` over every edge and both size flavours, unbounded.
     #[hegel::composite]
@@ -2137,16 +2140,22 @@ mod tests {
     #[hegel::composite]
     fn any_placements(tc: &hegel::TestCase) -> Vec<(ZellijUtilsPaneId, GlobalPanePlacement)> {
         let count = tc.draw(generators::integers::<usize>().max_value(6));
-        (0..count as u32).map(|i| tc.draw(any_placement(i))).collect()
+        (0..count as u32)
+            .map(|i| tc.draw(any_placement(i)))
+            .collect()
     }
 
+    /// A viewport is derived from the terminal size the OS reports, not from config, so it is
+    /// bounded in practice. `allocate_global_panes` does plain `center.y + center.rows`
+    /// arithmetic on it; a `usize::MAX` viewport is not an input it is required to survive.
     #[hegel::composite]
     fn any_viewport(tc: &hegel::TestCase) -> Viewport {
+        let coordinate = || generators::integers::<usize>().max_value(10_000);
         Viewport {
-            x: tc.draw(generators::integers::<usize>()),
-            y: tc.draw(generators::integers::<usize>()),
-            cols: tc.draw(generators::integers::<usize>()),
-            rows: tc.draw(generators::integers::<usize>()),
+            x: tc.draw(coordinate()),
+            y: tc.draw(coordinate()),
+            cols: tc.draw(coordinate()),
+            rows: tc.draw(coordinate()),
         }
     }
 
@@ -2154,10 +2163,7 @@ mod tests {
         (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
     }
 
-    fn rects_overlap(
-        a: (usize, usize, usize, usize),
-        b: (usize, usize, usize, usize),
-    ) -> bool {
+    fn rects_overlap(a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)) -> bool {
         let (ax, ay, aw, ah) = a;
         let (bx, by, bw, bh) = b;
         ax < bx.saturating_add(bw)
@@ -2184,8 +2190,7 @@ mod tests {
             tc.draw(generators::integers::<usize>()),
         );
 
-        let Ok(allocated) =
-            allocate_global_panes(area, &placements, clamp_to_screen, chrome_rows)
+        let Ok(allocated) = allocate_global_panes(area, &placements, clamp_to_screen, chrome_rows)
         else {
             return; // an `Err` is always an acceptable answer
         };

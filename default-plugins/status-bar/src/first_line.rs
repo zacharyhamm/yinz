@@ -374,8 +374,11 @@ fn swap_layout_status(
             let mut swap_layout_name = format!(" {} ", swap_layout_name);
             swap_layout_name.make_ascii_uppercase();
             let keycode = swap_layout_keycode(mode_info);
-            let swap_layout_name_len = swap_layout_name.chars().count() + 3; // 2 for the arrow separators, one for the screen end buffer
-                                                                   //
+            // width of the indicator itself: the name between the two separators. Count chars,
+            // not bytes, and count the separator rather than assuming it is one column - it is
+            // empty when the terminal has no arrow fonts.
+            let swap_layout_name_len =
+                swap_layout_name.chars().count() + 2 * separator.chars().count();
             macro_rules! style_swap_layout_indicator {
                 ($style_name:ident) => {{
                     (
@@ -407,10 +410,7 @@ fn swap_layout_status(
                 prefix_separator, swap_layout_name, suffix_separator
             );
             let (part, full_len) = if mode_info.mode == InputMode::Locked {
-                (
-                    format!("{}", swap_layout_indicator),
-                    swap_layout_name_len, // 1 is the space between
-                )
+                (swap_layout_indicator.clone(), swap_layout_name_len)
             } else {
                 (
                     format!(
@@ -420,10 +420,10 @@ fn swap_layout_status(
                         swap_layout_indicator,
                         colored_elements.superkey_prefix.paint(" ")
                     ),
-                    keycode.len + swap_layout_name_len + 1, // 1 is the space between
+                    keycode.len + swap_layout_name_len + 2, // the spaces on either side
                 )
             };
-            let short_len = swap_layout_name_len + 1; // 1 is the space between
+            let short_len = swap_layout_name_len;
             if full_len <= max_len {
                 Some(LinePart {
                     part,
@@ -793,11 +793,12 @@ mod tests {
                 .into_iter()
                 .map(|(key, target, ctrl)| {
                     let bare = KeyWithModifier::new(BareKey::Char(key.chars().next().unwrap()));
-                    let bare = if ctrl { bare.with_ctrl_modifier() } else { bare };
-                    (
-                        bare,
-                        vec![Action::SwitchToMode { input_mode: target }],
-                    )
+                    let bare = if ctrl {
+                        bare.with_ctrl_modifier()
+                    } else {
+                        bare
+                    };
+                    (bare, vec![Action::SwitchToMode { input_mode: target }])
                 })
                 .collect(),
         )];
@@ -822,13 +823,28 @@ mod tests {
         }
     }
 
+    /// A `max_len` no terminal could produce must not be taken literally - the padding loop
+    /// would build a string of that length.
+    #[test]
+    fn first_line_clamps_an_absurd_width() {
+        let part = first_line(&ModeInfo::default(), None, usize::MAX, ">");
+        assert!(
+            part.len <= 10_000,
+            "first_line claimed {} columns for max_len usize::MAX",
+            part.len
+        );
+    }
+
     /// `first_line` must never claim more columns than it was given, and the width it reports
     /// must be the width it actually renders.
     #[hegel::test]
     fn first_line_respects_the_width_it_is_given(tc: hegel::TestCase) {
         let mode_info = tc.draw(any_mode_info());
         let tab_info = tc.draw(generators::optional(any_tab_info()));
-        let max_len = tc.draw(generators::integers::<usize>());
+        // bounded for speed, not to dodge a defect: the padding loop emits one styled space per
+        // column, so a 10_000-column draw dominates the runtime of the whole suite.
+        // `first_line_clamps_an_absurd_width` covers the top end.
+        let max_len = tc.draw(generators::integers::<usize>().max_value(500));
         let separator = tc.draw(generators::sampled_from(vec![">", "", "|", "\u{e0b0}"]));
 
         let part = first_line(&mode_info, tab_info.as_ref(), max_len, separator);

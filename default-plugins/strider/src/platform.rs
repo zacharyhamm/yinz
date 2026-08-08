@@ -149,9 +149,24 @@ mod tests {
             PathBuf::from(tc.draw(generators::text()))
         } else {
             let s = tc.draw(generators::sampled_from(vec![
-                "", "/", "//", "\\", "\\\\", ":", "C:", "C:/", "C:\\", "c:", "C:/Users\\user",
-                "//server/share", "//server/share/folder", "//wsl.localhost/Ubuntu/",
-                "//wsl.localhost/", "//wsl.localhost", "/home/ünïcødé/🦀", "\\\\wsl.localhost\\Ubuntu",
+                "",
+                "/",
+                "//",
+                "\\",
+                "\\\\",
+                ":",
+                "C:",
+                "C:/",
+                "C:\\",
+                "c:",
+                "C:/Users\\user",
+                "//server/share",
+                "//server/share/folder",
+                "//wsl.localhost/Ubuntu/",
+                "//wsl.localhost/",
+                "//wsl.localhost",
+                "/home/ünïcødé/🦀",
+                "\\\\wsl.localhost\\Ubuntu",
             ]));
             PathBuf::from(s)
         }
@@ -177,7 +192,9 @@ mod tests {
             once.to_string_lossy(),
             twice.to_string_lossy(),
             "normalize({:?}) = {:?} but normalizing again gave {:?}",
-            path, once, twice
+            path,
+            once,
+            twice
         );
     }
 
@@ -191,7 +208,10 @@ mod tests {
             once.to_string_lossy(),
             twice.to_string_lossy(),
             "ensure_drive_root({:?}, {:?}) = {:?} but applying it again gave {:?}",
-            path, platform, once, twice
+            path,
+            platform,
+            once,
+            twice
         );
     }
 

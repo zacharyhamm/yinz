@@ -180,7 +180,10 @@ impl Text {
         occurrence_index: usize,
     ) -> Self {
         const ERROR_COLOR_LEVEL: usize = 6;
-        match substring_char_ranges(&self.text, substr.as_ref()).into_iter().nth(occurrence_index) {
+        match substring_char_ranges(&self.text, substr.as_ref())
+            .into_iter()
+            .nth(occurrence_index)
+        {
             Some(range) => self.color_range(ERROR_COLOR_LEVEL, range),
             None => self,
         }
@@ -237,7 +240,10 @@ impl Text {
         occurrence_index: usize,
     ) -> Self {
         const SUCCESS_COLOR_LEVEL: usize = 7;
-        match substring_char_ranges(&self.text, substr.as_ref()).into_iter().nth(occurrence_index) {
+        match substring_char_ranges(&self.text, substr.as_ref())
+            .into_iter()
+            .nth(occurrence_index)
+        {
             Some(range) => self.color_range(SUCCESS_COLOR_LEVEL, range),
             None => self,
         }
@@ -298,7 +304,10 @@ impl Text {
         substr: S,
         occurrence_index: usize,
     ) -> Self {
-        match substring_char_ranges(&self.text, substr.as_ref()).into_iter().nth(occurrence_index) {
+        match substring_char_ranges(&self.text, substr.as_ref())
+            .into_iter()
+            .nth(occurrence_index)
+        {
             Some(range) => self.color_range(index_level, range),
             None => self,
         }
@@ -445,7 +454,10 @@ mod tests {
         }
         let mut bytes = Vec::new();
         for part in body.split(',') {
-            bytes.push(part.parse::<u8>().map_err(|e| format!("{:?}: {}", part, e))?);
+            bytes.push(
+                part.parse::<u8>()
+                    .map_err(|e| format!("{:?}: {}", part, e))?,
+            );
         }
         String::from_utf8(bytes).map_err(|e| e.to_string())
     }

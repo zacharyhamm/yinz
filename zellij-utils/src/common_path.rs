@@ -105,12 +105,13 @@ mod tests {
     #[hegel::composite]
     fn paths(tc: &hegel::TestCase) -> PathBuf {
         let absolute = tc.draw(generators::booleans());
-        let components: Vec<String> = tc.draw(
-            generators::vecs(generators::text().min_size(1).filter(|s: &String| {
-                !s.contains(std::path::MAIN_SEPARATOR) && !s.contains('\0')
-            }))
-            .min_size(1),
-        );
+        let components: Vec<String> =
+            tc.draw(
+                generators::vecs(generators::text().min_size(1).filter(|s: &String| {
+                    !s.contains(std::path::MAIN_SEPARATOR) && !s.contains('\0')
+                }))
+                .min_size(1),
+            );
         let mut path = PathBuf::from(if absolute { "/" } else { "" });
         for component in components {
             path.push(component);
@@ -163,9 +164,7 @@ mod tests {
         let mut remaining: Vec<PathBuf> = all.clone();
         let mut shuffled: Vec<PathBuf> = Vec::with_capacity(remaining.len());
         while !remaining.is_empty() {
-            let idx = tc.draw(
-                generators::integers::<usize>().max_value(remaining.len() - 1),
-            );
+            let idx = tc.draw(generators::integers::<usize>().max_value(remaining.len() - 1));
             shuffled.push(remaining.remove(idx));
         }
         assert_eq!(

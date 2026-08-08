@@ -1085,13 +1085,15 @@ pub fn crop_rgba(
     h: usize,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(w * h * 4);
+    // `src` may be shorter than `src_w * src_h * 4` claims, and `x` may point past `src_w`;
+    // clamp to whole pixels so a malformed image truncates instead of panicking
+    let src_limit = src.len() - src.len() % 4;
     for row in y..y + h {
         if row >= src_h {
             break;
         }
         let row_start = (row * src_w + x) * 4;
-        let row_end =
-            std::cmp::min(row_start + w * 4, (row * src_w + src_w) * 4).min(src.len());
+        let row_end = std::cmp::min(row_start + w * 4, (row * src_w + src_w) * 4).min(src_limit);
         if row_start >= row_end {
             continue;
         }

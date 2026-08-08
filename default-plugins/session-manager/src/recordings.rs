@@ -296,7 +296,12 @@ mod tests {
         let (first, last) =
             Recordings::default().range_to_render(table_rows, results_len, selected_index);
         assert!(first <= last, "inverted range {}..{}", first, last);
-        assert!(last <= results_len, "{} rows past the end of {}", last, results_len);
+        assert!(
+            last <= results_len,
+            "{} rows past the end of {}",
+            last,
+            results_len
+        );
         assert!(
             last - first <= table_rows.saturating_sub(1),
             "{}..{} does not fit in {} rows (1 goes to the title)",
