@@ -369,6 +369,7 @@ fn pty_writer_records_successful_input() {
         started_at: std::time::Instant::now(),
         capture_input: true,
         enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
     let (bus_inner, sender) = make_test_bus(mock_clone);
@@ -415,6 +416,7 @@ fn pty_writer_records_successful_resize() {
         started_at: std::time::Instant::now(),
         capture_input: false,
         enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     let (bus_inner, sender) = make_test_bus(mock.clone());
     let mut bus = bus_inner;
@@ -562,6 +564,7 @@ fn pty_writer_records_successful_resize() {
         started_at: std::time::Instant::now(),
         capture_input: false,
         enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     let (sender2, receiver2) = zellij_utils::channels::unbounded();
     let sender2_ctx = zellij_utils::channels::SenderWithContext::new(sender2);

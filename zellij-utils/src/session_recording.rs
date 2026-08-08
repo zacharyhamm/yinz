@@ -184,20 +184,55 @@ impl RecordingStore {
     pub fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
         let tx = self.connection.transaction()?;
         for pane in panes {
-            let existing: Option<(i64, i64, i64)> = {
+            let existing: Option<(i64, i64, i64, String)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT id, initial_cols, initial_rows FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
+                    "SELECT id, initial_cols, initial_rows, tab_name FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
                 let mut rows =
                     stmt.query(rusqlite::params![self.session_id, pane.terminal_id as i64])?;
                 if let Some(row) = rows.next()? {
-                    Some((row.get(0)?, row.get(1)?, row.get(2)?))
+                    Some((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                 } else {
                     None
                 }
             };
-            if let Some((pane_id, _ic, _ir)) = existing {
-                // update tab and title, but not initial size nor started time
+            if let Some((pane_id, ic, ir, existing_tab_name)) = existing {
+                // If the pane was created speculatively via `record_events` (output
+                // arrived before `pane_metadata`), it will have default size 80x24
+                // and empty tab_name. In that case the true initial size is in
+                // `pane_metadata` and should be adopted, but only if no resize
+                // event has been recorded yet (otherwise initial should stay as
+                // first observed size). This fixes the race where `output` can
+                // arrive before `pane_metadata` and would otherwise leave a wrong
+                // `initial_cols`/`initial_rows` in the asciicast header.
+                let is_default_size = ic == 80 && ir == 24;
+                let size_differs = pane.cols as i64 != ic || pane.rows as i64 != ir;
+                let is_speculative = existing_tab_name.is_empty();
+                if is_default_size && size_differs && is_speculative {
+                    let has_resize: bool = {
+                        let mut stmt = tx.prepare(
+                            "SELECT 1 FROM recording_events WHERE pane_id = ?1 AND code = 'r' LIMIT 1",
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![pane_id])?;
+                        rows.next()?.is_some()
+                    };
+                    if !has_resize {
+                        tx.execute(
+                            "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4, initial_cols = ?5, initial_rows = ?6 WHERE id = ?7",
+                            rusqlite::params![
+                                pane.tab_id as i64,
+                                pane.tab_position as i64,
+                                pane.tab_name,
+                                pane.title,
+                                pane.cols as i64,
+                                pane.rows as i64,
+                                pane_id
+                            ],
+                        )?;
+                        continue;
+                    }
+                }
+                // normal path: update tab and title only, keep initial size and started time
                 tx.execute(
                     "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4 WHERE id = ?5",
                     rusqlite::params![
@@ -487,6 +522,7 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
         return Ok(Vec::new());
     }
     let conn = rusqlite::Connection::open(&db_path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // order: newest session first, then tab_position, then terminal_id
     let mut stmt = conn.prepare(
@@ -525,6 +561,19 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
             row.get::<_, i64>(11)?,
         ))
     })?;
+    // Fix N+1: fetch MAX(elapsed_us) for all panes in one query
+    let max_by_pane: std::collections::HashMap<i64, i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT pane_id, MAX(elapsed_us) FROM recording_events GROUP BY pane_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (pane_id, max) = row?;
+            map.insert(pane_id, max);
+        }
+        map
+    };
     let mut results = Vec::new();
     for row in pane_rows {
         let (
@@ -547,13 +596,8 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
         let duration_us = if let Some(ended) = ended_elapsed_us {
             ended - started_elapsed_us
         } else {
-            let mut stmt2 =
-                conn.prepare("SELECT MAX(elapsed_us) FROM recording_events WHERE pane_id = ?1")?;
-            let max: Option<i64> = stmt2
-                .query_row(rusqlite::params![pane_id], |r| r.get(0))
-                .unwrap_or(None);
-            match max {
-                Some(max_elapsed) => max_elapsed - started_elapsed_us,
+            match max_by_pane.get(&pane_id) {
+                Some(&max_elapsed) => max_elapsed - started_elapsed_us,
                 None => 0,
             }
         };
@@ -587,6 +631,7 @@ pub fn export_recording(
         anyhow::bail!("recording {} not found", recording_id);
     }
     let conn = rusqlite::Connection::open(&db_path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // get pane and session
     let pane: Option<(i64, i64, i64, i64, i64, String, String, i64, String)> = {
@@ -630,11 +675,16 @@ pub fn export_recording(
     } else {
         format!("{} / {} / {}", session_name, tab_name, pane_title_str)
     };
-    // header
+    // header: use pane's absolute start (session wall + pane elapsed) for late pans.
+    // This is best-effort: if system wall clock changed after session start,
+    // `session_started + started_elapsed` may be off vs true wall time.
+    // Storing per-pane absolute time would require schema change; for now we
+    // document and use the same monotonic+wall sum as `list_recordings`.
+    let pane_started_us = session_started_us + started_elapsed;
     let header = serde_json::json!({
         "version": 3,
         "term": {"cols": initial_cols, "rows": initial_rows},
-        "timestamp": session_started_us / 1_000_000,
+        "timestamp": pane_started_us / 1_000_000,
         "title": title
     });
     writeln!(output, "{}", serde_json::to_string(&header)?)?;
@@ -648,10 +698,20 @@ pub fn export_recording(
         let elapsed_us: i64 = row.get(0)?;
         let code: String = row.get(1)?;
         let data: Vec<u8> = row.get(2)?;
-        let interval_us = match prev_elapsed {
+        let mut interval_us = match prev_elapsed {
             Some(prev) => elapsed_us - prev,
             None => elapsed_us - started_elapsed,
         };
+        if interval_us < 0 {
+            log::warn!(
+                "negative interval for pane {}: elapsed {} prev {:?} started {}, clamping to 0",
+                pane_id,
+                elapsed_us,
+                prev_elapsed,
+                started_elapsed
+            );
+            interval_us = 0;
+        }
         // but spec example: events at 0, 500k, 1250k, 2000k with intervals 0.0, 0.5, 0.75, 0.75
         // That suggests intervals are from prior event, first interval 0.0 if first event at 0?
         // Our events are stored with absolute elapsed from pane start? In store, elapsed_us is absolute from session start? In test they use 0,500k etc as elapsed.

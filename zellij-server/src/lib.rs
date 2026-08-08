@@ -2067,6 +2067,9 @@ fn init_session(
         log::warn!(
             "session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
         );
+        eprintln!(
+            "Warning: session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
+        );
     }
     let (session_recorder_handle, session_recorder_thread) =
         if recording_enabled {
@@ -2082,7 +2085,17 @@ fn init_session(
                 capture_input,
             ) {
                 Some((handle, thread)) => (Some(handle), Some(thread)),
-                None => (None, None),
+                None => {
+                    log::error!(
+                        "Failed to start session recorder for data_dir {:?}; recording will be disabled",
+                        data_dir
+                    );
+                    eprintln!(
+                        "Warning: failed to start session recording for {:?} — check permissions/data_dir is a directory; recording disabled",
+                        data_dir
+                    );
+                    (None, None)
+                },
             }
         } else {
             (None, None)

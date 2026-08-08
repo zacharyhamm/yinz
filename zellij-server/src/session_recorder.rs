@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -27,6 +27,7 @@ pub struct SessionRecorderHandle {
     pub(crate) started_at: Instant,
     pub(crate) capture_input: bool,
     pub(crate) enabled: Arc<AtomicBool>,
+    pub(crate) dropped: Arc<AtomicUsize>,
 }
 
 impl SessionRecorderHandle {
@@ -36,12 +37,20 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::output(terminal_id, elapsed_us, data);
-        if let Err(_) = self
+        if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
         {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+            match e {
+                crossbeam::channel::TrySendError::Full(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    log::warn!("session recorder channel full, dropping output event");
+                },
+                crossbeam::channel::TrySendError::Disconnected(_) => {
+                    self.enabled.store(false, Ordering::Relaxed);
+                    log::error!("session recorder channel disconnected, disabling");
+                },
+            }
         }
     }
 
@@ -54,12 +63,20 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::input(terminal_id, elapsed_us, data);
-        if let Err(_) = self
+        if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
         {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+            match e {
+                crossbeam::channel::TrySendError::Full(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    log::warn!("session recorder channel full, dropping input event");
+                },
+                crossbeam::channel::TrySendError::Disconnected(_) => {
+                    self.enabled.store(false, Ordering::Relaxed);
+                    log::error!("session recorder channel disconnected, disabling");
+                },
+            }
         }
     }
 
@@ -69,12 +86,20 @@ impl SessionRecorderHandle {
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
         let event = RecordedEvent::resize(terminal_id, elapsed_us, cols, rows);
-        if let Err(_) = self
+        if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
         {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+            match e {
+                crossbeam::channel::TrySendError::Full(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    log::warn!("session recorder channel full, dropping resize event");
+                },
+                crossbeam::channel::TrySendError::Disconnected(_) => {
+                    self.enabled.store(false, Ordering::Relaxed);
+                    log::error!("session recorder channel disconnected, disabling");
+                },
+            }
         }
     }
 
@@ -83,12 +108,20 @@ impl SessionRecorderHandle {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        if let Err(_) = self
+        if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::PaneMetadata { elapsed_us, panes })
         {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+            match e {
+                crossbeam::channel::TrySendError::Full(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    log::warn!("session recorder channel full, dropping pane_metadata");
+                },
+                crossbeam::channel::TrySendError::Disconnected(_) => {
+                    self.enabled.store(false, Ordering::Relaxed);
+                    log::error!("session recorder channel disconnected, disabling");
+                },
+            }
         }
     }
 
@@ -97,20 +130,45 @@ impl SessionRecorderHandle {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        if let Err(_) = self.sender.try_send(RecorderInstruction::PaneClosed {
+        if let Err(e) = self.sender.try_send(RecorderInstruction::PaneClosed {
             terminal_id,
             elapsed_us,
         }) {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+            match e {
+                crossbeam::channel::TrySendError::Full(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    log::warn!("session recorder channel full, dropping pane_closed");
+                },
+                crossbeam::channel::TrySendError::Disconnected(_) => {
+                    self.enabled.store(false, Ordering::Relaxed);
+                    log::error!("session recorder channel disconnected, disabling");
+                },
+            }
         }
     }
 
     pub fn stop(&self) {
-        if let Err(_) = self.sender.try_send(RecorderInstruction::Stop) {
-            self.enabled.store(false, Ordering::Relaxed);
-            log::error!("session recorder channel full or disconnected, disabling");
+        // Stop must not be lost when the channel is full. Normal events use
+        // try_send to avoid blocking the caller, but Stop is a control signal
+        // and must be delivered to avoid a false `incomplete` state on shutdown.
+        const RETRIES: usize = 5;
+        for _ in 0..RETRIES {
+            match self
+                .sender
+                .send_timeout(RecorderInstruction::Stop, Duration::from_millis(500))
+            {
+                Ok(_) => return,
+                Err(crossbeam::channel::SendTimeoutError::Timeout(_)) => continue,
+                Err(crossbeam::channel::SendTimeoutError::Disconnected(_)) => {
+                    log::error!("session recorder channel disconnected on stop");
+                    return;
+                },
+            }
         }
+        log::error!("session recorder channel full, failed to send Stop after retries");
+        // Fallback to ensure shutdown does not hang if the recorder thread is
+        // deadlocked. This will cause `incomplete` but avoids an indefinite join.
+        self.enabled.store(false, Ordering::Relaxed);
     }
 }
 
@@ -137,22 +195,35 @@ pub fn spawn_session_recorder(
             return None;
         }
     }
-    let (sender, receiver) = crossbeam::channel::bounded(1024);
+    let (sender, receiver) = crossbeam::channel::bounded(4096);
     let enabled = Arc::new(AtomicBool::new(true));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let started_at = Instant::now();
+    let started_at_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_else(|e| {
+            log::warn!(
+                "system clock is before UNIX_EPOCH ({}), using 0 for session start",
+                e
+            );
+            0
+        });
     let handle = SessionRecorderHandle {
         sender: sender.clone(),
-        started_at: Instant::now(),
+        started_at,
         capture_input,
         enabled: enabled.clone(),
+        dropped: dropped.clone(),
     };
     let enabled_clone = enabled.clone();
-    let started_at = handle.started_at;
     let thread = std::thread::spawn(move || {
         recorder_thread(
             data_dir,
             session_name,
             capture_input,
             started_at,
+            started_at_us,
             receiver,
             enabled_clone,
         );
@@ -164,14 +235,11 @@ fn recorder_thread(
     data_dir: PathBuf,
     session_name: String,
     capture_input: bool,
-    started_at: Instant,
+    _started_at: Instant,
+    started_at_us: i64,
     receiver: crossbeam::channel::Receiver<RecorderInstruction>,
     enabled: Arc<AtomicBool>,
 ) {
-    let started_at_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
     let mut store = match zellij_utils::session_recording::RecordingStore::open(
         &data_dir,
         &session_name,
@@ -349,8 +417,14 @@ fn recorder_thread(
     }
     let ended_at_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_else(|e| {
+            log::warn!(
+                "system clock is before UNIX_EPOCH on session end ({}), using 0",
+                e
+            );
+            0
+        });
     if let Err(e) = store.finish_session(ended_at_us) { log::error!("failed to finish session: {}", e); }
     // if disabled, mark incomplete
     if !enabled.load(Ordering::Relaxed) {
@@ -412,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_disables_and_does_not_block() {
+    fn overflow_drops_and_does_not_block_or_disable() {
         // Create a bounded channel with capacity 1 and a receiver that never reads
         let (sender, _receiver) = crossbeam::channel::bounded::<RecorderInstruction>(1);
         // fill it
@@ -425,21 +499,40 @@ mod tests {
             .unwrap();
         assert!(sender.is_full());
         let enabled = Arc::new(AtomicBool::new(true));
+        let dropped = Arc::new(AtomicUsize::new(0));
         let handle = SessionRecorderHandle {
             sender: sender.clone(),
             started_at: Instant::now(),
             capture_input: true,
             enabled: enabled.clone(),
+            dropped: dropped.clone(),
         };
-        // this should not block, should set enabled to false
+        // this should not block, should drop and metric increment, but not disable
         let start = Instant::now();
         handle.output(1, b"y".to_vec());
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(100), "should not block");
-        assert!(!enabled.load(Ordering::Relaxed));
-        // second call should be no-op due to disabled
+        assert!(enabled.load(Ordering::Relaxed), "should remain enabled on Full");
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        // second call should also try and drop, not be no-op due to disabled
         handle.output(1, b"z".to_vec());
         assert_eq!(sender.len(), 1); // still full, not increased
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert!(enabled.load(Ordering::Relaxed));
+        // disconnected case should still disable
+        let (sender2, receiver2) = crossbeam::channel::bounded::<RecorderInstruction>(1);
+        drop(receiver2);
+        let enabled2 = Arc::new(AtomicBool::new(true));
+        let dropped2 = Arc::new(AtomicUsize::new(0));
+        let handle2 = SessionRecorderHandle {
+            sender: sender2,
+            started_at: Instant::now(),
+            capture_input: true,
+            enabled: enabled2.clone(),
+            dropped: dropped2.clone(),
+        };
+        handle2.output(1, b"a".to_vec());
+        assert!(!enabled2.load(Ordering::Relaxed), "disconnected should disable");
     }
 
     #[test]
@@ -455,11 +548,13 @@ mod tests {
     fn input_respected_capture_flag() {
         let (sender, receiver) = crossbeam::channel::bounded(10);
         let enabled = Arc::new(AtomicBool::new(true));
+        let dropped = Arc::new(AtomicUsize::new(0));
         let handle = SessionRecorderHandle {
             sender: sender.clone(),
             started_at: Instant::now(),
             capture_input: false,
             enabled: enabled.clone(),
+            dropped: dropped.clone(),
         };
         handle.input(1, b"secret".to_vec());
         assert!(

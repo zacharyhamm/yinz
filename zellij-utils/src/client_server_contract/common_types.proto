@@ -1239,7 +1239,7 @@ message Options {
   optional bool mouse_click_through = 45;
   optional string theme_dark = 46;
   optional string theme_light = 47;
-  reserved 50;
+  reserved 48, 49, 50;
   optional string pane_frame_style = 51;
   optional bool stacked_pane_list = 52;
   optional NestedSessionHandling nested_session_handling = 53;

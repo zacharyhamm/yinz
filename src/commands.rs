@@ -1045,10 +1045,17 @@ pub(crate) fn recordings(
             output,
         } => {
             if let Some(ref path) = output {
-                if path.exists() {
-                    anyhow::bail!("output file {:?} already exists", path);
-                }
-                let mut file = std::fs::File::create(path)?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::AlreadyExists {
+                            anyhow::anyhow!("output file {:?} already exists", path)
+                        } else {
+                            e.into()
+                        }
+                    })?;
                 zellij_utils::session_recording::export_recording(
                     &data_dir,
                     recording_id,

@@ -5945,9 +5945,11 @@ impl Screen {
                 }
             }
         }
-        // Global terminal panes are not tied to a tab. Include them as
-        // tab_position 0 / tab_name "global" so they appear in recordings;
-        // plugin global panes are already skipped above.
+        // Global terminal panes are not tied to a tab. Use a distinct
+        // `tab_position` (9999) and `tab_name` "global" so they sort after
+        // normal tabs (`ORDER BY tab_position ASC`) and do not collide with
+        // tab 0. `tab_id` stays 0 as it is not meaningful for globals.
+        // See REVIEW_CHECKLIST.md 2.12.
         for pane in &pane_manifest.global_panes {
             if pane.is_plugin {
                 continue;
@@ -5955,7 +5957,7 @@ impl Screen {
             result.push(PaneMetadata {
                 terminal_id: pane.id,
                 tab_id: 0,
-                tab_position: 0,
+                tab_position: 9999,
                 tab_name: "global".to_string(),
                 title: pane.title.clone(),
                 cols: pane.pane_content_columns,

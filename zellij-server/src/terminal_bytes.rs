@@ -61,6 +61,10 @@ impl TerminalBytes {
                 }
             }
         }
+        // PaneClosedGuard ensures `pane_closed` is sent when `listen()` ends
+        // (normal EOF or error). `RecordingStore::finish_pane` is idempotent
+        // (`UPDATE ... WHERE ended_elapsed_us IS NULL`), so a duplicate close
+        // (if any) is safe and becomes a no-op.
         let _pane_closed_guard = PaneClosedGuard {
             recorder: self.senders.session_recorder.clone(),
             terminal_id: self.terminal_id,
@@ -92,8 +96,9 @@ impl TerminalBytes {
                 },
             }
         }
-        drop(_pane_closed_guard);
-
+        // `_pane_closed_guard` drops here at scope end and sends `pane_closed`.
+        // No explicit `drop()` is needed; explicit drop was removed to avoid
+        // redundancy and to keep the guard alive until function exit.
         // Ignore any errors that happen here.
         // We only leave the loop above when the pane exits. This can happen in a lot of ways, but
         // the most problematic is when quitting zellij with `Ctrl+q`. That is because the channel
@@ -135,7 +140,7 @@ mod tests {
     use async_trait::async_trait;
     use std::io;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
     use std::time::Instant;
@@ -165,6 +170,7 @@ mod tests {
             started_at: Instant::now(),
             capture_input: false,
             enabled: Arc::new(AtomicBool::new(true)),
+            dropped: Arc::new(AtomicUsize::new(0)),
         };
         // create thread senders with recorder
         let mut senders = ThreadSenders::default();

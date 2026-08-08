@@ -191,9 +191,12 @@ fn recordings_list_output_formats_header_and_rows() {
     use std::fs;
     use zellij_utils::session_recording::{PaneMetadata, RecordingStore};
 
-    // create temp recording database with one pane
-    let dir_path =
-        std::env::temp_dir().join(format!("zellij-recordings-test-{}", std::process::id()));
+    // create temp recording database with one pane (unique per test invocation to avoid pid collision)
+    let dir_path = std::env::temp_dir().join(format!(
+        "zellij-recordings-test-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
     let _ = fs::remove_dir_all(&dir_path);
     fs::create_dir_all(&dir_path).unwrap();
     let mut store = RecordingStore::open(&dir_path, "my_session", true, 1_000_000).unwrap();
@@ -227,15 +230,17 @@ fn recordings_list_output_formats_header_and_rows() {
     // data row checks
     assert!(lines[1].contains("my_session"));
     assert!(lines[1].contains("my_tab"));
-    // running state for open pane
+    // running state for open pane (is_running=true, so should be running)
     assert!(
-        lines[1].contains("running")
-            || lines[1].contains("complete")
-            || lines[1].contains("incomplete")
+        lines[1].contains("running"),
+        "expected running for open pane, got: {}",
+        lines[1]
     );
-    // test state variants: close pane without error => complete, with error => incomplete
-    // We verify helper formats input yes/no correctly (capture_input true => yes)
-    assert!(lines[1].contains("yes") || lines[1].contains("no"));
+    assert!(
+        lines[1].contains("yes"),
+        "expected yes for capture_input true, got: {}",
+        lines[1]
+    );
     let _ = fs::remove_dir_all(&dir_path);
 }
 

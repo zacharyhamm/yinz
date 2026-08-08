@@ -571,10 +571,9 @@ impl Options {
         let mirror_session = merge_bool(other.mirror_session, self.mirror_session);
         let session_serialization =
             merge_bool(other.session_serialization, self.session_serialization);
-        let session_recording = other.session_recording.or(self.session_recording);
-        let session_recording_input = other
-            .session_recording_input
-            .or(self.session_recording_input);
+        let session_recording = merge_bool(other.session_recording, self.session_recording);
+        let session_recording_input =
+            merge_bool(other.session_recording_input, self.session_recording_input);
         let serialize_pane_viewport =
             merge_bool(other.serialize_pane_viewport, self.serialize_pane_viewport);
 
