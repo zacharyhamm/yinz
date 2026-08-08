@@ -35,6 +35,7 @@ mod pty_writer;
 mod route;
 mod screen;
 mod session_layout_metadata;
+mod session_recorder;
 mod terminal_bytes;
 mod thread_bus;
 mod ui;
@@ -356,6 +357,7 @@ pub(crate) struct SessionMetaData {
     plugin_thread: Option<thread::JoinHandle<()>>,
     pty_writer_thread: Option<thread::JoinHandle<()>>,
     background_jobs_thread: Option<thread::JoinHandle<()>>,
+    session_recorder_thread: Option<thread::JoinHandle<()>>,
     config_file_path: Option<PathBuf>,
 }
 
@@ -540,6 +542,12 @@ impl Drop for SessionMetaData {
         }
         if let Some(background_jobs_thread) = self.background_jobs_thread.take() {
             let _ = background_jobs_thread.join();
+        }
+        if let Some(recorder) = self.senders.session_recorder.take() {
+            recorder.stop();
+        }
+        if let Some(recorder_thread) = self.session_recorder_thread.take() {
+            let _ = recorder_thread.join();
         }
     }
 }
@@ -2050,6 +2058,30 @@ fn init_session(
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
 
+    let (session_recorder_handle, session_recorder_thread) = if config
+        .options
+        .session_recording
+        .unwrap_or(false)
+    {
+        let capture_input = config.options.session_recording.unwrap_or(false)
+            && config.options.session_recording_input.unwrap_or(false);
+        let session_name = config
+            .options
+            .session_name
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        match crate::session_recorder::spawn_session_recorder(
+            data_dir.clone(),
+            session_name,
+            capture_input,
+        ) {
+            Some((handle, thread)) => (Some(handle), Some(thread)),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
     let web_server_ip = config_options
@@ -2079,17 +2111,22 @@ fn init_session(
         .name("pty".to_string())
         .spawn({
             let layout = layout.clone();
+            let session_recorder_handle = session_recorder_handle.clone();
+            let mut bus = Bus::new(
+                vec![pty_receiver],
+                Some(&to_screen_bounded),
+                None,
+                Some(&to_plugin),
+                Some(&to_server),
+                Some(&to_pty_writer),
+                Some(&to_background_jobs),
+                Some(os_input.clone()),
+            );
+            if let Some(handle) = session_recorder_handle {
+                bus.senders.session_recorder = Some(handle);
+            }
             let pty = Pty::new(
-                Bus::new(
-                    vec![pty_receiver],
-                    Some(&to_screen_bounded),
-                    None,
-                    Some(&to_plugin),
-                    Some(&to_server),
-                    Some(&to_pty_writer),
-                    Some(&to_background_jobs),
-                    Some(os_input.clone()),
-                ),
+                bus,
                 cli_assets.is_debug,
                 config_options.scrollback_editor.clone(),
                 config_options.post_command_discovery_hook.clone(),
@@ -2102,7 +2139,7 @@ fn init_session(
     let screen_thread = thread::Builder::new()
         .name("screen".to_string())
         .spawn({
-            let screen_bus = Bus::new(
+            let mut screen_bus = Bus::new(
                 vec![screen_receiver, bounded_screen_receiver],
                 Some(&to_screen), // there are certain occasions (eg. caching) where the screen
                 // needs to send messages to itself
@@ -2113,6 +2150,9 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            if let Some(handle) = session_recorder_handle.clone() {
+                screen_bus.senders.session_recorder = Some(handle);
+            }
             let max_panes = cli_assets.max_panes;
 
             let client_attributes_clone = client_attributes.clone();
@@ -2141,7 +2181,7 @@ fn init_session(
     let plugin_thread = thread::Builder::new()
         .name("wasm".to_string())
         .spawn({
-            let plugin_bus = Bus::new(
+            let mut plugin_bus = Bus::new(
                 vec![plugin_receiver],
                 Some(&to_screen_bounded),
                 Some(&to_pty),
@@ -2151,6 +2191,9 @@ fn init_session(
                 Some(&to_background_jobs),
                 None,
             );
+            if let Some(handle) = session_recorder_handle.clone() {
+                plugin_bus.senders.session_recorder = Some(handle);
+            }
             let engine = get_engine();
 
             let layout = layout.clone();
@@ -2188,7 +2231,7 @@ fn init_session(
     let pty_writer_thread = thread::Builder::new()
         .name("pty_writer".to_string())
         .spawn({
-            let pty_writer_bus = Bus::new(
+            let mut pty_writer_bus = Bus::new(
                 vec![pty_writer_receiver],
                 Some(&to_screen),
                 Some(&to_pty),
@@ -2198,6 +2241,9 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            if let Some(handle) = session_recorder_handle.clone() {
+                pty_writer_bus.senders.session_recorder = Some(handle);
+            }
             || pty_writer_main(pty_writer_bus).fatal()
         })
         .unwrap();
@@ -2205,7 +2251,7 @@ fn init_session(
     let background_jobs_thread = thread::Builder::new()
         .name("background_jobs".to_string())
         .spawn({
-            let background_jobs_bus = Bus::new(
+            let mut background_jobs_bus = Bus::new(
                 vec![background_jobs_receiver],
                 Some(&to_screen),
                 Some(&to_pty),
@@ -2217,6 +2263,9 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            if let Some(handle) = session_recorder_handle.clone() {
+                background_jobs_bus.senders.session_recorder = Some(handle);
+            }
             let web_server_base_url = web_server_base_url(
                 web_server_ip,
                 web_server_port,
@@ -2267,6 +2316,7 @@ fn init_session(
             to_pty_writer: Some(to_pty_writer),
             to_background_jobs: Some(to_background_jobs),
             to_server: Some(to_server),
+            session_recorder: session_recorder_handle.clone(),
             should_silently_fail: false,
         },
         default_shell,
@@ -2277,6 +2327,7 @@ fn init_session(
         plugin_thread: Some(plugin_thread),
         pty_writer_thread: Some(pty_writer_thread),
         background_jobs_thread: Some(background_jobs_thread),
+        session_recorder_thread,
         #[cfg(feature = "web_server_capability")]
         web_sharing: config.options.web_sharing.unwrap_or(WebSharing::Off),
         #[cfg(not(feature = "web_server_capability"))]
