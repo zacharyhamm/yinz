@@ -64,6 +64,10 @@ impl TerminalBytes {
                     if self.debug {
                         let _ = debug_to_file(bytes, self.terminal_id as i32);
                     }
+                    // record output if enabled, before sending to screen
+                    if let Some(recorder) = &self.senders.session_recorder {
+                        recorder.output(self.terminal_id, bytes.to_vec());
+                    }
                     self.async_send_to_screen(ScreenInstruction::PtyBytes(
                         self.terminal_id,
                         bytes.to_vec(),
@@ -72,6 +76,10 @@ impl TerminalBytes {
                     .with_context(err_context)?;
                 },
             }
+        }
+        // send pane closed after read loop and before final render
+        if let Some(recorder) = &self.senders.session_recorder {
+            recorder.pane_closed(self.terminal_id);
         }
 
         // Ignore any errors that happen here.
@@ -104,5 +112,72 @@ impl TerminalBytes {
             .context("failed to async-send to screen")?
             .context("failed to block on sending message to screen")?;
         Ok(sent_at.elapsed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::os_input_output::AsyncReader;
+    use crate::session_recorder::{RecorderInstruction, SessionRecorderHandle};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::time::Instant;
+    use async_trait::async_trait;
+    use std::io;
+
+    struct FakeReader {
+        data: Option<Vec<u8>>,
+    }
+
+    #[async_trait]
+    impl AsyncReader for FakeReader {
+        async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if let Some(data) = self.data.take() {
+                let len = std::cmp::min(buf.len(), data.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Ok(len)
+            } else {
+                Ok(0) // EOF
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn records_output_and_pane_closed() -> anyhow::Result<()> {
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let handle = SessionRecorderHandle {
+            sender: sender.clone(),
+            started_at: Instant::now(),
+            capture_input: false,
+            enabled: Arc::new(AtomicBool::new(true)),
+        };
+        // create thread senders with recorder
+        let mut senders = ThreadSenders::default();
+        senders.session_recorder = Some(handle);
+        senders.should_silently_fail = true;
+        let mut terminal_bytes = TerminalBytes::new(
+            1,
+            Box::new(FakeReader { data: Some(b"hello".to_vec()) }),
+            senders,
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        terminal_bytes.listen().await?;
+        // should have received one output event and then pane closed
+        let mut events = Vec::new();
+        let mut closed = None;
+        while let Ok(instr) = receiver.try_recv() {
+            match instr {
+                RecorderInstruction::Events(ev) => events.extend(ev),
+                RecorderInstruction::PaneClosed { terminal_id, .. } => closed = Some(terminal_id),
+                _ => {},
+            }
+        }
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].terminal_id, 1);
+        assert_eq!(events[0].data, b"hello");
+        assert_eq!(events[0].kind, zellij_utils::session_recording::EventKind::Output);
+        assert_eq!(closed, Some(1));
+        Ok(())
     }
 }

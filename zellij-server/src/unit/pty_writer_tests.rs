@@ -354,3 +354,139 @@ fn write_error_clears_terminal_queue() {
     let written_2 = mock_clone.get_written_bytes(2);
     assert_eq!(written_2, b"should work");
 }
+
+#[test]
+fn pty_writer_records_successful_input() {
+    // Mock with AcceptAtMost(2) to cause two partial writes of "abcd" -> "ab" + "cd"
+    let mock = MockServerOsApi::new();
+    mock.set_behavior(1, WriteBehavior::AcceptAtMost(2));
+    let mock_clone = mock.clone();
+
+    // Create recorder channel
+    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
+    let handle = crate::session_recorder::SessionRecorderHandle {
+        sender: rec_sender,
+        started_at: std::time::Instant::now(),
+        capture_input: true,
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+
+    let (bus_inner, sender) = make_test_bus(mock_clone);
+    // inject recorder handle into bus
+    let mut bus = bus_inner;
+    bus.senders.session_recorder = Some(handle);
+
+    // Single write of "abcd" should be drained as two input events
+    run_pty_writer(
+        bus,
+        sender,
+        vec![PtyWriteInstruction::Write(b"abcd".to_vec(), 1, None)],
+    );
+
+    // Collect recorded input events
+    let mut input_events = Vec::new();
+    while let Ok(instr) = rec_receiver.try_recv() {
+        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
+            for e in ev {
+                if e.kind == zellij_utils::session_recording::EventKind::Input {
+                    input_events.push(e);
+                }
+            }
+        }
+    }
+    assert_eq!(input_events.len(), 2, "expected two input events for partial writes");
+    assert_eq!(input_events[0].data, b"ab");
+    assert_eq!(input_events[1].data, b"cd");
+    let concat: Vec<u8> = input_events.iter().flat_map(|e| e.data.clone()).collect();
+    assert_eq!(concat, b"abcd");
+}
+
+#[test]
+fn pty_writer_records_successful_resize() {
+    let mock = MockServerOsApi::new();
+    // First case: success should produce resize event
+    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
+    let handle = crate::session_recorder::SessionRecorderHandle {
+        sender: rec_sender,
+        started_at: std::time::Instant::now(),
+        capture_input: false,
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+    let (bus_inner, sender) = make_test_bus(mock.clone());
+    let mut bus = bus_inner;
+    bus.senders.session_recorder = Some(handle);
+    run_pty_writer(
+        bus,
+        sender,
+        vec![PtyWriteInstruction::ResizePty(1, 80, 24, None, None)],
+    );
+    let mut resize_events = Vec::new();
+    while let Ok(instr) = rec_receiver.try_recv() {
+        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
+            for e in ev {
+                if e.kind == zellij_utils::session_recording::EventKind::Resize {
+                    resize_events.push(e);
+                }
+            }
+        }
+    }
+    assert_eq!(resize_events.len(), 1, "success resize should produce one event");
+    // verify resize data encodes cols/rows via RecordedEvent::resize logic (format "80x24")
+    assert_eq!(resize_events[0].data, format!("80x24").into_bytes());
+    assert_eq!(resize_events[0].terminal_id, 1);
+
+    // Second case: error should produce no resize event
+    // Use a mock that errors on resize by overriding ServerOsApi impl: we need a variant that fails
+    // Since MockServerOsApi always returns Ok for resize, simulate error via a custom mock
+    struct FailingResizeMock {
+        inner: MockServerOsApi,
+    }
+    impl Clone for FailingResizeMock {
+        fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
+    }
+    impl crate::os_input_output::ServerOsApi for FailingResizeMock {
+        fn set_terminal_size_using_terminal_id(&self, _id: u32, _cols: u16, _rows: u16, _w: Option<u16>, _h: Option<u16>) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("simulated resize error"))
+        }
+        fn spawn_terminal(&self, _a: zellij_utils::input::command::TerminalAction, _b: Box<dyn Fn(crate::panes::PaneId, Option<i32>, zellij_utils::input::command::RunCommand) + Send>, _c: Option<std::path::PathBuf>) -> anyhow::Result<(u32, Box<dyn crate::os_input_output::AsyncReader>, Option<u32>)> { unimplemented!() }
+        fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> anyhow::Result<usize> { Ok(0) }
+        fn tcdrain(&self, _id: u32) -> anyhow::Result<()> { Ok(()) }
+        fn kill(&self, _pid: u32) -> anyhow::Result<()> { Ok(()) }
+        fn force_kill(&self, _pid: u32) -> anyhow::Result<()> { Ok(()) }
+        fn send_sigint(&self, _pid: u32) -> anyhow::Result<()> { Ok(()) }
+        fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> { Box::new(self.clone()) }
+        fn send_to_client(&self, _id: crate::ClientId, _msg: zellij_utils::ipc::ServerToClientMsg) -> anyhow::Result<()> { Ok(()) }
+        fn new_client(&mut self, _id: crate::ClientId, _s: interprocess::local_socket::Stream) -> anyhow::Result<zellij_utils::ipc::IpcReceiverWithContext<zellij_utils::ipc::ClientToServerMsg>> { unimplemented!() }
+        fn new_client_with_reply(&mut self, _id: crate::ClientId, _s: interprocess::local_socket::Stream, _r: interprocess::local_socket::Stream) -> anyhow::Result<zellij_utils::ipc::IpcReceiverWithContext<zellij_utils::ipc::ClientToServerMsg>> { unimplemented!() }
+        fn remove_client(&mut self, _id: crate::ClientId) -> anyhow::Result<()> { Ok(()) }
+        fn load_palette(&self) -> zellij_utils::data::Palette { zellij_utils::data::Palette::default() }
+        fn get_cwd(&self, _pid: u32) -> Option<std::path::PathBuf> { None }
+        fn write_to_file(&mut self, _buf: String, _file: Option<String>) -> anyhow::Result<()> { Ok(()) }
+        fn re_run_command_in_terminal(&self, _id: u32, _c: zellij_utils::input::command::RunCommand, _q: Box<dyn Fn(crate::panes::PaneId, Option<i32>, zellij_utils::input::command::RunCommand) + Send>) -> anyhow::Result<(Box<dyn crate::os_input_output::AsyncReader>, Option<u32>)> { unimplemented!() }
+        fn clear_terminal_id(&self, _id: u32) -> anyhow::Result<()> { Ok(()) }
+    }
+    let failing_mock = FailingResizeMock { inner: MockServerOsApi::new() };
+    let (rec_sender2, rec_receiver2) = crossbeam::channel::unbounded();
+    let handle2 = crate::session_recorder::SessionRecorderHandle {
+        sender: rec_sender2,
+        started_at: std::time::Instant::now(),
+        capture_input: false,
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+    let (sender2, receiver2) = zellij_utils::channels::unbounded();
+    let sender2_ctx = zellij_utils::channels::SenderWithContext::new(sender2);
+    let bus2 = crate::thread_bus::Bus::new(vec![receiver2], None, None, None, None, None, None, Some(Box::new(failing_mock)));
+    let mut bus2 = bus2;
+    bus2.senders.session_recorder = Some(handle2);
+    // send resize then exit
+    sender2_ctx.send(PtyWriteInstruction::ResizePty(2, 100, 30, None, None)).unwrap();
+    sender2_ctx.send(PtyWriteInstruction::Exit).unwrap();
+    crate::pty_writer::pty_writer_main(bus2).unwrap();
+    let mut resize_events2 = Vec::new();
+    while let Ok(instr) = rec_receiver2.try_recv() {
+        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
+            for e in ev { if e.kind == zellij_utils::session_recording::EventKind::Resize { resize_events2.push(e); } }
+        }
+    }
+    assert_eq!(resize_events2.len(), 0, "failed resize should produce no event");
+}

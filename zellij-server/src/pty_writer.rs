@@ -109,7 +109,7 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                     width_in_pixels,
                     height_in_pixels,
                 ) => {
-                    os_input
+                    let resize_result = os_input
                         .set_terminal_size_using_terminal_id(
                             terminal_id,
                             columns,
@@ -117,8 +117,13 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                             width_in_pixels,
                             height_in_pixels,
                         )
-                        .with_context(err_context)
-                        .non_fatal();
+                        .with_context(err_context);
+                    if resize_result.is_ok() {
+                        if let Some(recorder) = &bus.senders.session_recorder {
+                            recorder.resize(terminal_id, columns, rows);
+                        }
+                    }
+                    resize_result.non_fatal();
                 },
                 PtyWriteInstruction::StartCachingResizes => {
                     // we do this because there are some logic traps inside the screen/tab/layout code
@@ -159,6 +164,13 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                 match os_input.write_to_tty_stdin(tid, remaining) {
                     Ok(0) => break, // EAGAIN — move to next terminal
                     Ok(n) => {
+                        // record only the bytes the OS actually accepted
+                        if let Some(recorder) = &bus.senders.session_recorder {
+                            let accepted = &remaining[..n];
+                            if !accepted.is_empty() {
+                                recorder.input(tid, accepted.to_vec());
+                            }
+                        }
                         front.offset = front.offset.saturating_add(n);
                         if front.offset >= front.bytes.len() {
                             queue.pop_front();
