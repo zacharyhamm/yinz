@@ -73,6 +73,7 @@ windows-sys = { workspace = true, features = [
 insta = "1.48"
 tempfile = "3.2.0"
 wasmi = { version = "1.1.0", features = ["std"] }
+rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
 
 [features]
 web_server_capability = ["zellij-utils/web_server_capability"]
