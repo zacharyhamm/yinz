@@ -2074,10 +2074,9 @@ fn init_session(
     let (session_recorder_handle, session_recorder_thread) =
         if recording_enabled {
             let capture_input = recording_enabled && input_enabled;
-            let session_name = config
-                .options
-                .session_name
-                .clone()
+            let session_name = envs::get_session_name()
+                .ok()
+                .or_else(|| config.options.session_name.clone())
                 .unwrap_or_else(|| "default".to_string());
             match crate::session_recorder::spawn_session_recorder(
                 data_dir.clone(),

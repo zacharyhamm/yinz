@@ -1031,8 +1031,6 @@ pub(crate) fn recordings(
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
     use zellij_utils::cli::Recordings as RecordingsCli;
-    use zellij_utils::home::get_default_data_dir;
-    let _ = get_default_data_dir; // to satisfy use
     match command {
         RecordingsCli::List => {
             let summaries = zellij_utils::session_recording::list_recordings(&data_dir)?;
@@ -1112,11 +1110,8 @@ pub(crate) fn format_recordings_list(
 }
 
 fn format_started(started_at_us: i64) -> String {
-    // Simple formatting: use humantime or raw micros; avoid extra dependencies
-    // For test determinism, just return the micros as seconds with one decimal
-    // But we want a readable local time; fallback to micros string
-    // Use std time conversion without chrono: just show micros
-    format!("{}", started_at_us)
+    let t = std::time::UNIX_EPOCH + Duration::from_micros(started_at_us.max(0) as u64);
+    humantime::format_rfc3339_seconds(t).to_string()
 }
 
 fn format_duration(duration_us: i64) -> String {
