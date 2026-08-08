@@ -130,8 +130,17 @@ fn web_cli_status_with_ip_and_port_works() {
 fn cli_recordings_list_parses() {
     let args = CliArgs::try_parse_from(["zellij", "recordings", "list"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::List)) => {},
+        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: false })) => {},
         _ => panic!("Expected Recordings::List"),
+    }
+}
+
+#[test]
+fn cli_recordings_list_json_parses() {
+    let args = CliArgs::try_parse_from(["zellij", "recordings", "list", "--json"]).unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: true })) => {},
+        _ => panic!("Expected Recordings::List with json"),
     }
 }
 
@@ -184,6 +193,67 @@ fn cli_recordings_export_with_output_parses() {
         })) if path == PathBuf::from("pane.cast") => {},
         _ => panic!("Expected Recordings::Export with output"),
     }
+}
+
+#[test]
+fn cli_recordings_search_parses() {
+    let args = CliArgs::try_parse_from(["zellij", "recordings", "search", "needle"]).unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { query, limit, json })) => {
+            assert_eq!(query, "needle");
+            assert_eq!(limit, 50, "default limit");
+            assert!(!json, "default is the human-readable table");
+        },
+        _ => panic!("Expected Recordings::Search"),
+    }
+}
+
+#[test]
+fn cli_recordings_search_limit_parses() {
+    let args =
+        CliArgs::try_parse_from(["zellij", "recordings", "search", "needle", "--limit", "5"])
+            .unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { limit: 5, .. })) => {},
+        _ => panic!("Expected Recordings::Search with limit 5"),
+    }
+}
+
+#[test]
+fn cli_recordings_search_missing_query_fails() {
+    let res = CliArgs::try_parse_from(["zellij", "recordings", "search"]);
+    assert!(res.is_err(), "missing query should fail");
+}
+
+#[test]
+fn recordings_search_output_formats_header_and_rows() {
+    use zellij_utils::session_recording::SearchHit;
+
+    assert_eq!(crate::commands::format_search_results(&[]), "No matches.\n");
+
+    let hits = vec![SearchHit {
+        recording_id: 3,
+        session_name: "my_session".to_string(),
+        tab_name: "my_tab".to_string(),
+        pane_title: String::new(),
+        elapsed_us: 2_500_000,
+        started_at_us: 1_000_000,
+        text: "hello needle world".to_string(),
+    }];
+    let output = crate::commands::format_search_results(&hits);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2, "expected one header row and one data row");
+    for column in ["ID", "TIME", "SESSION", "TAB", "PANE", "TEXT"] {
+        assert!(lines[0].contains(column), "header must contain {}", column);
+    }
+    assert!(lines[1].contains("my_session"));
+    assert!(lines[1].contains("my_tab"));
+    assert!(lines[1].contains("hello needle world"));
+    assert!(
+        lines[1].contains("2.5s"),
+        "expected offset, got: {}",
+        lines[1]
+    );
 }
 
 #[test]

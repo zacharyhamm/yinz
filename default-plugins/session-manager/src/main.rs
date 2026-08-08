@@ -1,4 +1,5 @@
 mod new_session_info;
+mod recordings;
 mod resurrectable_sessions;
 mod session_list;
 mod single_screen;
@@ -19,6 +20,7 @@ use ui::{
     SessionUiInfo,
 };
 
+use recordings::Recordings;
 use resurrectable_sessions::ResurrectableSessions;
 use session_list::SessionList;
 
@@ -27,6 +29,7 @@ enum ActiveScreen {
     NewSession,
     AttachToSession,
     ResurrectSession,
+    Recordings,
     SingleScreen,
 }
 
@@ -41,6 +44,9 @@ pub(crate) struct State {
     session_name: Option<String>,
     pub(crate) sessions: SessionList,
     pub(crate) resurrectable_sessions: ResurrectableSessions,
+    pub(crate) recordings: Recordings,
+    /// the screen to go back to when leaving the recordings screen
+    previous_screen: Option<ActiveScreen>,
     search_term: String,
     new_session_info: NewSessionInfo,
     pub(crate) renaming_session_name: Option<String>,
@@ -163,6 +169,11 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(_result) => {
                 should_render = true;
             },
+            Event::RunCommandResult(exit_code, stdout, stderr, context) => {
+                should_render = self
+                    .recordings
+                    .handle_command_result(exit_code, stdout, stderr, context);
+            },
             Event::SessionUpdate(session_infos, resurrectable_session_list) => {
                 for session_info in &session_infos {
                     if session_info.is_current_session {
@@ -249,6 +260,9 @@ impl ZellijPlugin for State {
             },
             ActiveScreen::ResurrectSession => {
                 self.resurrectable_sessions.render(height, width, x, y);
+            },
+            ActiveScreen::Recordings => {
+                self.recordings.render(height, width, x, y);
             },
             ActiveScreen::SingleScreen => {
                 match self.single_screen_state.mode {
@@ -448,6 +462,7 @@ impl State {
             ActiveScreen::NewSession => self.handle_new_session_key(key),
             ActiveScreen::AttachToSession => self.handle_attach_to_session(key),
             ActiveScreen::ResurrectSession => self.handle_resurrect_session_key(key),
+            ActiveScreen::Recordings => self.handle_recordings_key(key),
             ActiveScreen::SingleScreen => self.handle_single_screen_key(key),
         }
     }
@@ -745,6 +760,57 @@ impl State {
         }
         should_render
     }
+    fn enter_recordings_screen(&mut self) {
+        self.previous_screen = Some(self.active_screen);
+        self.active_screen = ActiveScreen::Recordings;
+        self.recordings.ensure_queried();
+    }
+    fn handle_recordings_key(&mut self, key: KeyWithModifier) -> bool {
+        let mut should_render = false;
+        match key.bare_key {
+            BareKey::Down if key.has_no_modifiers() => {
+                self.recordings.move_selection_down();
+                should_render = true;
+            },
+            BareKey::Up if key.has_no_modifiers() => {
+                self.recordings.move_selection_up();
+                should_render = true;
+            },
+            // ponytail: <ENTER> is a no-op until replay lands - the row carries the recording id
+            // that `zellij recordings export` (and replay) take.
+            BareKey::Char(character) if key.has_no_modifiers() && character != '\n' => {
+                self.recordings.handle_character(character);
+                should_render = true;
+            },
+            BareKey::Backspace if key.has_no_modifiers() => {
+                self.recordings.handle_backspace();
+                should_render = true;
+            },
+            BareKey::Tab if key.has_no_modifiers() => {
+                self.toggle_active_screen();
+                should_render = true;
+            },
+            BareKey::Char('c') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                if !self.recordings.clear_search_term() {
+                    self.leave_recordings_screen();
+                }
+                should_render = true;
+            },
+            BareKey::Esc if key.has_no_modifiers() => {
+                self.leave_recordings_screen();
+                should_render = true;
+            },
+            _ => {},
+        }
+        should_render
+    }
+    fn leave_recordings_screen(&mut self) {
+        match self.previous_screen.take() {
+            Some(previous_screen) => self.active_screen = previous_screen,
+            None if !self.is_welcome_screen => close_self(),
+            None => {},
+        }
+    }
     fn handle_single_screen_key(&mut self, key: KeyWithModifier) -> bool {
         match self.single_screen_state.mode {
             SingleScreenMode::SearchAndSelect => self.handle_single_screen_search_key(key),
@@ -868,6 +934,10 @@ impl State {
             },
             BareKey::Char('r') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
                 self.renaming_session_name = Some(String::new());
+                should_render = true;
+            },
+            BareKey::Char('l') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                self.enter_recordings_screen();
                 should_render = true;
             },
             BareKey::Delete if key.has_no_modifiers() => {
@@ -1014,6 +1084,8 @@ impl State {
     }
     fn handle_selection(&mut self) {
         match self.active_screen {
+            // ponytail: nothing to select until replay lands
+            ActiveScreen::Recordings => {},
             ActiveScreen::NewSession => {
                 if self.new_session_info.name().len() >= 108 {
                     // this is due to socket path limitations
@@ -1248,7 +1320,11 @@ impl State {
         self.active_screen = match self.active_screen {
             ActiveScreen::NewSession => ActiveScreen::AttachToSession,
             ActiveScreen::AttachToSession => ActiveScreen::ResurrectSession,
-            ActiveScreen::ResurrectSession => ActiveScreen::NewSession,
+            ActiveScreen::ResurrectSession => {
+                self.recordings.ensure_queried();
+                ActiveScreen::Recordings
+            },
+            ActiveScreen::Recordings => ActiveScreen::NewSession,
             ActiveScreen::SingleScreen => ActiveScreen::SingleScreen, // no-op
         };
     }

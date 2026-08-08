@@ -312,6 +312,8 @@ pub struct PluginEnv {
     pub owner_client_id: ClientId,
     #[allow(dead_code)]
     pub plugin_own_data_dir: PathBuf,
+    /// The zellij data dir (where eg. session recordings live)
+    pub zellij_data_dir: PathBuf,
     pub plugin_own_cache_dir: PathBuf,
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,

@@ -220,6 +220,8 @@ enum CommandName {
   FocusHostSession = 228;
   CancelWebRequest = 229;
   SetGlobalPanePlacement = 230;
+  ListRecordings = 231;
+  SearchRecordings = 232;
 }
 
 message PluginCommand {
@@ -382,6 +384,7 @@ message PluginCommand {
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
     CancelWebRequestPayload cancel_web_request_payload = 172;
     SetGlobalPanePlacementPayload set_global_pane_placement_payload = 173;
+    SearchRecordingsPayload search_recordings_payload = 174;
   }
 }
 
@@ -1094,6 +1097,42 @@ message GetPaneInfoResponse {
 
 message GetTabInfoPayload {
   uint64 tab_id = 1;
+}
+
+message SearchRecordingsPayload {
+  string query = 1;
+  uint32 limit = 2;
+}
+
+message RecordingSummary {
+  int64 id = 1;
+  string session_name = 2;
+  string tab_name = 3;
+  uint32 terminal_id = 4;
+  string pane_title = 5;
+  int64 started_at_us = 6;
+  int64 duration_us = 7;
+  bool is_running = 8;
+  bool capture_input = 9;
+  optional string error = 10;
+}
+
+message SearchHit {
+  int64 recording_id = 1;
+  string session_name = 2;
+  string tab_name = 3;
+  string pane_title = 4;
+  int64 elapsed_us = 5;
+  int64 started_at_us = 6;
+  string text = 7;
+}
+
+message ListRecordingsResponse {
+  repeated RecordingSummary recordings = 1;
+}
+
+message SearchRecordingsResponse {
+  repeated SearchHit hits = 1;
 }
 
 message GetTabInfoResponse {

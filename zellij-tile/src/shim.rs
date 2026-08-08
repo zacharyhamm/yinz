@@ -26,22 +26,23 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
     ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-    ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
-    ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
-    ProtobufOpenCommandPaneFloatingNearPluginResponse, ProtobufOpenCommandPaneFloatingResponse,
-    ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
-    ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
-    ProtobufOpenCommandPaneResponse, ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenFileFloatingNearPluginResponse, ProtobufOpenFileFloatingResponse,
-    ProtobufOpenFileInPlaceOfPluginResponse, ProtobufOpenFileInPlaceResponse,
-    ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse, ProtobufOpenPaneInNewTabResponse,
-    ProtobufOpenPluginPaneFloatingResponse, ProtobufOpenTerminalFloatingNearPluginResponse,
-    ProtobufOpenTerminalFloatingResponse, ProtobufOpenTerminalInPlaceOfPluginResponse,
-    ProtobufOpenTerminalInPlaceResponse, ProtobufOpenTerminalNearPluginResponse,
-    ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-    ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
-    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufShowFloatingPanesResponse,
-    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
+    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
+    ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
+    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
+    ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
+    ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneResponse,
+    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
+    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
+    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
+    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
+    ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
+    ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
+    ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
+    ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
+    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, RenameWebTokenResponse,
+    RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -1849,6 +1850,47 @@ pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsing
             .map_err(|_| LayoutParsingError::SyntaxError)?),
         None => Err(LayoutParsingError::SyntaxError),
     }
+}
+
+/// List all session recordings (newest session first), if session recording is enabled.
+///
+/// Requires the `ReadPaneContents` permission.
+pub fn list_recordings() -> Vec<RecordingSummary> {
+    let plugin_command = PluginCommand::ListRecordings;
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let protobuf_response =
+        ProtobufListRecordingsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    protobuf_response
+        .recordings
+        .into_iter()
+        .map(|r| r.into())
+        .collect()
+}
+
+/// Full-text search the recorded terminal output of all session recordings, returning at most
+/// `limit` hits.
+///
+/// Requires the `ReadPaneContents` permission. Note this brings the search index up to date
+/// first, so the first call after a lot of recording activity can take a while.
+pub fn search_recordings(query: &str, limit: usize) -> Vec<SearchHit> {
+    let plugin_command = PluginCommand::SearchRecordings {
+        query: query.to_owned(),
+        limit,
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let protobuf_response =
+        ProtobufSearchRecordingsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    protobuf_response
+        .hits
+        .into_iter()
+        .map(|h| h.into())
+        .collect()
 }
 
 /// Get a list of clients, their focused pane and running command or focused plugin back as an

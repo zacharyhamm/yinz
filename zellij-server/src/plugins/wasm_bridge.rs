@@ -113,6 +113,7 @@ pub struct LoadingContext {
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
     pub plugin_dir: PathBuf,
+    pub zellij_data_dir: PathBuf,
     pub size: Size,
 }
 
@@ -162,6 +163,7 @@ impl LoadingContext {
             plugin_config,
             tab_index,
             plugin_dir: wasm_bridge.plugin_dir.clone(),
+            zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
             size,
         }
     }
@@ -176,6 +178,7 @@ pub struct WasmBridge {
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
     senders: ThreadSenders,
     plugin_dir: PathBuf,
+    zellij_data_dir: PathBuf,
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: PluginId,
@@ -215,6 +218,7 @@ impl WasmBridge {
         senders: ThreadSenders,
         engine: Engine,
         plugin_dir: PathBuf,
+        zellij_data_dir: PathBuf,
         path_to_default_shell: PathBuf,
         zellij_cwd: PathBuf,
         session_env_vars: std::collections::BTreeMap<String, String>,
@@ -244,6 +248,7 @@ impl WasmBridge {
             connected_clients,
             senders,
             plugin_dir,
+            zellij_data_dir,
             plugin_map,
             plugin_executor,
             path_to_default_shell,
@@ -2180,7 +2185,9 @@ pub fn render_plugin_for_clients(
         let instance = running_plugin.instance;
         let rendered_bytes = instance
             .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
-            .and_then(|render| render.call(&mut running_plugin.store, (rows as i32, columns as i32)))
+            .and_then(|render| {
+                render.call(&mut running_plugin.store, (rows as i32, columns as i32))
+            })
             .map_err(|e| anyhow!(e))
             .and_then(|_| wasi_read_string(running_plugin.store.data()).map_err(|e| anyhow!(e)))
             .with_context(err_context)?;

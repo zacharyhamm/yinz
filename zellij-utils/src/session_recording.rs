@@ -503,18 +503,7 @@ mod tests {
     }
 }
 
-pub struct RecordingSummary {
-    pub id: i64,
-    pub session_name: String,
-    pub tab_name: String,
-    pub terminal_id: u32,
-    pub pane_title: String,
-    pub started_at_us: i64,
-    pub duration_us: i64,
-    pub is_running: bool,
-    pub capture_input: bool,
-    pub error: Option<String>,
-}
+pub use crate::data::{RecordingSummary, SearchHit};
 
 pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     let db_path = data_dir.join("session-recordings.db");
@@ -563,9 +552,8 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     })?;
     // Fix N+1: fetch MAX(elapsed_us) for all panes in one query
     let max_by_pane: std::collections::HashMap<i64, i64> = {
-        let mut stmt = conn.prepare(
-            "SELECT pane_id, MAX(elapsed_us) FROM recording_events GROUP BY pane_id",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT pane_id, MAX(elapsed_us) FROM recording_events GROUP BY pane_id")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
@@ -741,6 +729,320 @@ fn format_interval(secs: f64) -> String {
         s.to_string()
     } else {
         format!("{}.0", s)
+    }
+}
+
+/// Search recorded terminal output. Brings the index up to date first, so recordings made
+/// before this feature existed (and panes still being written to) are searchable.
+///
+/// `query` is FTS5 syntax; if it doesn't parse as such it is retried as a literal phrase.
+pub fn search_recordings(data_dir: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    let db_path = data_dir.join("session-recordings.db");
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut conn = rusqlite::Connection::open(&db_path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    ensure_search_schema(&conn)?;
+    index_pending(&mut conn)?;
+    match run_search(&conn, query, limit) {
+        Ok(hits) => Ok(hits),
+        // Punctuation and unbalanced quotes are FTS5 syntax errors, but they are also what
+        // people paste in from a log line. Fall back to matching the whole thing literally.
+        Err(_) => run_search(&conn, &fts_phrase(query), limit),
+    }
+}
+
+fn fts_phrase(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', "\"\""))
+}
+
+fn ensure_search_schema(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS recording_search USING fts5(
+            text,
+            pane_id UNINDEXED,
+            elapsed_us UNINDEXED,
+            tokenize = 'unicode61'
+        );
+        CREATE TABLE IF NOT EXISTS recording_search_state (
+            pane_id INTEGER PRIMARY KEY REFERENCES recording_panes(id),
+            last_event_id INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS recording_events_pane_id
+        ON recording_events(pane_id, id);
+        "#,
+    )?;
+    Ok(())
+}
+
+// ponytail: a pane that never emits a newline would buffer forever and re-scan its whole
+// history on every search. Flush at this size instead; raise it if that ever matters.
+const MAX_INDEXED_LINE: usize = 64 * 1024;
+
+/// Index every output event not yet indexed, one line of plain text per row.
+///
+/// Note that full-screen TUI output (vim, htop) is a stream of cursor-positioning redraws,
+/// so its "lines" index as fragmented text. Shell and command output — the case this is for
+/// — indexes cleanly. Doing better would mean replaying through a terminal emulator.
+fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
+    let panes: Vec<(i64, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT p.id, COALESCE(st.last_event_id, 0)
+             FROM recording_panes p
+             LEFT JOIN recording_search_state st ON st.pane_id = p.id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    // IMMEDIATE, not the default DEFERRED: this transaction reads before it writes, and a
+    // deferred read->write upgrade returns SQLITE_BUSY *without* consulting `busy_timeout`
+    // (waiting could deadlock). A live server flushes every 100ms, so a deferred
+    // transaction loses that race every time and search fails with "database is locked".
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (pane_id, last_event_id) in panes {
+        // Raw bytes, stripped only once a whole line is in hand: an escape sequence can be
+        // split across two PTY chunks, and stripping each chunk on its own leaks the tail
+        // of the sequence into the text as if it were content.
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut lines: Vec<(String, i64)> = Vec::new();
+        // The id of the last event that completed a line. Anything after it is a partial
+        // tail we drop and re-read next time, which is why no buffer state is persisted.
+        let mut last_complete: Option<i64> = None;
+        {
+            let mut stmt = tx.prepare(
+                "SELECT id, elapsed_us, data FROM recording_events
+                 WHERE pane_id = ?1 AND code = 'o' AND id > ?2
+                 ORDER BY id ASC",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![pane_id, last_event_id])?;
+            while let Some(row) = rows.next()? {
+                let event_id: i64 = row.get(0)?;
+                let elapsed_us: i64 = row.get(1)?;
+                let data: Vec<u8> = row.get(2)?;
+                // Everything already in the buffer was checked and held no newline, so only
+                // the bytes just appended need scanning. Rescanning the whole buffer makes
+                // this quadratic on redraw-heavy panes that go 64KiB without a newline.
+                let scan_from = buffer.len();
+                buffer.extend_from_slice(&data);
+                match buffer[scan_from..]
+                    .iter()
+                    .rposition(|byte| *byte == b'\n')
+                    .map(|idx| idx + scan_from)
+                {
+                    Some(idx) => {
+                        let tail = buffer.split_off(idx + 1);
+                        let stripped = strip_ansi_escapes::strip(&buffer);
+                        for line in String::from_utf8_lossy(&stripped).split('\n') {
+                            push_line(&mut lines, line, elapsed_us);
+                        }
+                        buffer = tail;
+                        last_complete = Some(event_id);
+                    },
+                    None if buffer.len() >= MAX_INDEXED_LINE => {
+                        let stripped = strip_ansi_escapes::strip(&buffer);
+                        push_line(&mut lines, &String::from_utf8_lossy(&stripped), elapsed_us);
+                        buffer.clear();
+                        last_complete = Some(event_id);
+                    },
+                    None => {},
+                }
+            }
+        }
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO recording_search (text, pane_id, elapsed_us) VALUES (?1, ?2, ?3)",
+            )?;
+            for (text, elapsed_us) in lines {
+                insert.execute(rusqlite::params![text, pane_id, elapsed_us])?;
+            }
+        }
+        if let Some(event_id) = last_complete {
+            tx.execute(
+                "INSERT INTO recording_search_state (pane_id, last_event_id) VALUES (?1, ?2)
+                 ON CONFLICT(pane_id) DO UPDATE SET last_event_id = excluded.last_event_id",
+                rusqlite::params![pane_id, event_id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn push_line(lines: &mut Vec<(String, i64)>, line: &str, elapsed_us: i64) {
+    let cleaned = crate::shared::clean_string_from_control_and_linebreak(line);
+    // Terminal redraws pad every line out to the pane width, so a captured line is mostly
+    // runs of spaces with the real content scattered through it (measured: ~714 chars
+    // average on a real recording). Collapse the padding so hits are readable.
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !collapsed.is_empty() {
+        lines.push((collapsed, elapsed_us));
+    }
+}
+
+fn run_search(conn: &rusqlite::Connection, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    // FTS5 columns are typeless, so cast the two numeric ones back explicitly.
+    // `snippet` returns the window around the match rather than the head of the line:
+    // redrawn TUI output concatenates many screen repaints into one very long line, so
+    // the head is usually not where the match is.
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT CAST(r.pane_id AS INTEGER), CAST(r.elapsed_us AS INTEGER),
+               snippet(recording_search, 0, '', '', '…', 16),
+               s.name, p.tab_name, p.title, s.started_at_us
+        FROM recording_search r
+        JOIN recording_panes p ON p.id = CAST(r.pane_id AS INTEGER)
+        JOIN recording_sessions s ON s.id = p.session_id
+        WHERE recording_search MATCH ?1
+        ORDER BY rank
+        LIMIT ?2
+        "#,
+    )?;
+    let rows = stmt.query_map(rusqlite::params![query, limit as i64], |row| {
+        let elapsed_us: i64 = row.get(1)?;
+        let session_started_us: i64 = row.get(6)?;
+        Ok(SearchHit {
+            recording_id: row.get(0)?,
+            elapsed_us,
+            text: row.get(2)?,
+            session_name: row.get(3)?,
+            tab_name: row.get(4)?,
+            pane_title: row.get(5)?,
+            // Same best-effort wall clock reconstruction as `list_recordings`.
+            started_at_us: session_started_us + elapsed_us,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn record(store: &mut RecordingStore, elapsed_us: i64, data: &[u8]) {
+        store
+            .record_events(&[RecordedEvent::output(1, elapsed_us, data.to_vec())])
+            .unwrap();
+    }
+
+    fn open(dir: &Path) -> RecordingStore {
+        let mut store = RecordingStore::open(dir, "my_session", false, 1_000_000).unwrap();
+        store
+            .update_panes(
+                &[PaneMetadata {
+                    terminal_id: 1,
+                    tab_id: 0,
+                    tab_position: 0,
+                    tab_name: "my_tab".to_string(),
+                    title: "my_pane".to_string(),
+                    cols: 80,
+                    rows: 24,
+                }],
+                0,
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn finds_a_line_split_across_events_and_strips_ansi() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        // needle straddles two PTY chunks, and is wrapped in color codes
+        record(&mut store, 100, b"\x1b[32mhello nee");
+        record(&mut store, 200, b"dle world\x1b[0m\r\nunrelated\r\n");
+        drop(store);
+
+        let hits = search_recordings(dir.path(), "needle", 10)?;
+        assert_eq!(hits.len(), 1, "expected exactly one hit: {:?}", hits.len());
+        assert_eq!(hits[0].text, "hello needle world");
+        assert_eq!(hits[0].session_name, "my_session");
+        assert_eq!(hits[0].tab_name, "my_tab");
+        assert_eq!(hits[0].pane_title, "my_pane");
+        // attributed to the event that completed the line
+        assert_eq!(hits[0].elapsed_us, 200);
+        assert_eq!(hits[0].started_at_us, 1_000_000 + 200);
+        Ok(())
+    }
+
+    #[test]
+    fn strips_escape_sequences_split_across_events() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        // a truecolor SGR sequence cut in half by the chunk boundary; stripping each chunk
+        // on its own would leave "249m" behind as if it were content
+        record(&mut store, 100, b"alpha \x1b[38;2;77;185");
+        record(&mut store, 200, b";249mbravo\r\n");
+        drop(store);
+
+        let hits = search_recordings(dir.path(), "bravo", 10)?;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "alpha bravo");
+        assert_eq!(search_recordings(dir.path(), "249m", 10)?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn collapses_terminal_redraw_padding() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        let mut padded = b"left".to_vec();
+        padded.extend(std::iter::repeat_n(b' ', 200));
+        padded.extend_from_slice(b"right\r\n");
+        record(&mut store, 100, &padded);
+        drop(store);
+
+        let hits = search_recordings(dir.path(), "right", 10)?;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "left right");
+        Ok(())
+    }
+
+    #[test]
+    fn indexes_incrementally_without_duplicating() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        record(&mut store, 100, b"needle one\n");
+        assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
+
+        // a partial line is not indexed yet, and does not advance the cursor past itself
+        record(&mut store, 200, b"needle two");
+        assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
+
+        record(&mut store, 300, b" continued\n");
+        let hits = search_recordings(dir.path(), "needle", 10)?;
+        assert_eq!(hits.len(), 2, "expected no duplicate of the first line");
+        assert!(hits.iter().any(|h| h.text == "needle one"));
+        assert!(hits.iter().any(|h| h.text == "needle two continued"));
+        Ok(())
+    }
+
+    #[test]
+    fn falls_back_to_a_literal_phrase_for_invalid_fts_syntax() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        record(&mut store, 100, b"error: can't connect to host\n");
+        drop(store);
+
+        let hits = search_recordings(dir.path(), "error: can't connect", 10)?;
+        assert_eq!(hits.len(), 1);
+        // and real FTS5 syntax still works
+        assert_eq!(
+            search_recordings(dir.path(), "conn* AND host", 10)?.len(),
+            1
+        );
+        assert_eq!(search_recordings(dir.path(), "nomatch", 10)?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_database_returns_no_hits() -> Result<()> {
+        let dir = tempdir()?;
+        assert!(search_recordings(dir.path(), "needle", 10)?.is_empty());
+        Ok(())
     }
 }
 

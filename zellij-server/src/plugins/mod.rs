@@ -325,6 +325,7 @@ pub(crate) fn plugin_thread_main(
 ) -> Result<()> {
     info!("Wasm main thread starts");
     let plugin_dir = data_dir.join("plugins/");
+    let zellij_data_dir = data_dir.clone();
     let plugin_global_data_dir = plugin_dir.join("data");
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
@@ -336,6 +337,7 @@ pub(crate) fn plugin_thread_main(
         bus.senders.clone(),
         engine,
         plugin_dir,
+        zellij_data_dir,
         path_to_default_shell,
         zellij_cwd.clone(),
         session_env_vars,

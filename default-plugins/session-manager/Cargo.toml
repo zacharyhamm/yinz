@@ -9,4 +9,6 @@ zellij-tile = { path = "../../zellij-tile" }
 fuzzy-matcher = { workspace = true }
 unicode-width = { workspace = true }
 humantime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }

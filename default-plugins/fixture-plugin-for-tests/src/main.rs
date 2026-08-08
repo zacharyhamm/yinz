@@ -66,6 +66,7 @@ impl ZellijPlugin for State {
             PermissionType::WriteToClipboard,
             PermissionType::RunActionsAsUser,
             PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadPaneContents,
         ]);
         let should_subscribe_initial_keybinds = configuration
             .get("subscribe_initial_keybinds")
@@ -776,6 +777,19 @@ impl ZellijPlugin for State {
                     } else {
                         self.explicit_string_to_render = Some(format!("Error: Got empty env vars"));
                     }
+                },
+                BareKey::Char('r')
+                    if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
+                {
+                    let recordings = list_recordings();
+                    let hits = search_recordings("fixture-needle", 10);
+                    self.explicit_string_to_render = Some(format!(
+                        "Recordings: {}, first: {:?}, hits: {}, first hit: {:?}",
+                        recordings.len(),
+                        recordings.first(),
+                        hits.len(),
+                        hits.first(),
+                    ));
                 },
                 BareKey::Char('a')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Alt]) =>

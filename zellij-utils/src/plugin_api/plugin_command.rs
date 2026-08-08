@@ -67,7 +67,8 @@ pub use super::generated_api::api::{
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
-        KillSessionsResponse as ProtobufKillSessionsResponse, ListTokensResponse,
+        KillSessionsResponse as ProtobufKillSessionsResponse,
+        ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
         LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
         MovePaneWithPaneIdPayload, MovePayload, NewPluginArgs as ProtobufNewPluginArgs,
         NewTabPayload, NewTabResponse as ProtobufNewTabResponse, NewTabUnfocusedPayload,
@@ -115,7 +116,8 @@ pub use super::generated_api::api::{
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
         PluginMessagePayload, RebindKeysPayload, ReconfigurePayload,
-        RegexHighlight as ProtobufRegexHighlight, ReloadPluginPayload, RenameLayoutPayload,
+        RecordingSummary as ProtobufRecordingSummary, RegexHighlight as ProtobufRegexHighlight,
+        ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         RenameWebLoginTokenPayload, RenameWebTokenResponse, ReplacePaneWithExistingPanePayload,
         RequestPluginPermissionPayload, RerunCommandPanePayload, ResizePaneIdWithDirectionPayload,
@@ -124,6 +126,8 @@ pub use super::generated_api::api::{
         SaveLayoutPayload, SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
+        SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
+        SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetFloatingPanePinnedPayload,
         SetGlobalPanePlacementPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
@@ -145,8 +149,9 @@ use crate::data::{
     DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
     GetPaneCwdResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GetSessionListResponse,
     HighlightLayer, HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    MessageToPlugin, NewPluginArgs, PaneId, PermissionType, PluginCommand, RegexHighlight,
-    RenameLayoutResponse, SaveLayoutResponse, SessionInfo, SessionListSnapshot,
+    MessageToPlugin, NewPluginArgs, PaneId, PermissionType, PluginCommand, RecordingSummary,
+    RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit, SessionInfo,
+    SessionListSnapshot,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -1114,6 +1119,21 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     return Err("FocusHostSession should not have a payload");
                 }
                 Ok(PluginCommand::FocusHostSession)
+            },
+            Some(CommandName::ListRecordings) => {
+                if protobuf_plugin_command.payload.is_some() {
+                    return Err("ListRecordings should not have a payload");
+                }
+                Ok(PluginCommand::ListRecordings)
+            },
+            Some(CommandName::SearchRecordings) => match protobuf_plugin_command.payload {
+                Some(Payload::SearchRecordingsPayload(payload)) => {
+                    Ok(PluginCommand::SearchRecordings {
+                        query: payload.query,
+                        limit: payload.limit as usize,
+                    })
+                },
+                _ => Err("Malformed payload for SearchRecordings"),
             },
             Some(CommandName::TogglePaneFrames) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -3133,6 +3153,19 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::FocusHostSession => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusHostSession as i32,
                 payload: None,
+            }),
+            PluginCommand::ListRecordings => Ok(ProtobufPluginCommand {
+                name: CommandName::ListRecordings as i32,
+                payload: None,
+            }),
+            PluginCommand::SearchRecordings { query, limit } => Ok(ProtobufPluginCommand {
+                name: CommandName::SearchRecordings as i32,
+                payload: Some(Payload::SearchRecordingsPayload(
+                    ProtobufSearchRecordingsPayload {
+                        query,
+                        limit: limit as u32,
+                    },
+                )),
             }),
             PluginCommand::TogglePaneFrames => Ok(ProtobufPluginCommand {
                 name: CommandName::TogglePaneFrames as i32,
@@ -5272,6 +5305,68 @@ impl From<OpenPluginPaneFloatingResponse> for ProtobufOpenPluginPaneFloatingResp
     }
 }
 
+impl From<ProtobufRecordingSummary> for RecordingSummary {
+    fn from(protobuf: ProtobufRecordingSummary) -> Self {
+        RecordingSummary {
+            id: protobuf.id,
+            session_name: protobuf.session_name,
+            tab_name: protobuf.tab_name,
+            terminal_id: protobuf.terminal_id,
+            pane_title: protobuf.pane_title,
+            started_at_us: protobuf.started_at_us,
+            duration_us: protobuf.duration_us,
+            is_running: protobuf.is_running,
+            capture_input: protobuf.capture_input,
+            error: protobuf.error,
+        }
+    }
+}
+
+impl From<RecordingSummary> for ProtobufRecordingSummary {
+    fn from(summary: RecordingSummary) -> Self {
+        ProtobufRecordingSummary {
+            id: summary.id,
+            session_name: summary.session_name,
+            tab_name: summary.tab_name,
+            terminal_id: summary.terminal_id,
+            pane_title: summary.pane_title,
+            started_at_us: summary.started_at_us,
+            duration_us: summary.duration_us,
+            is_running: summary.is_running,
+            capture_input: summary.capture_input,
+            error: summary.error,
+        }
+    }
+}
+
+impl From<ProtobufSearchHit> for SearchHit {
+    fn from(protobuf: ProtobufSearchHit) -> Self {
+        SearchHit {
+            recording_id: protobuf.recording_id,
+            session_name: protobuf.session_name,
+            tab_name: protobuf.tab_name,
+            pane_title: protobuf.pane_title,
+            elapsed_us: protobuf.elapsed_us,
+            started_at_us: protobuf.started_at_us,
+            text: protobuf.text,
+        }
+    }
+}
+
+impl From<SearchHit> for ProtobufSearchHit {
+    fn from(hit: SearchHit) -> Self {
+        ProtobufSearchHit {
+            recording_id: hit.recording_id,
+            session_name: hit.session_name,
+            tab_name: hit.tab_name,
+            pane_title: hit.pane_title,
+            elapsed_us: hit.elapsed_us,
+            started_at_us: hit.started_at_us,
+            text: hit.text,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5384,6 +5479,58 @@ mod tests {
                 (other, _) => panic!("expected WebRequest, got {:?}", other),
             }
         }
+    }
+
+    #[test]
+    fn recording_commands_protobuf_round_trip() {
+        let original = PluginCommand::SearchRecordings {
+            query: "needle".to_owned(),
+            limit: 7,
+        };
+        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        match decoded {
+            PluginCommand::SearchRecordings { query, limit } => {
+                assert_eq!(query, "needle");
+                assert_eq!(limit, 7);
+            },
+            other => panic!("expected SearchRecordings, got {:?}", other),
+        }
+
+        let protobuf: ProtobufPluginCommand =
+            PluginCommand::ListRecordings.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        assert!(matches!(decoded, PluginCommand::ListRecordings));
+    }
+
+    #[test]
+    fn recording_results_protobuf_round_trip() {
+        let summary = RecordingSummary {
+            id: 3,
+            session_name: "session".to_owned(),
+            tab_name: "tab".to_owned(),
+            terminal_id: 5,
+            pane_title: "title".to_owned(),
+            started_at_us: 1_000,
+            duration_us: 2_000,
+            is_running: true,
+            capture_input: false,
+            error: Some("boom".to_owned()),
+        };
+        let protobuf: ProtobufRecordingSummary = summary.clone().into();
+        assert_eq!(RecordingSummary::from(protobuf), summary);
+
+        let hit = SearchHit {
+            recording_id: 3,
+            session_name: "session".to_owned(),
+            tab_name: "tab".to_owned(),
+            pane_title: "title".to_owned(),
+            elapsed_us: 42,
+            started_at_us: 1_000,
+            text: "needle in a haystack".to_owned(),
+        };
+        let protobuf: ProtobufSearchHit = hit.clone().into();
+        assert_eq!(SearchHit::from(protobuf), hit);
     }
 
     #[test]

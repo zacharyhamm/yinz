@@ -1032,10 +1032,13 @@ pub(crate) fn recordings(
 ) -> anyhow::Result<()> {
     use zellij_utils::cli::Recordings as RecordingsCli;
     match command {
-        RecordingsCli::List => {
+        RecordingsCli::List { json } => {
             let summaries = zellij_utils::session_recording::list_recordings(&data_dir)?;
-            let output = format_recordings_list(&summaries);
-            print!("{}", output);
+            if json {
+                println!("{}", serde_json::to_string(&summaries)?);
+            } else {
+                print!("{}", format_recordings_list(&summaries));
+            }
             Ok(())
         },
         RecordingsCli::Export {
@@ -1070,7 +1073,50 @@ pub(crate) fn recordings(
             }
             Ok(())
         },
+        RecordingsCli::Search { query, limit, json } => {
+            let hits =
+                zellij_utils::session_recording::search_recordings(&data_dir, &query, limit)?;
+            if json {
+                println!("{}", serde_json::to_string(&hits)?);
+            } else {
+                print!("{}", format_search_results(&hits));
+            }
+            Ok(())
+        },
     }
+}
+
+pub(crate) fn format_search_results(hits: &[zellij_utils::session_recording::SearchHit]) -> String {
+    if hits.is_empty() {
+        return "No matches.\n".to_string();
+    }
+    let mut out = String::from("ID  TIME  SESSION  TAB  PANE  TEXT\n");
+    for hit in hits {
+        let pane = if hit.pane_title.is_empty() {
+            "-"
+        } else {
+            &hit.pane_title
+        };
+        out.push_str(&format!(
+            "{}  {}  {}  {}  {}  {}\n",
+            hit.recording_id,
+            format_duration(hit.elapsed_us),
+            hit.session_name,
+            hit.tab_name,
+            pane,
+            truncate_chars(&hit.text, 120),
+        ));
+    }
+    out
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
 }
 
 pub(crate) fn format_recordings_list(

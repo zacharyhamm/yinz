@@ -95,9 +95,9 @@ use zellij_utils::{
             ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
             ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-            ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
-            ProtobufOpenCommandPaneBackgroundResponse,
+            ProtobufKillSessionsResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse,
             ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
@@ -114,7 +114,7 @@ use zellij_utils::{
             ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
             ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
             ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-            ProtobufShowFloatingPanesResponse,
+            ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
         },
         plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion},
     },
@@ -200,6 +200,10 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     },
                     PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
                     PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
+                    PluginCommand::ListRecordings => list_recordings(env),
+                    PluginCommand::SearchRecordings { query, limit } => {
+                        search_recordings(env, query, limit)
+                    },
                     PluginCommand::OpenFile(file_to_open, context) => {
                         open_file(env, file_to_open, context)
                     },
@@ -3932,6 +3936,37 @@ fn get_tab_info(env: &PluginEnv, tab_id: usize) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
+fn list_recordings(env: &PluginEnv) {
+    let recordings = zellij_utils::session_recording::list_recordings(&env.zellij_data_dir)
+        .unwrap_or_else(|e| {
+            log::error!("Failed to list recordings for plugin {}: {}", env.name(), e);
+            Vec::new()
+        });
+    let response = ProtobufListRecordingsResponse {
+        recordings: recordings.into_iter().map(|r| r.into()).collect(),
+    };
+    let _ = wasi_write_object(env, &response.encode_to_vec());
+}
+
+// ponytail: search indexes FTS inline on the plugin thread; move to a worker if large recordings
+// stall plugin calls
+fn search_recordings(env: &PluginEnv, query: String, limit: usize) {
+    let hits =
+        zellij_utils::session_recording::search_recordings(&env.zellij_data_dir, &query, limit)
+            .unwrap_or_else(|e| {
+                log::error!(
+                    "Failed to search recordings for plugin {}: {}",
+                    env.name(),
+                    e
+                );
+                Vec::new()
+            });
+    let response = ProtobufSearchRecordingsResponse {
+        hits: hits.into_iter().map(|h| h.into()).collect(),
+    };
+    let _ = wasi_write_object(env, &response.encode_to_vec());
+}
+
 fn list_clients(env: &PluginEnv) {
     let _ = env.senders.to_screen.as_ref().map(|sender| {
         sender.send(ScreenInstruction::ListClientsToPlugin(
@@ -5665,7 +5700,9 @@ fn check_command_permission(
         PluginCommand::InterceptKeyPresses | PluginCommand::ClearKeyPressesIntercepts => {
             PermissionType::InterceptInput
         },
-        PluginCommand::GetPaneScrollback { .. } => PermissionType::ReadPaneContents,
+        PluginCommand::GetPaneScrollback { .. }
+        | PluginCommand::ListRecordings
+        | PluginCommand::SearchRecordings { .. } => PermissionType::ReadPaneContents,
         PluginCommand::RunAction(..) => PermissionType::RunActionsAsUser,
         PluginCommand::GetSessionEnvironmentVariables => {
             PermissionType::ReadSessionEnvironmentVariables

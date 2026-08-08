@@ -129,7 +129,11 @@ impl CliArgs {
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Recordings {
     /// List recorded terminal panes.
-    List,
+    List {
+        /// Print a JSON array instead of a table.
+        #[clap(long)]
+        json: bool,
+    },
     /// Export one terminal pane as asciicast v3.
     Export {
         /// Recording ID from `zellij recordings list`.
@@ -137,6 +141,17 @@ pub enum Recordings {
         /// Write the cast to this file. The default is stdout.
         #[clap(short, long)]
         output: Option<PathBuf>,
+    },
+    /// Search recorded terminal output.
+    Search {
+        /// FTS5 query. Falls back to a literal phrase if it isn't valid FTS5 syntax.
+        query: String,
+        /// Maximum number of matching lines to return.
+        #[clap(short, long, default_value = "50")]
+        limit: usize,
+        /// Print a JSON array instead of a table.
+        #[clap(long)]
+        json: bool,
     },
 }
 

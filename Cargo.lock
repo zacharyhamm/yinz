@@ -3280,6 +3280,8 @@ version = "0.1.0"
 dependencies = [
  "fuzzy-matcher",
  "humantime",
+ "serde",
+ "serde_json",
  "unicode-width 0.2.2",
  "uuid",
  "zellij-tile",
@@ -5010,6 +5012,7 @@ dependencies = [
  "names",
  "rand 0.10.2",
  "regex",
+ "serde_json",
  "ssh2",
  "suggest",
  "thiserror 2.0.19",
