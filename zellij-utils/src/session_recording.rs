@@ -964,6 +964,7 @@ fn run_search(conn: &rusqlite::Connection, query: &str, limit: usize) -> Result<
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    use hegel::generators::{self, Generator};
     use tempfile::tempdir;
 
     fn record(store: &mut RecordingStore, elapsed_us: i64, data: &[u8]) {
@@ -1110,6 +1111,99 @@ mod search_tests {
         let dir = tempdir()?;
         assert!(search_recordings(dir.path(), "needle", 10)?.is_empty());
         Ok(())
+    }
+
+    /// Pieces of a plausible PTY stream: words, the separators lines are made of, escape
+    /// sequences to be stripped, and raw bytes (so cuts can land inside a UTF-8 sequence).
+    #[hegel::composite]
+    fn output_stream(tc: &hegel::TestCase) -> Vec<u8> {
+        let piece_count = tc.draw(generators::integers::<usize>().max_value(30));
+        let mut stream = Vec::new();
+        for _ in 0..piece_count {
+            let piece: Vec<u8> = tc.draw(hegel::one_of!(
+                generators::text().max_size(12).map(String::into_bytes),
+                generators::binary().max_size(8),
+                generators::sampled_from(vec![
+                    &b"\n"[..],
+                    b"\r\n",
+                    b"    ",
+                    b"\t",
+                    b"\x1b[32m",
+                    b"\x1b[0m",
+                    b"\x1b[38;2;77;185;249m",
+                    b"\x1b[2J",
+                ])
+                .map(<[u8]>::to_vec),
+            ));
+            stream.extend_from_slice(&piece);
+        }
+        stream
+    }
+
+    /// Every line `index_pending` would index, in order, for a pane fed `chunks` as events.
+    fn indexed_lines(chunks: &[&[u8]]) -> Vec<String> {
+        let dir = tempdir().unwrap();
+        {
+            let mut store = open(dir.path());
+            for chunk in chunks {
+                // one elapsed_us for every chunk: a line is attributed to the event that
+                // completed it, which chunking legitimately changes. The line *text* is
+                // what must not depend on it.
+                record(&mut store, 100, chunk);
+            }
+        }
+        let mut conn = rusqlite::Connection::open(dir.path().join("session-recordings.db")).unwrap();
+        ensure_search_schema(&conn).unwrap();
+        index_pending(&mut conn).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT text FROM recording_search ORDER BY rowid")
+            .unwrap();
+        let lines = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        lines
+    }
+
+    /// A PTY hands us the same bytes cut at arbitrary offsets from one run to the next, so
+    /// what gets indexed must depend on the stream and not on where the cuts fell. The two
+    /// tests above are this property at two hand-picked offsets.
+    // 50 rather than the default 100: each case builds a sqlite database on disk.
+    #[hegel::test(test_cases = 50)]
+    fn indexing_is_independent_of_chunk_boundaries(tc: hegel::TestCase) {
+        let stream = tc.draw(output_stream());
+        let cut_count = tc.draw(generators::integers::<usize>().max_value(stream.len()));
+        let mut cuts: Vec<usize> = tc.draw(
+            generators::vecs(generators::integers::<usize>().max_value(stream.len()))
+                .min_size(cut_count)
+                .max_size(cut_count)
+                .unique(true),
+        );
+        cuts.sort_unstable();
+
+        let chunks: Vec<&[u8]> = std::iter::once(0)
+            .chain(cuts.iter().copied())
+            .zip(cuts.iter().copied().chain(std::iter::once(stream.len())))
+            .map(|(from, to)| &stream[from..to])
+            .collect();
+
+        assert_eq!(indexed_lines(&[&stream]), indexed_lines(&chunks));
+    }
+
+    /// The literal-phrase fallback exists so that anything a person pastes in — a log line
+    /// with a colon, an apostrophe, a stray quote — searches instead of erroring. So no
+    /// string at all may come back as an FTS5 syntax error.
+    #[hegel::test]
+    fn any_query_string_searches_rather_than_erroring(tc: hegel::TestCase) {
+        let query = tc.draw(generators::text());
+        let dir = tempdir().unwrap();
+        {
+            let mut store = open(dir.path());
+            record(&mut store, 100, b"error: can't connect to host\n");
+        }
+        let hits = search_recordings(dir.path(), &query, 10);
+        assert!(hits.is_ok(), "{:?} errored: {:?}", query, hits.err());
     }
 }
 
