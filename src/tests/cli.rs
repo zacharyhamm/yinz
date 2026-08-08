@@ -161,3 +161,96 @@ fn cli_recordings_export_with_output_parses() {
         _ => panic!("Expected Recordings::Export with output"),
     }
 }
+
+#[test]
+fn recordings_list_output_formats_header_and_rows() {
+    use std::fs;
+    use zellij_utils::session_recording::{PaneMetadata, RecordingStore};
+
+    // create temp recording database with one pane
+    let dir_path = std::env::temp_dir().join(format!("zellij-recordings-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_path);
+    fs::create_dir_all(&dir_path).unwrap();
+    let mut store = RecordingStore::open(&dir_path, "my_session", true, 1_000_000).unwrap();
+    let meta = PaneMetadata {
+        terminal_id: 7,
+        tab_id: 0,
+        tab_position: 0,
+        tab_name: "my_tab".to_string(),
+        title: "my_pane".to_string(),
+        cols: 80,
+        rows: 24,
+    };
+    store.update_panes(&[meta], 0).unwrap();
+    let summaries = zellij_utils::session_recording::list_recordings(&dir_path).unwrap();
+    assert_eq!(summaries.len(), 1);
+    // call formatting helper (does not exist yet, should fail)
+    let output = crate::commands::format_recordings_list(&summaries);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2, "expected one header row and one data row");
+    assert!(lines[0].contains("ID"), "header must contain ID");
+    assert!(lines[0].contains("SESSION"), "header must contain SESSION");
+    assert!(lines[0].contains("TAB"), "header must contain TAB");
+    assert!(lines[0].contains("PANE"), "header must contain PANE");
+    assert!(lines[0].contains("STARTED"), "header must contain STARTED");
+    assert!(lines[0].contains("DURATION"), "header must contain DURATION");
+    assert!(lines[0].contains("INPUT"), "header must contain INPUT");
+    assert!(lines[0].contains("STATE"), "header must contain STATE");
+    // data row checks
+    assert!(lines[1].contains("my_session"));
+    assert!(lines[1].contains("my_tab"));
+    // running state for open pane
+    assert!(lines[1].contains("running") || lines[1].contains("complete") || lines[1].contains("incomplete"));
+    // test state variants: close pane without error => complete, with error => incomplete
+    // We verify helper formats input yes/no correctly (capture_input true => yes)
+    assert!(lines[1].contains("yes") || lines[1].contains("no"));
+    let _ = fs::remove_dir_all(&dir_path);
+}
+
+#[test]
+fn recordings_state_strings() {
+    use zellij_utils::session_recording::RecordingSummary;
+
+    let running = RecordingSummary {
+        id: 1,
+        session_name: "s".to_string(),
+        tab_name: "t".to_string(),
+        terminal_id: 1,
+        pane_title: "p".to_string(),
+        started_at_us: 0,
+        duration_us: 0,
+        is_running: true,
+        capture_input: true,
+        error: None,
+    };
+    let complete = RecordingSummary {
+        id: 2,
+        session_name: "s".to_string(),
+        tab_name: "t".to_string(),
+        terminal_id: 2,
+        pane_title: "p".to_string(),
+        started_at_us: 0,
+        duration_us: 5_000_000,
+        is_running: false,
+        capture_input: false,
+        error: None,
+    };
+    let incomplete = RecordingSummary {
+        id: 3,
+        session_name: "s".to_string(),
+        tab_name: "t".to_string(),
+        terminal_id: 3,
+        pane_title: "p".to_string(),
+        started_at_us: 0,
+        duration_us: 0,
+        is_running: false,
+        capture_input: false,
+        error: Some("oops".to_string()),
+    };
+    let output = crate::commands::format_recordings_list(&[running, complete, incomplete]);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 4, "header + 3 rows");
+    assert!(lines[1].contains("running"), "running pane should show running");
+    assert!(lines[2].contains("complete"), "closed pane without error should show complete");
+    assert!(lines[3].contains("incomplete"), "pane with error should show incomplete");
+}

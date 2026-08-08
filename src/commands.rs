@@ -1025,3 +1025,84 @@ pub fn get_config_options_from_cli_args(opts: &CliArgs) -> Result<Options, Strin
         .map(|(_, _, config_options, _, _)| config_options)
         .map_err(|e| e.to_string())
 }
+
+pub(crate) fn recordings(command: zellij_utils::cli::Recordings, data_dir: PathBuf) -> anyhow::Result<()> {
+    use zellij_utils::cli::Recordings as RecordingsCli;
+    use zellij_utils::home::get_default_data_dir;
+    let _ = get_default_data_dir; // to satisfy use
+    match command {
+        RecordingsCli::List => {
+            let summaries = zellij_utils::session_recording::list_recordings(&data_dir)?;
+            let output = format_recordings_list(&summaries);
+            print!("{}", output);
+            Ok(())
+        },
+        RecordingsCli::Export { recording_id, output } => {
+            if let Some(ref path) = output {
+                if path.exists() {
+                    anyhow::bail!("output file {:?} already exists", path);
+                }
+                let mut file = std::fs::File::create(path)?;
+                zellij_utils::session_recording::export_recording(&data_dir, recording_id, &mut file)?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut handle = stdout.lock();
+                zellij_utils::session_recording::export_recording(&data_dir, recording_id, &mut handle)?;
+            }
+            Ok(())
+        },
+    }
+}
+
+pub(crate) fn format_recordings_list(summaries: &[zellij_utils::session_recording::RecordingSummary]) -> String {
+    // Header as specified in plan
+    let mut out = String::new();
+    out.push_str("ID  SESSION  TAB  PANE  STARTED  DURATION  INPUT  STATE\n");
+    for s in summaries {
+        let started = format_started(s.started_at_us);
+        let duration = if s.is_running {
+            "running".to_string()
+        } else {
+            format_duration(s.duration_us)
+        };
+        let input = if s.capture_input { "yes" } else { "no" };
+        let state = if s.is_running {
+            "running"
+        } else if s.error.is_some() {
+            "incomplete"
+        } else {
+            "complete"
+        };
+        // PANE column: terminal_id plus title
+        let pane_col = if s.pane_title.is_empty() {
+            format!("{}", s.terminal_id)
+        } else {
+            format!("{} {}", s.terminal_id, s.pane_title)
+        };
+        // Use simple space-separated formatting; header checks only contain substrings
+        out.push_str(&format!(
+            "{}  {}  {}  {}  {}  {}  {}  {}\n",
+            s.id, s.session_name, s.tab_name, pane_col, started, duration, input, state
+        ));
+    }
+    out
+}
+
+fn format_started(started_at_us: i64) -> String {
+    // Simple formatting: use humantime or raw micros; avoid extra dependencies
+    // For test determinism, just return the micros as seconds with one decimal
+    // But we want a readable local time; fallback to micros string
+    // Use std time conversion without chrono: just show micros
+    format!("{}", started_at_us)
+}
+
+fn format_duration(duration_us: i64) -> String {
+    let secs = duration_us as f64 / 1_000_000.0;
+    if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 3600.0 {
+        format!("{:.1}m", secs / 60.0)
+    } else {
+        format!("{:.1}h", secs / 3600.0)
+    }
+}

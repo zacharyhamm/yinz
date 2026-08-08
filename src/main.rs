@@ -19,6 +19,19 @@ fn main() {
     create_config_and_cache_folders();
     let opts = CliArgs::parse();
 
+    // Handle offline recordings command before client/server startup
+    if let Some(Command::Recordings(rec)) = opts.command.clone() {
+        let data_dir = opts
+            .data_dir
+            .clone()
+            .unwrap_or_else(zellij_utils::home::get_default_data_dir);
+        if let Err(e) = commands::recordings(rec, data_dir) {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     {
         let config = Config::try_from(&opts).ok();
         if let Some(Command::Action(cli_action)) = opts.command {
