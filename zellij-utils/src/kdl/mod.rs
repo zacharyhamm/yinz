@@ -421,6 +421,10 @@ pub fn kdl_child_bool_value_for_entry<'a>(
         .and_then(|cwd_value| cwd_value.value().as_bool())
 }
 
+/// Global panes are only supported for tiled creation: `NewPane`, `NewTiledPane`, `Run` (as tiled)
+/// and plugin launches. Floating/in-place/stacked/blocking are rejected here and in
+/// `zellij-server/src/route.rs::reject_unrouted_global_pane_placement` — keep both
+/// sites uniform when adding actions.
 #[allow(clippy::result_large_err)]
 fn parse_global_pane_placement(
     command_metadata: Option<&KdlDocument>,
@@ -472,6 +476,25 @@ fn parse_global_plugin_pane_placement(
 ) -> Result<Option<GlobalPanePlacement>, ConfigError> {
     let global =
         command_metadata.and_then(|metadata| kdl_child_bool_value_for_entry(metadata, "global"));
+    // Only error for `edge`/`size` that look like global placement when `global` is not true.
+    // Plugin user config may legitimately contain keys named `edge`/`size` with arbitrary
+    // values (e.g. `edge "soft"` `size "large"` in `non_global_plugin_placement_…` test),
+    // so we only treat valid global values as a typo that should be reported.
+    let edge = command_metadata
+        .and_then(|m| kdl_child_string_value_for_entry(m, "edge"));
+    let is_valid_edge = matches!(edge, Some("left") | Some("right") | Some("top") | Some("bottom"));
+    let size_str = command_metadata
+        .and_then(|m| kdl_child_string_value_for_entry(m, "size"));
+    let is_valid_size = size_str
+        .as_ref()
+        .map(|s| crate::input::layout::PercentOrFixed::from_str(s).is_ok())
+        .unwrap_or(false);
+    if (is_valid_edge || is_valid_size) && global != Some(true) {
+        return Err(global_pane_kdl_error(
+            "edge or size without global",
+            action_node,
+        ));
+    }
     if global == Some(true) {
         parse_global_pane_placement(command_metadata, action_node)
     } else {

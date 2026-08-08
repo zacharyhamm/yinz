@@ -273,6 +273,10 @@ impl PaneGeom {
     /// `origin` is where the tab's display area starts on screen - non-zero when global panes are
     /// docked to the left or top - so that coordinates are relative to the tab rather than to the
     /// screen.
+    /// NOTE: Every floating-pane creation path (`tab/mod.rs`, `layout_applier.rs`,
+    /// `floating_panes/mod.rs`, `tiled_pane_grid.rs` and any future one) must pass
+    /// the tab's `display_area_origin` here; otherwise panes are mispositioned
+    /// when left/top global strips exist (see `pane_size` tests with non-zero origin).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_floating_pane_position(
         &mut self,
@@ -521,5 +525,69 @@ impl From<&Size> for PaneGeom {
             cols,
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::layout::PercentOrFixed;
+
+    #[test]
+    fn apply_floating_pane_position_with_non_zero_origin() {
+        let mut geom = PaneGeom::default();
+        // origin (10,5) simulates left/top global strips
+        let origin = (10, 5);
+        geom.apply_floating_pane_position(
+            Some(PercentOrFixed::Fixed(5)),
+            Some(PercentOrFixed::Fixed(3)),
+            Some(PercentOrFixed::Fixed(20)),
+            Some(PercentOrFixed::Fixed(10)),
+            80,
+            24,
+            origin,
+        );
+        // x = origin.x + x, y = origin.y + y
+        assert_eq!(geom.x, 15, "x should include origin.x");
+        assert_eq!(geom.y, 8, "y should include origin.y");
+        assert_eq!(geom.cols.as_usize(), 20);
+        assert_eq!(geom.rows.as_usize(), 10);
+    }
+
+    #[test]
+    fn apply_floating_pane_position_centered_with_origin() {
+        let mut geom = PaneGeom::default();
+        let origin = (10, 5);
+        // No x/y, width/height set — should center within viewport plus origin
+        geom.apply_floating_pane_position(
+            None,
+            None,
+            Some(PercentOrFixed::Fixed(20)),
+            Some(PercentOrFixed::Fixed(10)),
+            80,
+            24,
+            origin,
+        );
+        // centered: origin + (viewport - size)/2
+        assert_eq!(geom.x, 10 + (80 - 20) / 2);
+        assert_eq!(geom.y, 5 + (24 - 10) / 2);
+    }
+
+    #[test]
+    fn apply_floating_pane_position_percent_with_origin() {
+        let mut geom = PaneGeom::default();
+        let origin = (10, 5);
+        geom.apply_floating_pane_position(
+            Some(PercentOrFixed::Percent(10)),
+            Some(PercentOrFixed::Percent(20)),
+            None,
+            None,
+            100,
+            50,
+            origin,
+        );
+        // 10% of 100 =10, 20% of 50=10
+        assert_eq!(geom.x, 10 + 10);
+        assert_eq!(geom.y, 5 + 10);
     }
 }

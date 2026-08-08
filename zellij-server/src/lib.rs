@@ -2058,10 +2058,19 @@ fn init_session(
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
 
+    let recording_enabled = config.options.session_recording.unwrap_or(false);
+    let input_enabled = config
+        .options
+        .session_recording_input
+        .unwrap_or(false);
+    if input_enabled && !recording_enabled {
+        log::warn!(
+            "session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
+        );
+    }
     let (session_recorder_handle, session_recorder_thread) =
-        if config.options.session_recording.unwrap_or(false) {
-            let capture_input = config.options.session_recording.unwrap_or(false)
-                && config.options.session_recording_input.unwrap_or(false);
+        if recording_enabled {
+            let capture_input = recording_enabled && input_enabled;
             let session_name = config
                 .options
                 .session_name

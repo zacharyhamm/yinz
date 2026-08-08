@@ -34,6 +34,10 @@ use crate::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// Converts `ClientToServerMsg` to its protobuf representation.
+/// # Errors
+/// Returns `anyhow::Error` if the contained `Action` fails to convert (e.g. invalid `GlobalPanePlacement` size/edge, or other fallible action fields).
+/// This changed from `From` (infallible) at base `5254e4fc` to `TryFrom` in this branch; external callers must now use `try_into()?` / `TryFrom::try_from` and handle the error (see `zellij-utils/src/ipc.rs:387,496` for internal handling).
 // Convert Rust ClientToServerMsg to protobuf
 impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
     type Error = anyhow::Error;

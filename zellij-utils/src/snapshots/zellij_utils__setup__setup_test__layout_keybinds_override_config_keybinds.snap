@@ -115,6 +115,8 @@ Config {
         attach_to_session: None,
         auto_layout: None,
         session_serialization: None,
+        session_recording: None,
+        session_recording_input: None,
         serialize_pane_viewport: None,
         scrollback_lines_to_serialize: None,
         styled_underlines: None,

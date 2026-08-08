@@ -1,3 +1,5 @@
+// Clippy allows kept as debt — see REVIEW_CHECKLIST.md "Many clippy allows hide warnings".
+// Fix lints incrementally or document per-allow reason.
 #![allow(clippy::type_complexity)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::collapsible_if)]

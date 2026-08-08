@@ -2072,10 +2072,6 @@ pub struct Options {
     pub theme_dark: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="47")]
     pub theme_light: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bool, optional, tag="48")]
-    pub session_recording: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="49")]
-    pub session_recording_input: ::core::option::Option<bool>,
     #[prost(string, optional, tag="51")]
     pub pane_frame_style: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="52")]
@@ -2086,6 +2082,10 @@ pub struct Options {
     pub mouse_scroll_resize: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="55")]
     pub support_kitty_graphics_protocol: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="56")]
+    pub session_recording: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="57")]
+    pub session_recording_input: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

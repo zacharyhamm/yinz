@@ -224,11 +224,17 @@ fn new_pane_routing(
     }
 }
 
+/// Global panes are only supported for tiled creation paths:
+/// `NewPane`, `NewTiledPane`, `Run` (when not floating/in-place/stacked) and plugin
+/// launches (`LaunchPlugin`/`LaunchOrFocusPlugin`). Floating, in-place, stacked and blocking
+/// panes are positioned/layered differently and cannot be global. The same rule is
+/// enforced in `zellij-utils/src/kdl/mod.rs` (`Global panes cannot be ...` checks)
+/// — keep the two sites uniform when adding new actions.
 fn reject_unrouted_global_pane_placement(
     global_placement: Option<GlobalPanePlacement>,
 ) -> Result<()> {
     if global_placement.is_some() {
-        bail!("Global pane creation is unavailable until global pane routing is enabled");
+        bail!("Global panes cannot be floating, in-place, stacked or blocking");
     }
     Ok(())
 }

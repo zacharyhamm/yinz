@@ -1,3 +1,4 @@
+// Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::useless_format)]

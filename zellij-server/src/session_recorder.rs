@@ -23,10 +23,10 @@ pub enum RecorderInstruction {
 
 #[derive(Clone)]
 pub struct SessionRecorderHandle {
-    pub sender: crossbeam::channel::Sender<RecorderInstruction>,
-    pub started_at: Instant,
-    pub capture_input: bool,
-    pub enabled: Arc<AtomicBool>,
+    pub(crate) sender: crossbeam::channel::Sender<RecorderInstruction>,
+    pub(crate) started_at: Instant,
+    pub(crate) capture_input: bool,
+    pub(crate) enabled: Arc<AtomicBool>,
 }
 
 impl SessionRecorderHandle {
@@ -83,9 +83,13 @@ impl SessionRecorderHandle {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let _ = self
+        if let Err(_) = self
             .sender
-            .send(RecorderInstruction::PaneMetadata { elapsed_us, panes });
+            .try_send(RecorderInstruction::PaneMetadata { elapsed_us, panes })
+        {
+            self.enabled.store(false, Ordering::Relaxed);
+            log::error!("session recorder channel full or disconnected, disabling");
+        }
     }
 
     pub fn pane_closed(&self, terminal_id: u32) {
@@ -93,14 +97,20 @@ impl SessionRecorderHandle {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let _ = self.sender.send(RecorderInstruction::PaneClosed {
+        if let Err(_) = self.sender.try_send(RecorderInstruction::PaneClosed {
             terminal_id,
             elapsed_us,
-        });
+        }) {
+            self.enabled.store(false, Ordering::Relaxed);
+            log::error!("session recorder channel full or disconnected, disabling");
+        }
     }
 
     pub fn stop(&self) {
-        let _ = self.sender.send(RecorderInstruction::Stop);
+        if let Err(_) = self.sender.try_send(RecorderInstruction::Stop) {
+            self.enabled.store(false, Ordering::Relaxed);
+            log::error!("session recorder channel full or disconnected, disabling");
+        }
     }
 }
 
@@ -184,7 +194,7 @@ fn recorder_thread(
             if elapsed >= Duration::from_millis(100) {
                 // flush batch
                 if !batch.is_empty() {
-                    let _ = store.record_events(&batch);
+                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     batch.clear();
                     batch_start = None;
                 }
@@ -197,7 +207,7 @@ fn recorder_thread(
         };
         // also flush on 256
         if batch.len() >= 256 {
-            let _ = store.record_events(&batch);
+            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
             batch.clear();
             batch_start = None;
             continue;
@@ -209,7 +219,7 @@ fn recorder_thread(
                 }
                 batch.append(&mut events);
                 if batch.len() >= 256 {
-                    let _ = store.record_events(&batch);
+                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     batch.clear();
                     batch_start = None;
                 }
@@ -217,22 +227,22 @@ fn recorder_thread(
             Ok(RecorderInstruction::PaneMetadata { elapsed_us, panes }) => {
                 // flush batch before metadata
                 if !batch.is_empty() {
-                    let _ = store.record_events(&batch);
+                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     batch.clear();
                     batch_start = None;
                 }
-                let _ = store.update_panes(&panes, elapsed_us);
+                if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
             },
             Ok(RecorderInstruction::PaneClosed {
                 terminal_id,
                 elapsed_us,
             }) => {
                 if !batch.is_empty() {
-                    let _ = store.record_events(&batch);
+                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     batch.clear();
                     batch_start = None;
                 }
-                let _ = store.finish_pane(terminal_id, elapsed_us);
+                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
             },
             Ok(RecorderInstruction::Stop) => {
                 stopped = true;
@@ -240,42 +250,42 @@ fn recorder_thread(
             },
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                 if !batch.is_empty() {
-                    let _ = store.record_events(&batch);
+                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     batch.clear();
                     batch_start = None;
                 }
                 // check enabled flag
                 if !enabled.load(Ordering::Relaxed) {
                     // mark incomplete but flush already done
-                    let _ = store.mark_incomplete("recorder channel full or disconnected");
+                    if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
                     // drain remaining instructions without blocking?
                     while let Ok(instr) = receiver.try_recv() {
                         match instr {
                             RecorderInstruction::Events(mut ev) => {
                                 batch.append(&mut ev);
                                 if batch.len() >= 256 {
-                                    let _ = store.record_events(&batch);
+                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                                     batch.clear();
                                 }
                             },
                             RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
                                 if !batch.is_empty() {
-                                    let _ = store.record_events(&batch);
+                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                                     batch.clear();
                                     batch_start = None;
                                 }
-                                let _ = store.update_panes(&panes, elapsed_us);
+                                if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
                             },
                             RecorderInstruction::PaneClosed {
                                 terminal_id,
                                 elapsed_us,
                             } => {
                                 if !batch.is_empty() {
-                                    let _ = store.record_events(&batch);
+                                    if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                                     batch.clear();
                                     batch_start = None;
                                 }
-                                let _ = store.finish_pane(terminal_id, elapsed_us);
+                                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
                             },
                             RecorderInstruction::Stop => {
                                 stopped = true;
@@ -284,7 +294,7 @@ fn recorder_thread(
                         }
                     }
                     if !batch.is_empty() {
-                        let _ = store.record_events(&batch);
+                        if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                     }
                     break;
                 }
@@ -299,52 +309,52 @@ fn recorder_thread(
         if !enabled.load(Ordering::Relaxed) {
             // flush and mark incomplete
             if !batch.is_empty() {
-                let _ = store.record_events(&batch);
+                if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                 batch.clear();
             }
-            let _ = store.mark_incomplete("recorder channel full or disconnected");
+            if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
             // drain
             while let Ok(instr) = receiver.try_recv() {
                 match instr {
                     RecorderInstruction::Events(mut ev) => batch.append(&mut ev),
                     RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
                         if !batch.is_empty() {
-                            let _ = store.record_events(&batch);
+                            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                             batch.clear();
                         }
-                        let _ = store.update_panes(&panes, elapsed_us);
+                        if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
                     },
                     RecorderInstruction::PaneClosed {
                         terminal_id,
                         elapsed_us,
                     } => {
                         if !batch.is_empty() {
-                            let _ = store.record_events(&batch);
+                            if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                             batch.clear();
                         }
-                        let _ = store.finish_pane(terminal_id, elapsed_us);
+                        if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
                     },
                     RecorderInstruction::Stop => break,
                 }
             }
             if !batch.is_empty() {
-                let _ = store.record_events(&batch);
+                if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
             }
             break;
         }
     }
     // flush remaining
     if !batch.is_empty() {
-        let _ = store.record_events(&batch);
+        if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
     }
     let ended_at_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_micros() as i64;
-    let _ = store.finish_session(ended_at_us);
+    if let Err(e) = store.finish_session(ended_at_us) { log::error!("failed to finish session: {}", e); }
     // if disabled, mark incomplete
     if !enabled.load(Ordering::Relaxed) {
-        let _ = store.mark_incomplete("recorder channel full or disconnected");
+        if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
     }
 }
 

@@ -47,7 +47,7 @@ pub struct PaneLayoutManifest {
 
 pub fn serialize_session_layout(
     global_layout_manifest: GlobalLayoutManifest,
-) -> Result<(String, BTreeMap<String, String>), &'static str> {
+) -> Result<(String, BTreeMap<String, String>), String> {
     // BTreeMap is the pane contents and their file names
     let mut document = KdlDocument::new();
     let mut pane_contents = BTreeMap::new();
@@ -68,7 +68,7 @@ pub fn serialize_session_layout(
                 .append(&mut serialized_tabs);
         },
         Err(e) => {
-            return Err(e);
+            return Err(e.to_string());
         },
     }
     serialize_new_tab_template(
@@ -95,12 +95,12 @@ pub fn serialize_session_layout(
 fn serialize_global_panes(
     global_panes: Vec<PaneLayoutManifest>,
     pane_contents: &mut BTreeMap<String, String>,
-) -> Result<Option<KdlNode>, &'static str> {
+) -> Result<Option<KdlNode>, String> {
     let mut global_panes_children = KdlDocument::new();
-    for pane in global_panes {
-        let placement = pane
-            .global_placement
-            .ok_or("global pane manifest requires placement")?;
+    for (idx, pane) in global_panes.into_iter().enumerate() {
+        let placement = pane.global_placement.ok_or_else(|| {
+            format!("global pane {idx} requires placement")
+        })?;
         let (command, args) = extract_command_and_args(&pane.run);
         let (plugin, plugin_config) = extract_plugin_and_config(&pane.run);
         let (edit, _line_number) = extract_edit_and_line_number(&pane.run);
@@ -2213,7 +2213,7 @@ mod tests {
 
         assert_eq!(
             serialize_session_layout(global_layout_manifest).unwrap_err(),
-            "global pane manifest requires placement"
+            "global pane 0 requires placement"
         );
     }
     #[test]

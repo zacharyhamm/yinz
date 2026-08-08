@@ -148,6 +148,24 @@ fn cli_recordings_export_parses() {
 }
 
 #[test]
+fn cli_recordings_unknown_subcommand_fails() {
+    let res = CliArgs::try_parse_from(["zellij", "recordings", "bogus"]);
+    assert!(res.is_err(), "unknown subcommand should fail");
+}
+
+#[test]
+fn cli_recordings_export_missing_id_fails() {
+    let res = CliArgs::try_parse_from(["zellij", "recordings", "export"]);
+    assert!(res.is_err(), "missing recording_id should fail");
+}
+
+#[test]
+fn cli_recordings_export_non_numeric_id_fails() {
+    let res = CliArgs::try_parse_from(["zellij", "recordings", "export", "abc"]);
+    assert!(res.is_err(), "non-numeric id should fail");
+}
+
+#[test]
 fn cli_recordings_export_with_output_parses() {
     use std::path::PathBuf;
     let args = CliArgs::try_parse_from([

@@ -50,6 +50,21 @@ impl TerminalBytes {
 
         let mut err_ctx = get_current_ctx();
         err_ctx.add_call(ContextType::AsyncTask);
+        struct PaneClosedGuard {
+            recorder: Option<crate::session_recorder::SessionRecorderHandle>,
+            terminal_id: u32,
+        }
+        impl Drop for PaneClosedGuard {
+            fn drop(&mut self) {
+                if let Some(recorder) = &self.recorder {
+                    recorder.pane_closed(self.terminal_id);
+                }
+            }
+        }
+        let _pane_closed_guard = PaneClosedGuard {
+            recorder: self.senders.session_recorder.clone(),
+            terminal_id: self.terminal_id,
+        };
         let mut buf = [0u8; 65536];
         loop {
             match self.async_reader.read(&mut buf).await {
@@ -77,10 +92,7 @@ impl TerminalBytes {
                 },
             }
         }
-        // send pane closed after read loop and before final render
-        if let Some(recorder) = &self.senders.session_recorder {
-            recorder.pane_closed(self.terminal_id);
-        }
+        drop(_pane_closed_guard);
 
         // Ignore any errors that happen here.
         // We only leave the loop above when the pane exits. This can happen in a lot of ways, but

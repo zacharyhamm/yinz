@@ -785,6 +785,7 @@ async fn buffered_web_request(
 /// socket. Never emits the terminating chunk itself: it reports back with
 /// `BackgroundJob::WebRequestStreamFinished` so the terminator is emitted from a single place
 /// even when this task is aborted mid-read by a cancellation.
+// Clippy allow kept — see REVIEW_CHECKLIST.md "Many clippy allows hide warnings".
 #[allow(clippy::too_many_arguments)]
 async fn streamed_web_request(
     key: StreamKey,

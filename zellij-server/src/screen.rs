@@ -1,3 +1,6 @@
+// Clippy allows are intentional for this large file; they suppress lints that
+// would otherwise churn the branch. Keep with comment or fix incrementally.
+// See REVIEW_CHECKLIST.md "Many clippy allows hide warnings".
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_pattern_char_comparison)]
@@ -5647,6 +5650,9 @@ impl Screen {
         self.client_sizes.remove(&client_id);
         self.unowned_strip_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
+        self.global_panes.defocus_pane(client_id);
+        self.global_panes.stop_selecting_with_mouse(client_id);
+        self.global_panes.stop_mouse_resize(client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
@@ -5938,6 +5944,23 @@ impl Screen {
                     });
                 }
             }
+        }
+        // Global terminal panes are not tied to a tab. Include them as
+        // tab_position 0 / tab_name "global" so they appear in recordings;
+        // plugin global panes are already skipped above.
+        for pane in &pane_manifest.global_panes {
+            if pane.is_plugin {
+                continue;
+            }
+            result.push(PaneMetadata {
+                terminal_id: pane.id,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "global".to_string(),
+                title: pane.title.clone(),
+                cols: pane.pane_content_columns,
+                rows: pane.pane_content_rows,
+            });
         }
         result
     }

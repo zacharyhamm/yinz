@@ -167,6 +167,21 @@ auto_layout false
 // 
 session_serialization true
  
+// Record terminal pane output in the local recording database.
+// Options:
+//   - true
+//   - false (default)
+// 
+// session_recording false
+ 
+// Record raw terminal input. This can include passwords and other secrets.
+// This option has an effect only when session_recording is true.
+// Options:
+//   - true
+//   - false (default)
+// 
+// session_recording_input false
+ 
 // Whether pane viewports are serialized along with the session, default is false
 // Options:
 //   - true

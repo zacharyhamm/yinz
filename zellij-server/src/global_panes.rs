@@ -317,16 +317,42 @@ impl GlobalPaneManager {
             // are rejected too
             self.reject_occupied_edge(placement.edge, None)?;
         }
-        let insertion_index = declaration_order
-            .and_then(|new_order| {
-                self.panes.iter().position(|global_pane| {
-                    global_pane
-                        .declaration_order
-                        .map(|existing_order| existing_order > new_order)
-                        .unwrap_or(true)
-                })
-            })
-            .unwrap_or(self.panes.len());
+        // Layout panes (Some order) are kept sorted by declaration_order before
+        // runtime panes (None). New layout panes are inserted in order among layouts;
+        // runtime panes are always appended after all layouts.
+        let insertion_index = match declaration_order {
+            Some(new_order) => {
+                // position among layout panes
+                let layout_pos = self
+                    .panes
+                    .iter()
+                    .filter(|g| g.declaration_order.is_some())
+                    .position(|g| g.declaration_order.unwrap() > new_order);
+                if let Some(pos) = layout_pos {
+                    // map nth layout pane to absolute index
+                    self.panes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, g)| g.declaration_order.is_some())
+                        .nth(pos)
+                        .map(|(idx, _)| idx)
+                        .unwrap()
+                } else {
+                    // after last layout, before first runtime
+                    self.panes
+                        .iter()
+                        .position(|g| g.declaration_order.is_none())
+                        .unwrap_or(self.panes.len())
+                }
+            },
+            None => self.panes.len(),
+        };
+        // When `area` is `None` (before first reflow) the session surface size is
+        // not yet known, so only `reject_occupied_edge` is checked eagerly. An
+        // oversized `Fixed` or `Percent` size that would overflow the surface is
+        // not rejected here; it is deferred to the first `resize`/`apply_layout`
+        // where `allocate_global_panes` will clamp (or error) once `area` is set.
+        // This is intentional — see `sparse` vs `clamped` handling in `allocate`.
         let layout = if let Some(area) = self.area {
             let mut candidate = self.visible_placements();
             if !hidden {
@@ -382,6 +408,8 @@ impl GlobalPaneManager {
             .retain(|_, focused_pane_id| *focused_pane_id != pane_id);
         self.selecting_with_mouse
             .retain(|_, selecting_pane_id| *selecting_pane_id != pane_id);
+        self.resizing_with_mouse
+            .retain(|_, resizing_pane_id| *resizing_pane_id != pane_id);
         Some(removed.pane)
     }
 
@@ -414,6 +442,8 @@ impl GlobalPaneManager {
             .retain(|_, focused_pane_id| *focused_pane_id != pane_id);
         self.selecting_with_mouse
             .retain(|_, selecting_pane_id| *selecting_pane_id != pane_id);
+        self.resizing_with_mouse
+            .retain(|_, resizing_pane_id| *resizing_pane_id != pane_id);
         Ok(())
     }
 
@@ -461,6 +491,11 @@ impl GlobalPaneManager {
                 (global_pane.pane.pid().into(), candidate_placement)
             })
             .collect();
+        // Hidden panes are validated as if visible (candidate includes visibles + hidden).
+        // A hidden 60col right pane plus visible 60col left pane on 100col surface is
+        // therefore rejected here even though the hidden pane alone fits; `show()` would
+        // reject it later anyway. This keeps `set_placement` for hidden panes conservative.
+        // If hidden-only validation is desired, replace `candidate` with `vec![(pane_id.into(), placement)]`.
         let candidate_layout = allocate_global_panes(area, &candidate, false, self.chrome_rows)?;
         let layout = if target_is_hidden {
             allocate_global_panes(area, &self.visible_placements(), false, self.chrome_rows)?
@@ -755,6 +790,10 @@ impl GlobalPaneManager {
 
     pub fn stop_mouse_resize(&mut self, client_id: ClientId) {
         self.resizing_with_mouse.remove(&client_id);
+    }
+
+    pub fn stop_selecting_with_mouse(&mut self, client_id: ClientId) {
+        self.selecting_with_mouse.remove(&client_id);
     }
 
     /// Move the border of `pane_id` to `position`, sizing the pane from the absolute pointer

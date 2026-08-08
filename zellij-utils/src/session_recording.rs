@@ -143,35 +143,6 @@ impl RecordingStore {
         })
     }
 
-    fn get_pane_id(&self, terminal_id: u32) -> Result<Option<i64>> {
-        let mut stmt = self
-            .connection
-            .prepare("SELECT id FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2")?;
-        let mut rows = stmt.query(rusqlite::params![self.session_id, terminal_id as i64])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn ensure_pane_for_event(&mut self, event: &RecordedEvent) -> Result<i64> {
-        if let Some(id) = self.get_pane_id(event.terminal_id)? {
-            return Ok(id);
-        }
-        // pane does not exist, create with defaults or resize dimensions
-        let (initial_cols, initial_rows) = if event.kind == EventKind::Resize {
-            parse_resize(&event.data).unwrap_or((80, 24))
-        } else {
-            (80, 24)
-        };
-        self.connection.execute(
-            "INSERT INTO recording_panes (session_id, terminal_id, started_elapsed_us, initial_cols, initial_rows) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![self.session_id, event.terminal_id as i64, event.elapsed_us, initial_cols as i64, initial_rows as i64],
-        )?;
-        Ok(self.connection.last_insert_rowid())
-    }
-
     pub fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()> {
         if events.is_empty() {
             return Ok(());
@@ -211,9 +182,10 @@ impl RecordingStore {
     }
 
     pub fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+        let tx = self.connection.transaction()?;
         for pane in panes {
             let existing: Option<(i64, i64, i64)> = {
-                let mut stmt = self.connection.prepare(
+                let mut stmt = tx.prepare(
                     "SELECT id, initial_cols, initial_rows FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
                 let mut rows =
@@ -226,7 +198,7 @@ impl RecordingStore {
             };
             if let Some((pane_id, _ic, _ir)) = existing {
                 // update tab and title, but not initial size nor started time
-                self.connection.execute(
+                tx.execute(
                     "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4 WHERE id = ?5",
                     rusqlite::params![
                         pane.tab_id as i64,
@@ -237,7 +209,7 @@ impl RecordingStore {
                     ],
                 )?;
             } else {
-                self.connection.execute(
+                tx.execute(
                     "INSERT INTO recording_panes (session_id, terminal_id, tab_id, tab_position, tab_name, title, started_elapsed_us, initial_cols, initial_rows) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         self.session_id,
@@ -253,6 +225,7 @@ impl RecordingStore {
                 )?;
             }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -642,7 +615,7 @@ pub fn export_recording(
         _session_id,
         initial_cols,
         initial_rows,
-        _started_elapsed,
+        started_elapsed,
         session_name,
         tab_name,
         session_started_us,
@@ -677,7 +650,7 @@ pub fn export_recording(
         let data: Vec<u8> = row.get(2)?;
         let interval_us = match prev_elapsed {
             Some(prev) => elapsed_us - prev,
-            None => elapsed_us,
+            None => elapsed_us - started_elapsed,
         };
         // but spec example: events at 0, 500k, 1250k, 2000k with intervals 0.0, 0.5, 0.75, 0.75
         // That suggests intervals are from prior event, first interval 0.0 if first event at 0?
