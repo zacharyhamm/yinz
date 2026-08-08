@@ -127,6 +127,20 @@ impl CliArgs {
 }
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Recordings {
+    /// List recorded terminal panes.
+    List,
+    /// Export one terminal pane as asciicast v3.
+    Export {
+        /// Recording ID from `zellij recordings list`.
+        recording_id: i64,
+        /// Write the cast to this file. The default is stdout.
+        #[clap(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Change the behaviour of zellij
     #[clap(name = "options", value_parser)]
@@ -154,6 +168,10 @@ pub enum Command {
         "zellij [--session <OTHER SESSION NAME>] subscribe [OPTIONS] --pane-id..."
     ))]
     Subscribe(SubscribeCli),
+
+    /// Read local terminal pane recordings.
+    #[clap(subcommand)]
+    Recordings(Recordings),
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]

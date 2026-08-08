@@ -3004,6 +3004,12 @@ impl Options {
         let session_serialization =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_serialization")
                 .map(|(v, _)| v);
+        let session_recording =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording")
+                .map(|(v, _)| v);
+        let session_recording_input =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording_input")
+                .map(|(v, _)| v);
         let serialize_pane_viewport =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "serialize_pane_viewport")
                 .map(|(v, _)| v);
@@ -3149,6 +3155,8 @@ impl Options {
             attach_to_session,
             auto_layout,
             session_serialization,
+            session_recording,
+            session_recording_input,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -3918,6 +3926,67 @@ impl Options {
         };
         if let Some(session_serialization) = self.session_serialization {
             let mut node = create_node(session_serialization);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(false);
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn session_recording_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// Record terminal pane output in the local recording database.",
+            "// Options:",
+            "//   - true",
+            "//   - false (default)",
+            "// ",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("session_recording");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(session_recording) = self.session_recording {
+            let mut node = create_node(session_recording);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(false);
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn session_recording_input_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// Record raw terminal input. This can include passwords and other secrets.",
+            "// This option has an effect only when session_recording is true.",
+            "// Options:",
+            "//   - true",
+            "//   - false (default)",
+            "// ",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("session_recording_input");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(session_recording_input) = self.session_recording_input {
+            let mut node = create_node(session_recording_input);
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -4781,6 +4850,12 @@ impl Options {
         }
         if let Some(session_serialization) = self.session_serialization_to_kdl(add_comments) {
             nodes.push(session_serialization);
+        }
+        if let Some(session_recording) = self.session_recording_to_kdl(add_comments) {
+            nodes.push(session_recording);
+        }
+        if let Some(session_recording_input) = self.session_recording_input_to_kdl(add_comments) {
+            nodes.push(session_recording_input);
         }
         if let Some(serialize_pane_viewport) = self.serialize_pane_viewport_to_kdl(add_comments) {
             nodes.push(serialize_pane_viewport);
@@ -8101,4 +8176,37 @@ fn osc8_hyperlinks_config_parsing() {
     let serialized = config.to_string(false);
     let deserialized = Config::from_kdl(&serialized, None).unwrap();
     assert_eq!(deserialized.options.osc8_hyperlinks, Some(true));
+}
+
+#[test]
+fn session_recording_options_kdl_roundtrip() {
+    let fake_config = r#"
+        session_recording true
+        session_recording_input true
+    "#;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(options.session_recording, Some(true));
+    assert_eq!(options.session_recording_input, Some(true));
+
+    let serialized = Options::to_kdl(&options, false);
+    let mut doc_for_string = KdlDocument::new();
+    let mut serialized_clone = serialized.clone();
+    doc_for_string.nodes_mut().append(&mut serialized_clone);
+    let serialized_str = doc_for_string.to_string();
+    assert!(serialized_str.contains("session_recording"));
+    assert!(serialized_str.contains("session_recording_input"));
+
+    let mut fake_document = KdlDocument::new();
+    let mut serialized_clone2 = serialized.clone();
+    fake_document.nodes_mut().append(&mut serialized_clone2);
+    let reparsed = Options::from_kdl(
+        &fake_document
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reparsed.session_recording, Some(true));
+    assert_eq!(reparsed.session_recording_input, Some(true));
 }

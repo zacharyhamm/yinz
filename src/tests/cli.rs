@@ -125,3 +125,39 @@ fn web_cli_status_with_ip_and_port_works() {
         panic!("Expected Web command");
     }
 }
+
+#[test]
+fn cli_recordings_list_parses() {
+    let args = CliArgs::try_parse_from(["zellij", "recordings", "list"]).unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::List)) => {},
+        _ => panic!("Expected Recordings::List"),
+    }
+}
+
+#[test]
+fn cli_recordings_export_parses() {
+    let args = CliArgs::try_parse_from(["zellij", "recordings", "export", "42"]).unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
+            recording_id: 42,
+            output: None,
+        })) => {},
+        _ => panic!("Expected Recordings::Export without output"),
+    }
+}
+
+#[test]
+fn cli_recordings_export_with_output_parses() {
+    use std::path::PathBuf;
+    let args =
+        CliArgs::try_parse_from(["zellij", "recordings", "export", "42", "--output", "pane.cast"])
+            .unwrap();
+    match args.command {
+        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
+            recording_id: 42,
+            output: Some(path),
+        })) if path == PathBuf::from("pane.cast") => {},
+        _ => panic!("Expected Recordings::Export with output"),
+    }
+}

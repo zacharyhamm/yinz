@@ -217,6 +217,16 @@ pub struct Options {
     #[serde(default)]
     pub session_serialization: Option<bool>,
 
+    /// Record terminal pane output for this session.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub session_recording: Option<bool>,
+
+    /// Record terminal pane input. This option requires session recording.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub session_recording_input: Option<bool>,
+
     /// Whether pane viewports are serialized along with the session, default is false
     #[clap(long, value_parser)]
     #[serde(default)]
@@ -428,6 +438,10 @@ impl Options {
         let session_name = other.session_name.or_else(|| self.session_name.clone());
         let attach_to_session = other.attach_to_session.or(self.attach_to_session);
         let session_serialization = other.session_serialization.or(self.session_serialization);
+        let session_recording = other.session_recording.or(self.session_recording);
+        let session_recording_input = other
+            .session_recording_input
+            .or(self.session_recording_input);
         let serialize_pane_viewport = other
             .serialize_pane_viewport
             .or(self.serialize_pane_viewport);
@@ -502,6 +516,8 @@ impl Options {
             attach_to_session,
             auto_layout,
             session_serialization,
+            session_recording,
+            session_recording_input,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -555,6 +571,9 @@ impl Options {
         let mirror_session = merge_bool(other.mirror_session, self.mirror_session);
         let session_serialization =
             merge_bool(other.session_serialization, self.session_serialization);
+        let session_recording = merge_bool(other.session_recording, self.session_recording);
+        let session_recording_input =
+            merge_bool(other.session_recording_input, self.session_recording_input);
         let serialize_pane_viewport =
             merge_bool(other.serialize_pane_viewport, self.serialize_pane_viewport);
 
@@ -649,6 +668,8 @@ impl Options {
             attach_to_session,
             auto_layout,
             session_serialization,
+            session_recording,
+            session_recording_input,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
