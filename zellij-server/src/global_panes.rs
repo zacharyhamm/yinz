@@ -79,6 +79,52 @@ pub fn expand_viewport_over_global_panes(
     })
 }
 
+/// The rows inside a left/right strip's columns that neither the strip nor `tab_area`'s tab paints,
+/// as `(x, y, cols)` single-row rects.
+///
+/// A left/right pane's band is inset by the *largest* chrome any tab declares (`chrome_rows` here,
+/// `Screen::max_chrome_rows` there), so it can never cover a tab's tab bar or status bar. A tab with
+/// less chrome than that has the difference left over: the band skips those rows and the tab cannot
+/// reach them either, because only ui panes are widened over a strip
+/// (`TiledPanes::expand_ui_panes_over_global_strips`) and that tab has none at that row.
+///
+/// Read off the strip's actual geometry rather than recomputed from `chrome_rows`, so the
+/// "chrome doesn't fit, give the pane the whole height" fallback in `allocate_global_panes` needs no
+/// second branch here - it simply yields nothing.
+///
+/// ponytail: only the rows between the tab's own chrome and the band. A left/right pane declared
+/// *before* a top/bottom one is allocated over the full surface rather than the reduced center, so
+/// its band leaves rows outside `tab_area` that no top/bottom strip covers either - a hole that owes
+/// nothing to per-tab chrome and is not filled here. Allocate top/bottom edges first if it matters.
+pub fn unowned_strip_rows(
+    tab_area: Viewport,
+    strips: &[GlobalPaneStrip],
+    tab_chrome_rows: (usize, usize),
+) -> Vec<(usize, usize, usize)> {
+    let (own_top, own_bottom) = tab_chrome_rows;
+    let mut rects = vec![];
+    for strip in strips {
+        if !matches!(strip.edge, GlobalPaneEdge::Left | GlobalPaneEdge::Right) {
+            // top/bottom strips span the full width and leave no chrome rows to anyone
+            continue;
+        }
+        let cols = strip.geom.cols.as_usize();
+        let below_the_tabs_top_chrome = tab_area.y + own_top;
+        let above_the_tabs_bottom_chrome = (tab_area.y + tab_area.rows).saturating_sub(own_bottom);
+        let gaps = [
+            (below_the_tabs_top_chrome, strip.geom.y),
+            (
+                strip.geom.y + strip.geom.rows.as_usize(),
+                above_the_tabs_bottom_chrome,
+            ),
+        ];
+        for (start, end) in gaps {
+            rects.extend((start..end).map(|y| (strip.geom.x, y, cols)));
+        }
+    }
+    rects
+}
+
 pub enum GlobalPaneMouseEffect {
     WriteRaw(Vec<u8>),
     WriteAdjusted(Vec<Vec<u8>>),
@@ -434,9 +480,81 @@ impl GlobalPaneManager {
         changed
     }
 
+    /// The area the panes were last laid out over, `None` before the first `resize`.
+    pub fn area(&self) -> Option<Viewport> {
+        self.area
+    }
+
+    #[cfg(test)]
     pub fn center(&self, area: Viewport) -> Result<Viewport, String> {
-        allocate_global_panes(area, &self.visible_placements(), true, self.chrome_rows)
-            .map(|layout| layout.center)
+        self.tab_layout(area).map(|layout| layout.center)
+    }
+
+    /// Where the global panes sit for a tab of `tab_area`, and the center that tab gets.
+    ///
+    /// A global pane is one `Box<dyn Pane>` with one grid, so its *size* cannot vary per tab -
+    /// only its position can. Thicknesses are therefore resolved once against the session surface
+    /// (`self.area`) and applied verbatim to every tab, and the cross-axis extent is copied from
+    /// the session allocation. A right pane in a wider tab is the same strip, further right.
+    ///
+    /// This is only consistent because `Screen` pins the axis a global pane spans to the session
+    /// size (see `Screen::global_pane_constrained_axes`): were a tab taller than the session while
+    /// a side pane is visible, the strip would leave a band of that tab's column unowned.
+    pub fn tab_layout(&self, tab_area: Viewport) -> Result<AllocatedGlobalPanes, String> {
+        let placements = self.visible_placements();
+        let Some(surface) = self.area else {
+            // before the first reflow there is no session allocation to hold sizes to
+            return allocate_global_panes(tab_area, &placements, true, self.chrome_rows);
+        };
+        let session = allocate_global_panes(surface, &placements, true, self.chrome_rows)?;
+        // reuse the session allocation's own resolution rather than re-deriving percentages
+        let resolved: Vec<_> = placements
+            .iter()
+            .map(|(pane_id, placement)| {
+                let mut placement = *placement;
+                if let Some(geom) = session.panes.get(pane_id) {
+                    placement.size = PercentOrFixed::Fixed(match placement.edge {
+                        GlobalPaneEdge::Left | GlobalPaneEdge::Right => geom.cols.as_usize(),
+                        GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => geom.rows.as_usize(),
+                    });
+                }
+                (*pane_id, placement)
+            })
+            .collect();
+        let mut layout = allocate_global_panes(tab_area, &resolved, true, self.chrome_rows)?;
+        for (pane_id, geom) in layout.panes.iter_mut() {
+            if let Some(session_geom) = session.panes.get(pane_id) {
+                geom.cols = session_geom.cols;
+                geom.rows = session_geom.rows;
+            }
+        }
+        Ok(layout)
+    }
+
+    /// Move the panes to where they sit for the tab being rendered. Position only - the grids keep
+    /// the size `resize` gave them, so no pty or plugin is resized here.
+    ///
+    /// ponytail: clients on differently sized tabs make the position alternate between render
+    /// groups, so the panes repaint every frame while that holds. Diff per group if it turns out
+    /// to be a common setup rather than a transient one.
+    pub fn set_positions(&mut self, layout: &AllocatedGlobalPanes) {
+        for (pane_id, geom) in &layout.panes {
+            let Some(pane_index) = self.pane_indices.get(&PaneId::from(*pane_id)).copied() else {
+                continue;
+            };
+            let pane = &mut self.panes[pane_index].pane;
+            let current = pane.position_and_size();
+            if (current.x, current.y) == (geom.x, geom.y) {
+                continue;
+            }
+            pane.set_geom(PaneGeom {
+                x: geom.x,
+                y: geom.y,
+                ..current
+            });
+            pane.set_should_render(true);
+            pane.render_full_viewport();
+        }
     }
 
     pub fn resize(&mut self, area: Viewport) -> Result<Viewport, String> {
@@ -1129,23 +1247,28 @@ impl GlobalPaneManager {
             .into_iter()
             .map(|(pane_index, geom, content_offset)| {
                 let global_pane = &self.panes[pane_index];
-                let geometry_changed = !global_pane.layout_applied
-                    || global_pane.pane.position_and_size() != geom
+                let current = global_pane.pane.position_and_size();
+                // a pane the render loop moved to another tab's position (see `set_positions`) is
+                // not a resize: only the size and content offset reach the pty or the plugin
+                let size_changed = !global_pane.layout_applied
+                    || current.cols != geom.cols
+                    || current.rows != geom.rows
                     || global_pane.pane.get_content_offset() != content_offset;
-                (pane_index, geom, content_offset, geometry_changed)
+                let moved = (current.x, current.y) != (geom.x, geom.y);
+                (pane_index, geom, content_offset, size_changed, moved)
             })
             .collect();
 
         // ponytail: channel sends are not transactional. A successful resize can be observed by
         // an external worker before a later pane's send fails, but in-memory state is committed
         // only after every send succeeds.
-        for (pane_index, geom, content_offset, geometry_changed) in &desired_layout {
-            if *geometry_changed {
+        for (pane_index, geom, content_offset, size_changed, _moved) in &desired_layout {
+            if *size_changed {
                 self.send_resize(self.panes[*pane_index].pane.pid(), *geom, *content_offset)?;
             }
         }
 
-        for (pane_index, geom, content_offset, geometry_changed) in desired_layout {
+        for (pane_index, geom, content_offset, size_changed, moved) in desired_layout {
             let global_pane = &mut self.panes[pane_index];
             let should_frame =
                 self.pane_frame_style.draws_full_frames() && !global_pane.pane.borderless();
@@ -1153,7 +1276,7 @@ impl GlobalPaneManager {
                 global_pane.pane.set_frame(should_frame);
                 global_pane.frame_applied = Some(should_frame);
             }
-            if geometry_changed {
+            if size_changed || moved {
                 global_pane.pane.set_geom(geom);
                 global_pane.pane.set_content_offset(content_offset);
                 global_pane.pane.set_should_render(true);

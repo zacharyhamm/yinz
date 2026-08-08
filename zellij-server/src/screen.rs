@@ -82,12 +82,15 @@ use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
 use crate::{
-    global_panes::{GlobalPaneManager, GlobalPaneMouseEffect, GlobalPaneStrip},
+    global_panes::{
+        unowned_strip_rows, AllocatedGlobalPanes, GlobalPaneManager, GlobalPaneMouseEffect,
+        GlobalPaneStrip,
+    },
     nested_guest::NestedGuestTracker,
-    output::{HostKittyState, Output},
+    output::{CharacterChunk, HostKittyState, Output},
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::sixel::SixelImageStore,
-    panes::{PaneFactory, PaneId},
+    panes::{PaneFactory, PaneId, EMPTY_TERMINAL_CHARACTER},
     plugins::{DumpSessionLayoutResponse, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{
         get_default_shell, ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction, VteBytes,
@@ -551,9 +554,8 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     },
-    TerminalResize(Size),
     RecomputeTabSize(ClientId, Size),
-    TerminalPixelDimensions(PixelDimensions),
+    TerminalPixelDimensions(ClientId, PixelDimensions),
     TerminalBackgroundColor(String),
     TerminalForegroundColor(String),
     TerminalColorRegisters(Vec<(usize, String)>),
@@ -1084,7 +1086,6 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::CloseTabWithId(..) => ScreenContext::CloseTabWithId,
             ScreenInstruction::RenameTabWithId(..) => ScreenContext::RenameTabWithId,
             ScreenInstruction::BreakPanesToTabWithId { .. } => ScreenContext::BreakPanesToTabWithId,
-            ScreenInstruction::TerminalResize(..) => ScreenContext::TerminalResize,
             ScreenInstruction::RecomputeTabSize(..) => ScreenContext::RecomputeTabSize,
             ScreenInstruction::TerminalPixelDimensions(..) => {
                 ScreenContext::TerminalPixelDimensions
@@ -1513,8 +1514,6 @@ pub(crate) struct Screen {
     tabs: BTreeMap<usize, Tab>,
     pub(crate) global_panes: GlobalPaneManager,
     last_single_pane_tab_names: HashMap<usize, Option<String>>,
-    /// The full size of this [`Screen`].
-    size: Size,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -1530,6 +1529,10 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
+    /// The `unowned_strip_rows` last painted for each client. `Output` re-emits every chunk it is
+    /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
+    /// on every render tick (and force every watcher into a full repaint) - this is the diff.
+    unowned_strip_fill: HashMap<ClientId, Vec<(usize, usize, usize)>>,
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
@@ -1707,7 +1710,6 @@ impl Screen {
         Screen {
             bus,
             max_panes,
-            size: client_attributes.size,
             pixel_dimensions: Default::default(),
             character_cell_size,
             stacked_resize: Rc::new(RefCell::new(stacked_resize)),
@@ -1721,6 +1723,7 @@ impl Screen {
             connected_clients: Rc::new(RefCell::new(HashMap::new())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
+            unowned_strip_fill: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             global_panes,
@@ -2241,6 +2244,9 @@ impl Screen {
                     t.position -= 1;
                 }
             }
+            for tab_id in visible_tab_indices {
+                self.recompute_tab_size(tab_id).with_context(err_context)?;
+            }
             self.log_and_report_session_state()
                 .with_context(err_context)?;
             self.render(None).with_context(err_context)
@@ -2270,29 +2276,10 @@ impl Screen {
         }
     }
 
-    pub fn resize_to_screen(&mut self, new_screen_size: Size) -> Result<()> {
-        let err_context = || format!("failed to resize to screen size: {new_screen_size:#?}");
-
-        if self.size != new_screen_size {
-            let center = self.resize_global_panes_to(new_screen_size)?;
-            // commit the new size only once the global pane reflow has applied it, so a failed
-            // resize never leaves the screen size and the applied layout diverged
-            self.size = new_screen_size;
-            for tab in self.tabs.values_mut() {
-                tab.resize_whole_tab_to(center).with_context(err_context)?;
-                tab.set_force_render();
-            }
-            self.log_and_report_session_state()
-                .with_context(err_context)?;
-            self.render(None).with_context(err_context)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn global_center_for(&self, size: Size) -> Result<Viewport> {
+    /// Where the global panes sit for a tab of `size`, and the center that tab gets.
+    fn global_layout_for(&self, size: Size) -> Result<AllocatedGlobalPanes> {
         self.global_panes
-            .center(Viewport {
+            .tab_layout(Viewport {
                 x: 0,
                 y: 0,
                 cols: size.cols,
@@ -2304,20 +2291,44 @@ impl Screen {
     /// The top/bottom ui strips (tab bar, status bar) a left/right global pane must leave to the
     /// tab, so they can span the full screen width beside it.
     ///
-    /// ponytail: global panes are one geometry for the whole session while chrome is per tab, so
-    /// the strips follow the tab we render. Tabs whose layouts have differently sized chrome
-    /// re-flow on switch - the render tick re-allocates every frame, so this self-corrects.
-    fn active_tab_chrome_rows(&self) -> (usize, usize) {
-        self.get_first_client_id()
-            .and_then(|client_id| self.get_active_tab(client_id).ok())
-            .or_else(|| self.tabs.values().next())
+    /// A global pane is one grid shared by every tab, so this cannot follow the tab being
+    /// rendered: it is the tallest chrome any tab declares, which no tab's chrome can then be
+    /// covered by. The cost is that a tab with less chrome than that has rows in the strip's columns
+    /// that neither its chrome nor the shortened band reaches - `unowned_strip_rows` names them and
+    /// `Screen::fill_unowned_strip_rows` paints them.
+    fn max_chrome_rows(&self) -> (usize, usize) {
+        self.tabs
+            .values()
             .map(|tab| tab.chrome_rows())
+            .reduce(|acc, rows| (acc.0.max(rows.0), acc.1.max(rows.1)))
             .unwrap_or((0, 0))
     }
 
+    /// Every tab shares the smallest interactive client bounds, regardless of which tab each
+    /// client is viewing. Watchers and fit-disabled mobile clients are already handled by
+    /// `session_size`.
+    fn tab_surface_size(&self, _tab_id: usize) -> Option<Size> {
+        self.session_size()
+    }
+
+    /// How much of a watcher's viewport the followed client's frame covers, so
+    /// `serialize_with_size` clears only what is beyond it.
+    ///
+    /// That frame is the whole tab surface, global pane strips included - `Tab::size` is just the
+    /// center between them, and padding from there would clear the strips on every frame the panes
+    /// themselves did not redraw.
+    fn followed_frame_size(&self, tab_id: usize) -> Option<Size> {
+        if !self.tabs.contains_key(&tab_id) {
+            return None;
+        }
+        Some(
+            self.tab_surface_size(tab_id)
+                .unwrap_or_else(|| self.surface_size()),
+        )
+    }
+
     fn resize_global_panes_to(&mut self, size: Size) -> Result<Viewport> {
-        self.global_panes
-            .set_chrome_rows(self.active_tab_chrome_rows());
+        self.global_panes.set_chrome_rows(self.max_chrome_rows());
         self.global_panes
             .resize(Viewport {
                 x: 0,
@@ -2329,22 +2340,108 @@ impl Screen {
     }
 
     fn reflow_global_panes(&mut self) -> Result<()> {
-        let center = self.resize_global_panes_to(self.size)?;
-        for tab in self.tabs.values_mut() {
-            tab.resize_whole_tab_to(center)?;
+        let surface = self.surface_size();
+        self.resize_global_panes_to(surface)?;
+        for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
+            self.reflow_tab(tab_id)?;
         }
         Ok(())
     }
 
-    fn global_pane_strips(&self) -> Vec<GlobalPaneStrip> {
+    /// Lay tab `tab_id` out over the shared session surface, beside the global panes.
+    ///
+    /// With no interactive client there is no size to derive, so the tab keeps its last layout.
+    fn reflow_tab(&mut self, tab_id: usize) -> Result<()> {
+        let Some(tab_size) = self.tab_surface_size(tab_id) else {
+            return Ok(());
+        };
+        let center = self.global_layout_for(tab_size)?.center;
+        let center_size = Size {
+            cols: center.cols,
+            rows: center.rows,
+        };
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            if tab.get_display_area() != center_size
+                || tab.get_display_area_origin() != (center.x, center.y)
+            {
+                tab.resize_whole_tab_to(center)?;
+                tab.set_force_render();
+            }
+        }
+        Ok(())
+    }
+
+    /// The strips a tab must leave to the global panes for the supplied layout.
+    fn strips_from_layout(&self, layout: &AllocatedGlobalPanes) -> Vec<GlobalPaneStrip> {
         self.global_panes
             .panes()
             .filter(|(_pane, _placement, hidden)| !hidden)
-            .map(|(pane, placement, _hidden)| GlobalPaneStrip {
-                geom: pane.position_and_size(),
-                edge: placement.edge,
+            .filter_map(|(pane, placement, _hidden)| {
+                layout
+                    .panes
+                    .get(&pane.pid().into())
+                    .map(|geom| GlobalPaneStrip {
+                        geom: *geom,
+                        edge: placement.edge,
+                    })
             })
             .collect()
+    }
+
+    /// Paint the strip cells tab `tab_id` leaves unowned (see `unowned_strip_rows`) for the clients
+    /// looking at it, so the previous tab's chrome does not linger beside the sidebar.
+    ///
+    /// Only for clients whose fill actually changed, unless `force` - `Output` re-emits every chunk
+    /// it is handed and counts them towards `is_dirty`, so painting unconditionally would send a
+    /// frame on every render tick.
+    fn fill_unowned_strip_rows(
+        &mut self,
+        output: &mut Output,
+        tab_id: usize,
+        layout: &AllocatedGlobalPanes,
+        client_ids: &[ClientId],
+        force: bool,
+    ) -> Result<()> {
+        let strips = self.strips_from_layout(layout);
+        let Some(tab) = self.tabs.get(&tab_id) else {
+            return Ok(());
+        };
+        let rects = unowned_strip_rows(layout.center, &strips, tab.chrome_rows());
+        let stale: Vec<ClientId> = client_ids
+            .iter()
+            .copied()
+            .filter(|client_id| force || self.unowned_strip_fill.get(client_id) != Some(&rects))
+            .collect();
+        for client_id in &stale {
+            self.unowned_strip_fill.insert(*client_id, rects.clone());
+        }
+        if rects.is_empty() || stale.is_empty() {
+            return Ok(());
+        }
+        let chunks: Vec<CharacterChunk> = rects
+            .iter()
+            .map(|(x, y, cols)| CharacterChunk::new(vec![EMPTY_TERMINAL_CHARACTER; *cols], *x, *y))
+            .collect();
+        output
+            .add_character_chunks_to_multiple_clients(chunks, stale.into_iter(), None)
+            .context("failed to fill the strip rows no tab owns")
+    }
+
+    /// Move the global panes to where they sit for `client_id`'s tab, so anything reading their
+    /// geometry for that client - hit testing, relative mouse positions, a border drag - sees the
+    /// positions that client is actually looking at rather than the last tab rendered. Returns the
+    /// layout they were moved to.
+    fn position_global_panes_for_client(
+        &mut self,
+        client_id: ClientId,
+    ) -> Option<AllocatedGlobalPanes> {
+        let tab_id = self.active_tab_ids.get(&client_id).copied()?;
+        let tab_size = self
+            .tab_surface_size(tab_id)
+            .unwrap_or_else(|| self.surface_size());
+        let layout = self.global_layout_for(tab_size).ok()?;
+        self.global_panes.set_positions(&layout);
+        Some(layout)
     }
 
     fn with_pane<R>(&mut self, pane_id: PaneId, f: impl FnOnce(&mut dyn Pane) -> R) -> Option<R> {
@@ -2595,8 +2692,9 @@ impl Screen {
     }
 
     fn show_pane(&mut self, pane_id: PaneId) -> Result<()> {
+        let surface = self.surface_size();
         self.global_panes
-            .show(pane_id, self.size.into())
+            .show(pane_id, surface.into())
             .map_err(|error| anyhow!(error))?;
         self.reflow_global_panes()
     }
@@ -2606,8 +2704,9 @@ impl Screen {
         pane_id: PaneId,
         placement: GlobalPanePlacement,
     ) -> Result<()> {
+        let surface = self.surface_size();
         self.global_panes
-            .set_placement(pane_id, placement, self.size.into())
+            .set_placement(pane_id, placement, surface.into())
             .map_err(|error| anyhow!(error))?;
         self.reflow_global_panes()
     }
@@ -2708,6 +2807,12 @@ impl Screen {
                 PaneId::Plugin(plugin_id),
                 Some(AdjustedInput::PermissionRequestResult(permissions, status)),
             ) => {
+                // As Tab::handle_plugin_input does: while `requesting_permissions` is set the
+                // pane renders the prompt over the plugin's output and swallows keys, for every
+                // client rather than just the one who answered.
+                self.with_pane(PaneId::Plugin(plugin_id), |pane| {
+                    pane.request_permissions_from_user(None)
+                });
                 self.bus
                     .senders
                     .send_to_plugin(PluginInstruction::PermissionRequestResult(
@@ -2753,6 +2858,20 @@ impl Screen {
 
     pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {
         self.client_sizes.insert(client_id, size);
+        // A terminal that reports its text area in pixels but not its cell size needs a client
+        // size to divide by. That reply reaches us on the route thread while the size comes via
+        // AddClient on the server-instruction thread, so it can arrive first - `Screen::size` was
+        // seeded in `new` and was always there to divide by, `client_sizes` is not, and the client
+        // re-sends only on a font size change. `self.pixel_dimensions` kept the reply, so derive
+        // from it now that there is a size.
+        //
+        // Only when nothing has been derived yet: `text_area_size` belongs to whichever client
+        // sent it, so dividing it by another client's - or a newly resized one's - rows and cols
+        // would replace a good cell size with a wrong one.
+        let cell_size_is_unknown = self.character_cell_size.borrow().is_none();
+        if cell_size_is_unknown {
+            self.update_pixel_dimensions(client_id, PixelDimensions::default());
+        }
     }
 
     // The size a client contributes to the layout: a mobile web client with "fit" disabled must
@@ -2771,8 +2890,7 @@ impl Screen {
     }
 
     // The screen is shared by every client, so it can only be as large as the smallest one on
-    // each axis. `None` when no client contributes a size, in which case the last known size is
-    // kept rather than collapsing the layout.
+    // each axis. `None` when no client contributes a size.
     fn session_size(&self) -> Option<Size> {
         let connected = self.connected_clients.borrow();
         connected
@@ -2785,50 +2903,88 @@ impl Screen {
             })
     }
 
-    pub fn resize_to_clients(&mut self) -> Result<()> {
-        match self.session_size() {
-            Some(size) => self.resize_to_screen(size),
-            None => Ok(()),
+    // The single surface every global pane is allocated over: the smallest client viewport, so a
+    // global pane stays visible to every client.
+    //
+    // When no client contributes a size - every regular client has detached and only watchers
+    // remain - the last area the panes were laid out over stands in, so the layout is kept rather
+    // than collapsed to nothing. The per-client lookup is the remaining fallback, for before the
+    // first reflow has happened.
+    //
+    // Takes `connected_clients` via `session_size`, so bind it to a local before calling anything
+    // that borrows it again (`get_first_client_id`, and so `resize_global_panes_to`).
+    fn surface_size(&self) -> Size {
+        self.session_size()
+            .or_else(|| {
+                self.global_panes.area().map(|area| Size {
+                    rows: area.rows,
+                    cols: area.cols,
+                })
+            })
+            .unwrap_or_else(|| self.size_for_client(None))
+    }
+
+    // Stands in for the terminal-wide resize the removed `Screen::size` used to model: put every
+    // client at `new_screen_size` so `surface_size` resolves to it, then reflow.
+    #[cfg(test)]
+    fn resize_to_screen(&mut self, new_screen_size: Size) -> Result<()> {
+        let client_ids: Vec<ClientId> = self
+            .connected_clients
+            .borrow()
+            .keys()
+            .copied()
+            .chain(self.client_sizes.keys().copied())
+            .collect();
+        for client_id in client_ids {
+            self.set_client_size(client_id, new_screen_size);
         }
+        self.resize_to_clients()
+    }
+
+    pub fn resize_to_clients(&mut self) -> Result<()> {
+        let err_context = || "failed to resize to client sizes".to_string();
+        self.reflow_global_panes().with_context(err_context)?;
+        self.log_and_report_session_state()
+            .with_context(err_context)?;
+        self.render(None).with_context(err_context)
+    }
+
+    fn size_for_client(&self, client_id: Option<ClientId>) -> Size {
+        client_id
+            .and_then(|client_id| self.client_sizes.get(&client_id).copied())
+            .or_else(|| {
+                self.get_first_client_id()
+                    .and_then(|client_id| self.client_sizes.get(&client_id).copied())
+            })
+            .or_else(|| self.client_sizes.values().next().copied())
+            // every client has detached, so nobody contributes a size - the last area the global
+            // panes were laid out over is what `surface_size` falls back to, and a tab created
+            // here (`zellij action new-tab` against a detached session) has to match it or it is
+            // built with no rows to put a pane in and closed on the next render tick
+            .or_else(|| {
+                self.global_panes.area().map(|area| Size {
+                    rows: area.rows,
+                    cols: area.cols,
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn size_of_tab_of_client(&self, client_id: ClientId) -> Size {
+        self.active_tab_ids
+            .get(&client_id)
+            .and_then(|tab_id| self.tabs.get(tab_id))
+            .map(|tab| tab.size)
+            .unwrap_or_else(|| self.size_for_client(Some(client_id)))
     }
 
     pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
-        let err_context = || format!("failed to recompute size for tab {tab_id}");
-
-        let clients_on_tab: Vec<ClientId> = self
-            .active_tab_ids
-            .iter()
-            .filter(|(_client_id, active_tab)| **active_tab == tab_id)
-            .map(|(client_id, _)| *client_id)
-            .collect();
-        let new_size = clients_on_tab
-            .into_iter()
-            .filter_map(|client_id| self.effective_client_size(client_id))
-            .reduce(|acc, size| Size {
-                rows: acc.rows.min(size.rows),
-                cols: acc.cols.min(size.cols),
-            });
-        let Some(new_size) = new_size else {
-            return Ok(());
-        };
-        let center = self.global_center_for(new_size)?;
-        let center_size = Size {
-            cols: center.cols,
-            rows: center.rows,
-        };
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
-            if tab.get_display_area() != center_size
-                || tab.get_display_area_origin() != (center.x, center.y)
-            {
-                tab.resize_whole_tab_to(center).with_context(err_context)?;
-                tab.set_force_render();
-            }
-        }
-        Ok(())
+        self.reflow_tab(tab_id)
+            .with_context(|| format!("failed to recompute size for tab {tab_id}"))
     }
 
-    // Only clients viewing the same tab are relevant: fullscreen and tab sizing are per-tab, so a
-    // client on another tab is neither disturbed by nor a useful size reference for this one.
+    // A fit-disabled mobile client borrows only from a client viewing the same tab; another tab
+    // cannot be used as its rendering reference.
     fn shares_tab_with(&self, client_id: ClientId, other_id: ClientId) -> bool {
         if other_id == client_id {
             return false;
@@ -3062,16 +3218,24 @@ impl Screen {
         }
     }
 
-    pub fn update_pixel_dimensions(&mut self, pixel_dimensions: PixelDimensions) {
+    pub fn update_pixel_dimensions(
+        &mut self,
+        client_id: ClientId,
+        pixel_dimensions: PixelDimensions,
+    ) {
         self.pixel_dimensions.merge(pixel_dimensions);
         if let Some(character_cell_size) = self.pixel_dimensions.character_cell_size {
             *self.character_cell_size.borrow_mut() = Some(character_cell_size);
         } else if let Some(text_area_size) = self.pixel_dimensions.text_area_size {
-            let character_cell_size_height = text_area_size.height / self.size.rows;
-            let character_cell_size_width = text_area_size.width / self.size.cols;
+            let Some(client_size) = self.client_sizes.get(&client_id).copied() else {
+                return;
+            };
+            if client_size.rows == 0 || client_size.cols == 0 {
+                return;
+            }
             let character_cell_size = SizeInPixels {
-                height: character_cell_size_height,
-                width: character_cell_size_width,
+                height: text_area_size.height / client_size.rows,
+                width: text_area_size.width / client_size.cols,
             };
             *self.character_cell_size.borrow_mut() = Some(character_cell_size);
         }
@@ -4433,14 +4597,24 @@ impl Screen {
         // the render method for more details)
         let err_context = "failed to render screen";
 
-        let center = self.resize_global_panes_to(self.size)?;
-        let center_size = Size {
-            cols: center.cols,
-            rows: center.rows,
-        };
-        let global_pane_strips = self.global_pane_strips();
-        for tab in self.tabs.values_mut() {
-            let strips_changed = tab.set_global_pane_strips(&global_pane_strips);
+        // Global panes and every tab share the same session surface. Re-derive each tab's center
+        // from that surface so a render tick cannot restore stale geometry.
+        let surface = self.surface_size();
+        self.resize_global_panes_to(surface)?;
+        for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
+            // With no contributing client, fall back to the last known shared surface.
+            let tab_size = self.tab_surface_size(tab_id).unwrap_or(surface);
+            let layout = self.global_layout_for(tab_size)?;
+            let center = layout.center;
+            let center_size = Size {
+                cols: center.cols,
+                rows: center.rows,
+            };
+            let strips = self.strips_from_layout(&layout);
+            let Some(tab) = self.tabs.get_mut(&tab_id) else {
+                continue;
+            };
+            let strips_changed = tab.set_global_pane_strips(&strips);
             if strips_changed {
                 tab.set_force_render();
             }
@@ -4513,17 +4687,47 @@ impl Screen {
                 .filter(|client_id| !self.watcher_clients.contains_key(client_id))
                 .copied()
                 .collect();
-            self.global_panes
-                .render(
-                    &mut output,
-                    &regular_client_ids,
-                    &self.mode_info,
-                    &self.default_mode_info,
-                    self.style,
-                    self.session_is_mirrored,
-                    self.connected_clients.borrow().len() > 1,
-                )
-                .context(err_context)?;
+            // Keep global-pane output grouped with the clients viewing each tab.
+            let mut clients_by_tab: BTreeMap<Option<usize>, Vec<ClientId>> = BTreeMap::new();
+            for client_id in regular_client_ids {
+                clients_by_tab
+                    .entry(self.active_tab_ids.get(&client_id).copied())
+                    .or_default()
+                    .push(client_id);
+            }
+            let multiple_users_exist_in_session = self.connected_clients.borrow().len() > 1;
+            // ponytail: rendering a pane clears its dirty flag, so with more than one tab in view
+            // every group after the first would draw nothing. Repaint each group instead of
+            // tracking dirtiness per client - worth splitting only if the repaint cost is
+            // measurable.
+            let repaint_per_group = clients_by_tab.len() > 1;
+            for (tab_id, client_ids) in clients_by_tab {
+                let tab_size = tab_id
+                    .and_then(|tab_id| self.tab_surface_size(tab_id))
+                    .unwrap_or(surface);
+                let layout = self.global_layout_for(tab_size)?;
+                self.global_panes.set_positions(&layout);
+                if repaint_per_group {
+                    self.global_panes.set_force_render();
+                }
+                self.global_panes
+                    .render(
+                        &mut output,
+                        &client_ids,
+                        &self.mode_info,
+                        &self.default_mode_info,
+                        self.style,
+                        self.session_is_mirrored,
+                        multiple_users_exist_in_session,
+                    )
+                    .context(err_context)?;
+                if let Some(tab_id) = tab_id {
+                    // a host display clear wiped these cells along with everything else
+                    let force = output.any_host_display_cleared();
+                    self.fill_unowned_strip_rows(&mut output, tab_id, &layout, &client_ids, force)
+                        .context(err_context)?;
+                }
+            }
 
             // GlobalPanes::render clears each pane's should_render, but Output drops chunks for
             // clients no tab registered - a skipped tab would burn those dirty flags, so repaint
@@ -4661,24 +4865,26 @@ impl Screen {
 
                 let focused_tab_index_of_followed_client_id =
                     *self.active_tab_ids.get(&followed_client_id).unwrap_or(&0);
+                let followed_content_size =
+                    self.followed_frame_size(focused_tab_index_of_followed_client_id);
+
+                // Only force render if:
+                // 1. Non-watcher output was dirty, OR
+                // 2. Any watcher needs a forced render (first render or after resize), OR
+                // 3. No non-watcher clients are connected
+                let any_watcher_needs_force_render = self
+                    .watcher_clients
+                    .values()
+                    .any(|state| state.should_force_render());
+                let should_force_render = non_watcher_output_was_dirty
+                    || any_watcher_needs_force_render
+                    || !has_regular_clients;
 
                 if let Some(tab) = self
                     .tabs
                     .get_mut(&focused_tab_index_of_followed_client_id)
                     .as_mut()
                 {
-                    // Only force render if:
-                    // 1. Non-watcher output was dirty, OR
-                    // 2. Any watcher needs a forced render (first render or after resize), OR
-                    // 3. No non-watcher clients are connected
-                    let any_watcher_needs_force_render = self
-                        .watcher_clients
-                        .values()
-                        .any(|state| state.should_force_render());
-                    let should_force_render = non_watcher_output_was_dirty
-                        || any_watcher_needs_force_render
-                        || !has_regular_clients;
-
                     if should_force_render {
                         tab.set_force_render();
                         self.global_panes.set_force_render();
@@ -4691,6 +4897,10 @@ impl Screen {
                     .context(err_context)?;
                 }
 
+                // phase 1 left the panes at the last render group's tab, which is the followed
+                // client's only by luck - the watcher's content and `serialize_with_size` crop both
+                // come from the followed tab, so the panes have to sit where they do for it
+                let watcher_layout = self.position_global_panes_for_client(followed_client_id);
                 self.global_panes
                     .render(
                         &mut watcher_output,
@@ -4702,6 +4912,18 @@ impl Screen {
                         self.connected_clients.borrow().len() > 1,
                     )
                     .context(err_context)?;
+                if let Some(layout) = watcher_layout.filter(|_| should_force_render) {
+                    // this output is the followed client's, cropped per watcher on serialize, and
+                    // `should_force_render` already means a full repaint - so no diff to keep
+                    self.fill_unowned_strip_rows(
+                        &mut watcher_output,
+                        focused_tab_index_of_followed_client_id,
+                        &layout,
+                        &[followed_client_id],
+                        true,
+                    )
+                    .context(err_context)?;
+                }
                 if let Some(tab) = self
                     .tabs
                     .get_mut(&focused_tab_index_of_followed_client_id)
@@ -4728,7 +4950,7 @@ impl Screen {
 
                         // Serialize this watcher's output with size constraints (cropping and padding handled inside)
                         let mut serialized_output = watcher_specific_output
-                            .serialize_with_size(Some(watcher_state.size()), Some(self.size))
+                            .serialize_with_size(Some(watcher_state.size()), followed_content_size)
                             .context(err_context)?;
 
                         // Get the output for the followed client and map it to this watcher
@@ -5005,11 +5227,12 @@ impl Screen {
         let tab_name = tab_name.unwrap_or_else(|| String::new());
 
         let position = self.tabs.len();
+        let tab_size = self.size_for_client(client_id);
         let mut tab = Tab::new(
             tab_id,
             position,
             tab_name,
-            self.size,
+            tab_size,
             self.character_cell_size.clone(),
             self.stacked_resize.clone(),
             self.stacked_pane_list.clone(),
@@ -5176,7 +5399,6 @@ impl Screen {
         }
 
         // apply the layout to the new tab
-        let center = self.global_center_for(self.size)?;
         self.tabs
             .get_mut(&tab_id)
             .context("couldn't find tab with index {tab_id}")
@@ -5196,7 +5418,10 @@ impl Screen {
                     tab.visible(true)?;
                     tab.add_multiple_clients(drained_clients)?;
                 }
-                tab.resize_whole_tab_to(center).with_context(err_context)?;
+                // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
+                // reflows it against the global pane center
+                let tab_size = tab.size;
+                tab.resize_whole_tab(tab_size).with_context(err_context)?;
                 tab.set_force_render();
                 Ok(())
             })
@@ -5264,6 +5489,8 @@ impl Screen {
         };
 
         self.active_tab_ids.insert(client_id, tab_index);
+        // a reattaching client id inherits a blank terminal, not the fill the last one was sent
+        self.unowned_strip_fill.remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.connected_clients
             .borrow_mut()
@@ -5383,6 +5610,7 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
+        self.unowned_strip_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
@@ -6763,8 +6991,9 @@ impl Screen {
     }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         if self.global_panes.pane(pane_id).is_some() {
+            let surface = self.surface_size();
             self.global_panes
-                .resize_pane(pane_id, resize, self.size.into())
+                .resize_pane(pane_id, resize, surface.into())
                 .map_err(|error| anyhow!(error))?;
             return self.reflow_global_panes();
         }
@@ -6884,16 +7113,13 @@ impl Screen {
         if let Some(new_tab_name) = new_tab_name {
             tab.name = new_tab_name.clone();
         }
+        let tab_size = tab.size;
         for mut pane in extracted_panes {
             let run_instruction = pane.invoked_with().clone();
             let pane_id = pane.pid();
             let without_relayout = true;
 
-            // we reset the pane geom here to screen size so that we won't have trouble adding it
-            // temporarily to the new tab (eg. if it was stacked or had a fixed size), the size
-            // will be adjusted before the next render, further down the pipeline, when we apply
-            // the layout to this new tab
-            let new_geom = PaneGeom::from(&self.size);
+            let new_geom = PaneGeom::from(&tab_size);
             pane.set_geom(new_geom);
 
             // here we pass None instead of the ClientId, because we do not want this pane to be
@@ -7027,8 +7253,8 @@ impl Screen {
             // nothing to do here...
             return Ok(());
         }
-        let screen_size = self.size;
         if let Some(new_active_tab) = self.get_indexed_tab_mut(tab_index) {
+            let tab_size = new_active_tab.size;
             for (pane_was_floating, mut pane) in extracted_panes {
                 let pane_id = pane.pid();
                 if pane_was_floating {
@@ -7051,11 +7277,7 @@ impl Screen {
                     // here we pass None instead of the ClientId, because we do not want this pane to be
                     // necessarily focused
 
-                    // we reset the pane geom here to screen size so that we won't have trouble adding it
-                    // temporarily to the new tab (eg. if it was stacked or had a fixed size), the size
-                    // will be adjusted before the next render, further down the pipeline, when we apply
-                    // the layout to this new tab
-                    let new_geom = PaneGeom::from(&screen_size);
+                    let new_geom = PaneGeom::from(&tab_size);
                     pane.set_geom(new_geom);
 
                     new_active_tab.add_tiled_pane(pane, pane_id, false, None)?;
@@ -7578,12 +7800,13 @@ impl Screen {
     /// the same. Returns whether the event was consumed by a drag.
     fn handle_global_pane_border_drag(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if let Some(pane_id) = self.global_panes.mouse_resize_pane_id(client_id) {
+            let surface = self.surface_size();
             match event.event_type {
                 MouseEventType::Motion if event.left => {
                     match self.global_panes.resize_pane_to_position(
                         pane_id,
                         &event.position,
-                        self.size.into(),
+                        surface.into(),
                     ) {
                         // an over-far drag is simply not applied, the pane keeps its last valid size
                         Ok(false) | Err(_) => {},
@@ -7657,6 +7880,10 @@ impl Screen {
             && !event.wheel_up
             && !event.wheel_down;
         let active_pane_id_before = self.active_pane_id(client_id);
+        // the panes are left wherever the last render group put them, which is another client's
+        // tab as often as not - everything below hit-tests and takes relative positions against
+        // their geometry, so it has to be this client's view of them
+        self.position_global_panes_for_client(client_id);
         if self.handle_global_pane_border_drag(&event, client_id) {
             return;
         }
@@ -8130,16 +8357,18 @@ impl Screen {
             .remove(client_id);
     }
     fn toggle_pane_id_in_group(&mut self, pane_id: PaneId, client_id: &ClientId) {
+        let surface_size = self.size_of_tab_of_client(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
-            pane_groups.toggle_pane_id_in_group(pane_id, self.size, client_id);
+            pane_groups.toggle_pane_id_in_group(pane_id, surface_size, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
     }
     fn add_pane_id_to_group(&mut self, pane_id: PaneId, client_id: &ClientId) {
+        let surface_size = self.size_of_tab_of_client(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
-            pane_groups.add_pane_id_to_group(pane_id, self.size, client_id);
+            pane_groups.add_pane_id_to_group(pane_id, surface_size, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
     }
@@ -8223,13 +8452,14 @@ impl Screen {
         for_all_clients: bool,
         client_id: ClientId,
     ) {
+        let surface_size = self.size_of_tab_of_client(client_id);
         if for_all_clients {
             {
                 let mut current_pane_group = self.current_pane_group.borrow_mut();
                 current_pane_group.group_and_ungroup_panes_for_all_clients(
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
-                    self.size,
+                    surface_size,
                 );
             }
         } else {
@@ -8238,7 +8468,7 @@ impl Screen {
                 current_pane_group.group_and_ungroup_panes(
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
-                    self.size,
+                    surface_size,
                     &client_id,
                 );
             }
@@ -9010,26 +9240,14 @@ pub(crate) fn screen_thread_main(
                             screen.focus_global_pane(pane_id, client_id)?;
                         }
                     }
-                    let center = screen.resize_global_panes_to(screen.size)?;
-                    for tab in screen.tabs.values_mut() {
-                        tab.resize_whole_tab_to(center)?;
-                    }
-                    Ok(())
+                    screen.reflow_global_panes()
                 })();
                 if let Err(error) = creation_result {
                     pending_events_waiting_for_pane.remove(&pane_id);
                     if inserted {
                         screen.global_panes.remove(pane_id);
                         if !screen.global_panes.visible_pane_ids().is_empty() {
-                            screen
-                                .resize_global_panes_to(screen.size)
-                                .and_then(|center| {
-                                    for tab in screen.tabs.values_mut() {
-                                        tab.resize_whole_tab_to(center)?;
-                                    }
-                                    Ok(center)
-                                })
-                                .non_fatal();
+                            screen.reflow_global_panes().non_fatal();
                         }
                     }
                     if let Some(completion) = completion_tx.as_mut() {
@@ -10911,20 +11129,19 @@ pub(crate) fn screen_thread_main(
                         .push(ScreenInstruction::MoveTabRight(client_id, completion_tx));
                 }
             },
-            ScreenInstruction::TerminalResize(new_size) => {
-                screen.resize_to_screen(new_size)?;
-                screen.log_and_report_session_state()?; // update tabs so that the ui indication will be send to the plugins
-                screen.render(None)?;
-            },
             ScreenInstruction::RecomputeTabSize(client_id, new_size) => {
+                let previous_surface = screen.surface_size();
                 screen.set_client_size(client_id, new_size);
+                // the server sends this while setting the session up, before any tab exists
+                if screen.tabs.is_empty() {
+                    continue;
+                }
                 // resize_to_clients reflows the global panes and every tab against the new
-                // screen size, then reports and renders - which is what render_to_clients would
-                // otherwise undo, since it lays the tabs out against Screen::size on every frame
-                let previous_size = screen.size;
+                // surface size, then reports and renders - which is what render_to_clients would
+                // otherwise undo, since it lays the tabs out against the surface on every frame
                 screen.resize_to_clients()?;
-                if screen.size == previous_size {
-                    // another, smaller client is pinning the shared screen size, so the layout
+                if screen.surface_size() == previous_surface {
+                    // another, smaller client is pinning the shared surface size, so the layout
                     // does not change - but this client's terminal did, and it needs the
                     // unchanged layout painted over its new viewport
                     if let Ok(tab) = screen.get_active_tab_mut(client_id) {
@@ -10934,8 +11151,8 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                 }
             },
-            ScreenInstruction::TerminalPixelDimensions(pixel_dimensions) => {
-                screen.update_pixel_dimensions(pixel_dimensions);
+            ScreenInstruction::TerminalPixelDimensions(client_id, pixel_dimensions) => {
+                screen.update_pixel_dimensions(client_id, pixel_dimensions);
             },
             ScreenInstruction::TerminalBackgroundColor(background_color_instruction) => {
                 screen.update_terminal_background_color(background_color_instruction);
@@ -11086,7 +11303,9 @@ pub(crate) fn screen_thread_main(
             ) => {
                 screen.set_client_size(client_id, client_size);
                 screen.add_client(client_id, is_web_client)?;
-                screen.resize_to_clients()?;
+                // the new client can shrink the shared surface, so every tab is reflowed - but
+                // only the reflow: this handler reports and renders on its own way out
+                screen.reflow_global_panes()?;
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
                     if is_plugin {
                         PaneId::Plugin(pane_id)

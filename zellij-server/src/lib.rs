@@ -606,8 +606,8 @@ macro_rules! send_to_client {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
-    clients: HashMap<ClientId, Option<(Size, bool)>>, // bool -> is_web_client
-    pipes: HashMap<String, ClientId>,                 // String => pipe_id
+    clients: HashMap<ClientId, Option<bool>>, // bool -> is_web_client
+    pipes: HashMap<String, ClientId>,         // String => pipe_id
     watchers: HashMap<ClientId, bool>, // watcher clients (read-only observers) bool -> is_web_client
     last_active_client: Option<ClientId>, // last client that sent a Key message
     /// Host-query forward tokens that have been dispatched to a
@@ -671,15 +671,8 @@ impl SessionState {
         }
         stuck
     }
-    pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {
-        self.clients
-            .entry(client_id)
-            .or_insert_with(Default::default)
-            .as_mut()
-            .map(|(s, _is_web_client)| *s = size);
-    }
-    pub fn set_client_data(&mut self, client_id: ClientId, size: Size, is_web_client: bool) {
-        self.clients.insert(client_id, Some((size, is_web_client)));
+    pub fn set_client_is_web(&mut self, client_id: ClientId, is_web_client: bool) {
+        self.clients.insert(client_id, Some(is_web_client));
     }
     pub fn client_ids(&self) -> Vec<ClientId> {
         self.clients.keys().copied().collect()
@@ -690,10 +683,7 @@ impl SessionState {
     pub fn web_client_ids(&self) -> Vec<ClientId> {
         self.clients
             .iter()
-            .filter_map(|(c_id, size_and_is_web_client)| {
-                size_and_is_web_client
-                    .and_then(|(_s, is_web_client)| if is_web_client { Some(*c_id) } else { None })
-            })
+            .filter_map(|(c_id, is_web_client)| is_web_client.unwrap_or(false).then_some(*c_id))
             .collect()
     }
     pub fn web_watcher_client_ids(&self) -> Vec<ClientId> {
@@ -1031,11 +1021,22 @@ pub fn start_server_impl(
                     .insert(client_id, default_input_mode);
 
                 *session_data.write().unwrap() = Some(session);
-                session_state.write().unwrap().set_client_data(
-                    client_id,
-                    client_attributes.size,
-                    is_web_client,
-                );
+                session_state
+                    .write()
+                    .unwrap()
+                    .set_client_is_web(client_id, is_web_client);
+
+                session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .senders
+                    .send_to_screen(ScreenInstruction::RecomputeTabSize(
+                        client_id,
+                        client_attributes.size,
+                    ))
+                    .unwrap();
 
                 let default_shell = runtime_config_options.default_shell.map(|shell| {
                     TerminalAction::RunCommand(RunCommand {
@@ -1171,11 +1172,10 @@ pub fn start_server_impl(
                     .current_input_modes
                     .insert(client_id, default_input_mode);
 
-                session_state.write().unwrap().set_client_data(
-                    client_id,
-                    client_attributes.size,
-                    is_web_client,
-                );
+                session_state
+                    .write()
+                    .unwrap()
+                    .set_client_is_web(client_id, is_web_client);
 
                 session_data
                     .senders

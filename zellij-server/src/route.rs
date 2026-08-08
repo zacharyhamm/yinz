@@ -2523,15 +2523,10 @@ pub(crate) fn route_thread_main(
                                 )
                                 .with_context(err_context)?;
                             } else {
-                                session_state
-                                    .write()
-                                    .to_anyhow()
-                                    .with_context(err_context)?
-                                    .set_client_size(client_id, new_size);
-                                // Per-tab sizing: Screen's RecomputeTabSize
-                                // handler is a no-op for clients without an
-                                // active tab yet (i.e. resizes arriving
-                                // before AddClient is processed), so no
+                                // Per-tab sizing: Screen owns the client
+                                // sizes. A resize arriving before AddClient
+                                // is recorded but does not reach the layout,
+                                // which only counts connected clients, so no
                                 // session-level gating is needed.
                                 let _ = senders.as_ref().map(|s| {
                                     s.send_to_screen(ScreenInstruction::RecomputeTabSize(
@@ -2543,7 +2538,10 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
                             send_to_screen_or_retry_queue!(
                                 senders,
-                                ScreenInstruction::TerminalPixelDimensions(pixel_dimensions),
+                                ScreenInstruction::TerminalPixelDimensions(
+                                    client_id,
+                                    pixel_dimensions,
+                                ),
                                 instruction,
                                 retry_queue
                             )

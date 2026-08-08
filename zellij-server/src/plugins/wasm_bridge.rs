@@ -1739,21 +1739,31 @@ impl WasmBridge {
     pub fn cache_plugin_permissions(
         &mut self,
         plugin_id: PluginId,
-        client_id: Option<ClientId>,
+        _client_id: Option<ClientId>,
         permissions: Vec<PermissionType>,
         status: PermissionStatus,
         cache_path: Option<PathBuf>,
     ) -> Result<()> {
         let err_context = || format!("Failed to write plugin permission {plugin_id}");
 
-        let running_plugin = self
+        // Every instance of this plugin, not just the client who answered the prompt. The
+        // on-disk cache is keyed by plugin location alone and the cached-event replay drops
+        // the client id before fanning the grant out to everyone, so an instance belonging to
+        // a client who never saw the prompt gets told `Granted` while its own PluginEnv still
+        // has `permissions: None` — every gated call it makes is then silently dropped.
+        let running_plugins: Vec<_> = self
             .plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, client_id)
-            .ok_or_else(|| anyhow!("Failed to get running plugin"))?;
+            .running_plugins()
+            .into_iter()
+            .filter(|(p_id, _c_id, _running_plugin)| *p_id == plugin_id)
+            .map(|(_p_id, _c_id, running_plugin)| running_plugin)
+            .collect();
 
-        let mut running_plugin = running_plugin.lock().unwrap();
+        if running_plugins.is_empty() {
+            return Err(anyhow!("Failed to get running plugin"));
+        }
 
         let permissions = if status == PermissionStatus::Granted {
             permissions
@@ -1761,16 +1771,21 @@ impl WasmBridge {
             vec![]
         };
 
-        running_plugin
-            .store
-            .data_mut()
-            .set_permissions(HashSet::from_iter(permissions.clone()));
+        let mut plugin_location = None;
+        for running_plugin in running_plugins {
+            let mut running_plugin = running_plugin.lock().unwrap();
+            running_plugin
+                .store
+                .data_mut()
+                .set_permissions(HashSet::from_iter(permissions.clone()));
+            plugin_location
+                .get_or_insert_with(|| running_plugin.store.data().plugin.location.to_string());
+        }
 
         let mut permission_cache = PermissionCache::from_path_or_default(cache_path);
-        permission_cache.cache(
-            running_plugin.store.data().plugin.location.to_string(),
-            permissions,
-        );
+        if let Some(plugin_location) = plugin_location {
+            permission_cache.cache(plugin_location, permissions);
+        }
 
         permission_cache.write_to_file().with_context(err_context)
     }

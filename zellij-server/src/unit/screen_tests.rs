@@ -358,6 +358,11 @@ fn create_new_screen_with_kitty_graphics(
         web_server_port,
         NestedSessionHandling::default(),
     );
+    seed_first_client_size(screen, size)
+}
+
+fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
+    screen.set_client_size(1, size);
     screen
 }
 
@@ -743,6 +748,8 @@ impl MockScreen {
         config.options.pane_frame_style = Some(PaneFrameStyle::Full);
         config.options.stacked_pane_list = Some(false);
         let main_client_id = 1;
+
+        let _ = to_screen.send(ScreenInstruction::RecomputeTabSize(main_client_id, size));
 
         let received_background_jobs = Arc::new(Mutex::new(vec![]));
         std::thread::Builder::new()
@@ -1137,7 +1144,7 @@ fn insert_left_global_pane(screen: &mut Screen, cols: usize) {
 }
 
 fn assert_tiled_panes_are_bounded_by_left_global_pane(screen: &Screen, global_cols: usize) {
-    let screen_cols = screen.size.cols;
+    let screen_cols = screen.surface_size().cols;
     let tab = screen.tabs.get(&0).unwrap();
     assert_eq!(tab.get_display_area_origin(), (global_cols, 0));
     assert_eq!(tab.get_viewport().x, global_cols);
@@ -1225,7 +1232,7 @@ fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
         .unwrap();
     assert_eq!(
         (widened_chrome.x, widened_chrome.cols.as_usize()),
-        (0, screen.size.cols),
+        (0, screen.surface_size().cols),
         "the chrome pane does not span the full screen width"
     );
 
@@ -1236,7 +1243,7 @@ fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
         .position_and_size();
     assert_eq!(
         (global_pane_geom.y, global_pane_geom.rows.as_usize()),
-        (0, screen.size.rows - chrome_bottom),
+        (0, screen.surface_size().rows - chrome_bottom),
         "the global pane covers rows belonging to the tab's chrome"
     );
     assert_eq!(global_pane_geom.x, 0);
@@ -2803,8 +2810,8 @@ fn add_matching_global_plugin(
         .resize(zellij_utils::pane_size::Viewport {
             x: 0,
             y: 0,
-            cols: screen.size.cols,
-            rows: screen.size.rows,
+            cols: screen.surface_size().cols,
+            rows: screen.surface_size().rows,
         })
         .unwrap();
 }
@@ -2856,7 +2863,10 @@ fn add_global_terminal_on_edge(
             false,
         )
         .unwrap();
-    let center = screen.global_panes.resize(screen.size.into()).unwrap();
+    let center = screen
+        .global_panes
+        .resize(screen.surface_size().into())
+        .unwrap();
     for tab in screen.tabs.values_mut() {
         tab.resize_whole_tab_to(center).unwrap();
     }
@@ -3705,7 +3715,10 @@ fn global_terminal_and_plugin_output_is_delivered_to_dock_panes() {
         RunPluginOrAlias::from_url("file:/path/to/output/plugin", &None, None, None).unwrap();
     add_global_terminal(&mut screen, 42);
     add_matching_global_plugin(&mut screen, 77, run_plugin, false);
-    screen.global_panes.resize(screen.size.into()).unwrap();
+    screen
+        .global_panes
+        .resize(screen.surface_size().into())
+        .unwrap();
 
     assert!(screen
         .global_panes
@@ -4696,26 +4709,35 @@ fn update_screen_pixel_dimensions() {
     };
     let mut screen = create_new_screen(size, true, true);
     let initial_pixel_dimensions = screen.pixel_dimensions;
-    screen.update_pixel_dimensions(PixelDimensions {
-        character_cell_size: Some(SizeInPixels {
-            height: 10,
-            width: 5,
-        }),
-        text_area_size: None,
-    });
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            character_cell_size: Some(SizeInPixels {
+                height: 10,
+                width: 5,
+            }),
+            text_area_size: None,
+        },
+    );
     let pixel_dimensions_after_first_update = screen.pixel_dimensions;
-    screen.update_pixel_dimensions(PixelDimensions {
-        character_cell_size: None,
-        text_area_size: Some(SizeInPixels {
-            height: 100,
-            width: 50,
-        }),
-    });
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                height: 100,
+                width: 50,
+            }),
+        },
+    );
     let pixel_dimensions_after_second_update = screen.pixel_dimensions;
-    screen.update_pixel_dimensions(PixelDimensions {
-        character_cell_size: None,
-        text_area_size: None,
-    });
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            character_cell_size: None,
+            text_area_size: None,
+        },
+    );
     let pixel_dimensions_after_third_update = screen.pixel_dimensions;
     assert_eq!(
         initial_pixel_dimensions,
@@ -4763,6 +4785,63 @@ fn update_screen_pixel_dimensions() {
             }),
         },
         "empty update does not delete existing data",
+    );
+}
+
+#[test]
+fn character_cell_size_is_derived_from_the_reporting_client_size() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_new_screen(size, true, true);
+    let client_id = 2;
+    screen.set_client_size(
+        client_id,
+        Size {
+            cols: 100,
+            rows: 50,
+        },
+    );
+
+    screen.update_pixel_dimensions(
+        client_id,
+        PixelDimensions {
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                height: 1050,
+                width: 900,
+            }),
+        },
+    );
+
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        Some(SizeInPixels {
+            height: 21,
+            width: 9
+        }),
+        "The reported text area is divided by the grid size of the client that reported it"
+    );
+}
+
+#[test]
+fn character_cell_size_is_not_derived_for_a_client_of_unknown_size() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_new_screen(size, true, true);
+
+    screen.update_pixel_dimensions(
+        2,
+        PixelDimensions {
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                height: 1050,
+                width: 900,
+            }),
+        },
+    );
+
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        None,
+        "Without the reporting client's grid size the pixel report cannot be interpreted"
     );
 }
 
@@ -8841,7 +8920,7 @@ fn create_new_screen_with_message_capture(
         web_server_port,
         NestedSessionHandling::default(),
     );
-    (screen, messages)
+    (seed_first_client_size(screen, size), messages)
 }
 
 #[test]
@@ -11952,7 +12031,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         NestedSessionHandling::default(),
     );
     (
-        screen,
+        seed_first_client_size(screen, size),
         ForwardCapture {
             server_rx,
             pty_writer_rx,
@@ -12431,16 +12510,19 @@ fn empty_reply_falls_back_to_cached_pixel_dimensions() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     let pane = PaneId::Terminal(1);
-    screen.update_pixel_dimensions(PixelDimensions {
-        character_cell_size: Some(SizeInPixels {
-            height: 19,
-            width: 9,
-        }),
-        text_area_size: Some(SizeInPixels {
-            height: 608,
-            width: 931,
-        }),
-    });
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            character_cell_size: Some(SizeInPixels {
+                height: 19,
+                width: 9,
+            }),
+            text_area_size: Some(SizeInPixels {
+                height: 608,
+                width: 931,
+            }),
+        },
+    );
 
     // CSI 14t — text-area pixels.
     let token = screen.forward_host_query(pane, HostQuery::TextAreaPixelSize);
@@ -12630,7 +12712,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         NestedSessionHandling::default(),
     );
     (
-        screen,
+        seed_first_client_size(screen, size),
         ThemeCapture {
             plugin_rx,
             pty_writer_rx,
@@ -13232,7 +13314,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
     };
     let mut mode_info = ModeInfo::default();
     mode_info.session_name = Some("zellij-test".into());
-    Screen::new(
+    let screen = Screen::new(
         bus,
         &client_attributes,
         None, // max_panes
@@ -13268,7 +13350,59 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
         NestedSessionHandling::default(),
-    )
+    );
+    seed_first_client_size(screen, size)
+}
+
+#[test]
+fn new_tabs_are_created_at_the_size_of_the_client_creating_them() {
+    let initial_size = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_non_mirrored_screen(initial_size);
+    let client_size = Size { cols: 80, rows: 24 };
+    screen.set_client_size(1, client_size);
+
+    new_tab(&mut screen, 1, 0);
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().size,
+        client_size,
+        "A tab is created at the size of the client creating it"
+    );
+}
+
+#[test]
+fn applying_a_layout_to_an_existing_tab_keeps_its_viewer_derived_size() {
+    let initial_size = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_non_mirrored_screen(initial_size);
+    let client_size = Size { cols: 80, rows: 24 };
+    screen.set_client_size(1, client_size);
+    new_tab(&mut screen, 1, 0);
+
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(2, None)],
+            vec![],
+            HashMap::new(),
+            0,
+            true,
+            (1, false),
+            None,
+        )
+        .expect("TEST");
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().size,
+        client_size,
+        "Applying a layout to an existing tab does not resize it away from its viewers"
+    );
 }
 
 #[test]
@@ -13346,19 +13480,19 @@ fn resize_to_clients_takes_the_min_across_clients_and_grows_back_on_detach() {
     screen.resize_to_clients().expect("TEST");
 
     assert_eq!(
-        screen.size,
+        screen.surface_size(),
         Size {
             cols: 100,
             rows: 40
         },
-        "Screen size = (min cols across clients, min rows across clients)"
+        "Surface size = (min cols across clients, min rows across clients)"
     );
 
     screen.remove_client(2).expect("TEST");
     screen.resize_to_clients().expect("TEST");
 
     assert_eq!(
-        screen.size,
+        screen.surface_size(),
         Size {
             cols: 100,
             rows: 50
@@ -13394,8 +13528,8 @@ fn resize_to_clients_reflows_global_panes_and_survives_a_render() {
     assert_eq!(tab.get_display_area(), Size { cols: 30, rows: 10 });
     assert_eq!(tab.get_display_area_origin(), (10, 0));
 
-    // render_to_clients lays every tab out against Screen::size on each frame, so a resize that
-    // did not reach Screen::size would be snapped back here
+    // render_to_clients re-derives every tab's layout each frame, so a resize that did not reach
+    // the shared surface would be snapped back here
     screen.render_to_clients().expect("TEST");
     let tab = screen.tabs.get(&0).unwrap();
     assert_eq!(tab.get_display_area(), Size { cols: 30, rows: 10 });
@@ -13410,13 +13544,16 @@ fn character_cell_size_is_derived_from_the_resized_screen() {
     // a font-size change: the terminal keeps its pixel size but reports fewer, larger cells
     screen.set_client_size(1, Size { cols: 40, rows: 12 });
     screen.resize_to_clients().expect("TEST");
-    screen.update_pixel_dimensions(PixelDimensions {
-        text_area_size: Some(SizeInPixels {
-            width: 800,
-            height: 480,
-        }),
-        character_cell_size: None,
-    });
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            text_area_size: Some(SizeInPixels {
+                width: 800,
+                height: 480,
+            }),
+            character_cell_size: None,
+        },
+    );
 
     assert_eq!(
         *screen.character_cell_size.borrow(),
@@ -13429,7 +13566,7 @@ fn character_cell_size_is_derived_from_the_resized_screen() {
 }
 
 #[test]
-fn recompute_tab_size_isolates_tabs_with_different_viewers() {
+fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
     let initial_size = Size {
         cols: 200,
         rows: 60,
@@ -13447,24 +13584,292 @@ fn recompute_tab_size_isolates_tabs_with_different_viewers() {
         },
     );
     screen.switch_active_tab(0, None, true, 2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
 
     assert_eq!(
         screen.tabs.get(&1).unwrap().size,
         Size { cols: 80, rows: 24 },
-        "Tab 1 sized to its lone viewer (client 1)"
+        "The smaller client's tab uses the session bounds"
     );
     assert_eq!(
         screen.tabs.get(&0).unwrap().size,
+        Size { cols: 80, rows: 24 },
+        "A tab viewed only by the larger client is still restricted to the session bounds"
+    );
+
+    screen.set_client_size(
+        2,
+        Size {
+            cols: 240,
+            rows: 70,
+        },
+    );
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert!(screen
+        .tabs
+        .values()
+        .all(|tab| tab.size == Size { cols: 80, rows: 24 }));
+
+    screen.remove_client(1).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+
+    assert!(screen.tabs.values().all(|tab| tab.size
+        == Size {
+            cols: 240,
+            rows: 70
+        }));
+}
+
+/// Two clients of different widths on different tabs, with a right global pane: every tab stays
+/// inside the smallest client bounds, including across a render tick.
+#[test]
+fn global_panes_stay_within_shared_bounds_for_clients_on_different_tabs() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 200,
+        rows: 60,
+    });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.add_client(2, false).expect("TEST");
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 10);
+    screen.set_client_size(1, Size { cols: 80, rows: 24 });
+    screen.set_client_size(
+        2,
         Size {
             cols: 160,
             rows: 50,
         },
-        "Tab 0 sized to its lone viewer (client 2), unaffected by client 1's smaller viewport"
+    );
+    // client 1 stays on tab 1, client 2 moves to tab 0
+    screen.switch_active_tab(0, None, true, 2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+
+    let centers = |screen: &Screen| {
+        (
+            screen.tabs.get(&0).unwrap().get_display_area(),
+            screen.tabs.get(&1).unwrap().get_display_area(),
+        )
+    };
+    let expected = (Size { cols: 70, rows: 24 }, Size { cols: 70, rows: 24 });
+    assert_eq!(
+        centers(&screen),
+        expected,
+        "Both tabs use the shared session bounds beside the 10 column pane"
+    );
+
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        centers(&screen),
+        expected,
+        "A render tick preserves the shared session bounds"
+    );
+
+    // the pane itself is one grid at the same shared-session position for both clients
+    screen.position_global_panes_for_client(2);
+    let geom = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(
+        (geom.x, geom.cols.as_usize(), geom.rows.as_usize()),
+        (70, 10, 24)
+    );
+    screen.position_global_panes_for_client(1);
+    let geom = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(
+        (geom.x, geom.cols.as_usize(), geom.rows.as_usize()),
+        (70, 10, 24)
+    );
+}
+
+/// Global panes on both axes reserve their strips inside the shared session bounds.
+#[test]
+fn global_panes_on_both_axes_respect_the_shared_session_size() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 200,
+        rows: 60,
+    });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.add_client(2, false).expect("TEST");
+    insert_global_pane_on_edge(&mut screen, 98, GlobalPaneEdge::Top, 3);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 10);
+    screen.set_client_size(1, Size { cols: 80, rows: 24 });
+    screen.set_client_size(
+        2,
+        Size {
+            cols: 160,
+            rows: 50,
+        },
+    );
+    screen.switch_active_tab(0, None, true, 2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area(),
+        screen.tabs.get(&1).unwrap().get_display_area(),
+        "Both tabs use the same surface around the global pane strips"
+    );
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area(),
+        Size { cols: 70, rows: 21 },
+    );
+}
+
+/// Hit-testing a global pane uses the same session bounds for clients on different tabs.
+#[test]
+fn global_pane_hit_testing_uses_shared_session_bounds() {
+    use zellij_utils::data::GlobalPaneEdge;
+    use zellij_utils::position::Position;
+
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 200,
+        rows: 60,
+    });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.add_client(2, false).expect("TEST");
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 10);
+    screen.set_client_size(1, Size { cols: 80, rows: 24 });
+    screen.set_client_size(
+        2,
+        Size {
+            cols: 160,
+            rows: 24,
+        },
+    );
+    screen.switch_active_tab(0, None, true, 2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    for client_id in [1, 2] {
+        screen.position_global_panes_for_client(client_id);
+        assert_eq!(
+            screen.global_panes.pane_id_at(&Position::new(2, 75)),
+            Some(PaneId::Terminal(99)),
+            "Both clients hit the sidebar inside the shared bounds"
+        );
+        assert_eq!(
+            screen.global_panes.pane_id_at(&Position::new(2, 155)),
+            None,
+            "Neither client has session content beyond the smaller client's width"
+        );
+    }
+}
+
+/// A read-only watcher observes the session without shrinking its shared surface.
+#[test]
+fn watcher_size_does_not_constrain_session_bounds() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    screen.add_watcher_client(2).expect("TEST");
+    screen.set_watcher_size(2, Size { cols: 40, rows: 10 });
+    screen.resize_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().size,
+        Size { cols: 80, rows: 24 },
+        "The smaller watcher viewport does not shrink the interactive session"
+    );
+}
+
+/// A left/right pane's band is inset by the tallest chrome any tab declares, so a tab with less
+/// chrome than that is left with strip rows nothing paints - those get filled, once per change.
+#[test]
+fn a_tab_with_less_chrome_than_the_session_max_gets_its_strip_filled() {
+    use crate::global_panes::unowned_strip_rows;
+
+    let client_id = 1;
+    let rows = 20;
+    let global_cols = 10;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    // a non-selectable pane on the bottom edge is chrome, same as the status-bar plugin - tab 0
+    // gets one, tab 1 does not
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(3),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Down),
+                borderless: Some(true),
+            },
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .set_pane_selectable(PaneId::Terminal(3), false);
+    insert_left_global_pane(&mut screen, global_cols);
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    let (_, chrome_bottom) = screen.tabs.get(&0).unwrap().chrome_rows();
+    assert!(chrome_bottom > 0, "tab 0 has no bottom chrome to speak of");
+    assert_eq!(
+        screen.max_chrome_rows(),
+        (0, chrome_bottom),
+        "the band is inset by the tallest chrome, which is tab 0's"
+    );
+
+    let rows_for = |screen: &Screen, tab_id: usize| {
+        // tab 0 has no viewer, so it falls back to the shared surface just as the render tick does
+        let tab_size = screen
+            .tab_surface_size(tab_id)
+            .unwrap_or_else(|| screen.surface_size());
+        let layout = screen.global_layout_for(tab_size).unwrap();
+        unowned_strip_rows(
+            layout.center,
+            &screen.strips_from_layout(&layout),
+            screen.tabs.get(&tab_id).unwrap().chrome_rows(),
+        )
+    };
+    assert_eq!(
+        rows_for(&screen, 0),
+        vec![],
+        "tab 0's own chrome reaches every row the band leaves it"
+    );
+    assert_eq!(
+        rows_for(&screen, 1),
+        (rows - chrome_bottom..rows)
+            .map(|y| (0, y, global_cols))
+            .collect::<Vec<_>>(),
+        "tab 1 has no status bar, so the rows the band gave up for tab 0's are its to fill"
+    );
+
+    // client 1 is on tab 1 (the last one created), so it is the one that saw the fill - and it is
+    // memoised, or Output would re-emit it on every render tick and never let the session go quiet
+    assert_eq!(
+        screen.unowned_strip_fill.get(&client_id),
+        Some(&rows_for(&screen, 1)),
+        "the fill this client was sent is remembered, so the next render is a no-op"
     );
 }
 
 #[test]
-fn switching_tabs_recomputes_source_and_destination() {
+fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
     let initial_size = Size {
         cols: 200,
         rows: 60,
@@ -13493,16 +13898,13 @@ fn switching_tabs_recomputes_source_and_destination() {
 
     assert_eq!(
         screen.tabs.get(&1).unwrap().size,
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-        "Source tab grows back to fit its remaining viewer"
+        Size { cols: 80, rows: 24 },
+        "Source tab remains inside the smallest client bounds"
     );
     assert_eq!(
         screen.tabs.get(&0).unwrap().size,
         Size { cols: 80, rows: 24 },
-        "Destination tab shrinks to fit the arriving smaller viewer"
+        "Destination tab remains inside the smallest client bounds"
     );
 }
 
@@ -13533,11 +13935,8 @@ fn break_pane_to_new_tab_recomputes_source_and_destination() {
     );
     assert_eq!(
         screen.tabs.get(&1).unwrap().size,
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-        "Pre-condition: tab 1 sized to client 2"
+        Size { cols: 80, rows: 24 },
+        "Pre-condition: tab 1 is restricted by the smaller client on tab 0"
     );
 
     {
@@ -13594,11 +13993,8 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
     screen.switch_active_tab(0, None, true, 2).expect("TEST");
     assert_eq!(
         screen.tabs.get(&0).unwrap().size,
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-        "Pre-condition: tab 0 sized to client 2"
+        Size { cols: 80, rows: 24 },
+        "Pre-condition: tab 0 is restricted by the smaller client on tab 1"
     );
     assert_eq!(
         screen.tabs.get(&1).unwrap().size,
@@ -13672,6 +14068,56 @@ fn detaching_client_grows_vacated_tab_back() {
             rows: 50,
         },
         "Tab grows back to fit the remaining viewer after the smaller one detaches"
+    );
+}
+
+#[test]
+fn closing_a_tab_resizes_the_tab_it_returns_to() {
+    let initial_size = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_new_screen(initial_size, true, true);
+    let client_id = 1;
+    let small_size = Size { cols: 80, rows: 24 };
+    let large_size = Size {
+        cols: 160,
+        rows: 50,
+    };
+
+    screen.set_client_size(client_id, small_size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    assert_eq!(
+        screen.tabs.get(&1).unwrap().size,
+        small_size,
+        "Pre-condition: both tabs sized to the small client viewport"
+    );
+
+    screen.set_client_size(client_id, large_size);
+    screen.recompute_tab_size(1).expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&1).unwrap().size,
+        large_size,
+        "Pre-condition: the active tab follows the client resize"
+    );
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().size,
+        small_size,
+        "Pre-condition: the background tab keeps its stale size until it is activated"
+    );
+
+    screen.close_tab_by_id(1).expect("TEST");
+
+    assert_eq!(
+        screen.get_active_tab(client_id).unwrap().position,
+        0,
+        "Focus returns to the previous tab"
+    );
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().size,
+        large_size,
+        "The tab we return to adopts the current client size"
     );
 }
 
@@ -15591,5 +16037,89 @@ fn gp06_same_edge_global_panes_are_rejected() {
             .position_and_size(),
         geom_before,
         "the rejected placements left the docked pane untouched"
+    );
+}
+
+/// `zellij action new-tab` against a session every client has detached from: nobody contributes a
+/// size, so the tab has to fall back to the same last-known surface `surface_size` does. A 0x0 tab
+/// has no room for a pane and the next render tick closes it.
+#[test]
+fn a_tab_created_with_no_clients_attached_gets_the_last_known_session_size() {
+    let size = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen.render_to_clients().expect("TEST");
+    screen.remove_client(1).expect("TEST");
+
+    new_tab(&mut screen, 2, 1);
+
+    assert_eq!(
+        screen.tabs.get(&1).map(|tab| tab.size),
+        Some(size),
+        "A tab created while nothing is attached takes the size the panes were last laid out over"
+    );
+    screen.render_to_clients().expect("TEST");
+    assert!(
+        screen.tabs.contains_key(&1),
+        "and it survives the render tick rather than being closed for having no selectable panes"
+    );
+}
+
+/// A terminal that reports its text area in pixels but not its cell size needs a client size to
+/// divide it by. The reply comes off the route thread while the size comes off the
+/// server-instruction thread, so it can land first - and it is re-sent only on a font size change,
+/// so the size arriving has to be what derives the cell size.
+#[test]
+fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_cell_size() {
+    let size = Size { cols: 80, rows: 24 };
+    let mut screen = create_non_mirrored_screen(size);
+    // the helper seeds a size for client 1; the race is about it not being there yet
+    screen.client_sizes.clear();
+
+    screen.update_pixel_dimensions(
+        1,
+        PixelDimensions {
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                width: 800,
+                height: 480,
+            }),
+        },
+    );
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        None,
+        "there is no client size to divide the text area by yet"
+    );
+
+    screen.set_client_size(1, size);
+
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        }),
+        "the size arriving derives what the earlier reply could not"
+    );
+
+    screen.set_client_size(
+        1,
+        Size {
+            cols: 100,
+            rows: 30,
+        },
+    );
+
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        }),
+        "a later resize must not divide the stale text area by the new grid"
     );
 }
