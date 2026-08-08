@@ -496,3 +496,493 @@ mod tests {
         assert!(res.is_err());
     }
 }
+
+pub struct RecordingSummary {
+    pub id: i64,
+    pub session_name: String,
+    pub tab_name: String,
+    pub terminal_id: u32,
+    pub pane_title: String,
+    pub started_at_us: i64,
+    pub duration_us: i64,
+    pub is_running: bool,
+    pub capture_input: bool,
+    pub error: Option<String>,
+}
+
+pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
+    let db_path = data_dir.join("session-recordings.db");
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = rusqlite::Connection::open(&db_path)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    // order: newest session first, then tab_position, then terminal_id
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+            p.id,
+            s.name,
+            p.tab_name,
+            p.terminal_id,
+            p.title,
+            p.started_elapsed_us,
+            s.started_at_us,
+            p.ended_elapsed_us,
+            s.capture_input,
+            s.error,
+            s.started_at_us,
+            s.id
+        FROM recording_panes p
+        JOIN recording_sessions s ON p.session_id = s.id
+        ORDER BY s.started_at_us DESC, s.id DESC, p.tab_position ASC, p.terminal_id ASC
+        "#,
+    )?;
+    let pane_rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<i64>>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+        ))
+    })?;
+    let mut results = Vec::new();
+    for row in pane_rows {
+        let (id, session_name, tab_name, terminal_id, pane_title, started_elapsed_us, session_started, ended_elapsed_us, capture_input_int, error, _s_started, _s_id) = row?;
+        let pane_id = id;
+        // duration: if pane has ended, duration = ended - started_elapsed
+        // else use max event time, else 0
+        let duration_us = if let Some(ended) = ended_elapsed_us {
+            ended - started_elapsed_us
+        } else {
+            let mut stmt2 = conn.prepare(
+                "SELECT MAX(elapsed_us) FROM recording_events WHERE pane_id = ?1",
+            )?;
+            let max: Option<i64> = stmt2
+                .query_row(rusqlite::params![pane_id], |r| r.get(0))
+                .unwrap_or(None);
+            match max {
+                Some(max_elapsed) => max_elapsed - started_elapsed_us,
+                None => 0,
+            }
+        };
+        let is_running = ended_elapsed_us.is_none();
+        // started_at_us for summary: use session started + pane started elapsed? But spec says started_at_us is pane's absolute start?
+        // Use session started + pane started elapsed to match duration logic, fallback to session start
+        let started_at_us = session_started + started_elapsed_us;
+        results.push(RecordingSummary {
+            id,
+            session_name,
+            tab_name,
+            terminal_id: terminal_id as u32,
+            pane_title,
+            started_at_us,
+            duration_us,
+            is_running,
+            capture_input: capture_input_int != 0,
+            error,
+        });
+    }
+    Ok(results)
+}
+
+pub fn export_recording(
+    data_dir: &Path,
+    recording_id: i64,
+    output: &mut dyn std::io::Write,
+) -> Result<()> {
+    let db_path = data_dir.join("session-recordings.db");
+    if !db_path.exists() {
+        anyhow::bail!("recording {} not found", recording_id);
+    }
+    let conn = rusqlite::Connection::open(&db_path)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    // get pane and session
+    let pane: Option<(i64, i64, i64, i64, i64, String, String, i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.session_id, p.initial_cols, p.initial_rows, p.started_elapsed_us, s.name, p.tab_name, s.started_at_us, p.title FROM recording_panes p JOIN recording_sessions s ON p.session_id = s.id WHERE p.id = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![recording_id])?;
+        if let Some(row) = rows.next()? {
+            Some((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ))
+        } else {
+            None
+        }
+    };
+    let (pane_id, _session_id, initial_cols, initial_rows, _started_elapsed, session_name, tab_name, session_started_us, pane_title_opt) = match pane {
+        Some(v) => v,
+        None => anyhow::bail!("recording {} not found", recording_id),
+    };
+    let pane_title_str: String = pane_title_opt;
+    let title = if pane_title_str.is_empty() {
+        format!("{} / {}", session_name, tab_name)
+    } else {
+        format!("{} / {} / {}", session_name, tab_name, pane_title_str)
+    };
+    // header
+    let header = serde_json::json!({
+        "version": 3,
+        "term": {"cols": initial_cols, "rows": initial_rows},
+        "timestamp": session_started_us / 1_000_000,
+        "title": title
+    });
+    writeln!(output, "{}", serde_json::to_string(&header)?)?;
+    // events ordered by elapsed_us, id
+    let mut stmt = conn.prepare(
+        "SELECT elapsed_us, code, data FROM recording_events WHERE pane_id = ?1 ORDER BY elapsed_us ASC, id ASC",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![pane_id])?;
+    let mut prev_elapsed: Option<i64> = None;
+    while let Some(row) = rows.next()? {
+        let elapsed_us: i64 = row.get(0)?;
+        let code: String = row.get(1)?;
+        let data: Vec<u8> = row.get(2)?;
+        let interval_us = match prev_elapsed {
+            Some(prev) => elapsed_us - prev,
+            None => elapsed_us,
+        };
+        // but spec example: events at 0, 500k, 1250k, 2000k with intervals 0.0, 0.5, 0.75, 0.75
+        // That suggests intervals are from prior event, first interval 0.0 if first event at 0? 
+        // Our events are stored with absolute elapsed from pane start? In store, elapsed_us is absolute from session start? In test they use 0,500k etc as elapsed.
+        // Need to handle first interval as elapsed_us - 0? Actually first event at 0 should be 0.0
+        // For our implementation, first interval should be elapsed_us / 1_000_000? But spec shows intervals 0.0,0.5,0.75,0.75 for events at 0,500k,1250k,2000k where last interval is 0.75 not 0.75? Wait 2000k - 1250k = 750k =0.75 yep.
+        // So interval is elapsed - prev
+        let secs = interval_us as f64 / 1_000_000.0;
+        // format with at most 6 decimal places, trimming trailing zeros
+        let secs_str = format_interval(secs);
+        let data_str = String::from_utf8_lossy(&data).to_string();
+        let code_json = serde_json::to_string(&code)?;
+        let data_json = serde_json::to_string(&data_str)?;
+        writeln!(output, "[{}, {}, {}]", secs_str, code_json, data_json)?;
+        prev_elapsed = Some(elapsed_us);
+    }
+    Ok(())
+}
+
+fn format_interval(secs: f64) -> String {
+    if secs == 0.0 {
+        return "0.0".to_string();
+    }
+    let s = format!("{:.6}", secs);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    // ensure at least one decimal
+    if s.contains('.') {
+        s.to_string()
+    } else {
+        format!("{}.0", s)
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn lists_recorded_panes() -> Result<()> {
+        let dir = tempdir()?;
+        // first session (older)
+        {
+            let mut store = RecordingStore::open(dir.path(), "first", false, 1_000)?;
+            store.update_panes(
+                &[
+                    PaneMetadata {
+                        terminal_id: 1,
+                        tab_id: 10,
+                        tab_position: 1,
+                        tab_name: "tab1".to_string(),
+                        title: "pane1".to_string(),
+                        cols: 80,
+                        rows: 24,
+                    },
+                    PaneMetadata {
+                        terminal_id: 2,
+                        tab_id: 10,
+                        tab_position: 0,
+                        tab_name: "tab0".to_string(),
+                        title: "pane2".to_string(),
+                        cols: 80,
+                        rows: 24,
+                    },
+                ],
+                1_000,
+            )?;
+            store.record_events(&[RecordedEvent::output(1, 1_100, b"hello".to_vec())])?;
+            store.finish_pane(1, 1_200)?;
+        }
+        // second session (newer)
+        {
+            let mut store = RecordingStore::open(dir.path(), "second", true, 2_000)?;
+            store.update_panes(
+                &[PaneMetadata {
+                    terminal_id: 3,
+                    tab_id: 20,
+                    tab_position: 0,
+                    tab_name: "tabA".to_string(),
+                    title: "paneA".to_string(),
+                    cols: 80,
+                    rows: 24,
+                }],
+                2_000,
+            )?;
+            store.record_events(&[RecordedEvent::output(3, 2_100, b"world".to_vec())])?;
+        }
+        let list = list_recordings(dir.path())?;
+        assert_eq!(list.len(), 3);
+        // newest session first -> terminal 3 (second session) first
+        assert_eq!(list[0].terminal_id, 3);
+        assert_eq!(list[0].session_name, "second");
+        // then tab_position 0 before 1 within first session
+        assert_eq!(list[1].terminal_id, 2);
+        assert_eq!(list[2].terminal_id, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn exports_asciicast_v3() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, 1_500_000_000_000_000)?;
+        let metadata = PaneMetadata {
+            terminal_id: 1,
+            tab_id: 1,
+            tab_position: 0,
+            tab_name: "tab".to_string(),
+            title: "pane".to_string(),
+            cols: 80,
+            rows: 24,
+        };
+        store.update_panes(&[metadata], 0)?;
+        store.record_events(&[
+            RecordedEvent::output(1, 0, b"hello".to_vec()),
+            RecordedEvent::input(1, 500_000, b"x".to_vec()),
+            RecordedEvent::resize(1, 1_250_000, 100, 30),
+            RecordedEvent::output(1, 2_000_000, b"bye".to_vec()),
+        ])?;
+        // need to get pane id for export - it's the first pane inserted
+        let db_path = dir.path().join("session-recordings.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let pane_id: i64 = conn.query_row(
+            "SELECT id FROM recording_panes WHERE terminal_id = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut out = Vec::new();
+        export_recording(dir.path(), pane_id, &mut out)?;
+        let out_str = String::from_utf8(out)?;
+        let mut lines = out_str.lines();
+        let header: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
+        assert_eq!(header["version"], 3);
+        assert_eq!(header["term"]["cols"], 80);
+        assert_eq!(header["term"]["rows"], 24);
+        assert_eq!(header["timestamp"], 1500000000);
+        assert_eq!(header["title"], "test / tab / pane");
+        let l1: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
+        assert_eq!(l1, serde_json::json!([0.0, "o", "hello"]));
+        let l2: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
+        assert_eq!(l2, serde_json::json!([0.5, "i", "x"]));
+        let l3: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
+        assert_eq!(l3, serde_json::json!([0.75, "r", "100x30"]));
+        let l4: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
+        assert_eq!(l4, serde_json::json!([0.75, "o", "bye"]));
+        assert!(lines.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn export_unknown_id_errors() -> Result<()> {
+        let dir = tempdir()?;
+        let mut out = Vec::new();
+        let err = export_recording(dir.path(), 999, &mut out).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+        // also when DB exists but id missing
+        let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: 1,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "a".to_string(),
+                title: "b".to_string(),
+                cols: 80,
+                rows: 24,
+            }],
+            0,
+        )?;
+        let err2 = export_recording(dir.path(), 9999, &mut out).unwrap_err();
+        assert!(err2.to_string().contains("not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn export_invalid_utf8() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: 1,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "tab".to_string(),
+                title: "pane".to_string(),
+                cols: 80,
+                rows: 24,
+            }],
+            0,
+        )?;
+        store.record_events(&[RecordedEvent::output(1, 0, vec![0xff, 0xfe, b'a'])])?;
+        let pane_id: i64 = {
+            let db_path = dir.path().join("session-recordings.db");
+            let conn = rusqlite::Connection::open(db_path)?;
+            conn.query_row(
+                "SELECT id FROM recording_panes WHERE terminal_id = 1",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        let mut out = Vec::new();
+        export_recording(dir.path(), pane_id, &mut out)?;
+        let out_str = String::from_utf8_lossy(&out).to_string();
+        // should contain replacement character � (UTF-8 lossy)
+        assert!(out_str.contains("�"));
+        // parse second line
+        let lines: Vec<&str> = out_str.lines().collect();
+        let v: serde_json::Value = serde_json::from_str(lines[1])?;
+        let data = v[2].as_str().unwrap();
+        assert!(data.contains("�"));
+        Ok(())
+    }
+
+    #[test]
+    fn export_equal_timestamps_keep_order() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: 1,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "t".to_string(),
+                title: "p".to_string(),
+                cols: 80,
+                rows: 24,
+            }],
+            0,
+        )?;
+        // two events same timestamp, insertion order should be preserved
+        store.record_events(&[
+            RecordedEvent::output(1, 1_000, b"first".to_vec()),
+            RecordedEvent::output(1, 1_000, b"second".to_vec()),
+        ])?;
+        let pane_id: i64 = {
+            let db_path = dir.path().join("session-recordings.db");
+            let conn = rusqlite::Connection::open(db_path)?;
+            conn.query_row(
+                "SELECT id FROM recording_panes WHERE terminal_id = 1",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        let mut out = Vec::new();
+        export_recording(dir.path(), pane_id, &mut out)?;
+        let out_str = String::from_utf8(out)?;
+        let lines: Vec<&str> = out_str.lines().collect();
+        let v1: serde_json::Value = serde_json::from_str(lines[1])?;
+        let v2: serde_json::Value = serde_json::from_str(lines[2])?;
+        assert_eq!(v1[2], "first");
+        assert_eq!(v2[2], "second");
+        // intervals: first 0.001, second 0.0 (same timestamp)
+        assert_eq!(v1[0], serde_json::json!(0.001));
+        assert_eq!(v2[0], serde_json::json!(0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn export_running_recording() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: 1,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "t".to_string(),
+                title: "p".to_string(),
+                cols: 80,
+                rows: 24,
+            }],
+            0,
+        )?;
+        store.record_events(&[
+            RecordedEvent::output(1, 0, b"a".to_vec()),
+            RecordedEvent::output(1, 1_000, b"b".to_vec()),
+        ])?;
+        // do not finish pane/session, export should still include committed events
+        let pane_id: i64 = {
+            let db_path = dir.path().join("session-recordings.db");
+            let conn = rusqlite::Connection::open(db_path)?;
+            conn.query_row(
+                "SELECT id FROM recording_panes WHERE terminal_id = 1",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        let mut out = Vec::new();
+        export_recording(dir.path(), pane_id, &mut out)?;
+        let out_str = String::from_utf8(out)?;
+        assert_eq!(out_str.lines().count(), 3); // header + 2 events
+        Ok(())
+    }
+
+    #[test]
+    fn export_no_resize_uses_default_size() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: 1,
+                tab_id: 0,
+                tab_position: 0,
+                tab_name: "t".to_string(),
+                title: "p".to_string(),
+                cols: 80,
+                rows: 24,
+            }],
+            0,
+        )?;
+        store.record_events(&[RecordedEvent::output(1, 0, b"hi".to_vec())])?;
+        let pane_id: i64 = {
+            let db_path = dir.path().join("session-recordings.db");
+            let conn = rusqlite::Connection::open(db_path)?;
+            conn.query_row(
+                "SELECT id FROM recording_panes WHERE terminal_id = 1",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        let mut out = Vec::new();
+        export_recording(dir.path(), pane_id, &mut out)?;
+        let header: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out)?.lines().next().unwrap())?;
+        assert_eq!(header["term"]["cols"], 80);
+        assert_eq!(header["term"]["rows"], 24);
+        Ok(())
+    }
+}
