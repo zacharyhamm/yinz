@@ -4655,6 +4655,13 @@ impl Screen {
                 // set of global panes, so their content offsets need to be recomputed
                 tab.reapply_tiled_pane_frames();
             }
+            // the tab is now laid out over its center, with the strips it has to leave the global
+            // panes - so this is the one place that can have the last word on the chrome's width.
+            // Every re-solve above narrows the chrome back to the center and re-widens it only
+            // conditionally (a new tab has no strips yet when `apply_layout` resizes it, and a tab
+            // whose center and strips are both unchanged is not touched at all), so without this
+            // the tab bar and status bar can stay stranded beside a global pane.
+            tab.sync_ui_panes_to_global_strips();
         }
 
         // Separate rendering for regular clients and watchers

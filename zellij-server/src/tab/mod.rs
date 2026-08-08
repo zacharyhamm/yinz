@@ -4815,6 +4815,23 @@ impl Tab {
     pub fn reapply_tiled_pane_frames(&mut self) {
         self.tiled_panes.reapply_pane_frames();
     }
+    /// Re-normalize this tab's ui strips (tab bar, status bar) against the current global pane
+    /// strips, and return whether anything moved.
+    ///
+    /// Idempotent, and the render tick's last word on the chrome's width: every path that re-solves
+    /// the layout narrows the chrome back to the tab's center first, and each of them re-widens it
+    /// only conditionally, so this is what guarantees it happens at all.
+    pub fn sync_ui_panes_to_global_strips(&mut self) -> bool {
+        if !self.tiled_panes.expand_ui_panes_over_global_strips() {
+            return false;
+        }
+        // the content offsets (and pty sizes) follow from the new width
+        self.tiled_panes.reapply_pane_frames();
+        // a strip that just grew over the global pane has no grid diff for the columns it gained,
+        // so without a full repaint those cells keep the previous frame's content
+        self.set_force_render();
+        true
+    }
     pub fn set_should_clear_display_before_rendering(&mut self) {
         self.should_clear_display_before_rendering = true;
         self.floating_panes.set_force_render(); // we do this to make sure pinned panes are

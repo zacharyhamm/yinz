@@ -1250,6 +1250,83 @@ fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
     assert_eq!(global_pane_geom.cols.as_usize(), global_cols);
 }
 
+/// Add a non-selectable borderless pane on the bottom edge of `tab_id`, standing in for the
+/// status-bar plugin.
+fn add_chrome_pane(screen: &mut Screen, tab_id: usize, pane_id: u32, client_id: ClientId) {
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    tab.new_pane(
+        PaneId::Terminal(pane_id),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Tiled {
+            direction: Some(Direction::Down),
+            borderless: Some(true),
+        },
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_selectable(PaneId::Terminal(pane_id), false);
+}
+
+/// A tab opened *after* a global pane is already docked is built over the full surface and then
+/// narrowed to the center between the global panes, so its chrome has to be re-widened for it as
+/// well - and has to stay that way when the tabs are switched between.
+#[test]
+fn tab_chrome_spans_the_full_width_in_every_tab() {
+    let client_id = 1;
+    let global_cols = 10;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_chrome_pane(&mut screen, 0, 2, client_id);
+
+    insert_left_global_pane(&mut screen, global_cols);
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+    screen.render_to_clients().unwrap();
+
+    new_tab(&mut screen, 3, 1);
+    add_chrome_pane(&mut screen, 1, 4, client_id);
+    screen.render_to_clients().unwrap();
+
+    let surface_cols = screen.surface_size().cols;
+    let chrome_geom = |screen: &Screen, tab_id: usize, pane_id: u32| {
+        screen
+            .tabs
+            .get(&tab_id)
+            .unwrap()
+            .get_tiled_panes()
+            .find(|(id, _)| **id == PaneId::Terminal(pane_id))
+            .map(|(_, pane)| pane.position_and_size())
+            .unwrap()
+    };
+    for (tab_id, pane_id) in [(0, 2), (1, 4)] {
+        let geom = chrome_geom(&screen, tab_id, pane_id);
+        assert_eq!(
+            (geom.x, geom.cols.as_usize()),
+            (0, surface_cols),
+            "the chrome of tab {} does not span the full screen width",
+            tab_id
+        );
+    }
+
+    // and switching back to the first tab does not strand either of them
+    screen.go_to_tab(1, client_id).unwrap();
+    screen.render_to_clients().unwrap();
+    for (tab_id, pane_id) in [(0, 2), (1, 4)] {
+        let geom = chrome_geom(&screen, tab_id, pane_id);
+        assert_eq!(
+            (geom.x, geom.cols.as_usize()),
+            (0, surface_cols),
+            "the chrome of tab {} does not span the full screen width after switching tabs",
+            tab_id
+        );
+    }
+}
+
 fn global_pane_cols(screen: &Screen) -> usize {
     screen
         .global_panes

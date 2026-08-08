@@ -641,23 +641,27 @@ impl TiledPanes {
         // same as set_pane_frames except it reapplies the current situation
         self.set_pane_frames(self.pane_frame_style);
     }
-    /// Grow the tab's ui strips (tab bar, status bar) over the left/right global panes beside them,
-    /// so they span the full screen width while the panes between them stay inset.
+    /// Normalize the tab's ui strips (tab bar, status bar) to span the left/right global panes
+    /// beside them, so they cover the full screen width while the panes between them stay inset.
     /// `allocate_global_panes` is the other half of this deal: it keeps left/right strips out of the
     /// chrome rows, so the two never overlap.
+    ///
+    /// Idempotent and stateless: the target is derived from the tab's current display area and the
+    /// current strips, never from what a previous run wrote. With no adjacent strip the target *is*
+    /// the display area, so a strip widened earlier is pulled back rather than left stale - which is
+    /// what makes the origin-0 parking in `Tab::resize_whole_tab_to` (and its saturating pane
+    /// translation) self-correcting. Returns whether any pane moved.
     ///
     /// Only the geometry's `inner` value is touched, never the `Dimension` constraint the layout
     /// solver reads - every re-solve resizes the strip back to the tab's width and this pass widens
     /// it again, so the widening can never feed back into the layout.
-    pub fn expand_ui_panes_over_global_strips(&mut self) {
+    pub fn expand_ui_panes_over_global_strips(&mut self) -> bool {
         let display_area = display_area_viewport(&self.display_area, &self.display_area_origin);
-        // the same adjacency test the boundaries use, so this is a no-op while the panes are parked
-        // at origin 0 mid-resize and the strips do not abut them
+        // the same adjacency test the boundaries use, so this yields the display area itself while
+        // the panes are parked at origin 0 mid-resize and the strips do not abut them
         let expanded =
             expand_viewport_over_global_panes(display_area, &self.global_pane_strips.borrow());
-        if expanded.x == display_area.x && expanded.cols == display_area.cols {
-            return;
-        }
+        let mut changed = false;
         for pane in self.panes.values_mut() {
             let mut geom = pane.position_and_size();
             // ">= the display area" rather than "== it", so a strip that changed size re-expands an
@@ -676,7 +680,9 @@ impl TiledPanes {
             geom.cols.set_inner(expanded.cols);
             pane.set_geom(geom);
             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            changed = true;
         }
+        changed
     }
 
     /// The tab viewport grown over any global panes that abut it, so pane boundaries can be drawn
