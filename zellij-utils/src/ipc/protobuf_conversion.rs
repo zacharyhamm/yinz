@@ -909,6 +909,8 @@ impl From<crate::input::options::Options>
             attach_to_session: options.attach_to_session,
             auto_layout: options.auto_layout,
             session_serialization: options.session_serialization,
+            session_recording: options.session_recording,
+            session_recording_input: options.session_recording_input,
             serialize_pane_viewport: options.serialize_pane_viewport,
             scrollback_lines_to_serialize: options.scrollback_lines_to_serialize.map(|s| s as u32),
             styled_underlines: options.styled_underlines,
@@ -1026,6 +1028,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             attach_to_session: options.attach_to_session,
             auto_layout: options.auto_layout,
             session_serialization: options.session_serialization,
+            session_recording: options.session_recording,
+            session_recording_input: options.session_recording_input,
             serialize_pane_viewport: options.serialize_pane_viewport,
             scrollback_lines_to_serialize: options
                 .scrollback_lines_to_serialize

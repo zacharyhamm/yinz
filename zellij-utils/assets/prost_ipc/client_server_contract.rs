@@ -2072,6 +2072,10 @@ pub struct Options {
     pub theme_dark: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="47")]
     pub theme_light: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag="48")]
+    pub session_recording: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="49")]
+    pub session_recording_input: ::core::option::Option<bool>,
     #[prost(string, optional, tag="51")]
     pub pane_frame_style: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="52")]
