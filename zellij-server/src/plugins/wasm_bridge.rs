@@ -179,6 +179,8 @@ pub struct WasmBridge {
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: PluginId,
+    // plugins that run as a single instance for the whole session rather than one per client
+    shared_plugin_ids: HashSet<PluginId>,
     plugin_ids_waiting_for_permission_request: HashSet<PluginId>,
     cached_events_for_pending_plugins: HashMap<PluginId, Vec<EventOrPipeMessage>>,
     cached_resizes_for_pending_plugins: HashMap<PluginId, (usize, usize)>, // (rows, columns)
@@ -247,6 +249,7 @@ impl WasmBridge {
             path_to_default_shell,
             watcher,
             next_plugin_id: 0,
+            shared_plugin_ids: HashSet::new(),
             cached_events_for_pending_plugins: HashMap::new(),
             plugin_ids_waiting_for_permission_request: HashSet::new(),
             cached_resizes_for_pending_plugins: HashMap::new(),
@@ -330,6 +333,10 @@ impl WasmBridge {
                     },
                 };
                 let plugin_name = run.location.to_string();
+
+                if plugin.is_shared() {
+                    self.shared_plugin_ids.insert(plugin_id);
+                }
 
                 self.cached_events_for_pending_plugins
                     .insert(plugin_id, vec![]);
@@ -497,6 +504,7 @@ impl WasmBridge {
     }
     pub fn unload_plugin(&mut self, pid: PluginId) -> Result<()> {
         info!("Bye from plugin {}", pid);
+        self.shared_plugin_ids.remove(&pid);
 
         // Remove from plugin_map on main thread
         let plugins_to_cleanup: Vec<_> = {
@@ -691,7 +699,14 @@ impl WasmBridge {
         }
 
         let mut new_plugins = HashSet::new();
-        for plugin_id in self.plugin_map.lock().unwrap().plugin_ids() {
+        let existing_plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
+        for plugin_id in existing_plugin_ids {
+            if self.shared_plugin_ids.contains(&plugin_id) {
+                // a shared plugin has one instance for the whole session - we don't load another
+                // one for this client, we just make sure it's owned by a connected client
+                self.rekey_shared_plugin_if_owner_gone(plugin_id, client_id);
+                continue;
+            }
             new_plugins.insert(plugin_id);
         }
         for plugin_id in new_plugins {
@@ -807,6 +822,11 @@ impl WasmBridge {
                     .lock()
                     .unwrap()
                     .next_event_id(AtomicEvent::Resize);
+                let render_clients = if self.shared_plugin_ids.contains(&plugin_id) {
+                    self.connected_clients.lock().unwrap().clone()
+                } else {
+                    vec![client_id]
+                };
                 // Execute directly on pinned thread (no async I/O needed for resize/render)
                 self.plugin_executor.execute_for_plugin(plugin_id, {
                     // let senders = self.senders.clone();
@@ -824,36 +844,19 @@ impl WasmBridge {
                             // in the below conditional, we check if event_id == 0 so that we'll
                             // make sure to always render on the first resize event
                             if old_rows != new_rows || old_columns != new_columns || event_id == 0 {
-                                let rendered_bytes = running_plugin
-                                    .instance
-                                    .clone()
-                                    .get_typed_func::<(i32, i32), ()>(
-                                        &mut running_plugin.store,
-                                        "render",
-                                    )
-                                    .and_then(|render| {
-                                        render.call(
-                                            &mut running_plugin.store,
-                                            (new_rows as i32, new_columns as i32),
-                                        )
-                                    })
-                                    .map_err(|e| anyhow!(e))
-                                    .and_then(|_| {
-                                        wasi_read_string(running_plugin.store.data())
-                                            .map_err(|e| anyhow!(e))
-                                    })
-                                    .with_context(err_context);
-                                match rendered_bytes {
-                                    Ok(rendered_bytes) => {
-                                        let plugin_render_asset = PluginRenderAsset::new(
-                                            plugin_id,
-                                            client_id,
-                                            rendered_bytes.as_bytes().to_vec(),
-                                        );
+                                match render_plugin_for_clients(
+                                    plugin_id,
+                                    &mut running_plugin,
+                                    &render_clients,
+                                    None,
+                                )
+                                .with_context(err_context)
+                                {
+                                    Ok(plugin_render_assets) => {
                                         senders
-                                            .send_to_screen(ScreenInstruction::PluginBytes(vec![
-                                                plugin_render_asset,
-                                            ]))
+                                            .send_to_screen(ScreenInstruction::PluginBytes(
+                                                plugin_render_assets,
+                                            ))
                                             .unwrap();
                                     },
                                     Err(e) => log::error!("{}", e),
@@ -902,16 +905,34 @@ impl WasmBridge {
         for (pid, cid, event) in updates.clone().into_iter() {
             for (plugin_id, client_id, running_plugin, subscriptions) in &plugins_to_update {
                 let subs = subscriptions.lock().unwrap().clone();
+                let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
                 // FIXME: This is very janky... Maybe I should write my own macro for Event -> EventType?
                 if let Ok(event_type) = EventType::from_str(&event.to_string()) {
                     if (subs.contains(&event_type)
                         || event_type == EventType::PermissionRequestResult)
-                        && Self::message_is_directed_at_plugin(pid, cid, plugin_id, client_id)
+                        && Self::message_is_directed_at_plugin(
+                            pid,
+                            cid,
+                            plugin_id,
+                            client_id,
+                            plugin_is_shared,
+                        )
                     {
                         // Execute directly on pinned thread (no async I/O needed for event processing)
                         plugin_executor.execute_for_plugin(*plugin_id, {
                             let plugin_id = *plugin_id;
-                            let client_id = *client_id;
+                            // for a shared plugin, the acting client is whoever the message was
+                            // directed at, not the client the instance is keyed under
+                            let client_id = if plugin_is_shared {
+                                cid.unwrap_or(*client_id)
+                            } else {
+                                *client_id
+                            };
+                            let render_clients = if plugin_is_shared {
+                                self.connected_clients.lock().unwrap().clone()
+                            } else {
+                                vec![client_id]
+                            };
                             let running_plugin = running_plugin.clone();
                             let event = event.clone();
                             let _s = shutdown_sender.clone();
@@ -927,6 +948,7 @@ impl WasmBridge {
                                 match apply_event_to_plugin(
                                     plugin_id,
                                     client_id,
+                                    &render_clients,
                                     &mut running_plugin,
                                     &event,
                                     &mut plugin_render_assets,
@@ -1118,11 +1140,13 @@ impl WasmBridge {
         let plugin_executor = self.plugin_executor.clone();
         for (message_pid, message_cid, pipe_message) in messages.clone().into_iter() {
             for (plugin_id, client_id, running_plugin, _subscriptions) in &plugins_to_update {
+                let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
                 if Self::message_is_directed_at_plugin(
                     message_pid,
                     message_cid,
                     plugin_id,
                     client_id,
+                    plugin_is_shared,
                 ) {
                     if let PipeSource::Cli(pipe_id) = &pipe_message.source {
                         self.pending_pipes
@@ -1133,7 +1157,16 @@ impl WasmBridge {
                         let running_plugin = running_plugin.clone();
                         let pipe_message = pipe_message.clone();
                         let plugin_id = *plugin_id;
-                        let client_id = *client_id;
+                        let render_clients = if plugin_is_shared {
+                            self.connected_clients.lock().unwrap().clone()
+                        } else {
+                            vec![*client_id]
+                        };
+                        let client_id = if plugin_is_shared {
+                            message_cid.unwrap_or(*client_id)
+                        } else {
+                            *client_id
+                        };
                         let _s = shutdown_sender.clone();
                         let notification_end = notification_end.take();
                         move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
@@ -1143,6 +1176,7 @@ impl WasmBridge {
                             match apply_pipe_message_to_plugin(
                                 plugin_id,
                                 client_id,
+                                &render_clients,
                                 &mut running_plugin,
                                 &pipe_message,
                                 &mut plugin_render_assets,
@@ -1189,6 +1223,7 @@ impl WasmBridge {
                                 message_cid,
                                 plugin_id,
                                 client_id,
+                                false, // this plugin is still loading, it has no instance yet
                             ) {
                                 self.pending_pipes
                                     .mark_being_processed(pipe_id, plugin_id, client_id);
@@ -1232,11 +1267,28 @@ impl WasmBridge {
         }
         Ok(())
     }
+    /// A shared plugin's single instance is keyed in the PluginMap under the client that loaded
+    /// it. If that client is gone, hand the instance over to `new_owner` so that it keeps
+    /// receiving events.
+    fn rekey_shared_plugin_if_owner_gone(&mut self, plugin_id: PluginId, new_owner: ClientId) {
+        let mut plugin_map = self.plugin_map.lock().unwrap();
+        let connected_clients = self.connected_clients.lock().unwrap();
+        for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
+            if !connected_clients.contains(&owner) {
+                plugin_map.rekey_client(plugin_id, owner, new_owner);
+            }
+        }
+    }
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.connected_clients
             .lock()
             .unwrap()
             .retain(|c| c != &client_id);
+        if let Some(new_owner) = self.get_first_client_id() {
+            for plugin_id in self.shared_plugin_ids.clone() {
+                self.rekey_shared_plugin_if_owner_gone(plugin_id, new_owner);
+            }
+        }
 
         // Remove client from cached pane render report
         if let Some(ref mut prev_report) = self.previous_pane_render_report {
@@ -1464,6 +1516,13 @@ impl WasmBridge {
                 .iter()
                 .copied()
                 .collect();
+            // a shared plugin only has an instance for its owner, so this loop applies the cached
+            // events once - but they are then rendered for every client
+            let render_clients = if self.shared_plugin_ids.contains(&plugin_id) {
+                all_connected_clients.clone()
+            } else {
+                vec![]
+            };
             for client_id in &all_connected_clients {
                 if let Some((running_plugin, subscriptions)) = self
                     .plugin_map
@@ -1475,6 +1534,11 @@ impl WasmBridge {
                     self.plugin_executor.execute_for_plugin(plugin_id, {
                         let running_plugin = running_plugin.clone();
                         let client_id = *client_id;
+                        let render_clients = if render_clients.is_empty() {
+                            vec![client_id]
+                        } else {
+                            render_clients.clone()
+                        };
                         let _s = shutdown_sender.clone();
                         let events_or_pipe_messages = events_or_pipe_messages.clone();
                         move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
@@ -1495,6 +1559,7 @@ impl WasmBridge {
                                                 match apply_event_to_plugin(
                                                     plugin_id,
                                                     client_id,
+                                                    &render_clients,
                                                     &mut running_plugin,
                                                     &event,
                                                     &mut plugin_render_assets,
@@ -1525,6 +1590,7 @@ impl WasmBridge {
                                         match apply_pipe_message_to_plugin(
                                             plugin_id,
                                             client_id,
+                                            &render_clients,
                                             &mut running_plugin,
                                             &pipe_message,
                                             &mut plugin_render_assets,
@@ -1914,11 +1980,15 @@ impl WasmBridge {
         message_cid: Option<ClientId>,
         plugin_id: &PluginId,
         client_id: &ClientId,
+        plugin_is_shared: bool,
     ) -> bool {
+        // a shared plugin has a single instance for the whole session, so messages directed at any
+        // client reach it (the message's client becomes the acting client)
+        let client_matches = plugin_is_shared || message_cid == Some(*client_id);
         message_pid.is_none() && message_cid.is_none()
-            || (message_pid.is_none() && message_cid == Some(*client_id))
+            || (message_pid.is_none() && client_matches)
             || (message_cid.is_none() && message_pid == Some(*plugin_id))
-            || (message_cid == Some(*client_id) && message_pid == Some(*plugin_id))
+            || (client_matches && message_pid == Some(*plugin_id))
     }
     pub fn client_is_connected(&self, client_id: &ClientId) -> bool {
         self.connected_clients.lock().unwrap().contains(client_id)
@@ -2083,15 +2153,63 @@ fn check_event_permission(
     (PermissionStatus::Denied, Some(permission))
 }
 
+/// Call the plugin's `render` once per client, yielding one render asset per client. For a
+/// non-shared plugin `clients` is just the client owning this instance. For a shared plugin it's
+/// every connected client - the plugin's acting client id is set before each call so that it may
+/// vary its output per client.
+///
+/// ponytail: N wasm render calls for a shared plugin. If a plugin's output never depends on the
+/// client, render once and clone the bytes instead.
+pub fn render_plugin_for_clients(
+    plugin_id: PluginId,
+    running_plugin: &mut RunningPlugin,
+    clients: &[ClientId],
+    current_pipe: Option<&PipeSource>,
+) -> Result<Vec<PluginRenderAsset>> {
+    let err_context = || format!("Failed to render plugin {plugin_id}");
+    let rows = running_plugin.rows;
+    let columns = running_plugin.columns;
+    let owner_client_id = running_plugin.store.data().owner_client_id;
+    // pipes are tracked per (plugin_id, owner_client_id), so the owner must always get an asset
+    let mut clients_to_render = vec![owner_client_id];
+    clients_to_render.extend(clients.iter().filter(|c| **c != owner_client_id));
+
+    let mut plugin_render_assets = vec![];
+    for client_id in clients_to_render {
+        running_plugin.store.data_mut().client_id = client_id;
+        let instance = running_plugin.instance;
+        let rendered_bytes = instance
+            .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
+            .and_then(|render| render.call(&mut running_plugin.store, (rows as i32, columns as i32)))
+            .map_err(|e| anyhow!(e))
+            .and_then(|_| wasi_read_string(running_plugin.store.data()).map_err(|e| anyhow!(e)))
+            .with_context(err_context)?;
+        plugin_render_assets.push(PluginRenderAsset::new(
+            plugin_id,
+            client_id,
+            rendered_bytes.as_bytes().to_vec(),
+        ));
+    }
+    let pipes_to_block_or_unblock = pipes_to_block_or_unblock(running_plugin, current_pipe);
+    if let Some(owner_asset) = plugin_render_assets.first_mut() {
+        owner_asset.cli_pipes = pipes_to_block_or_unblock;
+    }
+    Ok(plugin_render_assets)
+}
+
 pub fn apply_event_to_plugin(
     plugin_id: PluginId,
     client_id: ClientId,
+    render_clients: &[ClientId],
     running_plugin: &mut RunningPlugin,
     event: &Event,
     plugin_render_assets: &mut Vec<PluginRenderAsset>,
     senders: ThreadSenders,
     plugin_subscriptions: &HashSet<EventType>,
 ) -> Result<()> {
+    // host commands issued while handling this event act on behalf of the client it was directed
+    // at (this only differs from the instance's owner for shared plugins)
+    running_plugin.store.data_mut().client_id = client_id;
     let instance = &running_plugin.instance;
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
@@ -2128,35 +2246,23 @@ pub fn apply_event_to_plugin(
                         should_render = true;
                     }
                     if rows > 0 && columns > 0 && should_render {
-                        let rendered_bytes = instance
-                            .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
-                            .and_then(|render| {
-                                render
-                                    .call(&mut running_plugin.store, (rows as i32, columns as i32))
-                            })
-                            .map_err(|e| anyhow!(e))
-                            .and_then(|_| {
-                                wasi_read_string(running_plugin.store.data())
-                                    .map_err(|e| anyhow!(e))
-                            })
-                            .with_context(err_context)?;
-                        let pipes_to_block_or_unblock =
-                            pipes_to_block_or_unblock(running_plugin, None);
-                        let plugin_render_asset = PluginRenderAsset::new(
+                        plugin_render_assets.append(&mut render_plugin_for_clients(
                             plugin_id,
-                            client_id,
-                            rendered_bytes.as_bytes().to_vec(),
-                        )
-                        .with_pipes(pipes_to_block_or_unblock);
-                        plugin_render_assets.push(plugin_render_asset);
+                            running_plugin,
+                            render_clients,
+                            None,
+                        )?);
                     } else {
                         // This is a bit of a hack to get around the fact that plugins are allowed not to
                         // render and still unblock CLI pipes
                         let pipes_to_block_or_unblock =
                             pipes_to_block_or_unblock(running_plugin, None);
-                        let plugin_render_asset =
-                            PluginRenderAsset::new(plugin_id, client_id, vec![])
-                                .with_pipes(pipes_to_block_or_unblock);
+                        let plugin_render_asset = PluginRenderAsset::new(
+                            plugin_id,
+                            running_plugin.store.data().owner_client_id,
+                            vec![],
+                        )
+                        .with_pipes(pipes_to_block_or_unblock);
                         let _ = senders
                             .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
                                 plugin_render_asset,
@@ -2223,4 +2329,67 @@ pub fn apply_before_close_event_to_plugin(
         ]))
         .context("failed to unblock input pipe");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {
+        let configuration = configuration
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        PluginConfig {
+            path: PathBuf::from("test-plugin"),
+            _allow_exec_host_cmd: false,
+            location: RunPluginLocation::parse("zellij:tab-bar", None).unwrap(),
+            initial_userspace_configuration: PluginUserConfiguration::new(configuration),
+            initial_cwd: None,
+        }
+    }
+
+    #[test]
+    fn shared_plugins_are_opted_into_through_their_configuration() {
+        assert!(!plugin_config(&[]).is_shared());
+        assert!(plugin_config(&[("shared", "true")]).is_shared());
+        assert!(!plugin_config(&[("shared", "false")]).is_shared());
+        assert!(!plugin_config(&[("shared", "yes please")]).is_shared());
+    }
+
+    #[test]
+    fn shared_plugins_receive_messages_directed_at_any_client() {
+        let (plugin_id, owner_client_id, other_client_id) = (1, 1, 2);
+        // a message for another client reaches a shared plugin, but not a per-client one
+        assert!(WasmBridge::message_is_directed_at_plugin(
+            Some(plugin_id),
+            Some(other_client_id),
+            &plugin_id,
+            &owner_client_id,
+            true,
+        ));
+        assert!(!WasmBridge::message_is_directed_at_plugin(
+            Some(plugin_id),
+            Some(other_client_id),
+            &plugin_id,
+            &owner_client_id,
+            false,
+        ));
+        // a message for another plugin never reaches it
+        assert!(!WasmBridge::message_is_directed_at_plugin(
+            Some(plugin_id + 1),
+            Some(other_client_id),
+            &plugin_id,
+            &owner_client_id,
+            true,
+        ));
+        // broadcasts still reach it exactly as before
+        assert!(WasmBridge::message_is_directed_at_plugin(
+            None,
+            None,
+            &plugin_id,
+            &owner_client_id,
+            true,
+        ));
+    }
 }

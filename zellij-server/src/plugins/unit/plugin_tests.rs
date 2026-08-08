@@ -770,6 +770,93 @@ pub fn load_new_plugin_from_hd() {
 
 #[test]
 #[ignore]
+pub fn shared_plugin_has_one_instance_serving_all_clients() {
+    // a plugin declared with `shared true` is loaded once for the client that loaded it, and is
+    // not re-instantiated when a second client connects. an event directed at the second client
+    // must reach that single instance, and its render must reach both clients.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) = create_plugin_thread(None, None);
+    let mut configuration = BTreeMap::new();
+    configuration.insert("shared".to_owned(), "true".to_owned());
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
+        configuration: PluginUserConfiguration::new(configuration),
+        ..Default::default()
+    });
+    let first_client_id = 1;
+    let second_client_id = 2;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        2,
+        &PermissionType::ChangeApplicationState,
+        cache_path,
+        plugin_thread_sender,
+        first_client_id
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(first_client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false, // close_replaced_pane
+        Some("test_plugin".to_owned()),
+        run_plugin,
+        Some(1), // tab index
+        None,
+        first_client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(second_client_id));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // directed at the second client, which has no instance of its own
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(second_client_id),
+        Event::InputReceived,
+    )]));
+    screen_thread.join().unwrap();
+    teardown();
+    let mut clients_that_rendered_the_event = vec![];
+    for screen_instruction in received_screen_instructions.lock().unwrap().iter() {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = screen_instruction {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes =
+                    String::from_utf8_lossy(plugin_render_asset.bytes.as_slice()).to_string();
+                if plugin_bytes.contains("InputReceived") {
+                    clients_that_rendered_the_event.push(plugin_render_asset.client_id);
+                }
+            }
+        }
+    }
+    clients_that_rendered_the_event.sort();
+    clients_that_rendered_the_event.dedup();
+    assert_eq!(
+        clients_that_rendered_the_event,
+        vec![first_client_id, second_client_id],
+        "the single shared instance handled the second client's event and rendered for both clients"
+    );
+}
+
+#[test]
+#[ignore]
 pub fn load_new_plugin_with_plugin_alias() {
     // here we load our fixture plugin into the plugin thread, and then send it an update message
     // expecting tha thte plugin will log the received event and render it later after the update

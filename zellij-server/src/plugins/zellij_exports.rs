@@ -2635,7 +2635,8 @@ fn post_message_to(env: &PluginEnv, plugin_message: PluginMessage) -> Result<()>
     env.senders
         .send_to_plugin(PluginInstruction::PostMessagesToPluginWorker(
             env.plugin_id,
-            env.client_id,
+            // workers are keyed in the PluginMap, so this is the owner and not the acting client
+            env.owner_client_id,
             worker_name,
             vec![(plugin_message.name, plugin_message.payload)],
         ))

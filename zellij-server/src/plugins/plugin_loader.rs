@@ -264,6 +264,7 @@ impl<'a> PluginLoader<'a> {
         let plugin_env = PluginEnv {
             plugin_id: self.plugin_id,
             client_id: self.client_id,
+            owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
             permissions: Arc::new(Mutex::new(None)),
             senders: self.senders.clone(),
@@ -314,6 +315,11 @@ impl<'a> PluginLoader<'a> {
         Ok((store, instance))
     }
     pub fn clone_instance_for_other_clients(&mut self) -> Result<()> {
+        if self.plugin_config.is_shared() {
+            // a shared plugin has exactly one instance for the whole session, owned by the client
+            // that loaded it
+            return Ok(());
+        }
         let Some(connected_clients) = self.connected_clients.as_ref() else {
             return Ok(());
         };
@@ -376,6 +382,7 @@ impl<'a> PluginLoader<'a> {
         let plugin_env = PluginEnv {
             plugin_id: self.plugin_id,
             client_id: self.client_id,
+            owner_client_id: self.client_id,
             plugin: plugin_config,
             permissions: Arc::new(Mutex::new(None)),
             senders: self.senders.clone(),

@@ -1,7 +1,7 @@
 use super::{PluginId, PluginInstruction};
 use crate::plugins::plugin_map::RunningPlugin;
-use crate::plugins::wasm_bridge::PluginRenderAsset;
-use crate::plugins::zellij_exports::{wasi_read_string, wasi_write_object};
+use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
+use crate::plugins::zellij_exports::wasi_write_object;
 use std::collections::{HashMap, HashSet};
 use zellij_utils::data::{PipeMessage, PipeSource};
 use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
@@ -134,11 +134,15 @@ impl PendingPipeInfo {
 pub fn apply_pipe_message_to_plugin(
     plugin_id: PluginId,
     client_id: ClientId,
+    render_clients: &[ClientId],
     running_plugin: &mut RunningPlugin,
     pipe_message: &PipeMessage,
     plugin_render_assets: &mut Vec<PluginRenderAsset>,
     senders: &ThreadSenders,
 ) -> Result<()> {
+    // host commands issued while handling this message act on behalf of the client it was directed
+    // at (this only differs from the instance's owner for shared plugins)
+    running_plugin.store.data_mut().client_id = client_id;
     let instance = &running_plugin.instance;
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
@@ -160,30 +164,21 @@ pub fn apply_pipe_message_to_plugin(
                 .with_context(err_context)?;
             let should_render = should_render == 1;
             if rows > 0 && columns > 0 && should_render {
-                let rendered_bytes = instance
-                    .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
-                    .and_then(|render| {
-                        render.call(&mut running_plugin.store, (rows as i32, columns as i32))
-                    })
-                    .map_err(|e| anyhow!(e))
-                    .and_then(|_| {
-                        wasi_read_string(running_plugin.store.data()).map_err(|e| anyhow!(e))
-                    })
-                    .with_context(err_context)?;
+                plugin_render_assets.append(&mut render_plugin_for_clients(
+                    plugin_id,
+                    running_plugin,
+                    render_clients,
+                    Some(&pipe_message.source),
+                )?);
+            } else {
                 let pipes_to_block_or_unblock =
                     pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
                 let plugin_render_asset = PluginRenderAsset::new(
                     plugin_id,
-                    client_id,
-                    rendered_bytes.as_bytes().to_vec(),
+                    running_plugin.store.data().owner_client_id,
+                    vec![],
                 )
                 .with_pipes(pipes_to_block_or_unblock);
-                plugin_render_assets.push(plugin_render_asset);
-            } else {
-                let pipes_to_block_or_unblock =
-                    pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
-                let plugin_render_asset = PluginRenderAsset::new(plugin_id, client_id, vec![])
-                    .with_pipes(pipes_to_block_or_unblock);
                 let _ = senders
                     .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
                         plugin_render_asset,
@@ -198,7 +193,7 @@ pub fn apply_pipe_message_to_plugin(
                 pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
             let plugin_render_asset = PluginRenderAsset::new(
                 plugin_id,
-                client_id,
+                running_plugin.store.data().owner_client_id,
                 vec![], // nothing to render
             )
             .with_pipes(pipes_to_block_or_unblock);

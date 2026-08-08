@@ -47,6 +47,30 @@ pub struct PluginConfig {
 }
 
 impl PluginConfig {
+    /// A "shared" plugin runs as a single wasm instance for the whole session, rather than one
+    /// instance per connected client. Opted into with a `shared true` key in the plugin's
+    /// configuration block.
+    pub fn is_shared(&self) -> bool {
+        match self
+            .initial_userspace_configuration
+            .inner()
+            .get("shared")
+            .map(|value| value.trim())
+        {
+            None => false,
+            Some(value) => match value.parse::<bool>() {
+                Ok(is_shared) => is_shared,
+                Err(_) => {
+                    log::warn!(
+                        "Plugin {}: ignoring unparseable 'shared' configuration value: {:?}",
+                        self.path.display(),
+                        value
+                    );
+                    false
+                },
+            },
+        }
+    }
     pub fn from_run_plugin(run_plugin: &RunPlugin) -> Option<PluginConfig> {
         match &run_plugin.location {
             RunPluginLocation::File(path) => Some(PluginConfig {

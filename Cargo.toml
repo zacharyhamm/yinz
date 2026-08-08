@@ -55,6 +55,7 @@ members = [
     "default-plugins/multiple-select",
     "default-plugins/layout-manager",
     "default-plugins/link",
+    "default-plugins/shared-test",
     "zellij-client",
     "zellij-integration-tests",
     "zellij-server",

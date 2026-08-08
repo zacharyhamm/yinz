@@ -224,6 +224,33 @@ impl PluginMap {
             (running_plugin, subscriptions, running_workers),
         );
     }
+    /// Move a plugin's single instance from one owner client to another, eg. when the client
+    /// owning a shared plugin disconnects. Returns true if an instance was moved.
+    pub fn rekey_client(&mut self, plugin_id: PluginId, from: ClientId, to: ClientId) -> bool {
+        if from == to {
+            return false;
+        }
+        match self.plugin_assets.remove(&(plugin_id, from)) {
+            Some(plugin_asset) => {
+                {
+                    let mut running_plugin = plugin_asset.0.lock().unwrap();
+                    let plugin_env = running_plugin.store.data_mut();
+                    plugin_env.owner_client_id = to;
+                    plugin_env.client_id = to;
+                }
+                self.plugin_assets.insert((plugin_id, to), plugin_asset);
+                true
+            },
+            None => false,
+        }
+    }
+    pub fn owner_client_ids_of_plugin_id(&self, plugin_id: PluginId) -> Vec<ClientId> {
+        self.plugin_assets
+            .keys()
+            .filter(|(p_id, _)| *p_id == plugin_id)
+            .map(|(_, client_id)| *client_id)
+            .collect()
+    }
     pub fn run_plugin_of_plugin_id(&self, plugin_id: PluginId) -> Option<RunPlugin> {
         self.plugin_assets
             .iter()
@@ -275,7 +302,14 @@ pub struct PluginEnv {
     pub senders: ThreadSenders,
     pub wasi_ctx: WasiCtx,
     pub tab_index: Option<usize>,
+    /// The client this instance is currently acting on behalf of. For a shared plugin (one
+    /// instance for the whole session) this is set to the client whose event is being handled, so
+    /// that host commands act on the right client. Use `owner_client_id` for anything keyed in
+    /// the `PluginMap`.
     pub client_id: ClientId,
+    /// The client this instance is keyed under in the `PluginMap`. Equal to `client_id` for
+    /// non-shared plugins.
+    pub owner_client_id: ClientId,
     #[allow(dead_code)]
     pub plugin_own_data_dir: PathBuf,
     pub plugin_own_cache_dir: PathBuf,
