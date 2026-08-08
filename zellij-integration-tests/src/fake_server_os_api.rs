@@ -80,11 +80,16 @@ impl ServerOsApi for FakeServerOsApi {
             *cached_resizes = Some(BTreeMap::new());
         }
     }
-    fn apply_cached_resizes(&mut self) {
+    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
         let cached_resizes = self.cached_resizes.lock().unwrap().take();
-        for (terminal_id, (cols, rows)) in cached_resizes.unwrap_or_default() {
-            self.shared_ptys.set_size(terminal_id, cols, rows);
+        let cached_resizes = cached_resizes.unwrap_or_default();
+        for (terminal_id, (cols, rows)) in &cached_resizes {
+            self.shared_ptys.set_size(*terminal_id, *cols, *rows);
         }
+        cached_resizes
+            .into_iter()
+            .map(|(terminal_id, (cols, rows))| (terminal_id, cols, rows))
+            .collect()
     }
     fn spawn_terminal(
         &self,

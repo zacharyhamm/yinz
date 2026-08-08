@@ -18,3 +18,4 @@ zellij-tile-utils = { path = "../../zellij-tile-utils" }
 
 [dev-dependencies]
 regex = { workspace = true }
+hegeltest = "0.29.3"

@@ -191,6 +191,9 @@ impl Dimension {
         }
     }
     pub fn split_out(&mut self, by: f64) -> Self {
+        // splitting into fewer than one part is meaningless and `by as usize` would be 0;
+        // NaN and negatives land here too
+        let by = if by.is_finite() && by >= 1.0 { by } else { 1.0 };
         match self.constraint {
             Constraint::Percent(percent) => {
                 let split_out_value = percent / by;
@@ -294,17 +297,23 @@ impl PaneGeom {
         if let Some(height) = &height {
             self.rows = Dimension::fixed(height.to_fixed(viewport_rows));
         }
+        // saturating: `PercentOrFixed` comes from layout config, so a typo'd `Fixed` can be
+        // arbitrarily large
         self.x = match &x {
-            Some(x) => origin.0 + x.to_fixed(viewport_cols),
+            Some(x) => origin.0.saturating_add(x.to_fixed(viewport_cols)),
             None if width.is_some() => {
-                origin.0 + viewport_cols.saturating_sub(self.cols.as_usize()) / 2
+                origin
+                    .0
+                    .saturating_add(viewport_cols.saturating_sub(self.cols.as_usize()) / 2)
             },
             None => self.x,
         };
         self.y = match &y {
-            Some(y) => origin.1 + y.to_fixed(viewport_rows),
+            Some(y) => origin.1.saturating_add(y.to_fixed(viewport_rows)),
             None if height.is_some() => {
-                origin.1 + viewport_rows.saturating_sub(self.rows.as_usize()) / 2
+                origin
+                    .1
+                    .saturating_add(viewport_rows.saturating_sub(self.rows.as_usize()) / 2)
             },
             None => self.y,
         };
@@ -324,23 +333,29 @@ impl PaneGeom {
             viewport.rows,
             origin,
         );
+        // saturating throughout: the coordinates come from layout config and can be arbitrarily
+        // large
+        let max_x = viewport.x.saturating_add(viewport.cols);
+        let max_y = viewport.y.saturating_add(viewport.rows);
+        // clamp high first, then low: the high clamp subtracts the pane's own size and can
+        // itself land left of / above the viewport
+        if self.x > max_x {
+            self.x = max_x.saturating_sub(self.cols.as_usize());
+        }
         if self.x < viewport.x {
             self.x = viewport.x;
-        } else if self.x > viewport.x + viewport.cols {
-            self.x = (viewport.x + viewport.cols).saturating_sub(self.cols.as_usize());
+        }
+        if self.y > max_y {
+            self.y = max_y.saturating_sub(self.rows.as_usize());
         }
         if self.y < viewport.y {
             self.y = viewport.y;
-        } else if self.y > viewport.y + viewport.rows {
-            self.y = (viewport.y + viewport.rows).saturating_sub(self.rows.as_usize());
         }
-        if self.x + self.cols.as_usize() > viewport.x + viewport.cols {
-            let new_cols = (viewport.x + viewport.cols).saturating_sub(self.x);
-            self.cols.set_inner(new_cols);
+        if self.x.saturating_add(self.cols.as_usize()) > max_x {
+            self.cols.set_inner(max_x.saturating_sub(self.x));
         }
-        if self.y + self.rows.as_usize() > viewport.y + viewport.rows {
-            let new_rows = (viewport.y + viewport.rows).saturating_sub(self.y);
-            self.rows.set_inner(new_rows);
+        if self.y.saturating_add(self.rows.as_usize()) > max_y {
+            self.rows.set_inner(max_y.saturating_sub(self.y));
         }
     }
     pub fn combine_vertically_with(&self, geom_below: &PaneGeom) -> Option<Self> {
@@ -531,7 +546,107 @@ impl From<&Size> for PaneGeom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::FloatingPaneCoordinates;
     use crate::input::layout::PercentOrFixed;
+    use hegel::generators::{self, Generator};
+
+    /// Any `Dimension`, either constraint, unbounded `inner`.
+    #[hegel::composite]
+    fn dimensions(tc: &hegel::TestCase) -> Dimension {
+        let constraint = tc.draw(hegel::one_of!(
+            generators::floats::<f64>().map(Constraint::Percent),
+            generators::integers::<usize>().map(Constraint::Fixed),
+        ));
+        let inner = tc.draw(generators::integers::<usize>());
+        Dimension { constraint, inner }
+    }
+
+    #[hegel::composite]
+    fn percent_or_fixeds(tc: &hegel::TestCase) -> PercentOrFixed {
+        tc.draw(hegel::one_of!(
+            generators::integers::<usize>().map(PercentOrFixed::Percent),
+            generators::integers::<usize>().map(PercentOrFixed::Fixed),
+        ))
+    }
+
+    /// Screen-sized coordinates: large but small enough that `origin + value` cannot
+    /// overflow `usize` (usize overflow is a separate concern from containment).
+    #[hegel::composite]
+    fn coordinates(tc: &hegel::TestCase) -> usize {
+        tc.draw(generators::integers::<usize>().max_value(u32::MAX as usize))
+    }
+
+    #[hegel::test]
+    fn split_out_never_panics(tc: hegel::TestCase) {
+        let mut dimension = tc.draw(dimensions());
+        let by = tc.draw(generators::floats::<f64>());
+        let before = dimension;
+        let split_out = dimension.split_out(by);
+        // just touch the results so nothing is optimized away
+        assert!(
+            split_out.as_usize() == split_out.as_usize(),
+            "split_out({}) on {:?} produced {:?} / {:?}",
+            by,
+            before,
+            dimension,
+            split_out
+        );
+    }
+
+    #[hegel::test]
+    fn adjust_coordinates_keeps_the_geom_inside_the_viewport(tc: hegel::TestCase) {
+        let viewport = Viewport {
+            x: tc.draw(coordinates()),
+            y: tc.draw(coordinates()),
+            rows: tc.draw(coordinates()),
+            cols: tc.draw(coordinates()),
+        };
+        let origin = (tc.draw(coordinates()), tc.draw(coordinates()));
+        let coords = FloatingPaneCoordinates {
+            x: tc.draw(generators::optional(percent_or_fixeds())),
+            y: tc.draw(generators::optional(percent_or_fixeds())),
+            width: tc.draw(generators::optional(percent_or_fixeds())),
+            height: tc.draw(generators::optional(percent_or_fixeds())),
+            pinned: None,
+            borderless: None,
+        };
+        let mut geom = PaneGeom::default();
+        geom.adjust_coordinates(coords.clone(), viewport, origin);
+        assert!(
+            geom.x >= viewport.x,
+            "x {} left of viewport {:?} (coords {:?}, origin {:?})",
+            geom.x,
+            viewport,
+            coords,
+            origin
+        );
+        assert!(
+            geom.y >= viewport.y,
+            "y {} above viewport {:?} (coords {:?}, origin {:?})",
+            geom.y,
+            viewport,
+            coords,
+            origin
+        );
+        assert!(
+            geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols,
+            "x {} + cols {} past viewport {:?} (coords {:?}, origin {:?})",
+            geom.x,
+            geom.cols.as_usize(),
+            viewport,
+            coords,
+            origin
+        );
+        assert!(
+            geom.y + geom.rows.as_usize() <= viewport.y + viewport.rows,
+            "y {} + rows {} past viewport {:?} (coords {:?}, origin {:?})",
+            geom.y,
+            geom.rows.as_usize(),
+            viewport,
+            coords,
+            origin
+        );
+    }
 
     #[test]
     fn apply_floating_pane_position_with_non_zero_origin() {

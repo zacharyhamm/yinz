@@ -46,7 +46,8 @@ impl<Value: Debug> Node<Value> {
                         // An unambiguous match for the entire input
                         return NodeFind::Exact(depth, value);
                     },
-                    None => panic!("Node has no children and no value!?"),
+                    // an empty map's root has neither children nor a value
+                    None => return NodeFind::AmbiguousBackTrack,
                 }
             }
             return match self.value.as_ref() {
@@ -203,6 +204,48 @@ impl<Value: Debug + Clone> KeyMap<Value> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use hegel::generators;
+
+    #[hegel::test]
+    fn lookup_never_panics(tc: hegel::TestCase) {
+        let entries: Vec<(Vec<u8>, u8)> = tc.draw(generators::vecs(generators::tuples!(
+            generators::binary(),
+            generators::integers::<u8>(),
+        )));
+        let key = tc.draw(generators::binary());
+        let maybe_more = tc.draw(generators::booleans());
+        let mut km = KeyMap::new();
+        for (k, v) in &entries {
+            km.insert(k, *v);
+        }
+        let found = km.lookup(&key, maybe_more);
+        assert!(
+            matches!(
+                found,
+                Found::None | Found::Exact(..) | Found::Ambiguous(..) | Found::NeedData
+            ),
+            "lookup({:?}, {}) on {:?} returned {:?}",
+            key,
+            maybe_more,
+            entries,
+            found
+        );
+    }
+
+    #[hegel::test]
+    fn an_inserted_key_is_found_exactly(tc: hegel::TestCase) {
+        let key: Vec<u8> = tc.draw(generators::binary().min_size(1));
+        let value = tc.draw(generators::integers::<u8>());
+        let mut km = KeyMap::new();
+        km.insert(&key, value);
+        assert_eq!(
+            km.lookup(&key, NO_MORE),
+            Found::Exact(key.len(), value),
+            "looking up {:?} (value {}) right after inserting it",
+            key,
+            value
+        );
+    }
 
     const NO_MORE: bool = false;
     const MAYBE_MORE: bool = true;

@@ -1512,3 +1512,160 @@ fn two_nested_frames_in_one_chunk_are_both_extracted() {
     assert_eq!(out.nested_frames, vec![payload.clone(), payload]);
     assert!(out.residue.is_empty());
 }
+
+// =====================================================================
+// Property-based tests (hegel)
+// =====================================================================
+
+use hegel::generators;
+
+/// Real sequence fragments the parser's state machine branches on. Random
+/// bytes alone almost never reach the OSC/CSI/APC/DCS/paste paths, so the
+/// generator interleaves these with noise.
+const SEQ_FRAGMENTS: &[&[u8]] = &[
+    b"\x1b",
+    b"\x1b]",
+    b"\x1b[",
+    b"\x1b_G",
+    b"\x1b_",
+    b"\x1bP26661n",
+    b"\x1b[200~",
+    b"\x1b[201~",
+    b"\x1b\\",
+    b"\x07",
+    b"11;rgb:0000/0000/0000",
+    b"10;rgb:ffff/ffff/ffff",
+    b"4;12;rgb:1212/3434/5656",
+    b"99;body",
+    b"\x1b[4;720;1280t",
+    b"\x1b[6;18;9t",
+    b"\x1b[?2026;2$y",
+    b"\x1b[?997;1n",
+    b"\x1b[?62;4c",
+    b"i=31;OK\x1b\\",
+    b"abc",
+];
+
+/// Raw stdin as it arrives from the host terminal: real ANSI fragments
+/// interleaved with arbitrary binary noise.
+///
+/// Piece count and noise size are bounded only for runtime sanity — the
+/// resulting buffers stay in the low kilobytes, many orders of magnitude
+/// below `PARTIAL_BUFFER_CAP_BYTES` (100MB), which cannot be reached in a
+/// property test anyway.
+#[hegel::composite]
+fn stdin_bytes(tc: &hegel::TestCase) -> Vec<u8> {
+    let pieces = tc.draw(generators::integers::<usize>().max_value(24));
+    let mut out = Vec::new();
+    for _ in 0..pieces {
+        if tc.draw(generators::booleans()) {
+            if tc.draw(generators::integers::<u8>().max_value(7)) == 0 {
+                // A complete, well-formed nested-session frame — the shape
+                // `nested_frame_split_at_every_boundary_is_extracted` covers
+                // by hand.
+                out.extend(announce_frame_and_payload().0);
+            } else {
+                let fragment = tc.draw(generators::sampled_from(SEQ_FRAGMENTS.to_vec()));
+                out.extend_from_slice(fragment);
+            }
+        }
+        out.extend(tc.draw(generators::binary().max_size(16)));
+    }
+    out
+}
+
+/// The whole observable output of driving a parser to exhaustion over a
+/// sequence of chunks: everything it classified, plus everything it was
+/// still holding when the stream went idle.
+#[derive(Debug, PartialEq, Eq)]
+struct Accumulated {
+    replies: Vec<String>,
+    nested_frames: Vec<Vec<u8>>,
+    desktop_notifications: Vec<Vec<u8>>,
+    residue: Vec<u8>,
+    finalized: Vec<u8>,
+}
+
+fn drive(chunks: &[&[u8]]) -> Accumulated {
+    let mut parser = StdinAnsiParser::new();
+    let mut acc = Accumulated {
+        replies: Vec::new(),
+        nested_frames: Vec::new(),
+        desktop_notifications: Vec::new(),
+        residue: Vec::new(),
+        finalized: Vec::new(),
+    };
+    for chunk in chunks {
+        let out = parser.feed(chunk);
+        // HostReply has no PartialEq; its Debug rendering is total and
+        // faithful enough to compare two runs.
+        acc.replies
+            .extend(out.replies.iter().map(|r| format!("{:?}", r)));
+        acc.nested_frames.extend(out.nested_frames);
+        acc.desktop_notifications.extend(out.desktop_notifications);
+        acc.residue.extend(out.residue);
+    }
+    acc.finalized = parser.finalize_force();
+    acc
+}
+
+#[hegel::test]
+fn feed_never_panics_on_arbitrary_stdin(tc: hegel::TestCase) {
+    // Unbounded raw bytes: stdin is untrusted input from the host terminal.
+    let bytes = tc.draw(generators::binary());
+    let mut parser = StdinAnsiParser::new();
+    let out = parser.feed(&bytes);
+    let _ = parser.pending_partial();
+    let _ = parser.finalize_lone_esc();
+    let finalized = parser.finalize_force();
+    // A single feed can only ever emit bytes it was given: residue plus
+    // whatever is still buffered cannot exceed the input.
+    assert!(
+        out.residue.len() + finalized.len() <= bytes.len(),
+        "feed of {:?} emitted {} residue + {} buffered bytes from {} input bytes",
+        bytes,
+        out.residue.len(),
+        finalized.len(),
+        bytes.len()
+    );
+}
+
+#[hegel::test]
+fn feed_never_panics_on_ansi_shaped_stdin(tc: hegel::TestCase) {
+    let bytes = tc.draw(stdin_bytes());
+    let mut parser = StdinAnsiParser::new();
+    let _ = parser.feed(&bytes);
+    let _ = parser.pending_partial();
+    let _ = parser.finalize_force();
+}
+
+#[hegel::test(test_cases = 500)]
+fn chunk_splitting_does_not_change_what_is_parsed(tc: hegel::TestCase) {
+    let bytes = tc.draw(stdin_bytes());
+    // Split points are bounded by the buffer length so they land on real
+    // boundaries instead of being folded modulo into a few low offsets.
+    let mut splits = tc.draw(
+        generators::vecs(generators::integers::<usize>().max_value(bytes.len()))
+            .max_size(8),
+    );
+    splits.sort_unstable();
+    splits.dedup();
+
+    let mut chunks: Vec<&[u8]> = Vec::new();
+    let mut prev = 0;
+    for split in &splits {
+        chunks.push(&bytes[prev..*split]);
+        prev = *split;
+    }
+    chunks.push(&bytes[prev..]);
+
+    let whole = drive(&[&bytes[..]]);
+    let split = drive(&chunks);
+    assert_eq!(
+        whole,
+        split,
+        "feeding {:?} whole differs from feeding it split at {:?}",
+        bytes,
+        splits
+    );
+}

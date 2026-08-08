@@ -385,3 +385,69 @@ fn temp_file_outside_temp_dir_with_magic_name_is_deleted() {
     assert_eq!(command.image.unwrap().bytes, raster);
     assert!(!path.exists());
 }
+
+// ---- property-based tests (hegel) ----
+
+use hegel::generators::{self, Generator};
+
+/// A plausible-looking kitty control string, so the generated chunks actually reach the parser's
+/// interesting paths instead of bouncing off `parse_control_data`.
+///
+/// Deliberately never emits `f=100` (PNG) or `o=z` (zlib): those hand the payload to a real
+/// decoder, which is orders of magnitude slower than the parsing this property is about. Random
+/// binary chunks below could in principle spell one out, but not in any realistic number of runs.
+#[hegel::composite]
+fn any_control_chunk(tc: &hegel::TestCase) -> Vec<u8> {
+    let pair_count = tc.draw(generators::integers::<usize>().max_value(8));
+    let keys = vec![
+        "a", "f", "s", "v", "m", "q", "i", "I", "p", "d", "x", "y", "w", "h", "z", "C", "c", "r",
+        "X", "Y", "t", "o", "S", "O", "??",
+    ];
+    let values = vec![
+        "0", "1", "2", "24", "32", "T", "t", "d", "q", "-1", "a", "", "4294967296", "-99999999999",
+        "1.5", "\u{ff}",
+    ];
+    let mut control = String::new();
+    for index in 0..pair_count {
+        if index > 0 {
+            control.push(',');
+        }
+        control.push_str(tc.draw(generators::sampled_from(keys.clone())));
+        control.push('=');
+        control.push_str(tc.draw(generators::sampled_from(values.clone())));
+    }
+    let mut raw = control.into_bytes();
+    if tc.draw(generators::booleans()) {
+        raw.push(b';');
+        // payload is base64 in a well formed command, garbage is on purpose here too
+        raw.extend_from_slice(&tc.draw(generators::binary().max_size(256)));
+    }
+    raw
+}
+
+#[hegel::test]
+fn parse_never_panics_on_any_chunk_sequence(tc: hegel::TestCase) {
+    let chunk_count = tc.draw(generators::integers::<usize>().max_value(8));
+    let chunks: Vec<Vec<u8>> = (0..chunk_count)
+        .map(|_| {
+            if tc.draw(generators::booleans()) {
+                tc.draw(any_control_chunk())
+            } else {
+                // capped at a few KiB purely for runtime
+                tc.draw(generators::binary().max_size(4096))
+            }
+        })
+        .collect();
+
+    let mut parser = KittyCommandParser::new();
+    // the property is "does not panic on any chunk sequence"
+    for chunk in &chunks {
+        let _ = parser.parse(chunk);
+    }
+    parser.abort_pending();
+    assert!(
+        !parser.has_pending(),
+        "abort_pending left an upload pending after {:?}",
+        chunks
+    );
+}

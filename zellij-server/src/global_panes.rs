@@ -2102,4 +2102,151 @@ mod tests {
 
         assert_eq!(manager.plugin_ids(), vec![1, 2]);
     }
+
+    // ---- property-based tests (hegel) ----
+
+    use hegel::generators::{self, Generator};
+
+    /// A `(PaneId, GlobalPanePlacement)` over every edge and both size flavours, unbounded.
+    #[hegel::composite]
+    fn any_placement(
+        tc: &hegel::TestCase,
+        pane_index: u32,
+    ) -> (ZellijUtilsPaneId, GlobalPanePlacement) {
+        let edge = tc.draw(generators::sampled_from(vec![
+            GlobalPaneEdge::Left,
+            GlobalPaneEdge::Right,
+            GlobalPaneEdge::Top,
+            GlobalPaneEdge::Bottom,
+        ]));
+        let size = if tc.draw(generators::booleans()) {
+            PercentOrFixed::Percent(tc.draw(generators::integers::<usize>()))
+        } else {
+            PercentOrFixed::Fixed(tc.draw(generators::integers::<usize>()))
+        };
+        let pane_id = if tc.draw(generators::booleans()) {
+            ZellijUtilsPaneId::Terminal(pane_index)
+        } else {
+            ZellijUtilsPaneId::Plugin(pane_index)
+        };
+        (pane_id, GlobalPanePlacement { edge, size })
+    }
+
+    /// Distinct pane ids - `allocate_global_panes` collects into a `BTreeMap`, so duplicate ids
+    /// would silently collapse and make "one rect per input" meaningless.
+    #[hegel::composite]
+    fn any_placements(tc: &hegel::TestCase) -> Vec<(ZellijUtilsPaneId, GlobalPanePlacement)> {
+        let count = tc.draw(generators::integers::<usize>().max_value(6));
+        (0..count as u32).map(|i| tc.draw(any_placement(i))).collect()
+    }
+
+    #[hegel::composite]
+    fn any_viewport(tc: &hegel::TestCase) -> Viewport {
+        Viewport {
+            x: tc.draw(generators::integers::<usize>()),
+            y: tc.draw(generators::integers::<usize>()),
+            cols: tc.draw(generators::integers::<usize>()),
+            rows: tc.draw(generators::integers::<usize>()),
+        }
+    }
+
+    fn rect_of(geom: &PaneGeom) -> (usize, usize, usize, usize) {
+        (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
+    }
+
+    fn rects_overlap(
+        a: (usize, usize, usize, usize),
+        b: (usize, usize, usize, usize),
+    ) -> bool {
+        let (ax, ay, aw, ah) = a;
+        let (bx, by, bw, bh) = b;
+        ax < bx.saturating_add(bw)
+            && bx < ax.saturating_add(aw)
+            && ay < by.saturating_add(bh)
+            && by < ay.saturating_add(ah)
+    }
+
+    fn contains(area: &Viewport, r: (usize, usize, usize, usize)) -> bool {
+        let (x, y, w, h) = r;
+        x >= area.x
+            && y >= area.y
+            && x.saturating_add(w) <= area.x.saturating_add(area.cols)
+            && y.saturating_add(h) <= area.y.saturating_add(area.rows)
+    }
+
+    #[hegel::test]
+    fn allocated_global_panes_tile_the_area_without_overlapping(tc: hegel::TestCase) {
+        let area = tc.draw(any_viewport());
+        let placements = tc.draw(any_placements());
+        let clamp_to_screen = tc.draw(generators::booleans());
+        let chrome_rows = (
+            tc.draw(generators::integers::<usize>()),
+            tc.draw(generators::integers::<usize>()),
+        );
+
+        let Ok(allocated) =
+            allocate_global_panes(area, &placements, clamp_to_screen, chrome_rows)
+        else {
+            return; // an `Err` is always an acceptable answer
+        };
+
+        let rects: Vec<_> = allocated
+            .panes
+            .iter()
+            .map(|(pane_id, geom)| (*pane_id, rect_of(geom)))
+            .collect();
+
+        for (pane_id, rect) in &rects {
+            assert!(
+                contains(&area, *rect),
+                "{:?} at {:?} escapes area {:?} (placements {:?}, clamp {}, chrome {:?})",
+                pane_id,
+                rect,
+                area,
+                placements,
+                clamp_to_screen,
+                chrome_rows
+            );
+        }
+        for (i, (id_a, a)) in rects.iter().enumerate() {
+            for (id_b, b) in rects.iter().skip(i + 1) {
+                assert!(
+                    !rects_overlap(*a, *b),
+                    "{:?} at {:?} overlaps {:?} at {:?} (area {:?}, placements {:?}, clamp {}, chrome {:?})",
+                    id_a,
+                    a,
+                    id_b,
+                    b,
+                    area,
+                    placements,
+                    clamp_to_screen,
+                    chrome_rows
+                );
+            }
+        }
+        let center = allocated.center;
+        let center_rect = (center.x, center.y, center.cols, center.rows);
+        for (pane_id, rect) in &rects {
+            assert!(
+                !rects_overlap(center_rect, *rect),
+                "center {:?} overlaps {:?} at {:?} (area {:?}, placements {:?}, clamp {}, chrome {:?})",
+                center_rect,
+                pane_id,
+                rect,
+                area,
+                placements,
+                clamp_to_screen,
+                chrome_rows
+            );
+        }
+        assert!(
+            contains(&area, center_rect),
+            "center {:?} escapes area {:?} (placements {:?}, clamp {}, chrome {:?})",
+            center_rect,
+            area,
+            placements,
+            clamp_to_screen,
+            chrome_rows
+        );
+    }
 }

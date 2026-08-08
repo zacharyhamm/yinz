@@ -183,6 +183,7 @@ fn xterm_256_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
     use zellij_utils::input::web_client::{WebClientConfig, WebClientTheme};
 
     fn config_with_web_theme(theme: WebClientTheme) -> Config {
@@ -226,6 +227,91 @@ mod tests {
             ClientToServerMsg::ColorRegisters { color_registers } => Some(color_registers.len()),
             _ => None,
         })
+    }
+
+    /// Parse the `rgb:RRRR/GGGG/BBBB` form back into 8-bit components,
+    /// undoing the `* 0x0101` widening. `None` if the shape is wrong.
+    fn parse_xparse(s: &str) -> Option<(u8, u8, u8)> {
+        let body = s.strip_prefix("rgb:")?;
+        let parts: Vec<&str> = body.split('/').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let mut out = [0u8; 3];
+        for (i, part) in parts.iter().enumerate() {
+            if part.len() != 4 {
+                return None;
+            }
+            let wide = u16::from_str_radix(part, 16).ok()?;
+            if wide % 0x0101 != 0 {
+                return None;
+            }
+            out[i] = (wide / 0x0101) as u8;
+        }
+        Some((out[0], out[1], out[2]))
+    }
+
+    #[hegel::test]
+    fn every_rgb_survives_the_css_to_xparse_bridge(tc: hegel::TestCase) {
+        let r = tc.draw(generators::integers::<u8>());
+        let g = tc.draw(generators::integers::<u8>());
+        let b = tc.draw(generators::integers::<u8>());
+        let css = PaletteColor::Rgb((r, g, b)).as_rgb_str();
+        let xparse = css_rgb_to_xparse(&css)
+            .unwrap_or_else(|| panic!("({}, {}, {}) -> {:?} was rejected", r, g, b, css));
+        assert_eq!(
+            parse_xparse(&xparse),
+            Some((r, g, b)),
+            "({}, {}, {}) -> {:?} -> {:?} did not round-trip",
+            r,
+            g,
+            b,
+            css,
+            xparse
+        );
+    }
+
+    #[hegel::test]
+    fn css_rgb_to_xparse_is_total(tc: hegel::TestCase) {
+        // Arbitrary Unicode: this string comes from user config.
+        let s = tc.draw(generators::text());
+        if let Some(xparse) = css_rgb_to_xparse(&s) {
+            assert!(
+                parse_xparse(&xparse).is_some(),
+                "input {:?} produced malformed xparse string {:?}",
+                s,
+                xparse
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn xterm_256_matches_the_canonical_table(tc: hegel::TestCase) {
+        let index = tc.draw(generators::integers::<u8>());
+        // Canonical xterm cube levels, written out rather than recomputed
+        // so this is an independent check of the formula.
+        const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        let expected = match index {
+            0..=15 => (0, 0, 0),
+            16..=231 => {
+                let idx = (index - 16) as usize;
+                (
+                    LEVELS[idx / 36],
+                    LEVELS[(idx / 6) % 6],
+                    LEVELS[idx % 6],
+                )
+            },
+            232..=255 => {
+                let v = 8 + 10 * (index - 232);
+                (v, v, v)
+            },
+        };
+        assert_eq!(
+            xterm_256_rgb(index),
+            expected,
+            "index {} does not match the canonical xterm-256 table",
+            index
+        );
     }
 
     #[test]

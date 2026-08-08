@@ -1687,7 +1687,9 @@ impl InputParser {
                     if let Some(idx) = self.buf.find_subsequence(offset, end_paste) {
                         let pasted =
                             String::from_utf8_lossy(&self.buf.as_slice()[0..idx]).to_string();
-                        self.buf.advance(pasted.len() + end_paste.len());
+                        // advance by the raw byte offset, not `pasted.len()`: lossy decoding
+                        // widens each invalid byte to a 3-byte U+FFFD and would overrun the buffer
+                        self.buf.advance(idx + end_paste.len());
                         callback(InputEvent::Paste(pasted), self.buf.len());
                         self.state = InputState::Normal;
                     } else {

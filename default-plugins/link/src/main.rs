@@ -330,8 +330,12 @@ fn expand_path(path: &str, env_vars: &BTreeMap<String, String>) -> String {
             }
             i = end_idx;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            // copy the whole char, not the byte: `bytes[i] as char` is a Latin-1 widening and
+            // would turn "café" into "cafÃ©". `i` is always on a char boundary because every
+            // other advance lands on an ASCII byte.
+            let ch = after_tilde[i..].chars().next().unwrap();
+            i += ch.len_utf8();
+            result.push(ch);
         }
     }
 
@@ -374,6 +378,33 @@ fn parse_path_and_line(matched_string: &str) -> (&str, Option<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
+
+    /// An environment map with arbitrary (full-Unicode) keys and values.
+    #[hegel::composite]
+    fn env_map(tc: &hegel::TestCase) -> BTreeMap<String, String> {
+        let pairs = tc.draw(generators::vecs(generators::tuples!(
+            generators::text(),
+            generators::text(),
+        )));
+        pairs.into_iter().collect()
+    }
+
+    /// `expand_path` documents that it leaves everything it does not recognise as-is. A path with
+    /// no `$` and no leading `~` has nothing to expand, so it must come back unchanged.
+    #[hegel::test]
+    fn expand_path_is_the_identity_when_there_is_nothing_to_expand(tc: hegel::TestCase) {
+        let path = tc.draw(generators::text());
+        let env_vars = tc.draw(env_map());
+        tc.assume(!path.contains('$') && !path.starts_with('~'));
+        assert_eq!(
+            expand_path(&path, &env_vars),
+            path,
+            "expand_path({:?}, {:?}) changed a path with nothing to expand",
+            path,
+            env_vars
+        );
+    }
 
     // --- parse_path_and_line tests ---
 

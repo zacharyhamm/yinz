@@ -244,30 +244,21 @@ impl FromStr for BareKey {
     type Err = Box<dyn std::error::Error>;
     fn from_str(key_str: &str) -> Result<Self, Self::Err> {
         match key_str.to_ascii_lowercase().as_str() {
-            "pagedown" => Ok(BareKey::PageDown),
-            "pageup" => Ok(BareKey::PageUp),
-            "left" => Ok(BareKey::Left),
-            "down" => Ok(BareKey::Down),
-            "up" => Ok(BareKey::Up),
-            "right" => Ok(BareKey::Right),
+            // every spelling `Display` produces must parse back, so that keybind configs and
+            // `zellij action send-keys` accept what the UI shows the user
+            "pagedown" | "pgdn" => Ok(BareKey::PageDown),
+            "pageup" | "pgup" => Ok(BareKey::PageUp),
+            "left" | "←" => Ok(BareKey::Left),
+            "down" | "↓" => Ok(BareKey::Down),
+            "up" | "↑" => Ok(BareKey::Up),
+            "right" | "→" => Ok(BareKey::Right),
             "home" => Ok(BareKey::Home),
             "end" => Ok(BareKey::End),
             "backspace" => Ok(BareKey::Backspace),
             "delete" => Ok(BareKey::Delete),
             "del" => Ok(BareKey::Delete),
             "insert" => Ok(BareKey::Insert),
-            "f1" => Ok(BareKey::F(1)),
-            "f2" => Ok(BareKey::F(2)),
-            "f3" => Ok(BareKey::F(3)),
-            "f4" => Ok(BareKey::F(4)),
-            "f5" => Ok(BareKey::F(5)),
-            "f6" => Ok(BareKey::F(6)),
-            "f7" => Ok(BareKey::F(7)),
-            "f8" => Ok(BareKey::F(8)),
-            "f9" => Ok(BareKey::F(9)),
-            "f10" => Ok(BareKey::F(10)),
-            "f11" => Ok(BareKey::F(11)),
-            "f12" => Ok(BareKey::F(12)),
+            "ins" => Ok(BareKey::Insert),
             "tab" => Ok(BareKey::Tab),
             "esc" => Ok(BareKey::Esc),
             "enter" => Ok(BareKey::Enter),
@@ -278,7 +269,11 @@ impl FromStr for BareKey {
             "pause" => Ok(BareKey::Pause),
             "menu" => Ok(BareKey::Menu),
             "space" => Ok(BareKey::Char(' ')),
-            _ => {
+            other => {
+                // any "f<n>", not just f1-f12 - `Display` writes F(n) for every n
+                if let Some(index) = other.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+                    return Ok(BareKey::F(index));
+                }
                 if key_str.chars().count() == 1 {
                     if let Some(character) = key_str.chars().next() {
                         return Ok(BareKey::Char(character));
@@ -3739,4 +3734,97 @@ pub fn can_parse_unicode_bare_keys() {
         Some(BareKey::Char('ъ')),
         "Can parse a bare 'ъ' keypress"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::generators::{self, Generator};
+
+    /// Any `BareKey`, including `F` indices and characters outside the ones the
+    /// parser knows about.
+    ///
+    /// Two characters are excluded from the `Char` arm, because the string form genuinely
+    /// cannot represent them rather than because of a defect:
+    /// * the arrow glyphs `←↓↑→`, which `Display` also uses for `Left`/`Down`/`Up`/`Right`,
+    ///   so `Char('←')` and `Left` share a spelling and only one of them can win.
+    /// * ASCII whitespace, which `KeyWithModifier::from_str` uses as its modifier
+    ///   delimiter (`split_ascii_whitespace`); `BareKey::Tab` is how you spell a tab.
+    #[hegel::composite]
+    fn bare_keys(tc: &hegel::TestCase) -> BareKey {
+        tc.draw(hegel::one_of!(
+            generators::sampled_from(vec![
+                BareKey::PageDown,
+                BareKey::PageUp,
+                BareKey::Left,
+                BareKey::Down,
+                BareKey::Up,
+                BareKey::Right,
+                BareKey::Home,
+                BareKey::End,
+                BareKey::Backspace,
+                BareKey::Delete,
+                BareKey::Insert,
+                BareKey::Tab,
+                BareKey::Esc,
+                BareKey::Enter,
+                BareKey::CapsLock,
+                BareKey::ScrollLock,
+                BareKey::NumLock,
+                BareKey::PrintScreen,
+                BareKey::Pause,
+                BareKey::Menu,
+            ]),
+            generators::integers::<u8>().map(BareKey::F),
+            generators::text()
+                .min_size(1)
+                .map(|s| s.chars().next().unwrap())
+                .filter(|c| !"←↓↑→".contains(*c) && !c.is_ascii_whitespace())
+                .map(BareKey::Char),
+        ))
+    }
+
+    #[hegel::composite]
+    fn keys_with_modifiers(tc: &hegel::TestCase) -> KeyWithModifier {
+        let bare_key = tc.draw(bare_keys());
+        let key_modifiers: BTreeSet<KeyModifier> = tc
+            .draw(generators::vecs(generators::sampled_from(vec![
+                KeyModifier::Ctrl,
+                KeyModifier::Alt,
+                KeyModifier::Shift,
+                KeyModifier::Super,
+            ])))
+            .into_iter()
+            .collect();
+        KeyWithModifier {
+            bare_key,
+            key_modifiers,
+        }
+    }
+
+    #[hegel::test]
+    fn key_with_modifier_roundtrips_through_its_string_form(tc: hegel::TestCase) {
+        let key = tc.draw(keys_with_modifiers());
+        let stringified = key.to_string();
+        let parsed = KeyWithModifier::from_str(&stringified);
+        // NOTE: `KeyWithModifier`'s `PartialEq` case-folds, so compare the fields.
+        match parsed {
+            Ok(parsed) => {
+                assert_eq!(
+                    parsed.bare_key, key.bare_key,
+                    "{:?} stringified to {:?} and parsed back as {:?}",
+                    key, stringified, parsed
+                );
+                assert_eq!(
+                    parsed.key_modifiers, key.key_modifiers,
+                    "{:?} stringified to {:?} and parsed back as {:?}",
+                    key, stringified, parsed
+                );
+            },
+            Err(e) => panic!(
+                "{:?} stringified to {:?} which does not parse: {}",
+                key, stringified, e
+            ),
+        }
+    }
 }

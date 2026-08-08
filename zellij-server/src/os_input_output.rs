@@ -378,7 +378,9 @@ pub trait ServerOsApi: Send + Sync {
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()>;
     fn cache_resizes(&mut self) {}
-    fn apply_cached_resizes(&mut self) {}
+    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+        Vec::new()
+    }
 }
 
 impl ServerOsApi for ServerOsInputOutput {
@@ -684,21 +686,28 @@ impl ServerOsApi for ServerOsInputOutput {
             *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
         }
     }
-    fn apply_cached_resizes(&mut self) {
+    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+        let mut applied = Vec::new();
         let mut cached_resizes = self.cached_resizes.lock().unwrap().take();
         if let Some(cached_resizes) = cached_resizes.as_mut() {
             for (terminal_id, (cols, rows, width_in_pixels, height_in_pixels)) in
                 cached_resizes.iter()
             {
-                let _ = self.set_terminal_size_using_terminal_id(
-                    *terminal_id,
-                    *cols,
-                    *rows,
-                    *width_in_pixels,
-                    *height_in_pixels,
-                );
+                if self
+                    .set_terminal_size_using_terminal_id(
+                        *terminal_id,
+                        *cols,
+                        *rows,
+                        *width_in_pixels,
+                        *height_in_pixels,
+                    )
+                    .is_ok()
+                {
+                    applied.push((*terminal_id, *cols, *rows));
+                }
             }
         }
+        applied
     }
 }
 

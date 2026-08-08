@@ -74,14 +74,18 @@ impl PaneGroups {
     }
     pub fn group_and_ungroup_panes(
         &mut self,
-        mut pane_ids_to_group: Vec<PaneId>,
+        pane_ids_to_group: Vec<PaneId>,
         pane_ids_to_ungroup: Vec<PaneId>,
         screen_size: Size,
         client_id: &ClientId,
     ) {
         let previous_groups = self.clone_inner();
         let client_pane_group = self.panes_in_group.entry(*client_id).or_default();
-        client_pane_group.append(&mut pane_ids_to_group);
+        for pane_id in pane_ids_to_group {
+            if !client_pane_group.contains(&pane_id) {
+                client_pane_group.push(pane_id);
+            }
+        }
         client_pane_group.retain(|p| !pane_ids_to_ungroup.contains(p));
         if self.should_launch_plugin(&previous_groups, client_id) {
             self.launch_plugin(screen_size, client_id);
@@ -99,7 +103,11 @@ impl PaneGroups {
 
         for client_id in &all_connected_clients {
             let client_pane_group = self.panes_in_group.entry(*client_id).or_default();
-            client_pane_group.append(&mut pane_ids_to_group.clone());
+            for pane_id in &pane_ids_to_group {
+                if !client_pane_group.contains(pane_id) {
+                    client_pane_group.push(*pane_id);
+                }
+            }
             client_pane_group.retain(|p| !pane_ids_to_ungroup.contains(p));
 
             if self.should_launch_plugin(&previous_groups, client_id) {
@@ -488,5 +496,179 @@ mod tests {
         previous_groups.insert(client_id, vec![]);
 
         assert!(!pane_groups.should_launch_plugin(&previous_groups, &client_id));
+    }
+
+    // ---- property-based tests (hegel) ----
+
+    use hegel::generators::{self, Generator};
+
+    /// Small pools on purpose: `PaneGroups` is a per-client set, so the interesting behaviour
+    /// (aliasing, re-adding, toggling something another rule already added) only shows up when the
+    /// same ids keep coming back.
+    #[hegel::composite]
+    fn any_client_id(tc: &hegel::TestCase) -> ClientId {
+        tc.draw(generators::integers::<ClientId>().max_value(3))
+    }
+
+    #[hegel::composite]
+    fn any_pane_id(tc: &hegel::TestCase) -> PaneId {
+        let n = tc.draw(generators::integers::<u32>().max_value(4));
+        if tc.draw(generators::booleans()) {
+            PaneId::Terminal(n)
+        } else {
+            PaneId::Plugin(n)
+        }
+    }
+
+    #[hegel::composite]
+    fn any_pane_ids(tc: &hegel::TestCase) -> Vec<PaneId> {
+        let count = tc.draw(generators::integers::<usize>().max_value(4));
+        (0..count).map(|_| tc.draw(any_pane_id())).collect()
+    }
+
+    struct PaneGroupsModel {
+        real: PaneGroups,
+        /// what the groups would be if every operation kept its per-client list duplicate-free
+        model: HashMap<ClientId, Vec<PaneId>>,
+        screen_size: Size,
+    }
+
+    impl PaneGroupsModel {
+        fn push_unique(list: &mut Vec<PaneId>, pane_id: PaneId) {
+            if !list.contains(&pane_id) {
+                list.push(pane_id);
+            }
+        }
+    }
+
+    #[hegel::state_machine]
+    impl PaneGroupsModel {
+        #[rule]
+        fn toggle_pane_id_in_group(&mut self, tc: hegel::TestCase) {
+            let pane_id = tc.draw(any_pane_id());
+            let client_id = tc.draw(any_client_id());
+            self.real
+                .toggle_pane_id_in_group(pane_id, self.screen_size, &client_id);
+            let group = self.model.entry(client_id).or_default();
+            if group.contains(&pane_id) {
+                group.retain(|p| p != &pane_id);
+            } else {
+                group.push(pane_id);
+            }
+        }
+
+        #[rule]
+        fn add_pane_id_to_group(&mut self, tc: hegel::TestCase) {
+            let pane_id = tc.draw(any_pane_id());
+            let client_id = tc.draw(any_client_id());
+            self.real
+                .add_pane_id_to_group(pane_id, self.screen_size, &client_id);
+            Self::push_unique(self.model.entry(client_id).or_default(), pane_id);
+        }
+
+        #[rule]
+        fn group_and_ungroup_panes(&mut self, tc: hegel::TestCase) {
+            let to_group = tc.draw(any_pane_ids());
+            let to_ungroup = tc.draw(any_pane_ids());
+            let client_id = tc.draw(any_client_id());
+            self.real.group_and_ungroup_panes(
+                to_group.clone(),
+                to_ungroup.clone(),
+                self.screen_size,
+                &client_id,
+            );
+            let group = self.model.entry(client_id).or_default();
+            for pane_id in &to_group {
+                Self::push_unique(group, *pane_id);
+            }
+            group.retain(|p| !to_ungroup.contains(p));
+        }
+
+        #[rule]
+        fn group_and_ungroup_panes_for_all_clients(&mut self, tc: hegel::TestCase) {
+            let to_group = tc.draw(any_pane_ids());
+            let to_ungroup = tc.draw(any_pane_ids());
+            self.real.group_and_ungroup_panes_for_all_clients(
+                to_group.clone(),
+                to_ungroup.clone(),
+                self.screen_size,
+            );
+            // production only touches clients that already have an entry
+            for group in self.model.values_mut() {
+                for pane_id in &to_group {
+                    Self::push_unique(group, *pane_id);
+                }
+                group.retain(|p| !to_ungroup.contains(p));
+            }
+        }
+
+        #[rule]
+        fn clear_pane_group(&mut self, tc: hegel::TestCase) {
+            let client_id = tc.draw(any_client_id());
+            self.real.clear_pane_group(&client_id);
+            if let Some(group) = self.model.get_mut(&client_id) {
+                group.clear();
+            }
+        }
+
+        #[rule]
+        fn override_groups(&mut self, tc: hegel::TestCase) {
+            // duplicate-free by construction - feeding duplicates in through the front door would
+            // make the no-duplicates invariant a statement about the test, not about `PaneGroups`
+            let client_count = tc.draw(generators::integers::<usize>().max_value(4));
+            let mut new_groups: HashMap<ClientId, Vec<PaneId>> = HashMap::new();
+            for _ in 0..client_count {
+                let client_id = tc.draw(any_client_id());
+                let mut group: Vec<PaneId> = vec![];
+                for pane_id in tc.draw(any_pane_ids()) {
+                    Self::push_unique(&mut group, pane_id);
+                }
+                new_groups.insert(client_id, group);
+            }
+            self.real.override_groups_with(new_groups.clone());
+            self.model = new_groups;
+        }
+
+        #[invariant]
+        fn groups_are_duplicate_free_and_match_the_model(&self, _: hegel::TestCase) {
+            let inner = self.real.clone_inner();
+            for (client_id, group) in &inner {
+                let as_set: HashSet<PaneId> = group.iter().copied().collect();
+                assert_eq!(
+                    as_set.len(),
+                    group.len(),
+                    "client {} has duplicates in its group: {:?}",
+                    client_id,
+                    group
+                );
+                let expected: HashSet<PaneId> = self
+                    .model
+                    .get(client_id)
+                    .map(|g| g.iter().copied().collect())
+                    .unwrap_or_default();
+                assert_eq!(
+                    as_set, expected,
+                    "client {} group {:?} disagrees with the model {:?}",
+                    client_id, group, self.model
+                );
+            }
+            let real_clients: HashSet<ClientId> = inner.keys().copied().collect();
+            let model_clients: HashSet<ClientId> = self.model.keys().copied().collect();
+            assert_eq!(
+                real_clients, model_clients,
+                "client set {:?} disagrees with the model {:?}",
+                inner, self.model
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn pane_groups_stay_duplicate_free_and_track_the_model(tc: hegel::TestCase) {
+        let machine = PaneGroupsModel {
+            real: create_test_pane_groups(),
+            model: HashMap::new(),
+            screen_size: create_test_screen_size(),
+        };
+        hegel::stateful::run(machine, tc);
     }
 }

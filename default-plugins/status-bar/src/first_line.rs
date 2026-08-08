@@ -287,7 +287,7 @@ fn short_mode_shortcut(
     let suffix_separator = colors.suffix_separator.paint(separator);
     LinePart {
         part: ANSIStrings(&[prefix_separator, char_shortcut, suffix_separator]).to_string(),
-        len: separator.chars().count()      // Separator
+        len: start_separator.chars().count() // Separator (empty for the first tile)
             + 1                             // " "
             + key_binding.chars().count()   // Key binding
             + 1                             // " "
@@ -374,7 +374,7 @@ fn swap_layout_status(
             let mut swap_layout_name = format!(" {} ", swap_layout_name);
             swap_layout_name.make_ascii_uppercase();
             let keycode = swap_layout_keycode(mode_info);
-            let swap_layout_name_len = swap_layout_name.len() + 3; // 2 for the arrow separators, one for the screen end buffer
+            let swap_layout_name_len = swap_layout_name.chars().count() + 3; // 2 for the arrow separators, one for the screen end buffer
                                                                    //
             macro_rules! style_swap_layout_indicator {
                 ($style_name:ident) => {{
@@ -612,6 +612,10 @@ pub fn first_line(
     max_len: usize,
     separator: &str,
 ) -> LinePart {
+    // no terminal is this wide; the cap stops an absurd `max_len` from building a string of
+    // that length one space at a time below
+    const MAX_LINE_WIDTH: usize = 10_000;
+    let max_len = max_len.min(MAX_LINE_WIDTH);
     let supports_arrow_fonts = !help.capabilities.arrow_fonts;
     let colored_elements = color_elements(help.style.colors, !supports_arrow_fonts, false);
     let binds = &help.get_mode_keybinds();
@@ -752,6 +756,108 @@ pub fn first_line(
 /// operation.
 mod tests {
     use super::*;
+    use hegel::generators;
+
+    fn all_input_modes() -> Vec<InputMode> {
+        vec![
+            InputMode::Normal,
+            InputMode::Locked,
+            InputMode::Resize,
+            InputMode::Pane,
+            InputMode::Tab,
+            InputMode::Scroll,
+            InputMode::EnterSearch,
+            InputMode::Search,
+            InputMode::RenameTab,
+            InputMode::RenamePane,
+            InputMode::Session,
+            InputMode::Move,
+            InputMode::Prompt,
+            InputMode::Tmux,
+        ]
+    }
+
+    /// Hand-mocking [`ModeInfo`] is, as the module doc above says, torture -- so build it once
+    /// here and reuse it.
+    #[hegel::composite]
+    fn any_mode_info(tc: &hegel::TestCase) -> ModeInfo {
+        let mode = tc.draw(generators::sampled_from(all_input_modes()));
+        let bindings = tc.draw(generators::vecs(generators::tuples!(
+            generators::text().min_size(1).max_size(1),
+            generators::sampled_from(all_input_modes()),
+            generators::booleans(),
+        )));
+        let keybinds = vec![(
+            mode,
+            bindings
+                .into_iter()
+                .map(|(key, target, ctrl)| {
+                    let bare = KeyWithModifier::new(BareKey::Char(key.chars().next().unwrap()));
+                    let bare = if ctrl { bare.with_ctrl_modifier() } else { bare };
+                    (
+                        bare,
+                        vec![Action::SwitchToMode { input_mode: target }],
+                    )
+                })
+                .collect(),
+        )];
+        ModeInfo {
+            mode,
+            keybinds,
+            capabilities: PluginCapabilities {
+                arrow_fonts: tc.draw(generators::booleans()),
+            },
+            ..ModeInfo::default()
+        }
+    }
+
+    /// The swap layout name is the interesting part: it is drawn from full Unicode, while
+    /// `swap_layout_status` measures it in bytes.
+    #[hegel::composite]
+    fn any_tab_info(tc: &hegel::TestCase) -> TabInfo {
+        TabInfo {
+            active_swap_layout_name: tc.draw(generators::optional(generators::text())),
+            is_swap_layout_dirty: tc.draw(generators::booleans()),
+            ..TabInfo::default()
+        }
+    }
+
+    /// `first_line` must never claim more columns than it was given, and the width it reports
+    /// must be the width it actually renders.
+    #[hegel::test]
+    fn first_line_respects_the_width_it_is_given(tc: hegel::TestCase) {
+        let mode_info = tc.draw(any_mode_info());
+        let tab_info = tc.draw(generators::optional(any_tab_info()));
+        let max_len = tc.draw(generators::integers::<usize>());
+        let separator = tc.draw(generators::sampled_from(vec![">", "", "|", "\u{e0b0}"]));
+
+        let part = first_line(&mode_info, tab_info.as_ref(), max_len, separator);
+        let claimed_len = part.len;
+        let rendered = unstyle(part);
+        let actual_len = rendered.chars().count();
+
+        assert!(
+            claimed_len <= max_len,
+            "first_line claimed {} columns but was given {} (mode {:?}, swap layout {:?}, separator {:?})",
+            claimed_len,
+            max_len,
+            mode_info.mode,
+            tab_info.as_ref().and_then(|t| t.active_swap_layout_name.clone()),
+            separator
+        );
+        assert_eq!(
+            claimed_len,
+            actual_len,
+            "first_line claimed {} columns but rendered {} ({:?}) (max_len {}, mode {:?}, swap layout {:?}, separator {:?})",
+            claimed_len,
+            actual_len,
+            rendered,
+            max_len,
+            mode_info.mode,
+            tab_info.as_ref().and_then(|t| t.active_swap_layout_name.clone()),
+            separator
+        );
+    }
 
     fn colored_elements() -> ColoredElements {
         let palette = Styling::default();

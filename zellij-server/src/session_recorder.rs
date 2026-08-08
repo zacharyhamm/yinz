@@ -226,6 +226,7 @@ pub fn spawn_session_recorder(
             started_at_us,
             receiver,
             enabled_clone,
+            dropped,
         );
     });
     Some((handle, thread))
@@ -235,10 +236,11 @@ fn recorder_thread(
     data_dir: PathBuf,
     session_name: String,
     capture_input: bool,
-    _started_at: Instant,
+    started_at: Instant,
     started_at_us: i64,
     receiver: crossbeam::channel::Receiver<RecorderInstruction>,
     enabled: Arc<AtomicBool>,
+    dropped: Arc<AtomicUsize>,
 ) {
     let mut store = match zellij_utils::session_recording::RecordingStore::open(
         &data_dir,
@@ -417,10 +419,19 @@ fn recorder_thread(
             );
             0
         });
-    if let Err(e) = store.finish_session(ended_at_us) { log::error!("failed to finish session: {}", e); }
-    // if disabled, mark incomplete
-    if !enabled.load(Ordering::Relaxed) {
-        if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") { log::error!("failed to mark incomplete: {}", e); }
+    let ended_elapsed_us = started_at.elapsed().as_micros() as i64;
+    if let Err(e) = store.finish_session(ended_at_us, ended_elapsed_us) {
+        log::error!("failed to finish session: {}", e);
+    }
+    let dropped = dropped.load(Ordering::Relaxed);
+    if dropped > 0 {
+        if let Err(e) = store.mark_incomplete(&format!("dropped {} recording events", dropped)) {
+            log::error!("failed to mark incomplete: {}", e);
+        }
+    } else if !enabled.load(Ordering::Relaxed) {
+        if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
+            log::error!("failed to mark incomplete: {}", e);
+        }
     }
 }
 
@@ -447,7 +458,6 @@ mod tests {
         handle.output(1, b"hello".to_vec());
         handle.input(1, b"input".to_vec());
         handle.resize(1, 100, 30);
-        handle.pane_closed(1);
         handle.stop();
         thread.join().unwrap();
         // open DB and assert
@@ -524,6 +534,28 @@ mod tests {
         };
         handle2.output(1, b"a".to_vec());
         assert!(!enabled2.load(Ordering::Relaxed), "disconnected should disable");
+    }
+
+    #[test]
+    fn dropped_events_mark_session_incomplete() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        sender.send(RecorderInstruction::Stop)?;
+        recorder_thread(
+            dir.path().to_path_buf(),
+            "test".to_string(),
+            false,
+            Instant::now(),
+            1_000,
+            receiver,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicUsize::new(1)),
+        );
+        let conn = rusqlite::Connection::open(dir.path().join("session-recordings.db"))?;
+        let error: String =
+            conn.query_row("SELECT error FROM recording_sessions", [], |row| row.get(0))?;
+        assert_eq!(error, "dropped 1 recording events");
+        Ok(())
     }
 
     #[test]

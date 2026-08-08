@@ -1,31 +1,42 @@
-use std::collections::BTreeMap;
-
-use serde::Deserialize;
+use zellij_tile::prelude::{RecordingSummary, SearchHit};
 use zellij_tile::shim::*;
 
-/// The context key we tag our `run_command` calls with, so we can tell our own results apart
-/// from anyone else's and drop replies to queries the user has already typed past.
-const CONTEXT_KEY: &str = "recordings_query";
-
-/// A row of `zellij recordings list --json` or `zellij recordings search --json`. The two
-/// share enough fields to be one struct: search hits carry `recording_id` and the matched
-/// `text`, list rows carry `id` and a `duration_us`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 pub struct RecordingRow {
-    #[serde(alias = "recording_id")]
     pub id: i64,
-    #[serde(default)]
     pub session_name: String,
-    #[serde(default)]
     pub tab_name: String,
-    #[serde(default)]
     pub pane_title: String,
-    #[serde(default)]
     pub duration_us: i64,
-    #[serde(default)]
     pub elapsed_us: i64,
-    #[serde(default)]
     pub text: Option<String>,
+}
+
+impl From<RecordingSummary> for RecordingRow {
+    fn from(row: RecordingSummary) -> Self {
+        Self {
+            id: row.id,
+            session_name: row.session_name,
+            tab_name: row.tab_name,
+            pane_title: row.pane_title,
+            duration_us: row.duration_us,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<SearchHit> for RecordingRow {
+    fn from(hit: SearchHit) -> Self {
+        Self {
+            id: hit.recording_id,
+            session_name: hit.session_name,
+            tab_name: hit.tab_name,
+            pane_title: hit.pane_title,
+            elapsed_us: hit.elapsed_us,
+            text: Some(hit.text),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -33,21 +44,11 @@ pub struct Recordings {
     pub search_term: String,
     rows: Vec<RecordingRow>,
     selected_index: Option<usize>,
-    error: Option<String>,
-    /// A query is running. Only ever one at a time - the next one is queued in `pending` and
-    /// fired when this one returns, which doubles as the debounce for typing.
-    in_flight: bool,
-    pending: Option<String>,
-    has_queried: bool,
 }
 
 impl Recordings {
-    /// Fetch the list if we never have. Called when the screen is entered.
-    pub fn ensure_queried(&mut self) {
-        if !self.has_queried {
-            self.has_queried = true;
-            self.query();
-        }
+    pub fn refresh(&mut self) {
+        self.query();
     }
     pub fn handle_character(&mut self, character: char) {
         self.search_term.push(character);
@@ -66,74 +67,21 @@ impl Recordings {
         true
     }
     fn query(&mut self) {
-        let term = self.search_term.clone();
-        if self.in_flight {
-            self.pending = Some(term);
-            return;
-        }
-        self.in_flight = true;
-        let mut context = BTreeMap::new();
-        context.insert(CONTEXT_KEY.to_owned(), term.clone());
-        // ponytail: shells out to `zellij` on PATH with the default data dir - a server started
-        // with --data-dir will point us at the wrong database. Plumb a PluginCommand if that
-        // ever matters.
-        if term.is_empty() {
-            run_command(&["zellij", "recordings", "list", "--json"], context);
+        self.rows = if self.search_term.is_empty() {
+            list_recordings().into_iter().map(Into::into).collect()
         } else {
-            run_command(
-                &["zellij", "recordings", "search", &term, "--json"],
-                context,
-            );
-        }
-    }
-    /// Returns whether this result was ours (and so whether a re-render is needed).
-    pub fn handle_command_result(
-        &mut self,
-        exit_code: Option<i32>,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-        context: BTreeMap<String, String>,
-    ) -> bool {
-        let Some(term) = context.get(CONTEXT_KEY) else {
-            return false;
+            search_recordings(&self.search_term, 50)
+                .into_iter()
+                .map(Into::into)
+                .collect()
         };
-        let is_stale = *term != self.search_term;
-        self.in_flight = false;
-        if let Some(pending) = self.pending.take() {
-            self.search_term = pending;
-            self.query();
-        }
-        if is_stale {
-            // a newer query is on its way, don't flash intermediate results
-            return false;
-        }
-        if exit_code.unwrap_or(0) != 0 {
-            self.error = Some(String::from_utf8_lossy(&stderr).trim().to_owned());
-            self.rows.clear();
-        } else {
-            match serde_json::from_slice::<Vec<RecordingRow>>(&stdout) {
-                Ok(rows) => {
-                    self.error = None;
-                    self.rows = rows;
-                },
-                Err(e) => {
-                    self.error = Some(format!("Failed to parse recordings: {}", e));
-                    self.rows.clear();
-                },
-            }
-        }
         self.selected_index = if self.rows.is_empty() { None } else { Some(0) };
-        true
     }
     pub fn render(&self, rows: usize, columns: usize, x: usize, y: usize) {
         let search_indication =
             Text::new(format!("Search: {}_", self.search_term)).color_range(2, ..7);
         print_text_with_coordinates(search_indication, x.saturating_sub(1), y + 2, None, None);
         let table_rows = rows.saturating_sub(5); // search row, toggle row and some padding
-        if let Some(error) = self.error.as_ref() {
-            print_text_with_coordinates(Text::new(error).color_range(3, ..), x, y + 4, None, None);
-            return;
-        }
         if self.rows.is_empty() {
             let message = if self.search_term.is_empty() {
                 "No recordings."
@@ -187,7 +135,9 @@ impl Recordings {
             let row_count_to_render = table_rows.saturating_sub(1); // 1 for the title
             let first_row_index_to_render = selected_index
                 .unwrap_or(0)
-                .saturating_sub(row_count_to_render / 2);
+                .saturating_sub(row_count_to_render / 2)
+                // keep the viewport full when the selection is near the end of the list
+                .min(results_len - row_count_to_render);
             let last_row_index_to_render =
                 (first_row_index_to_render + row_count_to_render).min(results_len);
             (first_row_index_to_render, last_row_index_to_render)
@@ -268,80 +218,137 @@ fn truncate(text: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
 
-    fn list_json() -> Vec<u8> {
-        br#"[{"id":7,"session_name":"s","tab_name":"t","terminal_id":1,"pane_title":"zsh",
-             "started_at_us":0,"duration_us":65000000,"is_running":false,"capture_input":false,
-             "error":null}]"#
-            .to_vec()
+    /// `(table_rows, results_len, selected_index)` with the selection always in range,
+    /// as `render_table` guarantees.
+    #[hegel::composite]
+    fn render_inputs(tc: &hegel::TestCase) -> (usize, usize, Option<usize>) {
+        let table_rows = tc.draw(generators::integers::<usize>().max_value(500));
+        let results_len = tc.draw(generators::integers::<usize>().max_value(500));
+        let selected_index = if results_len == 0 {
+            None
+        } else {
+            tc.draw(generators::optional(
+                generators::integers::<usize>().max_value(results_len - 1),
+            ))
+        };
+        (table_rows, results_len, selected_index)
     }
 
-    fn search_json() -> Vec<u8> {
-        br#"[{"recording_id":9,"session_name":"s","tab_name":"t","pane_title":"zsh",
-             "elapsed_us":3661000000,"started_at_us":0,"text":"error: boom"}]"#
-            .to_vec()
-    }
-
-    fn context(term: &str) -> BTreeMap<String, String> {
-        let mut context = BTreeMap::new();
-        context.insert(CONTEXT_KEY.to_owned(), term.to_owned());
-        context
-    }
-
-    #[test]
-    fn parses_both_shapes_and_labels_them() {
-        let mut recordings = Recordings::default();
-        recordings.in_flight = true;
-        assert!(recordings.handle_command_result(Some(0), list_json(), vec![], context("")));
-        assert_eq!(recordings.selected_recording_id(), Some(7));
-        assert_eq!(time_label(&recordings.rows[0]), "1:05"); // duration, no text
-        assert_eq!(pane_label(&recordings.rows[0]), "t/zsh");
-
-        recordings.search_term = "boom".to_owned();
-        recordings.in_flight = true;
-        assert!(recordings.handle_command_result(Some(0), search_json(), vec![], context("boom")));
-        assert_eq!(recordings.selected_recording_id(), Some(9));
-        assert_eq!(time_label(&recordings.rows[0]), "1:01:01"); // hit offset
+    fn row(id: i64) -> RecordingRow {
+        RecordingRow {
+            id,
+            session_name: "s".to_string(),
+            tab_name: "t".to_string(),
+            pane_title: "zsh".to_string(),
+            duration_us: 65_000_000,
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn stale_results_are_dropped_and_the_pending_query_wins() {
-        let mut recordings = Recordings::default();
-        recordings.search_term = "boom".to_owned();
-        recordings.in_flight = true;
-        // a reply to the older "bo" query lands after the user typed on
-        assert!(!recordings.handle_command_result(Some(0), list_json(), vec![], context("bo")));
-        assert!(recordings.rows.is_empty());
-    }
+    fn converts_typed_rows_and_labels_them() {
+        let list_row = RecordingRow::from(RecordingSummary {
+            id: 7,
+            session_name: "s".to_string(),
+            tab_name: "t".to_string(),
+            terminal_id: 1,
+            pane_title: "zsh".to_string(),
+            started_at_us: 0,
+            duration_us: 65_000_000,
+            is_running: false,
+            capture_input: false,
+            error: None,
+        });
+        assert_eq!(time_label(&list_row), "1:05");
+        assert_eq!(pane_label(&list_row), "t/zsh");
 
-    #[test]
-    fn other_plugins_command_results_are_ignored() {
-        let mut recordings = Recordings::default();
-        assert!(!recordings.handle_command_result(Some(0), list_json(), vec![], BTreeMap::new()));
-    }
-
-    #[test]
-    fn a_failed_command_surfaces_stderr() {
-        let mut recordings = Recordings::default();
-        recordings.in_flight = true;
-        assert!(recordings.handle_command_result(
-            Some(1),
-            vec![],
-            b"no such database\n".to_vec(),
-            context("")
-        ));
-        assert_eq!(recordings.error.as_deref(), Some("no such database"));
-        assert_eq!(recordings.selected_recording_id(), None);
+        let search_row = RecordingRow::from(SearchHit {
+            recording_id: 9,
+            session_name: "s".to_string(),
+            tab_name: "t".to_string(),
+            pane_title: "zsh".to_string(),
+            elapsed_us: 3_661_000_000,
+            started_at_us: 0,
+            text: "error: boom".to_string(),
+        });
+        assert_eq!(search_row.id, 9);
+        assert_eq!(time_label(&search_row), "1:01:01");
     }
 
     #[test]
     fn selection_wraps_in_both_directions() {
-        let mut recordings = Recordings::default();
-        recordings.in_flight = true;
-        recordings.handle_command_result(Some(0), list_json(), vec![], context(""));
-        recordings.move_selection_down(); // one row, wraps back onto itself
+        let mut recordings = Recordings {
+            rows: vec![row(7)],
+            selected_index: Some(0),
+            ..Default::default()
+        };
+        recordings.move_selection_down();
         assert_eq!(recordings.selected_recording_id(), Some(7));
         recordings.move_selection_up();
         assert_eq!(recordings.selected_recording_id(), Some(7));
+    }
+
+    #[hegel::test]
+    fn range_stays_within_the_results_and_the_viewport(tc: hegel::TestCase) {
+        let (table_rows, results_len, selected_index) = tc.draw(render_inputs());
+        let (first, last) =
+            Recordings::default().range_to_render(table_rows, results_len, selected_index);
+        assert!(first <= last, "inverted range {}..{}", first, last);
+        assert!(last <= results_len, "{} rows past the end of {}", last, results_len);
+        assert!(
+            last - first <= table_rows.saturating_sub(1),
+            "{}..{} does not fit in {} rows (1 goes to the title)",
+            first,
+            last,
+            table_rows
+        );
+    }
+
+    #[hegel::test]
+    fn selection_is_always_on_screen(tc: hegel::TestCase) {
+        let (table_rows, results_len, selected_index) = tc.draw(render_inputs());
+        // fewer than 2 rows leaves no room for anything but the title
+        tc.assume(table_rows >= 2);
+        let Some(selected) = selected_index else {
+            return;
+        };
+        let (first, last) =
+            Recordings::default().range_to_render(table_rows, results_len, selected_index);
+        assert!(
+            first <= selected && selected < last,
+            "selection {} outside rendered range {}..{}",
+            selected,
+            first,
+            last
+        );
+    }
+
+    #[hegel::test]
+    fn everything_is_rendered_when_it_fits(tc: hegel::TestCase) {
+        let (table_rows, results_len, selected_index) = tc.draw(render_inputs());
+        tc.assume(results_len < table_rows);
+        assert_eq!(
+            Recordings::default().range_to_render(table_rows, results_len, selected_index),
+            (0, results_len)
+        );
+    }
+
+    #[hegel::test]
+    fn viewport_is_filled_when_there_are_enough_results(tc: hegel::TestCase) {
+        let (table_rows, results_len, selected_index) = tc.draw(render_inputs());
+        tc.assume(table_rows >= 2 && results_len >= table_rows - 1);
+        let (first, last) =
+            Recordings::default().range_to_render(table_rows, results_len, selected_index);
+        assert_eq!(
+            last - first,
+            table_rows - 1,
+            "{} results but only {}..{} rendered in {} rows",
+            results_len,
+            first,
+            last,
+            table_rows
+        );
     }
 }

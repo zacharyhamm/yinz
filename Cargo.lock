@@ -916,6 +916,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashu-base"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993b95dc1b248e3f5747dcb017a41d6e75853a2e5ee4504f7d537c5b8dffdae4"
+
+[[package]]
+name = "dashu-int"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49c05a0d5cb0b39fcc87c46432fdac24b90dce239857c7f6b798be4ffc3c42c6"
+dependencies = [
+ "cfg-if",
+ "dashu-base",
+ "num-modular",
+ "rustversion",
+ "static_assertions",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1538,6 +1557,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hegeltest"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30f634ce35ffdc2efd4508cdcc0a90b1feabd5790be3cd701c47aadcba68b2f3"
+dependencies = [
+ "crc32fast",
+ "dashu-int",
+ "hegeltest-c",
+ "hegeltest-macros",
+ "miniz_oxide",
+ "parking_lot 0.12.1",
+ "paste",
+ "rand 0.10.2",
+ "rustc-hash",
+ "tempfile",
+]
+
+[[package]]
+name = "hegeltest-c"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5492b7c7dbf9359481e00c88f374435683070b83b6c0201f912d6716a8d53fd1"
+dependencies = [
+ "dashu-int",
+ "hashbrown 0.17.1",
+ "libm",
+ "miniz_oxide",
+ "once_cell",
+ "rand 0.10.2",
+ "rustc-hash",
+ "rustix 1.1.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hegeltest-macros"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3396793b15373a6df0a2603db3dd43bbf908e8dc0d99845aed91655e6023c970"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2026,6 +2091,7 @@ name = "layout-manager"
 version = "0.1.0"
 dependencies = [
  "fuzzy-matcher",
+ "hegeltest",
  "miette 7.6.0",
  "strip-ansi-escapes",
  "unicode-width 0.2.2",
@@ -2129,6 +2195,7 @@ dependencies = [
 name = "link"
 version = "0.1.0"
 dependencies = [
+ "hegeltest",
  "zellij-tile",
 ]
 
@@ -2430,6 +2497,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-modular"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd8e500409e6cd603b03e477c26a6caecdc27ac58979a53e881c75eafc079f44"
+
+[[package]]
 name = "num-traits"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2596,6 +2669,12 @@ dependencies = [
  "smallvec",
  "windows-targets 0.48.0",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pem"
@@ -2992,6 +3071,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3101,6 +3186,12 @@ dependencies = [
  "rustls-pki-types",
  "untrusted",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ryu"
@@ -3279,6 +3370,7 @@ name = "session-manager"
 version = "0.1.0"
 dependencies = [
  "fuzzy-matcher",
+ "hegeltest",
  "humantime",
  "serde",
  "serde_json",
@@ -3474,10 +3566,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
 name = "status-bar"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
+ "hegeltest",
  "lazy_static",
  "rand 0.10.2",
  "regex",
@@ -3494,6 +3593,7 @@ name = "strider"
 version = "0.2.0"
 dependencies = [
  "fuzzy-matcher",
+ "hegeltest",
  "pretty-bytes",
  "unicode-width 0.2.2",
  "zellij-tile",
@@ -5036,6 +5136,7 @@ dependencies = [
  "dialoguer",
  "futures",
  "futures-util",
+ "hegeltest",
  "include_dir",
  "insta",
  "interprocess",
@@ -5104,6 +5205,7 @@ dependencies = [
  "daemonix",
  "flate2",
  "futures-lite",
+ "hegeltest",
  "highway",
  "insta",
  "interprocess",
@@ -5143,6 +5245,7 @@ dependencies = [
 name = "zellij-tile"
 version = "0.45.0"
 dependencies = [
+ "hegeltest",
  "prost",
  "serde",
  "serde_json",
@@ -5176,6 +5279,7 @@ dependencies = [
  "directories",
  "dunce",
  "expect-test",
+ "hegeltest",
  "humantime",
  "include_dir",
  "insta",

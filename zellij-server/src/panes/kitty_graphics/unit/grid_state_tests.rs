@@ -283,3 +283,60 @@ fn reverse_index_region_scroll_reaps_fully_below_margin() {
     grid.apply_region_scroll(0, 80, -20, 0, 0, false);
     assert_eq!(grid.placements.len(), 0);
 }
+
+// ---- property-based tests (hegel) ----
+
+use hegel::generators::{self, Generator};
+
+/// `crop_rgba` takes seven unrelated `usize`s and indexes `src` with the product of three of
+/// them. Sizes are capped only to keep allocation sane, not to dodge edge cases: 0 and 1 are
+/// generated, and `x`/`y`/`w`/`h` are free to point outside the buffer.
+#[hegel::test]
+fn crop_rgba_never_panics(tc: hegel::TestCase) {
+    let src: Vec<u8> = tc.draw(generators::binary().max_size(4096));
+    let src_w = tc.draw(generators::integers::<usize>().max_value(64));
+    let src_h = tc.draw(generators::integers::<usize>().max_value(64));
+    let x = tc.draw(generators::integers::<usize>().max_value(64));
+    let y = tc.draw(generators::integers::<usize>().max_value(64));
+    let w = tc.draw(generators::integers::<usize>().max_value(64));
+    let h = tc.draw(generators::integers::<usize>().max_value(64));
+    let out = crop_rgba(&src, src_w, src_h, x, y, w, h);
+    assert!(
+        out.len() % 4 == 0,
+        "crop_rgba(src.len()={}, src_w={}, src_h={}, x={}, y={}, w={}, h={}) returned {} bytes, \
+         not a whole number of rgba pixels",
+        src.len(),
+        src_w,
+        src_h,
+        x,
+        y,
+        w,
+        h,
+        out.len()
+    );
+}
+
+#[hegel::test]
+fn crop_rgba_of_an_in_bounds_rect_is_exactly_w_times_h_pixels(tc: hegel::TestCase) {
+    let src_w = tc.draw(generators::integers::<usize>().max_value(32));
+    let src_h = tc.draw(generators::integers::<usize>().max_value(32));
+    let x = tc.draw(generators::integers::<usize>().max_value(src_w));
+    let y = tc.draw(generators::integers::<usize>().max_value(src_h));
+    let w = tc.draw(generators::integers::<usize>().max_value(src_w - x));
+    let h = tc.draw(generators::integers::<usize>().max_value(src_h - y));
+    let src = vec![7u8; src_w * src_h * 4];
+    let out = crop_rgba(&src, src_w, src_h, x, y, w, h);
+    assert_eq!(
+        out.len(),
+        w * h * 4,
+        "crop_rgba(src_w={}, src_h={}, x={}, y={}, w={}, h={}) returned {} bytes, expected {}",
+        src_w,
+        src_h,
+        x,
+        y,
+        w,
+        h,
+        out.len(),
+        w * h * 4
+    );
+}

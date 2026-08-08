@@ -70,6 +70,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+hegeltest = "0.29.3"
 insta = "1.48"
 tempfile = "3.2.0"
 wasmi = { version = "1.1.0", features = ["std"] }

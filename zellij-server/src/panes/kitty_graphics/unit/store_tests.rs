@@ -147,3 +147,161 @@ fn rgb24_images_are_normalized_to_rgba_at_store_time() {
     );
     assert_eq!(store.total_bytes(), 16);
 }
+
+// ---- property-based tests (hegel) ----
+
+use hegel::generators::{self, Generator};
+
+#[hegel::composite]
+fn any_decoded_image(tc: &hegel::TestCase) -> DecodedImage {
+    let format = tc.draw(generators::sampled_from(vec![
+        KittyFormat::Rgba32,
+        KittyFormat::Rgb24,
+        // Png here means "already decoded", `normalize_to_rgba` passes the bytes through
+        KittyFormat::Png,
+    ]));
+    // capped to keep the run fast; 0-length is generated
+    let bytes = tc.draw(generators::binary().max_size(64));
+    DecodedImage {
+        bytes,
+        width: tc.draw(generators::integers::<u32>().max_value(8)),
+        height: tc.draw(generators::integers::<u32>().max_value(8)),
+        format,
+    }
+}
+
+struct KittyImageStoreModel {
+    store: KittyImageStore,
+    /// every id `store_image` ever handed out, in order; ids are never reused
+    known_ids: Vec<InternalImageId>,
+}
+
+impl KittyImageStoreModel {
+    /// Draws from the ids the store actually issued *and* from junk ids that were never valid
+    /// (or have since been evicted), so every entry point is exercised with both.
+    fn any_id(&self, tc: &hegel::TestCase) -> InternalImageId {
+        if !self.known_ids.is_empty() && tc.draw(generators::booleans()) {
+            let index = tc.draw(
+                generators::integers::<usize>().max_value(self.known_ids.len() - 1),
+            );
+            self.known_ids[index]
+        } else {
+            tc.draw(generators::integers::<InternalImageId>().max_value(64))
+        }
+    }
+}
+
+#[hegel::state_machine]
+impl KittyImageStoreModel {
+    #[rule]
+    fn store_image(&mut self, tc: hegel::TestCase) {
+        let image = tc.draw(any_decoded_image());
+        if let Ok(id) = self.store.store_image(image) {
+            self.known_ids.push(id);
+        }
+    }
+
+    #[rule]
+    fn touch(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store.touch(id);
+    }
+
+    #[rule]
+    fn add_placement_ref(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store.add_placement_ref(id);
+    }
+
+    #[rule]
+    fn remove_placement_ref(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store.remove_placement_ref(id);
+    }
+
+    #[rule]
+    fn free(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store.free(id);
+    }
+
+    #[rule]
+    fn add_scaled_variant(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let cells = (
+            tc.draw(generators::integers::<u16>().max_value(4)),
+            tc.draw(generators::integers::<u16>().max_value(4)),
+        );
+        let bytes = tc.draw(generators::binary().max_size(64));
+        self.store.add_scaled_variant(id, cells, bytes);
+    }
+
+    #[rule]
+    fn base64_for(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let variant = if tc.draw(generators::booleans()) {
+            Some((
+                tc.draw(generators::integers::<u16>().max_value(4)),
+                tc.draw(generators::integers::<u16>().max_value(4)),
+            ))
+        } else {
+            None
+        };
+        let _ = self.store.base64_for(id, variant);
+    }
+
+    #[invariant]
+    fn accounting_matches_the_live_images(&self, _: hegel::TestCase) {
+        let live: Vec<InternalImageId> = self
+            .known_ids
+            .iter()
+            .copied()
+            .filter(|id| self.store.get(*id).is_some())
+            .collect();
+        assert_eq!(
+            self.store.image_count(),
+            live.len(),
+            "image_count() is {} but {} of the issued ids {:?} are still reachable",
+            self.store.image_count(),
+            live.len(),
+            self.known_ids
+        );
+        let expected: usize = live
+            .iter()
+            .map(|id| {
+                let image = self.store.get(*id).unwrap();
+                image.rgba.len()
+                    + image
+                        .scaled_variants
+                        .values()
+                        .map(|bytes| bytes.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        assert_eq!(
+            self.store.total_bytes(),
+            expected,
+            "total_bytes() is {} but the live images {:?} hold {} bytes",
+            self.store.total_bytes(),
+            live,
+            expected
+        );
+    }
+}
+
+#[hegel::test]
+fn store_accounting_survives_any_sequence_of_operations(tc: hegel::TestCase) {
+    // tiny quotas make eviction (and the refcount/protected corner cases around it) the common
+    // case rather than something that only happens at 320MiB
+    let quota = tc.draw(hegel::one_of!(
+        generators::just(0usize),
+        generators::just(1usize),
+        generators::integers::<usize>().max_value(256),
+        generators::just(DEFAULT_KITTY_STORE_QUOTA_BYTES),
+    ));
+    let machine = KittyImageStoreModel {
+        store: KittyImageStore::with_quota(quota),
+        known_ids: vec![],
+    };
+    hegel::stateful::run(machine, tc);
+}

@@ -3,7 +3,7 @@ use crate::os_input_output::{AsyncReader, ServerOsApi};
 use crate::panes::PaneId;
 use crate::thread_bus::Bus;
 use interprocess::local_socket::Stream as LocalSocketStream;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use zellij_utils::channels::SenderWithContext;
@@ -33,6 +33,7 @@ struct MockServerOsApi {
     write_behavior: Arc<Mutex<HashMap<u32, WriteBehavior>>>,
     /// Log of (terminal_id, bytes) for each successful write.
     write_log: Arc<Mutex<Vec<(u32, Vec<u8>)>>>,
+    cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>,
 }
 
 impl MockServerOsApi {
@@ -40,6 +41,7 @@ impl MockServerOsApi {
         MockServerOsApi {
             write_behavior: Arc::new(Mutex::new(HashMap::new())),
             write_log: Arc::new(Mutex::new(Vec::new())),
+            cached_resizes: Arc::new(Mutex::new(None)),
         }
     }
     fn set_behavior(&self, terminal_id: u32, behavior: WriteBehavior) {
@@ -62,13 +64,29 @@ impl MockServerOsApi {
 impl ServerOsApi for MockServerOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
-        _id: u32,
-        _cols: u16,
-        _rows: u16,
+        id: u32,
+        cols: u16,
+        rows: u16,
         _width_in_pixels: Option<u16>,
         _height_in_pixels: Option<u16>,
     ) -> Result<()> {
+        if let Some(cached) = self.cached_resizes.lock().unwrap().as_mut() {
+            cached.insert(id, (cols, rows));
+        }
         Ok(())
+    }
+    fn cache_resizes(&mut self) {
+        *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
+    }
+    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+        self.cached_resizes
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, (cols, rows))| (id, cols, rows))
+            .collect()
     }
     fn spawn_terminal(
         &self,
@@ -444,6 +462,37 @@ fn pty_writer_records_successful_resize() {
     // verify resize data encodes cols/rows via RecordedEvent::resize logic (format "80x24")
     assert_eq!(resize_events[0].data, format!("80x24").into_bytes());
     assert_eq!(resize_events[0].terminal_id, 1);
+
+    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
+    let handle = crate::session_recorder::SessionRecorderHandle {
+        sender: rec_sender,
+        started_at: std::time::Instant::now(),
+        capture_input: false,
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    let (mut bus, sender) = make_test_bus(MockServerOsApi::new());
+    bus.senders.session_recorder = Some(handle);
+    run_pty_writer(
+        bus,
+        sender,
+        vec![
+            PtyWriteInstruction::StartCachingResizes,
+            PtyWriteInstruction::ResizePty(1, 80, 24, None, None),
+            PtyWriteInstruction::ResizePty(1, 100, 30, None, None),
+            PtyWriteInstruction::ApplyCachedResizes,
+        ],
+    );
+    let resize_events: Vec<_> = rec_receiver
+        .try_iter()
+        .flat_map(|instruction| match instruction {
+            crate::session_recorder::RecorderInstruction::Events(events) => events,
+            _ => Vec::new(),
+        })
+        .filter(|event| event.kind == zellij_utils::session_recording::EventKind::Resize)
+        .collect();
+    assert_eq!(resize_events.len(), 1);
+    assert_eq!(resize_events[0].data, b"100x30");
 
     // Second case: error should produce no resize event
     // Use a mock that errors on resize by overriding ServerOsApi impl: we need a variant that fails

@@ -931,3 +931,84 @@ fn spans_start_at_the_given_origin() {
         "panes span the whole display area from the origin"
     );
 }
+
+// ---- property-based tests (hegel) ----
+
+use hegel::generators::{self, Generator};
+
+/// Generated `PaneSpec`s for the class-B oracle.
+///
+/// Two narrowings, both harness limitations rather than contract restrictions:
+/// * `stacked: None` - the stacked path in `PaneResizer::apply_spans` goes through `StackedPanes`,
+///   which calls `Pane` methods `MockPane` leaves as `unimplemented!()`.
+/// * `geom_override: None` - `assert_cross_axis_untouched`/`assert_constraints_preserved` compare
+///   the snapshot's `current_geom` against `spec.geom()`, which is only the same thing when there
+///   is no override.
+#[hegel::composite]
+fn any_pane_spec(tc: &hegel::TestCase, id: u32) -> PaneSpec {
+    // percentages that under- and over-sum 100 across a layout, plus the degenerate ends
+    let percents = vec![0.0, 0.1, 1.0, 25.0, 33.3, 50.0, 60.0, 100.0, 150.0];
+    let mut dimension = |tc: &hegel::TestCase| {
+        if tc.draw(generators::booleans()) {
+            let mut d = zellij_utils::pane_size::Dimension::percent(
+                tc.draw(generators::sampled_from(percents.clone())),
+            );
+            // a pane of size 0 is not a legal layout - the resizer rejects it outright
+            d.set_inner(tc.draw(generators::integers::<usize>().min_value(1).max_value(200)));
+            d
+        } else {
+            zellij_utils::pane_size::Dimension::fixed(
+                tc.draw(generators::integers::<usize>().min_value(1).max_value(200)),
+            )
+        }
+    };
+    let cols = dimension(tc);
+    let rows = dimension(tc);
+    PaneSpec {
+        id: PaneId::Terminal(id),
+        x: tc.draw(generators::integers::<usize>().max_value(200)),
+        y: tc.draw(generators::integers::<usize>().max_value(200)),
+        cols,
+        rows,
+        stacked: None,
+        logical_position: tc.draw(generators::optional(
+            generators::integers::<usize>().max_value(8),
+        )),
+        geom_override: None,
+    }
+}
+
+#[hegel::test]
+fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
+    // ids must be distinct: `run_layout` keys a `HashMap` by id, so duplicates would silently
+    // drop panes and make `input_spec` lookups meaningless
+    let pane_count = tc.draw(generators::integers::<u32>().max_value(6));
+    let specs: Vec<PaneSpec> = (0..pane_count).map(|id| tc.draw(any_pane_spec(id))).collect();
+    let direction = tc.draw(generators::sampled_from(vec![
+        SplitDirection::Horizontal,
+        SplitDirection::Vertical,
+    ]));
+    let space = tc.draw(generators::integers::<usize>());
+    let origin = tc.draw(generators::integers::<usize>());
+
+    let fixture = Fixture {
+        name: "generated",
+        specs: specs.clone(),
+        direction,
+        space,
+        class: Class::B,
+        // bands are a hand-declared grouping of panes expected to tile the axis; there is no way
+        // to derive them from an arbitrary layout, so the band assertion is not exercised here
+        bands: vec![],
+    };
+    let run = run_layout(&specs, direction, space, origin);
+    assert!(
+        !run.panes.is_empty() || specs.is_empty(),
+        "layout of {:?} (direction {:?}, space {}, origin {}) lost every pane",
+        specs,
+        direction,
+        space,
+        origin
+    );
+    assert_class_b_invariants(&fixture, &run);
+}

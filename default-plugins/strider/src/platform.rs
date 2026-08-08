@@ -137,6 +137,109 @@ impl Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
+
+    /// Full-Unicode path strings, mixed with the shapes this module actually branches on
+    /// (`\`, `/`, `//`, `:`, drive letters, UNC/WSL roots, empty).
+    #[hegel::composite]
+    fn any_path(tc: &hegel::TestCase) -> PathBuf {
+        // hegel biases `booleans()` toward `false`, so that branch gets the shapes that matter.
+        let free_form = tc.draw(generators::booleans());
+        if free_form {
+            PathBuf::from(tc.draw(generators::text()))
+        } else {
+            let s = tc.draw(generators::sampled_from(vec![
+                "", "/", "//", "\\", "\\\\", ":", "C:", "C:/", "C:\\", "c:", "C:/Users\\user",
+                "//server/share", "//server/share/folder", "//wsl.localhost/Ubuntu/",
+                "//wsl.localhost/", "//wsl.localhost", "/home/ünïcødé/🦀", "\\\\wsl.localhost\\Ubuntu",
+            ]));
+            PathBuf::from(s)
+        }
+    }
+
+    #[hegel::composite]
+    fn any_platform(tc: &hegel::TestCase) -> Platform {
+        tc.draw(generators::sampled_from(vec![
+            Platform::Unix,
+            Platform::Windows,
+        ]))
+    }
+
+    /// "No-op for paths that don't contain backslashes" -- so normalizing twice must not move.
+    #[hegel::test]
+    fn normalize_is_idempotent(tc: hegel::TestCase) {
+        let path = tc.draw(any_path());
+        let once = Platform::normalize(&path);
+        let twice = Platform::normalize(&once);
+        // compared as strings: `PathBuf`'s `PartialEq` is component-wise and would, for instance,
+        // call "C:" and "C:/" equal -- exactly the distinction these helpers exist to make.
+        assert_eq!(
+            once.to_string_lossy(),
+            twice.to_string_lossy(),
+            "normalize({:?}) = {:?} but normalizing again gave {:?}",
+            path, once, twice
+        );
+    }
+
+    #[hegel::test]
+    fn ensure_drive_root_is_idempotent(tc: hegel::TestCase) {
+        let path = tc.draw(any_path());
+        let platform = tc.draw(any_platform());
+        let once = Platform::ensure_drive_root(path.clone(), platform);
+        let twice = Platform::ensure_drive_root(once.clone(), platform);
+        assert_eq!(
+            once.to_string_lossy(),
+            twice.to_string_lossy(),
+            "ensure_drive_root({:?}, {:?}) = {:?} but applying it again gave {:?}",
+            path, platform, once, twice
+        );
+    }
+
+    /// "Identity on Unix" -- a path with no backslashes survives normalize + host display.
+    #[hegel::test]
+    fn normalize_then_display_is_the_identity_on_unix(tc: hegel::TestCase) {
+        let path = tc.draw(any_path());
+        tc.assume(!path.to_string_lossy().contains('\\'));
+        let displayed = Platform::to_host_display(&Platform::normalize(&path), Platform::Unix);
+        assert_eq!(
+            displayed,
+            path.to_string_lossy(),
+            "unix round trip of {:?} produced {:?}",
+            path,
+            displayed
+        );
+    }
+
+    /// `ensure_drive_root` normalizes a root, it does not demote one. Note that it is *not*
+    /// the identity on roots -- rewriting the bare drive `C:` into `C:/` is the whole reason
+    /// the function exists -- so the invariant is that a root stays a root.
+    // `assume` throws away most draws here, so ask for more of them.
+    #[hegel::test(test_cases = 2000, suppress_health_check = [hegel::HealthCheck::FilterTooMuch])]
+    fn ensure_drive_root_keeps_roots_rooted(tc: hegel::TestCase) {
+        let path = tc.draw(any_path());
+        let platform = tc.draw(any_platform());
+        tc.assume(Platform::is_root(&path, platform));
+        let ensured = Platform::ensure_drive_root(path.clone(), platform);
+        assert!(
+            Platform::is_root(&ensured, platform),
+            "{:?} is a root on {:?} but ensure_drive_root turned it into {:?}, which is not",
+            path,
+            platform,
+            ensured
+        );
+    }
+
+    /// `virtual_root_display_name` byte-slices its input; it must never panic on any path.
+    #[hegel::test]
+    fn path_helpers_never_panic(tc: hegel::TestCase) {
+        let path = tc.draw(any_path());
+        let platform = tc.draw(any_platform());
+        let _ = Platform::detect(&path.to_string_lossy());
+        let _ = Platform::normalize(&path);
+        let _ = Platform::to_host_display(&path, platform);
+        let _ = Platform::is_root(&path, platform);
+        let _ = Platform::virtual_root_display_name(&path, platform);
+    }
 
     #[test]
     fn detect_unix() {

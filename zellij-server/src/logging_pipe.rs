@@ -202,4 +202,75 @@ mod logging_pipe_test {
 
         assert_eq!(pipe.buffer.len(), 0);
     }
+
+    // ---- property-based tests (hegel) ----
+
+    use hegel::generators::{self, Generator};
+
+    /// A write that is either arbitrary bytes or something shaped like real plugin output: text
+    /// with lone `\n`, `\r\n`, and multi-byte UTF-8 deliberately split across the write boundary,
+    /// which is what makes `flush`'s hand-counted `consumed_bytes` interesting.
+    #[hegel::composite]
+    fn any_write(tc: &hegel::TestCase) -> Vec<u8> {
+        if tc.draw(generators::booleans()) {
+            // capped only for runtime; the 16KiB cap is exercised by the write count below
+            return tc.draw(generators::binary().max_size(1024));
+        }
+        let pieces = vec![
+            "hello".as_bytes().to_vec(),
+            b"\n".to_vec(),
+            b"\r\n".to_vec(),
+            b"\n\n\n".to_vec(),
+            "".as_bytes().to_vec(),
+            // a 4-byte codepoint, and each of its prefixes on its own
+            "\u{1f631}".as_bytes().to_vec(),
+            "\u{1f631}".as_bytes()[..1].to_vec(),
+            "\u{1f631}".as_bytes()[..2].to_vec(),
+            "\u{1f631}".as_bytes()[..3].to_vec(),
+            "\u{1f631}".as_bytes()[3..].to_vec(),
+            "é".as_bytes()[..1].to_vec(),
+            "é".as_bytes()[1..].to_vec(),
+            vec![0xff],
+            vec![b'x'; 8192],
+        ];
+        let count = tc.draw(generators::integers::<usize>().max_value(6));
+        let mut out = vec![];
+        for _ in 0..count {
+            out.extend_from_slice(&tc.draw(generators::sampled_from(pieces.clone())));
+        }
+        out
+    }
+
+    #[hegel::test]
+    fn buffer_never_grows_past_the_cap_for_any_write_sequence(tc: hegel::TestCase) {
+        let write_count = tc.draw(generators::integers::<usize>().max_value(12));
+        let writes: Vec<Vec<u8>> = (0..write_count).map(|_| tc.draw(any_write())).collect();
+
+        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        for (index, write) in writes.iter().enumerate() {
+            // an over-cap write is reported as an error, not a panic, and clears the buffer
+            let _ = pipe.write(write);
+            pipe.flush().expect("flush must not fail");
+            assert!(
+                pipe.buffer.len() <= ZELLIJ_MAX_PIPE_BUFFER_SIZE,
+                "after write {} of {:?} the residual buffer is {} bytes, past the {} cap",
+                index,
+                writes.iter().map(|w| w.len()).collect::<Vec<_>>(),
+                pipe.buffer.len(),
+                ZELLIJ_MAX_PIPE_BUFFER_SIZE
+            );
+        }
+        // whatever is left is an unterminated tail: it must contain no newline, or a line was
+        // logged without being drained
+        pipe.buffer.make_contiguous();
+        let residual: Vec<u8> = pipe.buffer.iter().copied().collect();
+        if let Ok(text) = std::str::from_utf8(&residual) {
+            assert!(
+                !text.contains('\n'),
+                "residual buffer {:?} still holds a complete line after {:?}",
+                text,
+                writes.iter().map(|w| w.len()).collect::<Vec<_>>()
+            );
+        }
+    }
 }

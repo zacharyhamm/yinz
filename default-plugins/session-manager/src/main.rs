@@ -89,7 +89,6 @@ impl ZellijPlugin for State {
             EventType::ModeUpdate,
             EventType::SessionUpdate,
             EventType::Key,
-            EventType::RunCommandResult,
             EventType::Timer,
             EventType::Visible,
         ]);
@@ -168,11 +167,6 @@ impl ZellijPlugin for State {
             },
             Event::PermissionRequestResult(_result) => {
                 should_render = true;
-            },
-            Event::RunCommandResult(exit_code, stdout, stderr, context) => {
-                should_render = self
-                    .recordings
-                    .handle_command_result(exit_code, stdout, stderr, context);
             },
             Event::SessionUpdate(session_infos, resurrectable_session_list) => {
                 for session_info in &session_infos {
@@ -763,7 +757,7 @@ impl State {
     fn enter_recordings_screen(&mut self) {
         self.previous_screen = Some(self.active_screen);
         self.active_screen = ActiveScreen::Recordings;
-        self.recordings.ensure_queried();
+        self.recordings.refresh();
     }
     fn handle_recordings_key(&mut self, key: KeyWithModifier) -> bool {
         let mut should_render = false;
@@ -787,7 +781,11 @@ impl State {
                 should_render = true;
             },
             BareKey::Tab if key.has_no_modifiers() => {
-                self.toggle_active_screen();
+                if self.previous_screen.is_some() {
+                    self.leave_recordings_screen();
+                } else {
+                    self.toggle_active_screen();
+                }
                 should_render = true;
             },
             BareKey::Char('c') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
@@ -1321,7 +1319,7 @@ impl State {
             ActiveScreen::NewSession => ActiveScreen::AttachToSession,
             ActiveScreen::AttachToSession => ActiveScreen::ResurrectSession,
             ActiveScreen::ResurrectSession => {
-                self.recordings.ensure_queried();
+                self.recordings.refresh();
                 ActiveScreen::Recordings
             },
             ActiveScreen::Recordings => ActiveScreen::NewSession,
@@ -1518,5 +1516,22 @@ impl State {
             None,
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_returns_to_single_screen_after_opening_recordings() {
+        let mut state = State {
+            active_screen: ActiveScreen::Recordings,
+            previous_screen: Some(ActiveScreen::SingleScreen),
+            ..Default::default()
+        };
+        state.handle_recordings_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(state.active_screen, ActiveScreen::SingleScreen);
+        assert_eq!(state.previous_screen, None);
     }
 }

@@ -11,3 +11,6 @@ zellij-tile = { path = "../../zellij-tile" }
 pretty-bytes = { workspace = true }
 fuzzy-matcher = { workspace = true }
 unicode-width = { workspace = true }
+
+[dev-dependencies]
+hegeltest = "0.29.3"

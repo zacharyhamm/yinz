@@ -1090,7 +1090,11 @@ pub fn crop_rgba(
             break;
         }
         let row_start = (row * src_w + x) * 4;
-        let row_end = std::cmp::min(row_start + w * 4, (row * src_w + src_w) * 4);
+        let row_end =
+            std::cmp::min(row_start + w * 4, (row * src_w + src_w) * 4).min(src.len());
+        if row_start >= row_end {
+            continue;
+        }
         out.extend_from_slice(&src[row_start..row_end]);
     }
     out

@@ -53,6 +53,7 @@ struct PendingWrite {
 pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<u32, VecDeque<PendingWrite>> = HashMap::new();
+    let mut caching_resizes = false;
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
@@ -118,7 +119,7 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                             height_in_pixels,
                         )
                         .with_context(err_context);
-                    if resize_result.is_ok() {
+                    if resize_result.is_ok() && !caching_resizes {
                         if let Some(recorder) = &bus.senders.session_recorder {
                             recorder.resize(terminal_id, columns, rows);
                         }
@@ -134,10 +135,16 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                     // so we do this to play nice and always only send the last resize instruction to
                     // each pane
                     // the logic for this happens in the main Screen event loop
+                    caching_resizes = true;
                     os_input.cache_resizes();
                 },
                 PtyWriteInstruction::ApplyCachedResizes => {
-                    os_input.apply_cached_resizes();
+                    for (terminal_id, columns, rows) in os_input.apply_cached_resizes() {
+                        if let Some(recorder) = &bus.senders.session_recorder {
+                            recorder.resize(terminal_id, columns, rows);
+                        }
+                    }
+                    caching_resizes = false;
                 },
                 PtyWriteInstruction::Exit => {
                     return Ok(());

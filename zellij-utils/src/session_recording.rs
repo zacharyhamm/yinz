@@ -272,11 +272,17 @@ impl RecordingStore {
         Ok(())
     }
 
-    pub fn finish_session(&mut self, ended_at_us: i64) -> Result<()> {
-        self.connection.execute(
+    pub fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE recording_panes SET ended_elapsed_us = ?1 WHERE session_id = ?2 AND ended_elapsed_us IS NULL",
+            rusqlite::params![ended_elapsed_us, self.session_id],
+        )?;
+        tx.execute(
             "UPDATE recording_sessions SET ended_at_us = ?1 WHERE id = ?2",
             rusqlite::params![ended_at_us, self.session_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -303,7 +309,34 @@ fn parse_resize(data: &[u8]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
     use tempfile::tempdir;
+
+    #[hegel::test]
+    fn resize_events_roundtrip_through_parse_resize(tc: hegel::TestCase) {
+        let cols = tc.draw(generators::integers::<u16>());
+        let rows = tc.draw(generators::integers::<u16>());
+        let event = RecordedEvent::resize(0, 0, cols, rows);
+        assert_eq!(
+            parse_resize(&event.data),
+            Some((cols as usize, rows as usize)),
+            "{}x{} encoded as {:?}",
+            cols,
+            rows,
+            String::from_utf8_lossy(&event.data)
+        );
+    }
+
+    #[hegel::test]
+    fn parse_resize_never_panics(tc: hegel::TestCase) {
+        let data = tc.draw(generators::binary());
+        let parsed = parse_resize(&data);
+        assert!(
+            parsed.is_some() || parsed.is_none(),
+            "parse_resize({:?}) misbehaved",
+            data
+        );
+    }
 
     #[test]
     fn stores_pane_events() -> Result<()> {
@@ -348,33 +381,35 @@ mod tests {
     fn finishes_pane_and_session() -> Result<()> {
         let dir = tempdir()?;
         let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
-        let metadata = PaneMetadata {
-            terminal_id: 1,
+        let metadata = |terminal_id| PaneMetadata {
+            terminal_id,
             tab_id: 0,
-            tab_position: 0,
+            tab_position: terminal_id as usize,
             tab_name: "tab".to_string(),
             title: "title".to_string(),
             cols: 80,
             rows: 24,
         };
-        store.update_panes(&[metadata], 0)?;
+        store.update_panes(&[metadata(1), metadata(2)], 0)?;
         store.record_events(&[RecordedEvent::output(1, 10, b"hi".to_vec())])?;
         store.finish_pane(1, 100)?;
-        store.finish_session(200)?;
+        store.finish_session(200, 150)?;
         let db_path = dir.path().join("session-recordings.db");
         let conn = rusqlite::Connection::open(&db_path)?;
-        let ended: Option<i64> = conn.query_row(
-            "SELECT ended_elapsed_us FROM recording_panes WHERE terminal_id = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        assert_eq!(ended, Some(100));
+        let mut ended =
+            conn.prepare("SELECT ended_elapsed_us FROM recording_panes ORDER BY terminal_id")?;
+        let ended = ended
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<Option<i64>>>>()?;
+        assert_eq!(ended, vec![Some(100), Some(150)]);
         let sess_ended: Option<i64> = conn.query_row(
             "SELECT ended_at_us FROM recording_sessions WHERE name = 'test'",
             [],
             |r| r.get(0),
         )?;
         assert_eq!(sess_ended, Some(200));
+        let recordings = list_recordings(dir.path())?;
+        assert!(recordings.iter().all(|recording| !recording.is_running));
         Ok(())
     }
 
@@ -769,17 +804,30 @@ fn ensure_search_schema(conn: &rusqlite::Connection) -> Result<()> {
         );
         CREATE TABLE IF NOT EXISTS recording_search_state (
             pane_id INTEGER PRIMARY KEY REFERENCES recording_panes(id),
-            last_event_id INTEGER NOT NULL
+            last_event_id INTEGER NOT NULL,
+            pending BLOB NOT NULL DEFAULT X''
         );
         CREATE INDEX IF NOT EXISTS recording_events_pane_id
         ON recording_events(pane_id, id);
         "#,
     )?;
+    let has_pending = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('recording_search_state') WHERE name = 'pending')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_pending {
+        conn.execute_batch(
+            "ALTER TABLE recording_search_state ADD COLUMN pending BLOB NOT NULL DEFAULT X'';
+             DELETE FROM recording_search;
+             DELETE FROM recording_search_state;",
+        )?;
+    }
     Ok(())
 }
 
-// ponytail: a pane that never emits a newline would buffer forever and re-scan its whole
-// history on every search. Flush at this size instead; raise it if that ever matters.
+// ponytail: a pane that never emits a newline would buffer forever. Flush at this size instead;
+// raise it if that ever matters.
 const MAX_INDEXED_LINE: usize = 64 * 1024;
 
 /// Index every output event not yet indexed, one line of plain text per row.
@@ -788,13 +836,13 @@ const MAX_INDEXED_LINE: usize = 64 * 1024;
 /// so its "lines" index as fragmented text. Shell and command output — the case this is for
 /// — indexes cleanly. Doing better would mean replaying through a terminal emulator.
 fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
-    let panes: Vec<(i64, i64)> = {
+    let panes: Vec<(i64, i64, Vec<u8>)> = {
         let mut stmt = conn.prepare(
-            "SELECT p.id, COALESCE(st.last_event_id, 0)
+            "SELECT p.id, COALESCE(st.last_event_id, 0), COALESCE(st.pending, X'')
              FROM recording_panes p
              LEFT JOIN recording_search_state st ON st.pane_id = p.id",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     // IMMEDIATE, not the default DEFERRED: this transaction reads before it writes, and a
@@ -802,15 +850,12 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
     // (waiting could deadlock). A live server flushes every 100ms, so a deferred
     // transaction loses that race every time and search fails with "database is locked".
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    for (pane_id, last_event_id) in panes {
+    for (pane_id, last_event_id, mut buffer) in panes {
         // Raw bytes, stripped only once a whole line is in hand: an escape sequence can be
         // split across two PTY chunks, and stripping each chunk on its own leaks the tail
         // of the sequence into the text as if it were content.
-        let mut buffer: Vec<u8> = Vec::new();
         let mut lines: Vec<(String, i64)> = Vec::new();
-        // The id of the last event that completed a line. Anything after it is a partial
-        // tail we drop and re-read next time, which is why no buffer state is persisted.
-        let mut last_complete: Option<i64> = None;
+        let mut last_seen: Option<i64> = None;
         {
             let mut stmt = tx.prepare(
                 "SELECT id, elapsed_us, data FROM recording_events
@@ -822,6 +867,7 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
                 let event_id: i64 = row.get(0)?;
                 let elapsed_us: i64 = row.get(1)?;
                 let data: Vec<u8> = row.get(2)?;
+                last_seen = Some(event_id);
                 // Everything already in the buffer was checked and held no newline, so only
                 // the bytes just appended need scanning. Rescanning the whole buffer makes
                 // this quadratic on redraw-heavy panes that go 64KiB without a newline.
@@ -839,13 +885,11 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
                             push_line(&mut lines, line, elapsed_us);
                         }
                         buffer = tail;
-                        last_complete = Some(event_id);
                     },
                     None if buffer.len() >= MAX_INDEXED_LINE => {
                         let stripped = strip_ansi_escapes::strip(&buffer);
                         push_line(&mut lines, &String::from_utf8_lossy(&stripped), elapsed_us);
                         buffer.clear();
-                        last_complete = Some(event_id);
                     },
                     None => {},
                 }
@@ -859,11 +903,11 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
                 insert.execute(rusqlite::params![text, pane_id, elapsed_us])?;
             }
         }
-        if let Some(event_id) = last_complete {
+        if let Some(event_id) = last_seen {
             tx.execute(
-                "INSERT INTO recording_search_state (pane_id, last_event_id) VALUES (?1, ?2)
-                 ON CONFLICT(pane_id) DO UPDATE SET last_event_id = excluded.last_event_id",
-                rusqlite::params![pane_id, event_id],
+                "INSERT INTO recording_search_state (pane_id, last_event_id, pending) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(pane_id) DO UPDATE SET last_event_id = excluded.last_event_id, pending = excluded.pending",
+                rusqlite::params![pane_id, event_id, buffer],
             )?;
         }
     }
@@ -1005,18 +1049,41 @@ mod search_tests {
     fn indexes_incrementally_without_duplicating() -> Result<()> {
         let dir = tempdir()?;
         let mut store = open(dir.path());
-        record(&mut store, 100, b"needle one\n");
+        record(&mut store, 100, b"needle one\nneedle two");
         assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
 
-        // a partial line is not indexed yet, and does not advance the cursor past itself
-        record(&mut store, 200, b"needle two");
+        // the tail shares an event with the completed line and must survive incremental indexing
         assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
 
-        record(&mut store, 300, b" continued\n");
+        record(&mut store, 200, b" continued\n");
         let hits = search_recordings(dir.path(), "needle", 10)?;
         assert_eq!(hits.len(), 2, "expected no duplicate of the first line");
         assert!(hits.iter().any(|h| h.text == "needle one"));
         assert!(hits.iter().any(|h| h.text == "needle two continued"));
+        Ok(())
+    }
+
+    #[test]
+    fn migrates_old_search_state_and_rebuilds_the_index() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        record(&mut store, 100, b"needle\n");
+        drop(store);
+
+        let conn = rusqlite::Connection::open(dir.path().join("session-recordings.db"))?;
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE recording_search USING fts5(text, pane_id UNINDEXED, elapsed_us UNINDEXED);
+             CREATE TABLE recording_search_state (
+                 pane_id INTEGER PRIMARY KEY REFERENCES recording_panes(id),
+                 last_event_id INTEGER NOT NULL
+             );
+             INSERT INTO recording_search VALUES ('stale', 1, 100);
+             INSERT INTO recording_search_state VALUES (1, 1);",
+        )?;
+        drop(conn);
+
+        assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
+        assert!(search_recordings(dir.path(), "stale", 10)?.is_empty());
         Ok(())
     }
 

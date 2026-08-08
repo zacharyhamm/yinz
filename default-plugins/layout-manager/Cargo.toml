@@ -11,3 +11,6 @@ miette = { workspace = true }
 strip-ansi-escapes = { workspace = true }
 unicode-width = { workspace = true }
 fuzzy-matcher = { workspace = true }
+
+[dev-dependencies]
+hegeltest = "0.29.3"
