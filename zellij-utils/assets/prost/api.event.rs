@@ -418,6 +418,8 @@ pub struct TabUpdatePayload {
 pub struct PaneUpdatePayload {
     #[prost(message, repeated, tag="1")]
     pub pane_manifest: ::prost::alloc::vec::Vec<PaneManifest>,
+    #[prost(message, repeated, tag="2")]
+    pub global_panes: ::prost::alloc::vec::Vec<PaneInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -454,6 +456,8 @@ pub struct SessionManifest {
     pub pane_history: ::prost::alloc::vec::Vec<ClientPaneHistory>,
     #[prost(uint64, tag="12")]
     pub creation_time: u64,
+    #[prost(message, repeated, tag="13")]
+    pub global_panes: ::prost::alloc::vec::Vec<PaneInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -632,6 +636,10 @@ pub struct PaneInfo {
     pub default_fg: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="25")]
     pub default_bg: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="26")]
+    pub global_placement: ::core::option::Option<super::action::GlobalPanePlacement>,
+    #[prost(bool, tag="27")]
+    pub is_hidden: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

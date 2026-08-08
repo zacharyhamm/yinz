@@ -8,7 +8,7 @@ use crate::{
     os_input_output::ServerOsApi,
     panes::PaneId,
     plugins::PluginInstruction,
-    pty::{ClientTabIndexOrPaneId, PtyInstruction},
+    pty::{ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction},
     screen::ScreenInstruction,
     ServerInstruction, SessionMetaData, SessionState,
 };
@@ -18,9 +18,9 @@ use uuid::Uuid;
 use zellij_utils::{
     channels::SenderWithContext,
     data::{
-        BareKey, ConnectToSession, Direction, Event, InputMode, KeyModifier, ListPanesResponse,
-        ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo,
-        UnblockCondition,
+        BareKey, ConnectToSession, Direction, Event, GlobalPanePlacement, InputMode, KeyModifier,
+        ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy,
+        TabInfo, UnblockCondition,
     },
     envs,
     errors::prelude::*,
@@ -213,6 +213,15 @@ fn new_pane_routing(
     } else {
         ClientTabIndexOrPaneId::ClientId(client_id)
     }
+}
+
+fn reject_unrouted_global_pane_placement(
+    global_placement: Option<GlobalPanePlacement>,
+) -> Result<()> {
+    if global_placement.is_some() {
+        bail!("Global pane creation is unavailable until global pane routing is enabled");
+    }
+    Ok(())
 }
 
 pub(crate) fn route_action(
@@ -638,6 +647,7 @@ pub(crate) fn route_action(
             direction,
             pane_name,
             start_suppressed,
+            global_placement,
         } => {
             let shell = default_shell.clone();
             let new_pane_placement = match direction {
@@ -656,6 +666,7 @@ pub(crate) fn route_action(
                     ClientTabIndexOrPaneId::ClientId(client_id),
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    global_placement.map(GlobalPaneSpawnContext::from),
                 ))
                 .with_context(err_context)?;
         },
@@ -667,7 +678,9 @@ pub(crate) fn route_action(
             near_current_pane,
             no_focus,
             tab_id,
+            global_placement,
         } => {
+            reject_unrouted_global_pane_placement(global_placement)?;
             let command = command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
@@ -709,6 +722,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     notification_end,
                     set_pane_blocking,
+                    None,
                 ))
                 .with_context(err_context)?;
             wait_forever = true;
@@ -724,7 +738,9 @@ pub(crate) fn route_action(
             near_current_pane,
             no_focus,
             tab_id,
+            global_placement,
         } => {
+            reject_unrouted_global_pane_placement(global_placement)?;
             let title = format!("Editing: {}", open_file_payload.path.display());
             let open_file = TerminalAction::OpenFile(open_file_payload);
             let pty_instr = if should_open_in_place {
@@ -755,6 +771,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    None,
                 )
             };
             senders.send_to_pty(pty_instr).with_context(err_context)?;
@@ -781,7 +798,9 @@ pub(crate) fn route_action(
             near_current_pane,
             no_focus,
             tab_id,
+            global_placement,
         } => {
+            reject_unrouted_global_pane_placement(global_placement)?;
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
@@ -796,6 +815,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    None,
                 ))
                 .with_context(err_context)?;
         },
@@ -807,7 +827,9 @@ pub(crate) fn route_action(
             pane_id_to_replace,
             close_replaced_pane,
             tab_id,
+            global_placement,
         } => {
+            reject_unrouted_global_pane_placement(global_placement)?;
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
@@ -845,7 +867,9 @@ pub(crate) fn route_action(
             near_current_pane,
             no_focus,
             tab_id,
+            global_placement,
         } => {
+            reject_unrouted_global_pane_placement(global_placement)?;
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
@@ -893,6 +917,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    None,
                 ))
                 .with_context(err_context)?;
         },
@@ -904,12 +929,28 @@ pub(crate) fn route_action(
             no_focus,
             borderless,
             tab_id,
+            global_placement,
         } => {
+            if global_placement.is_some() && near_current_pane {
+                return Err(anyhow!(
+                    "global panes cannot use near-current-pane placement"
+                ));
+            }
+            if global_placement.is_some() && tab_id.is_some() {
+                return Err(anyhow!("global panes cannot target a tab"));
+            }
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
             let client_tab_index_or_paneid =
                 new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
+            let global_context = global_placement.map(|placement| GlobalPaneSpawnContext {
+                placement,
+                borderless: borderless.unwrap_or(false),
+                initially_hidden: false,
+                should_focus: !no_focus,
+                declaration_order: None,
+            });
             senders
                 .send_to_pty(PtyInstruction::SpawnTerminal(
                     run_cmd,
@@ -922,6 +963,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    global_context,
                 ))
                 .with_context(err_context)?;
         },
@@ -963,7 +1005,13 @@ pub(crate) fn route_action(
             command,
             near_current_pane,
             no_focus,
+            global_placement,
         } => {
+            if global_placement.is_some() && near_current_pane {
+                return Err(anyhow!(
+                    "global panes cannot use near-current-pane placement"
+                ));
+            }
             let run_cmd = Some(TerminalAction::RunCommand(command.clone().into()));
             let client_tab_index_or_paneid =
                 new_pane_routing(no_focus, near_current_pane, None, pane_id, client_id);
@@ -979,6 +1027,7 @@ pub(crate) fn route_action(
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                     false, // set_blocking
+                    global_placement.map(GlobalPaneSpawnContext::from),
                 ))
                 .with_context(err_context)?;
         },
@@ -1420,6 +1469,7 @@ pub(crate) fn route_action(
             close_replaced_pane,
             skip_cache,
             tab_id,
+            global_placement,
         } => {
             senders
                 .send_to_screen(ScreenInstruction::LaunchOrFocusPlugin(
@@ -1433,6 +1483,7 @@ pub(crate) fn route_action(
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                     tab_id,
+                    global_placement,
                 ))
                 .with_context(err_context)?;
         },
@@ -1445,6 +1496,7 @@ pub(crate) fn route_action(
             cwd,
             no_focus,
             tab_id,
+            global_placement,
         } => {
             senders
                 .send_to_screen(ScreenInstruction::LaunchPlugin(
@@ -1459,6 +1511,7 @@ pub(crate) fn route_action(
                     Some(NotificationEnd::new(completion_tx)),
                     tab_id,
                     no_focus,
+                    global_placement,
                 ))
                 .with_context(err_context)?;
         },
@@ -2131,6 +2184,15 @@ pub(crate) fn route_action(
                 .send_to_screen(ScreenInstruction::MoveTabWithTabId(
                     id as usize,
                     direction,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::SetGlobalPanePlacement { pane_id, placement } => {
+            senders
+                .send_to_screen(ScreenInstruction::SetGlobalPanePlacement(
+                    pane_id.into(),
+                    placement,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -3350,6 +3412,15 @@ fn send_output_to_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_global_pane_routing_rejects_creation_placement() {
+        assert!(reject_unrouted_global_pane_placement(None).is_ok());
+        assert!(reject_unrouted_global_pane_placement(Some(
+            zellij_utils::data::GlobalPanePlacement::default()
+        ))
+        .is_err());
+    }
 
     #[test]
     fn test_notification_end_sets_affected_tab_id() {

@@ -1,10 +1,11 @@
+use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
 use crate::input::{
     command::RunCommand,
     config::ConfigError,
     layout::{
-        FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, PluginUserConfiguration, Run,
-        RunPluginOrAlias, SplitDirection, SplitSize, SwapFloatingLayout, SwapTiledLayout,
-        TiledPaneLayout,
+        FloatingPaneLayout, GlobalPaneLayout, Layout, LayoutConstraint, PercentOrFixed,
+        PluginUserConfiguration, Run, RunPluginOrAlias, SplitDirection, SplitSize,
+        SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
     },
 };
 
@@ -64,6 +65,7 @@ impl<'a> KdlLayoutParser<'a> {
         // otherwise they might collide
         word == "pane"
             || word == "layout"
+            || word == "global_panes"
             || word == "pane_template"
             || word == "tab_template"
             || word == "default_tab_template"
@@ -78,6 +80,8 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "start_suspended"
             || word == "borderless"
             || word == "focus"
+            || word == "hidden"
+            || word == "edge"
             || word == "name"
             || word == "size"
             || word == "cwd"
@@ -643,6 +647,93 @@ impl<'a> KdlLayoutParser<'a> {
             default_bg,
             ..Default::default()
         })
+    }
+
+    fn parse_global_panes(
+        &self,
+        global_panes_node: &KdlNode,
+    ) -> Result<Vec<GlobalPaneLayout>, ConfigError> {
+        let mut global_panes = vec![];
+        if let Some(children) = kdl_children_nodes!(global_panes_node) {
+            for child in children {
+                if kdl_name!(child) != "pane" {
+                    return Err(ConfigError::new_layout_kdl_error(
+                        format!(
+                            "global_panes can only contain pane nodes, found: {}",
+                            kdl_name!(child)
+                        ),
+                        child.span().offset(),
+                        child.span().len(),
+                    ));
+                }
+                let edge = match kdl_get_string_property_or_child_value!(child, "edge") {
+                    Some("left") => GlobalPaneEdge::Left,
+                    Some("right") => GlobalPaneEdge::Right,
+                    Some("top") => GlobalPaneEdge::Top,
+                    Some("bottom") => GlobalPaneEdge::Bottom,
+                    _ => {
+                        return Err(ConfigError::new_layout_kdl_error(
+                            "global pane requires edge left, right, top or bottom".into(),
+                            child.span().offset(),
+                            child.span().len(),
+                        ));
+                    },
+                };
+                if kdl_get_int_property_or_child_value!(child, "size")
+                    .map(|size| size <= 0)
+                    .unwrap_or(false)
+                {
+                    return Err(ConfigError::new_layout_kdl_error(
+                        "global pane size must be greater than zero".into(),
+                        child.span().offset(),
+                        child.span().len(),
+                    ));
+                }
+                let size = self.parse_percent_or_fixed(child, "size", true)?;
+                if size.map(|size| size.is_zero()).unwrap_or(true) {
+                    return Err(ConfigError::new_layout_kdl_error(
+                        "global pane size must be greater than zero".into(),
+                        child.span().offset(),
+                        child.span().len(),
+                    ));
+                }
+                let mut run = self.parse_command_plugin_or_edit_block(child)?;
+                if let (Some(run), Some(global_cwd)) = (&mut run, &self.global_cwd) {
+                    run.add_cwd(global_cwd);
+                }
+                let hidden = kdl_get_bool_property_or_child_value_with_error!(child, "hidden")
+                    .unwrap_or(false);
+                if !hidden
+                    && global_panes.iter().any(|global_pane: &GlobalPaneLayout| {
+                        !global_pane.hidden && global_pane.placement.edge == edge
+                    })
+                {
+                    // one visible global pane per edge - same-edge panes have no separator geometry
+                    // between them (see GlobalPaneManager::reject_occupied_edge)
+                    return Err(ConfigError::new_layout_kdl_error(
+                        "a global pane is already docked to this edge".into(),
+                        child.span().offset(),
+                        child.span().len(),
+                    ));
+                }
+                global_panes.push(GlobalPaneLayout {
+                    run,
+                    placement: GlobalPanePlacement {
+                        edge,
+                        size: size.unwrap(),
+                    },
+                    borderless: kdl_get_bool_property_or_child_value_with_error!(
+                        child,
+                        "borderless"
+                    )
+                    .unwrap_or(false),
+                    focus: kdl_get_bool_property_or_child_value_with_error!(child, "focus")
+                        .unwrap_or(false),
+                    hidden,
+                });
+            }
+        }
+        Ok(global_panes)
     }
     fn insert_children_to_pane_template(
         &self,
@@ -2480,8 +2571,23 @@ impl<'a> KdlLayoutParser<'a> {
         let mut child_floating_panes = vec![];
         let mut swap_tiled_layouts = vec![];
         let mut swap_floating_layouts = vec![];
+        let mut global_panes = vec![];
         if let Some(children) = kdl_children_nodes!(layout_node) {
             self.populate_global_cwd(layout_node)?;
+            let global_panes_blocks: Vec<&KdlNode> = children
+                .iter()
+                .filter(|child| kdl_name!(child) == "global_panes")
+                .collect();
+            if global_panes_blocks.len() > 1 {
+                return Err(ConfigError::new_layout_kdl_error(
+                    "layout can contain only one global_panes block".into(),
+                    global_panes_blocks[1].span().offset(),
+                    global_panes_blocks[1].span().len(),
+                ));
+            }
+            if let Some(global_panes_node) = global_panes_blocks.first() {
+                global_panes = self.parse_global_panes(global_panes_node)?;
+            }
             self.populate_pane_templates(children, &kdl_layout)?;
             self.populate_tab_templates(children)?;
             self.populate_swap_tiled_layouts(children, &mut swap_tiled_layouts)?;
@@ -2495,7 +2601,7 @@ impl<'a> KdlLayoutParser<'a> {
                 )?;
             }
         }
-        if !child_tabs.is_empty() {
+        let mut layout = if !child_tabs.is_empty() {
             // Check if layout_node has tab properties when there are explicit tabs
             let layout_has_tab_name =
                 kdl_get_string_property_or_child_value!(layout_node, "name").is_some();
@@ -2556,7 +2662,7 @@ impl<'a> KdlLayoutParser<'a> {
                 focused_tab_index,
                 swap_tiled_layouts,
                 swap_floating_layouts,
-            )
+            )?
         } else if !child_panes.is_empty() {
             // Extract tab properties from layout_node
             let tab_name =
@@ -2576,7 +2682,7 @@ impl<'a> KdlLayoutParser<'a> {
                 split_direction,
                 hide_floating_panes,
                 tab_cwd,
-            )
+            )?
         } else {
             // Extract tab properties for layout_with_one_pane case
             let tab_name =
@@ -2595,7 +2701,9 @@ impl<'a> KdlLayoutParser<'a> {
                 split_direction,
                 hide_floating_panes,
                 tab_cwd,
-            )
-        }
+            )?
+        };
+        layout.global_panes = global_panes;
+        Ok(layout)
     }
 }

@@ -13,6 +13,7 @@ pub mod tab;
 
 pub mod background_jobs;
 mod global_async_runtime;
+mod global_panes;
 mod logging_pipe;
 mod mobile_web;
 pub mod nested_guest;

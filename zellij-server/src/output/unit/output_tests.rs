@@ -520,7 +520,7 @@ fn test_serialize_with_size_hides_cursor_when_cropped() {
     let max_size = Some(Size { rows: 10, cols: 20 });
 
     // Set cursor outside max_size
-    output.cursor_is_visible(25, 5, None);
+    output.set_cursor_coordinates(1, 25, 5);
 
     let chunk = create_character_chunk_from_str("Test", 0, 0);
     output
@@ -535,6 +535,49 @@ fn test_serialize_with_size_hides_cursor_when_cropped() {
         client_output.contains("\u{1b}[?25l"),
         "Should contain hide cursor instruction when cursor is cropped"
     );
+}
+
+#[test]
+fn test_serialize_with_size_crops_each_client_against_its_own_cursor() {
+    // gp07: cursor coordinates are per client - a client whose own cursor fits must keep it, no
+    // matter which other client rendered its (cropped) cursor into the same Output
+    for reversed in [false, true] {
+        let mut output = create_test_output();
+        let client_ids = create_test_clients(2);
+        let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+        output.add_clients(&client_ids, link_handler, None);
+
+        let cursors = [(1, 25, 5), (2, 5, 5)];
+        for (client_id, x, y) in if reversed {
+            [cursors[1], cursors[0]]
+        } else {
+            cursors
+        } {
+            output.set_cursor_coordinates(client_id, x, y);
+        }
+
+        for client_id in [1, 2] {
+            output
+                .add_character_chunks_to_client(
+                    client_id,
+                    vec![create_character_chunk_from_str("Test", 0, 0)],
+                    None,
+                )
+                .unwrap();
+        }
+
+        let result = output
+            .serialize_with_size(Some(Size { rows: 10, cols: 20 }), None)
+            .unwrap();
+        assert!(
+            result.get(&1).unwrap().contains("\u{1b}[?25l"),
+            "client 1's cursor is outside its size and must be hidden (reversed: {reversed})"
+        );
+        assert!(
+            !result.get(&2).unwrap().contains("\u{1b}[?25l"),
+            "client 2's cursor fits and must not be hidden by client 1's (reversed: {reversed})"
+        );
+    }
 }
 
 #[test]
@@ -778,6 +821,36 @@ fn test_visible_character_chunks_partially_covered_right() {
             "Visible chunk should be shorter than original"
         );
     }
+}
+
+#[test]
+fn test_visible_character_chunks_pane_beside_chunk() {
+    // gp15: the "covers the chunk partially to the right" branch must not also match a pane that
+    // sits entirely beside the chunk - it is bounded by the chunk's right side, mirroring the
+    // left-partial branch
+    let chunk_spans_5_to_14 = || vec![create_character_chunk_from_str("HelloWorld", 5, 5)];
+
+    // pane at x=20-29: no horizontal overlap at all, the chunk is untouched
+    let stack = FloatingPanesStack {
+        layers: vec![create_pane_geom(20, 5, 10, 1)],
+    };
+    let visible = stack
+        .visible_character_chunks(chunk_spans_5_to_14(), Some(0))
+        .unwrap();
+    assert_eq!(visible.len(), 1, "a pane beside the chunk covers nothing");
+    assert_eq!(visible[0].x, 5);
+    assert_eq!(visible[0].width(), 10, "the whole chunk stays visible");
+
+    // pane at x=14-23: overlaps the chunk's last column only
+    let stack = FloatingPanesStack {
+        layers: vec![create_pane_geom(14, 5, 10, 1)],
+    };
+    let visible = stack
+        .visible_character_chunks(chunk_spans_5_to_14(), Some(0))
+        .unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].x, 5);
+    assert_eq!(visible[0].width(), 9, "only the covered last column is cut");
 }
 
 #[test]

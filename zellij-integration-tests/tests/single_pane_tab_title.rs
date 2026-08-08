@@ -40,6 +40,9 @@ fn replace_pane_in_place_with_held_command(
         no_focus: false,
         borderless: None,
         tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
     });
     zellij.expect_pty_spawn()
 }

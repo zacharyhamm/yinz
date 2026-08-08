@@ -1820,16 +1820,6 @@ impl MouseHandler {
             Ok(None)
         }
     }
-
-    pub(crate) fn set_mouse_selection_support(
-        tab: &mut Tab,
-        pane_id: PaneId,
-        selection_support: bool,
-    ) {
-        if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-            pane.set_mouse_selection_support(selection_support);
-        }
-    }
 }
 
 #[cfg(test)]

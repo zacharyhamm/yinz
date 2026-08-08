@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::{
+    data::{GlobalPaneEdge, GlobalPanePlacement},
     input::layout::PluginUserConfiguration,
     input::layout::{
         FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, Run, RunPluginOrAlias,
@@ -16,6 +17,7 @@ pub struct GlobalLayoutManifest {
     pub global_cwd: Option<PathBuf>,
     pub default_shell: Option<PathBuf>,
     pub default_layout: Box<Layout>,
+    pub global_panes: Vec<PaneLayoutManifest>,
     pub tabs: Vec<(String, TabLayoutManifest)>,
 }
 
@@ -38,6 +40,8 @@ pub struct PaneLayoutManifest {
     pub pane_contents: Option<String>,
     pub default_fg: Option<String>,
     pub default_bg: Option<String>,
+    pub global_placement: Option<GlobalPanePlacement>,
+    pub is_hidden: bool,
 }
 
 pub fn serialize_session_layout(
@@ -50,6 +54,11 @@ pub fn serialize_session_layout(
     let mut layout_node_children = KdlDocument::new();
     if let Some(global_cwd) = serialize_global_cwd(&global_layout_manifest.global_cwd) {
         layout_node_children.nodes_mut().push(global_cwd);
+    }
+    if let Some(global_panes) =
+        serialize_global_panes(global_layout_manifest.global_panes, &mut pane_contents)?
+    {
+        layout_node_children.nodes_mut().push(global_panes);
     }
     match serialize_multiple_tabs(global_layout_manifest.tabs, &mut pane_contents) {
         Ok(mut serialized_tabs) => {
@@ -80,6 +89,85 @@ pub fn serialize_session_layout(
     layout_node.set_children(layout_node_children);
     document.nodes_mut().push(layout_node);
     Ok((document.to_string(), pane_contents))
+}
+
+fn serialize_global_panes(
+    global_panes: Vec<PaneLayoutManifest>,
+    pane_contents: &mut BTreeMap<String, String>,
+) -> Result<Option<KdlNode>, &'static str> {
+    let mut global_panes_children = KdlDocument::new();
+    for pane in global_panes {
+        let placement = pane
+            .global_placement
+            .ok_or("global pane manifest requires placement")?;
+        let (command, args) = extract_command_and_args(&pane.run);
+        let (plugin, plugin_config) = extract_plugin_and_config(&pane.run);
+        let (edit, _line_number) = extract_edit_and_line_number(&pane.run);
+        let mut pane_node = KdlNode::new("pane");
+        let edge = match placement.edge {
+            GlobalPaneEdge::Left => "left",
+            GlobalPaneEdge::Right => "right",
+            GlobalPaneEdge::Top => "top",
+            GlobalPaneEdge::Bottom => "bottom",
+        };
+        pane_node
+            .entries_mut()
+            .push(KdlEntry::new_prop("edge", edge));
+        match placement.size {
+            PercentOrFixed::Fixed(size) => pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("size", KdlValue::Base10(size as i64))),
+            PercentOrFixed::Percent(size) => pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("size", format!("{size}%"))),
+        }
+        if pane.is_hidden {
+            pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("hidden", KdlValue::Bool(true)));
+        }
+        serialize_pane_title_and_attributes(
+            &command,
+            &edit,
+            &pane.title,
+            pane.cwd,
+            Some(pane.is_focused),
+            &pane.pane_contents,
+            pane_contents,
+            false,
+            &mut pane_node,
+        );
+        if pane.is_borderless {
+            pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("borderless", KdlValue::Bool(true)));
+        }
+        if let Some(fg) = pane.default_fg {
+            pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("default_fg", fg));
+        }
+        if let Some(bg) = pane.default_bg {
+            pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("default_bg", bg));
+        }
+        if !args.is_empty() || plugin.is_some() || command.is_some() {
+            let mut pane_node_children = KdlDocument::new();
+            serialize_args(args, &mut pane_node_children);
+            serialize_start_suspended(&command, &mut pane_node_children);
+            serialize_plugin(plugin, plugin_config, &mut pane_node_children);
+            pane_node.set_children(pane_node_children);
+        }
+        global_panes_children.nodes_mut().push(pane_node);
+    }
+    if global_panes_children.nodes().is_empty() {
+        Ok(None)
+    } else {
+        let mut global_panes_node = KdlNode::new("global_panes");
+        global_panes_node.set_children(global_panes_children);
+        Ok(Some(global_panes_node))
+    }
 }
 
 fn serialize_tab(
@@ -1134,6 +1222,8 @@ fn get_split_sizes(constraints: &Vec<Constraint>) -> Vec<Option<SplitSize>> {
 mod tests {
 
     use super::*;
+    use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
+    use crate::input::layout::RunPlugin;
     use crate::pane_size::Dimension;
     use expect_test::expect;
     use insta::assert_snapshot;
@@ -2099,6 +2189,38 @@ mod tests {
         };
         let kdl = serialize_session_layout(global_layout_manifest).unwrap();
         assert_snapshot!(kdl.0);
+    }
+    #[test]
+    fn can_serialize_global_panes() {
+        let global_layout_manifest = GlobalLayoutManifest {
+            global_panes: vec![PaneLayoutManifest {
+                run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
+                    RunPlugin::from_url("zellij:strider").unwrap(),
+                ))),
+                global_placement: Some(GlobalPanePlacement {
+                    edge: GlobalPaneEdge::Left,
+                    size: PercentOrFixed::Percent(25),
+                }),
+                is_hidden: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let kdl = serialize_session_layout(global_layout_manifest).unwrap();
+        assert_snapshot!(kdl.0);
+    }
+    #[test]
+    fn global_pane_manifest_requires_placement() {
+        let global_layout_manifest = GlobalLayoutManifest {
+            global_panes: vec![PaneLayoutManifest::default()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            serialize_session_layout(global_layout_manifest).unwrap_err(),
+            "global pane manifest requires placement"
+        );
     }
     #[test]
     fn can_serialize_new_tab_template() {

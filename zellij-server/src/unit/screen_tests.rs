@@ -1,6 +1,8 @@
 use super::{screen_thread_main, CopyOptions, Screen, ScreenInstruction};
+use crate::global_panes::GlobalPaneManager;
 use crate::panes::kitty_graphics::KittyImageStore;
-use crate::panes::PaneId;
+use crate::panes::{PaneFactory, PaneId};
+use crate::route::NotificationEnd;
 use crate::{
     channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
     thread_bus::Bus, ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
@@ -9,14 +11,16 @@ use insta::assert_snapshot;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use zellij_utils::cli::CliAction;
-use zellij_utils::data::{Event, EventType, Resize, Style, WebSharing};
+use zellij_utils::data::{Event, EventType, Mouse, Resize, Style, Styling, WebSharing};
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
+use zellij_utils::input::command::{RunCommand, RunCommandAction, TerminalAction};
 use zellij_utils::input::config::Config;
+use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
-    RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, TiledPaneLayout,
+    FloatingPaneLayout, GlobalPaneLayout, Layout, PercentOrFixed, PluginAlias,
+    PluginUserConfiguration, Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection,
+    TiledPaneLayout,
 };
 use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::{NestedSessionHandling, Options, PaneFrameStyle};
@@ -25,15 +29,16 @@ use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::position::Position;
 
 use crate::background_jobs::BackgroundJob;
-use crate::os_input_output::AsyncReader;
+use crate::os_input_output::{AsyncReader, NullAsyncReader};
 use crate::pty_writer::PtyWriteInstruction;
 use std::collections::HashSet;
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    plugins::PluginInstruction,
-    pty::{ClientTabIndexOrPaneId, PtyInstruction},
+    plugins::{PluginInstruction, PluginRenderAsset},
+    pty::{pty_thread_main, ClientTabIndexOrPaneId, Pty, PtyInstruction},
+    ui::loading_indication::LoadingIndication,
 };
 use zellij_utils::ipc::PixelDimensions;
 
@@ -65,37 +70,33 @@ fn take_snapshot_and_cursor_coordinates(
     (coords, format!("{:?}", grid))
 }
 
+fn grid_for_render_snapshot(screen_size: Size) -> Grid {
+    Grid::new(
+        screen_size.rows,
+        screen_size.cols,
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(Some(SizeInPixels {
+            width: 8,
+            height: 21,
+        }))),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    )
+}
+
 fn take_snapshots_and_cursor_coordinates_from_render_events<'a>(
     all_events: impl Iterator<Item = &'a ServerInstruction>,
     screen_size: Size,
 ) -> Vec<(Option<(usize, usize)>, String)> {
-    let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
-    let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
-    let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
-        width: 8,
-        height: 21,
-    })));
-    let debug = false;
-    let arrow_fonts = true;
-    let styled_underlines = true;
-    let osc8_hyperlinks = true;
-    let explicitly_disable_kitty_keyboard_protocol = false;
-    let mut grid = Grid::new(
-        screen_size.rows,
-        screen_size.cols,
-        Rc::new(RefCell::new(Palette::default())),
-        terminal_emulator_color_codes,
-        Rc::new(RefCell::new(LinkHandler::new())),
-        character_cell_size,
-        sixel_image_store,
-        Rc::new(RefCell::new(KittyImageStore::default())),
-        Style::default(),
-        debug,
-        arrow_fonts,
-        styled_underlines,
-        osc8_hyperlinks,
-        explicitly_disable_kitty_keyboard_protocol,
-    );
+    let mut grid = grid_for_render_snapshot(screen_size);
     let snapshots: Vec<(Option<(usize, usize)>, String)> = all_events
         .filter_map(|server_instruction| {
             match server_instruction {
@@ -198,7 +199,7 @@ impl ServerOsApi for FakeInputOutput {
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        unimplemented!()
+        Ok((42, Box::new(NullAsyncReader), None))
     }
     fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> Result<usize> {
         unimplemented!()
@@ -382,6 +383,7 @@ struct MockScreen {
     pub config_options: Options,
     pub session_metadata: SessionMetaData,
     pub config: Config,
+    default_layout: Box<Layout>,
     advanced_mouse_actions: bool,
     last_opened_tab_index: Option<usize>,
 }
@@ -396,6 +398,7 @@ impl MockScreen {
         let mut config = self.config.clone();
         config.options.advanced_mouse_actions = Some(self.advanced_mouse_actions);
         let client_attributes = self.client_attributes.clone();
+        let default_layout = self.default_layout.clone();
         let screen_bus = Bus::new(
             vec![self.screen_receiver.take().unwrap()],
             Some(&self.to_screen.clone()),
@@ -418,7 +421,7 @@ impl MockScreen {
                     client_attributes,
                     config,
                     debug,
-                    Box::new(Layout::default()),
+                    default_layout,
                 )
                 .expect("TEST")
             })
@@ -785,6 +788,7 @@ impl MockScreen {
             session_metadata,
             last_opened_tab_index: None,
             config,
+            default_layout: Box::new(Layout::default()),
             advanced_mouse_actions: true,
         }
     }
@@ -864,6 +868,3196 @@ fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
             None,
         )
         .expect("TEST");
+}
+
+#[test]
+fn global_pane_renders_once_for_clients_on_different_tabs() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.add_client(2, false).expect("TEST");
+    screen.switch_active_tab(0, None, true, 2).expect("TEST");
+
+    let mut global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        3,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    global_pane.handle_pty_bytes(b"GLOBAL".to_vec());
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(10),
+            },
+            false,
+        )
+        .unwrap();
+    screen
+        .global_panes
+        .focus_pane(PaneId::Terminal(99), 1)
+        .unwrap();
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.render_to_clients().expect("TEST");
+    let (render_instruction, _) = server_receiver.recv().expect("render instruction");
+    let ServerInstruction::Render(Some(mut rendered_clients)) = render_instruction else {
+        panic!("expected client render output")
+    };
+    let mut client_1_grid = grid_for_render_snapshot(size);
+    let mut client_2_grid = grid_for_render_snapshot(size);
+    let (client_1_cursor, client_1_snapshot) = take_snapshot_and_cursor_coordinates(
+        &rendered_clients.remove(&1).expect("client 1 output"),
+        &mut client_1_grid,
+    );
+    let (client_2_cursor, client_2_snapshot) = take_snapshot_and_cursor_coordinates(
+        &rendered_clients.remove(&2).expect("client 2 output"),
+        &mut client_2_grid,
+    );
+    assert_eq!(client_1_cursor, Some((1, 0)));
+    assert_ne!(client_2_cursor, Some((1, 0)));
+
+    let normalized_snapshot =
+        format!("client 1:\n{client_1_snapshot}\nclient 2:\n{client_2_snapshot}")
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+    assert_snapshot!(
+        normalized_snapshot,
+        @r###"
+    client 1:
+    00 (C): GLOBAL   │
+    01 (C):          │
+    02 (C):          │
+    03 (C):          │
+    04 (C):          │
+    05 (C):          │
+    06 (C):          │
+    07 (C):          │
+    08 (C):          │
+    09 (C):          │
+
+    client 2:
+    00 (C): GLOBAL   │
+    01 (C):          │
+    02 (C):          │
+    03 (C):          │
+    04 (C):          │
+    05 (C):          │
+    06 (C):          │
+    07 (C):          │
+    08 (C):          │
+    09 (C):          │
+    "###
+    );
+    for tab in screen.tabs.values() {
+        assert_eq!(tab.get_display_area(), Size { cols: 30, rows: 10 });
+        assert_eq!(tab.get_viewport().x, 10);
+        assert!(!tab.get_all_pane_ids().contains(&PaneId::Terminal(99)));
+    }
+}
+
+#[test]
+fn closing_the_last_pane_with_a_visible_global_pane_exits_the_session() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 12);
+    screen.render_to_clients().expect("TEST");
+    while server_receiver.try_recv().is_ok() {} // drain the first frame
+
+    // the user exits their last shell
+    assert!(screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .extract_pane(PaneId::Terminal(1), true)
+        .is_some());
+    screen.render_to_clients().expect("TEST");
+
+    assert!(
+        screen.tabs.is_empty(),
+        "a visible global pane must not keep an emptied tab alive"
+    );
+    assert!(
+        std::iter::from_fn(|| server_receiver.try_recv().ok())
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))),
+        "expected ServerInstruction::Render(None) to exit the session"
+    );
+}
+
+#[test]
+fn global_pane_render_does_not_move_the_cursor_of_a_client_focused_on_a_tab_pane() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let mut global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        3,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    global_pane.handle_pty_bytes(b"GLOBAL".to_vec());
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(10),
+            },
+            false,
+        )
+        .unwrap();
+    // client 1 is left focused on its tab pane, not on the global pane
+
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    let next_client_1_render = || loop {
+        let (instruction, _) = server_receiver.recv().expect("render instruction");
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            return rendered_clients.remove(&1).expect("client 1 output");
+        }
+    };
+
+    // first frame: both the tab pane and the global pane render
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .handle_pty_bytes(1, b"tab pane".to_vec())
+        .unwrap();
+    screen.render_to_clients().expect("TEST");
+    let mut grid = grid_for_render_snapshot(size);
+    let cursor_in_tab_pane =
+        take_snapshot_and_cursor_coordinates(&next_client_1_render(), &mut grid).0;
+    assert!(
+        cursor_in_tab_pane.is_some(),
+        "the client's cursor should be visible in its tab pane"
+    );
+
+    // second frame: only the global pane has anything new to render
+    screen.global_panes.handle_pty_bytes(99, b"MORE".to_vec());
+    screen.render_to_clients().expect("TEST");
+    let second_frame = next_client_1_render();
+    let cursor_after_global_pane_render =
+        take_snapshot_and_cursor_coordinates(&second_frame, &mut grid).0;
+
+    assert_eq!(
+        cursor_after_global_pane_render, cursor_in_tab_pane,
+        "a global pane rendering must not strand the cursor at the end of its own contents"
+    );
+    assert!(
+        second_frame.contains("\u{1b}[?25l"),
+        "the cursor should be hidden while the global pane's contents are drawn"
+    );
+}
+
+fn insert_left_global_pane(screen: &mut Screen, cols: usize) {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(cols),
+            },
+            false,
+        )
+        .unwrap();
+}
+
+fn assert_tiled_panes_are_bounded_by_left_global_pane(screen: &Screen, global_cols: usize) {
+    let screen_cols = screen.size.cols;
+    let tab = screen.tabs.get(&0).unwrap();
+    assert_eq!(tab.get_display_area_origin(), (global_cols, 0));
+    assert_eq!(tab.get_viewport().x, global_cols);
+    let geoms: Vec<_> = tab
+        .get_tiled_panes()
+        .map(|(id, p)| (*id, p.position_and_size()))
+        .collect();
+    assert!(geoms.len() > 1, "expected more than one tiled pane");
+    for (id, geom) in &geoms {
+        assert!(
+            geom.x >= global_cols,
+            "pane {:?} at x {} is underneath the global pane (which is {} columns wide)",
+            id,
+            geom.x,
+            global_cols
+        );
+        assert!(
+            geom.x + geom.cols.as_usize() <= screen_cols,
+            "pane {:?} overflows the screen: {} + {} > {}",
+            id,
+            geom.x,
+            geom.cols.as_usize(),
+            screen_cols
+        );
+    }
+    let rightmost_edge = geoms
+        .iter()
+        .map(|(_, geom)| geom.x + geom.cols.as_usize())
+        .max()
+        .unwrap();
+    assert_eq!(
+        rightmost_edge, screen_cols,
+        "tiled panes do not reach the right edge of the screen"
+    );
+}
+
+/// The tab's ui strips (tab bar, status bar) span the whole screen and the left global pane fills
+/// only the rows between them.
+#[test]
+fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
+    let client_id = 1;
+    let global_cols = 10;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    // a non-selectable pane on the bottom edge is chrome, same as the status-bar plugin
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Down),
+                borderless: Some(true),
+            },
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .set_pane_selectable(PaneId::Terminal(2), false);
+
+    insert_left_global_pane(&mut screen, global_cols);
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+    screen.render_to_clients().unwrap();
+
+    let tab = screen.get_active_tab(client_id).unwrap();
+    let (chrome_top, chrome_bottom) = tab.chrome_rows();
+    assert_eq!(chrome_top, 0);
+    assert!(
+        chrome_bottom > 0,
+        "the tab has no bottom chrome to speak of"
+    );
+    let widened_chrome = tab
+        .get_tiled_panes()
+        .find(|(id, _)| **id == PaneId::Terminal(2))
+        .map(|(_, pane)| pane.position_and_size())
+        .unwrap();
+    assert_eq!(
+        (widened_chrome.x, widened_chrome.cols.as_usize()),
+        (0, screen.size.cols),
+        "the chrome pane does not span the full screen width"
+    );
+
+    let global_pane_geom = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(
+        (global_pane_geom.y, global_pane_geom.rows.as_usize()),
+        (0, screen.size.rows - chrome_bottom),
+        "the global pane covers rows belonging to the tab's chrome"
+    );
+    assert_eq!(global_pane_geom.x, 0);
+    assert_eq!(global_pane_geom.cols.as_usize(), global_cols);
+}
+
+fn global_pane_cols(screen: &Screen) -> usize {
+    screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size()
+        .cols
+        .as_usize()
+}
+
+#[test]
+fn resizing_a_focused_global_pane_only_moves_the_border_it_has() {
+    use zellij_utils::data::{Direction, Resize, ResizeStrategy};
+
+    let client_id = 1;
+    let mut screen = screen_with_two_tiled_panes_and_a_global_pane();
+    let global_pane_id = PaneId::Terminal(99);
+    screen.focus_global_pane(global_pane_id, client_id).unwrap();
+    assert_eq!(global_pane_cols(&screen), 10);
+
+    // a left global pane has no horizontal border to move up or down
+    screen
+        .resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Up)),
+            global_pane_id,
+        )
+        .unwrap();
+    assert_eq!(global_pane_cols(&screen), 10);
+
+    screen
+        .resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+            global_pane_id,
+        )
+        .unwrap();
+    assert_eq!(global_pane_cols(&screen), 11);
+
+    screen
+        .resize_pane_with_id(ResizeStrategy::new(Resize::Decrease, None), global_pane_id)
+        .unwrap();
+    assert_eq!(global_pane_cols(&screen), 10);
+}
+
+#[test]
+fn resizing_the_tab_pane_beside_a_global_pane_moves_their_shared_border() {
+    use zellij_utils::data::{Direction, Resize, ResizeStrategy};
+
+    let client_id = 1;
+    let mut screen = screen_with_two_tiled_panes_and_a_global_pane();
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .focus_pane_on_edge(Direction::Left, client_id);
+
+    // growing the tab pane towards the global pane shrinks it
+    assert!(screen
+        .resize_global_pane_from_adjacent_tab_pane(
+            client_id,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Left)),
+        )
+        .unwrap());
+    assert_eq!(global_pane_cols(&screen), 9);
+
+    assert!(screen
+        .resize_global_pane_from_adjacent_tab_pane(
+            client_id,
+            ResizeStrategy::new(Resize::Decrease, Some(Direction::Left)),
+        )
+        .unwrap());
+    assert_eq!(global_pane_cols(&screen), 10);
+
+    // there is no global pane on the right, and a directionless resize stays tab-local
+    assert!(!screen
+        .resize_global_pane_from_adjacent_tab_pane(
+            client_id,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .unwrap());
+    assert!(!screen
+        .resize_global_pane_from_adjacent_tab_pane(
+            client_id,
+            ResizeStrategy::new(Resize::Increase, None),
+        )
+        .unwrap());
+    assert_eq!(global_pane_cols(&screen), 10);
+}
+
+#[test]
+fn dragging_the_border_of_a_global_pane_resizes_it() {
+    let client_id = 1;
+    let mut screen = screen_with_two_tiled_panes_and_a_global_pane();
+    // the separator cell of a left global pane is its own last column
+    let border_column = 9;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(5, border_column)),
+        client_id,
+    );
+    // the press starts a drag rather than focusing the pane
+    assert_eq!(screen.global_panes.focused_pane_id(client_id), None);
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(5, 14)),
+        client_id,
+    );
+    assert_eq!(global_pane_cols(&screen), 15);
+    assert_tiled_panes_are_bounded_by_left_global_pane(&screen, 15);
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_event(Position::new(5, 14)),
+        client_id,
+    );
+    // once released, moving over the tab area no longer resizes anything
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(5, 30)),
+        client_id,
+    );
+    assert_eq!(global_pane_cols(&screen), 15);
+}
+
+#[test]
+fn a_click_on_tab_chrome_beside_a_global_pane_is_not_a_border_drag() {
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    // a non-selectable pane on the bottom edge is chrome, same as the status-bar plugin. It draws
+    // no boundary, so the row it shares with the global pane below it is a click, not a border
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Down),
+                borderless: Some(true),
+            },
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .set_pane_selectable(PaneId::Terminal(2), false);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .resize_to_screen(Size { cols: 40, rows: 12 })
+        .unwrap();
+    screen.render_to_clients().unwrap();
+
+    let global_pane_geom = |screen: &Screen| {
+        screen
+            .global_panes
+            .pane(PaneId::Terminal(42))
+            .unwrap()
+            .position_and_size()
+    };
+    let border_line = global_pane_geom(&screen).y as i32 - 1;
+    let rows_before = global_pane_geom(&screen).rows.as_usize();
+    // the row is the global pane's border, it is only the chrome on top of it that saves the click
+    assert!(screen
+        .global_panes
+        .border_pane_id_at(&Position::new(border_line, 5))
+        .is_some());
+    assert!(screen
+        .get_active_tab(client_id)
+        .unwrap()
+        .position_is_on_ui_pane(&Position::new(border_line, 5)));
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(border_line, 5)),
+        client_id,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(border_line - 3, 5)),
+        client_id,
+    );
+    assert_eq!(global_pane_geom(&screen).rows.as_usize(), rows_before);
+}
+
+#[test]
+fn adding_a_tiled_pane_stays_beside_a_left_global_pane() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    insert_left_global_pane(&mut screen, 10);
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .unwrap();
+
+    assert_tiled_panes_are_bounded_by_left_global_pane(&screen, 10);
+}
+
+/// A tab with two tiled panes (1 and 2) plus one global pane (99) on the left edge. Focus is left
+/// on the newly created pane 2, which is the last pane of the tab's cycle.
+fn screen_with_two_tiled_panes_and_a_global_pane() -> Screen {
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    insert_left_global_pane(&mut screen, 10);
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    screen
+}
+
+#[test]
+fn focus_cycle_walks_through_global_panes_and_back_into_the_tab() {
+    let client_id = 1;
+    let mut screen = screen_with_two_tiled_panes_and_a_global_pane();
+    let global_pane_id = PaneId::Terminal(99);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(2))
+    );
+
+    // the global panes form a segment appended to the end of the tab's cycle
+    screen.cycle_focus(client_id, true);
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(global_pane_id));
+    screen.cycle_focus(client_id, true);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(1)),
+        "cycling past the last global pane should wrap back into the tab"
+    );
+    screen.cycle_focus(client_id, true);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(2))
+    );
+
+    // and backwards is the exact mirror
+    screen.cycle_focus(client_id, false);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(1))
+    );
+    screen.cycle_focus(client_id, false);
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(global_pane_id));
+    screen.cycle_focus(client_id, false);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+#[test]
+fn move_focus_crosses_into_and_out_of_a_left_global_pane() {
+    let client_id = 1;
+    let mut screen = screen_with_two_tiled_panes_and_a_global_pane();
+    let global_pane_id = PaneId::Terminal(99);
+
+    // travelling right lands on the leftmost pane, so it has nowhere left to go inside the tab
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .focus_pane_on_edge(Direction::Right, client_id);
+    let leftmost_pane_id = screen.get_active_pane_id(&client_id).unwrap();
+    let moved = screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .move_focus_left(client_id)
+        .unwrap();
+    assert!(!moved, "expected to be at the tab's left edge");
+
+    assert!(screen.enter_global_pane_in_direction(Direction::Left, client_id));
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(global_pane_id));
+
+    // moving further left is the session boundary - focus stays put
+    assert!(screen.global_pane_handles_direction(Direction::Left, client_id));
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(global_pane_id));
+
+    // moving right returns to the tab pane nearest the global pane
+    assert!(screen.global_pane_handles_direction(Direction::Right, client_id));
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(leftmost_pane_id)
+    );
+}
+
+#[test]
+fn adding_a_tiled_pane_with_swap_layouts_stays_beside_a_left_global_pane() {
+    // with swap layouts the new pane goes through the layout applier rather than the constraint
+    // system, which positions panes in the tab's display area from scratch
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    use std::collections::BTreeMap;
+    use zellij_utils::input::layout::LayoutConstraint;
+
+    let swap_tiled_layouts = vec![(
+        BTreeMap::from([(LayoutConstraint::NoConstraint, TiledPaneLayout::default())]),
+        Some("swap".to_owned()),
+    )];
+    screen
+        .new_tab(0, (swap_tiled_layouts, vec![]), None, Some(1))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(1, None)],
+            vec![],
+            HashMap::new(),
+            0,
+            true,
+            (1, false),
+            None,
+        )
+        .unwrap();
+    insert_left_global_pane(&mut screen, 10);
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .unwrap();
+
+    assert_tiled_panes_are_bounded_by_left_global_pane(&screen, 10);
+}
+
+#[test]
+fn screen_resizes_tabs_directly_to_the_global_center_without_accumulating_origin() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    let global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(10),
+            },
+            false,
+        )
+        .unwrap();
+
+    screen
+        .resize_to_screen(Size { cols: 50, rows: 12 })
+        .unwrap();
+    let tab = screen.tabs.get(&0).unwrap();
+    assert_eq!(tab.get_display_area_origin(), (10, 0));
+    assert_eq!(tab.get_display_area(), Size { cols: 40, rows: 12 });
+    assert_eq!(tab.get_pane_with_id(PaneId::Terminal(1)).unwrap().x(), 10);
+
+    screen
+        .resize_to_screen(Size { cols: 60, rows: 14 })
+        .unwrap();
+    let tab = screen.tabs.get(&0).unwrap();
+    assert_eq!(tab.get_display_area_origin(), (10, 0));
+    assert_eq!(tab.get_display_area(), Size { cols: 50, rows: 14 });
+    assert_eq!(tab.get_pane_with_id(PaneId::Terminal(1)).unwrap().x(), 10);
+}
+
+fn insert_global_pane_on_edge(
+    screen: &mut Screen,
+    id: u32,
+    edge: zellij_utils::data::GlobalPaneEdge,
+    cols: usize,
+) {
+    use zellij_utils::data::GlobalPanePlacement;
+
+    let global_pane = PaneFactory::terminal(
+        id,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge,
+                size: PercentOrFixed::Fixed(cols),
+            },
+            false,
+        )
+        .unwrap();
+}
+
+#[test]
+fn opposite_edge_global_panes_reserve_boundary_space_for_tab_edge_panes() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 98, GlobalPaneEdge::Left, 8);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 8);
+
+    screen.render_to_clients().expect("TEST");
+
+    let tab = screen.tabs.get(&0).unwrap();
+    let pane = tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    // the pane abuts the right global pane, so its last column is drawn as a boundary and must be
+    // reserved from its content (and pty size)
+    assert_eq!(
+        pane.get_content_offset().right,
+        1,
+        "tab pane abutting a right global pane must reserve a boundary column"
+    );
+    assert_eq!(pane.get_content_columns(), pane.cols() - 1);
+}
+
+#[test]
+fn right_only_global_pane_reserves_boundary_space_for_tab_edge_panes() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 8);
+
+    screen.render_to_clients().expect("TEST");
+
+    let tab = screen.tabs.get(&0).unwrap();
+    let pane = tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    assert_eq!(
+        pane.get_content_offset().right,
+        1,
+        "tab pane abutting a right global pane must reserve a boundary column"
+    );
+    assert_eq!(pane.get_content_columns(), pane.cols() - 1);
+}
+
+#[test]
+fn opposite_vertical_edge_global_panes_reserve_boundary_space_for_tab_edge_panes() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 98, GlobalPaneEdge::Top, 4);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Bottom, 4);
+
+    screen.render_to_clients().expect("TEST");
+
+    let tab = screen.tabs.get(&0).unwrap();
+    let pane = tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    // the pane abuts the bottom global pane, so its last row is drawn as a boundary and must be
+    // reserved from its content (and pty size)
+    assert_eq!(
+        pane.get_content_offset().bottom,
+        1,
+        "tab pane abutting a bottom global pane must reserve a boundary row"
+    );
+    assert_eq!(pane.get_content_rows(), pane.rows() - 1);
+}
+
+#[test]
+fn hidden_and_reshown_global_pane_keeps_boundary_reservation() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Right, 8);
+    screen.render_to_clients().expect("TEST");
+
+    screen.hide_pane(PaneId::Terminal(99)).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let pane = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(1))
+        .unwrap();
+    assert_eq!(pane.get_content_offset().right, 0);
+
+    screen.show_pane(PaneId::Terminal(99)).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let pane = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(1))
+        .unwrap();
+    assert_eq!(
+        pane.get_content_offset().right,
+        1,
+        "tab pane abutting the reshown right global pane must reserve a boundary column"
+    );
+}
+
+#[test]
+fn newly_added_client_sees_existing_global_panes() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let mut global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    global_pane.handle_pty_bytes(b"GLOBAL ONLY".to_vec());
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(12),
+            },
+            false,
+        )
+        .unwrap();
+
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.render_to_clients().expect("TEST");
+    let _ = server_receiver.recv().expect("initial render");
+
+    screen.add_client(2, false).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    let mut client_2_output = None;
+    while let Ok((instruction, _)) = server_receiver.try_recv() {
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            if let Some(output) = rendered_clients.remove(&2) {
+                client_2_output = Some(output);
+            }
+        }
+    }
+    let client_2_output = client_2_output.expect("client 2 should receive a render");
+    let mut grid = grid_for_render_snapshot(size);
+    let snapshot = take_snapshot_and_cursor_coordinates(&client_2_output, &mut grid).1;
+    assert!(
+        snapshot.contains("GLOBAL ONLY"),
+        "newly added client should see the global pane contents, got:\n{snapshot}"
+    );
+}
+
+#[test]
+fn global_pane_fake_cursor_does_not_move_other_clients_cursor() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2, false).expect("TEST");
+
+    let global_pane = PaneFactory::terminal(
+        99,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    screen
+        .global_panes
+        .insert(
+            global_pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            false,
+        )
+        .unwrap();
+    screen
+        .focus_pane_with_id(PaneId::Terminal(99), false, false, 1)
+        .expect("TEST");
+
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.render_to_clients().expect("TEST");
+
+    let (render_instruction, _) = server_receiver.recv().expect("render instruction");
+    let ServerInstruction::Render(Some(rendered_clients)) = render_instruction else {
+        panic!("expected client render output")
+    };
+
+    // client 1 is focused on the global pane: their cursor must be inside it
+    let mut client_1_grid = grid_for_render_snapshot(size);
+    let (client_1_cursor, _) = take_snapshot_and_cursor_coordinates(
+        rendered_clients.get(&1).expect("client 1 output"),
+        &mut client_1_grid,
+    );
+    assert!(
+        client_1_cursor.is_some_and(|(_x, y)| y >= 7),
+        "client 1 cursor should be inside the bottom global pane, got: {client_1_cursor:?}"
+    );
+
+    // client 2 is focused on the tab pane: the fake cursor drawn for client 1 inside the global
+    // pane must not have moved client 2's host cursor out of the tab area
+    let mut client_2_grid = grid_for_render_snapshot(size);
+    let (client_2_cursor, _) = take_snapshot_and_cursor_coordinates(
+        rendered_clients.get(&2).expect("client 2 output"),
+        &mut client_2_grid,
+    );
+    assert!(
+        client_2_cursor.is_some_and(|(_x, y)| y < 7),
+        "client 2 cursor should stay inside the tab area, got: {client_2_cursor:?}"
+    );
+}
+
+#[test]
+fn global_terminal_creation_preserves_placement_from_pty_to_screen() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Bottom,
+        size: PercentOrFixed::Fixed(3),
+    };
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_bus = Bus::new(
+        vec![mock_screen.pty_receiver.take().unwrap()],
+        Some(&mock_screen.to_screen),
+        Some(&mock_screen.to_pty),
+        Some(&mock_screen.to_plugin),
+        Some(&mock_screen.to_server),
+        Some(&mock_screen.to_pty_writer),
+        Some(&mock_screen.to_background_jobs),
+        Some(Box::new(mock_screen.os_input.clone())),
+    );
+    let pty = Pty::new(pty_bus, false, None, None);
+    let pty_thread = std::thread::spawn(move || {
+        pty_thread_main(pty, Box::new(Layout::default())).expect("pty thread")
+    });
+
+    route_arbitrary_action_to_server(
+        &mock_screen.clone_session_metadata(),
+        Action::NewPane {
+            direction: None,
+            pane_name: Some("global terminal".to_owned()),
+            start_suppressed: false,
+            global_placement: Some(placement),
+        },
+        1,
+    );
+
+    let screen_receiver = mock_screen.screen_receiver.take().unwrap();
+    let instruction = loop {
+        let (instruction, _) = screen_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("global pane screen instruction");
+        if matches!(instruction, ScreenInstruction::NewGlobalPane { .. }) {
+            break instruction;
+        }
+    };
+    match instruction {
+        ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Terminal(42),
+            placement: actual,
+            ..
+        } => assert_eq!(actual, placement),
+        other => panic!("expected global terminal creation, got {other:?}"),
+    }
+
+    let _ = mock_screen.to_pty.send(PtyInstruction::Exit);
+    let _ = mock_screen.to_background_jobs.send(BackgroundJob::Exit);
+    pty_thread.join().unwrap();
+}
+
+#[test]
+fn global_new_tiled_pane_route_preserves_command_shell_and_spawn_context() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Right,
+        size: PercentOrFixed::Fixed(8),
+    };
+    let default_shell = TerminalAction::RunCommand(
+        RunCommandAction {
+            command: PathBuf::from("default-shell"),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let actions = [
+        Action::NewTiledPane {
+            direction: Some(Direction::Right),
+            command: Some(RunCommandAction {
+                command: PathBuf::from("global-command"),
+                ..Default::default()
+            }),
+            pane_name: Some("command global".to_owned()),
+            near_current_pane: false,
+            no_focus: false,
+            borderless: Some(true),
+            tab_id: None,
+            global_placement: Some(placement),
+        },
+        Action::NewTiledPane {
+            direction: None,
+            command: None,
+            pane_name: Some("shell global".to_owned()),
+            near_current_pane: false,
+            no_focus: true,
+            borderless: Some(false),
+            tab_id: None,
+            global_placement: Some(placement),
+        },
+    ];
+    let invalid_actions = [
+        Action::NewTiledPane {
+            direction: None,
+            command: None,
+            pane_name: None,
+            near_current_pane: true,
+            no_focus: false,
+            borderless: None,
+            tab_id: None,
+            global_placement: Some(placement),
+        },
+        Action::NewTiledPane {
+            direction: None,
+            command: None,
+            pane_name: None,
+            near_current_pane: false,
+            no_focus: false,
+            borderless: None,
+            tab_id: Some(2),
+            global_placement: Some(placement),
+        },
+    ];
+    let route_results: Vec<_> = actions
+        .into_iter()
+        .map(|action| {
+            route_action(
+                action,
+                1,
+                None,
+                None,
+                mock_screen.session_metadata.senders.clone(),
+                Some(default_shell.clone()),
+                None,
+                InputMode::Normal,
+                None,
+            )
+        })
+        .collect();
+    let invalid_route_results: Vec<_> = invalid_actions
+        .into_iter()
+        .map(|action| {
+            route_action(
+                action,
+                1,
+                None,
+                None,
+                mock_screen.session_metadata.senders.clone(),
+                Some(default_shell.clone()),
+                None,
+                InputMode::Normal,
+                None,
+            )
+        })
+        .collect();
+    let spawned: Vec<_> = pty_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    mock_screen.teardown(vec![]);
+
+    assert!(route_results.iter().all(Result::is_ok));
+    assert!(invalid_route_results[0]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("near-current-pane"));
+    assert!(invalid_route_results[1]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("cannot target a tab"));
+    assert_eq!(spawned.len(), 2);
+    assert!(matches!(
+        &spawned[0],
+        PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(command)),
+            Some(name),
+            _,
+            _,
+            ClientTabIndexOrPaneId::ClientId(1),
+            _,
+            _,
+            Some(context),
+        ) if command.command == PathBuf::from("global-command")
+            && name == "command global"
+            && context.placement == placement
+            && context.borderless
+            && context.should_focus
+    ));
+    assert!(matches!(
+        &spawned[1],
+        PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(command)),
+            Some(name),
+            _,
+            _,
+            ClientTabIndexOrPaneId::ClientIdNoFocus(1),
+            _,
+            _,
+            Some(context),
+        ) if command.command == PathBuf::from("default-shell")
+            && name == "shell global"
+            && context.placement == placement
+            && !context.borderless
+            && !context.should_focus
+    ));
+}
+
+#[test]
+fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Terminal(41),
+            initial_pane_title: Some("invalid global".to_owned()),
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(10),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(failed_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    let failed = failed_rx.blocking_recv().unwrap();
+
+    let (succeeded_tx, succeeded_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Terminal(42),
+            initial_pane_title: Some("valid global".to_owned()),
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(succeeded_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    let succeeded = succeeded_rx.blocking_recv().unwrap();
+
+    let (duplicate_tx, duplicate_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Terminal(42),
+            initial_pane_title: Some("duplicate global".to_owned()),
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(duplicate_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    let duplicate = duplicate_rx.blocking_recv().unwrap();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ClosePane(
+            PaneId::Terminal(42),
+            None,
+            Some(NotificationEnd::new(closed_tx)),
+            None,
+        ))
+        .unwrap();
+    closed_rx.blocking_recv().unwrap();
+    let pty_instructions: Vec<_> = pty_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    let invalid_cleanup_count = pty_instructions
+        .iter()
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                PtyInstruction::ClosePane(PaneId::Terminal(41), None)
+            )
+        })
+        .count();
+    let existing_backend_cleanup_count = pty_instructions
+        .iter()
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                PtyInstruction::ClosePane(PaneId::Terminal(42), None)
+            )
+        })
+        .count();
+    mock_screen.teardown(vec![screen_thread]);
+
+    assert_eq!(failed.exit_status, Some(1));
+    assert_eq!(failed.affected_pane_id, None);
+    assert!(failed.error_message.is_some());
+    assert_eq!(invalid_cleanup_count, 1);
+    assert_eq!(existing_backend_cleanup_count, 1);
+    assert_eq!(succeeded.affected_pane_id, Some(PaneId::Terminal(42)));
+    assert_eq!(duplicate.exit_status, Some(1));
+    assert_eq!(duplicate.affected_pane_id, None);
+    assert!(duplicate.error_message.is_some());
+}
+
+#[test]
+fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen.drop_all_pty_messages();
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(88, 1, b"STALE_BYTES".to_vec()),
+        ]))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ShowPluginCursor(88, 1, Some((2, 0))))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::StartPluginLoadingIndication(
+            88,
+            LoadingIndication::new("STALE_START".to_owned()),
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ProgressPluginLoadingOffset(88))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::UpdatePluginLoadingStage(
+            88,
+            LoadingIndication::new("STALE_STAGE".to_owned()),
+        ))
+        .unwrap();
+
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin/88", &None, None, None).unwrap();
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(88),
+            initial_pane_title: Some("invalid global plugin".to_owned()),
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(run_plugin.clone())),
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(10),
+            },
+            borderless: true,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(failed_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    assert_eq!(failed_rx.blocking_recv().unwrap().exit_status, Some(1));
+
+    let (succeeded_tx, succeeded_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(88),
+            initial_pane_title: Some("reused global plugin".to_owned()),
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(run_plugin)),
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: true,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(succeeded_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    assert_eq!(
+        succeeded_rx.blocking_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(88))
+    );
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+
+    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+        received_server_instructions.iter(),
+        size,
+    );
+    let (cursor, snapshot) = snapshots.last().expect("final render");
+    assert!(!snapshot.contains("STALE_BYTES"), "{snapshot}");
+    assert!(!snapshot.contains("STALE_STAGE"), "{snapshot}");
+    assert_ne!(*cursor, Some((2, 0)));
+}
+
+#[test]
+fn early_global_plugin_bytes_replay_before_already_queued_later_bytes() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen.drop_all_pty_messages();
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(90, 1, b"EARLY".to_vec()),
+        ]))
+        .unwrap();
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(90),
+            initial_pane_title: Some("ordered global plugin".to_owned()),
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(
+                RunPluginOrAlias::from_url("file:/path/to/global/plugin/90", &None, None, None)
+                    .unwrap(),
+            )),
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: true,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(completion_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(90, 1, b"LATER".to_vec()),
+        ]))
+        .unwrap();
+
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    assert_eq!(
+        completion_rx.blocking_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(90))
+    );
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+
+    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+        received_server_instructions.iter(),
+        size,
+    );
+    let (_, snapshot) = snapshots.last().expect("final render");
+    assert!(snapshot.contains("07 (C): LATER"), "{snapshot}");
+    assert!(!snapshot.contains("EARLY"), "{snapshot}");
+}
+
+#[test]
+fn early_global_plugin_events_are_replayed_after_insertion() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 60, rows: 10 };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen.drop_all_pty_messages();
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let loading_start = LoadingIndication::new("EARLY_START".to_owned());
+    let loading_stage = LoadingIndication::new("EARLY_STAGE".to_owned());
+    std::thread::sleep(std::time::Duration::from_millis(450));
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(77, 1, b"EARLY_BYTES".to_vec()),
+        ]))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ShowPluginCursor(77, 1, Some((2, 0))))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(78, 1, b"loading grid".to_vec()),
+        ]))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::StartPluginLoadingIndication(
+            78,
+            loading_start,
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ProgressPluginLoadingOffset(78))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::UpdatePluginLoadingStage(
+            78,
+            loading_stage,
+        ))
+        .unwrap();
+
+    for (plugin_id, edge, size, should_focus) in [
+        (77, GlobalPaneEdge::Left, 18, true),
+        (78, GlobalPaneEdge::Bottom, 3, false),
+    ] {
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::NewGlobalPane {
+                pane_id: PaneId::Plugin(plugin_id),
+                initial_pane_title: Some(format!("global plugin {plugin_id}")),
+                hold_for_command: None,
+                invoked_with: Some(Run::Plugin(
+                    RunPluginOrAlias::from_url(
+                        &format!("file:/path/to/global/plugin/{plugin_id}"),
+                        &None,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+                )),
+                placement: GlobalPanePlacement {
+                    edge,
+                    size: PercentOrFixed::Fixed(size),
+                },
+                borderless: true,
+                initially_hidden: false,
+                should_focus,
+                client_id: Some(1),
+                completion_tx: Some(NotificationEnd::new(completion_tx)),
+                set_blocking: false,
+                declaration_order: None,
+            })
+            .unwrap();
+        assert_eq!(
+            completion_rx.blocking_recv().unwrap().affected_pane_id,
+            Some(PaneId::Plugin(plugin_id))
+        );
+        if plugin_id == 77 {
+            mock_screen
+                .to_screen
+                .send(ScreenInstruction::RenderToClients)
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let unblocked_plugin_ids: Vec<_> = plugin_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::UnblockCliPipes(assets) => Some(
+                assets
+                    .into_iter()
+                    .map(|asset| asset.plugin_id)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+
+    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+        received_server_instructions.iter(),
+        size,
+    );
+    let (_, snapshot) = snapshots.last().expect("final render");
+    assert_eq!(unblocked_plugin_ids, vec![77, 78]);
+    assert!(
+        snapshots
+            .iter()
+            .any(|(_, snapshot)| snapshot.contains("EARLY_BYTES")),
+        "{snapshots:?}"
+    );
+    assert!(snapshot.contains("EARLY_STAGE."), "{snapshot}");
+    assert!(
+        snapshots.iter().any(|(cursor, _)| *cursor == Some((2, 0))),
+        "{snapshots:?}"
+    );
+}
+
+#[test]
+fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
+    // regression: unblocking used to be gated on finding a pane to draw the bytes into, so a
+    // plugin that rendered without one (a background plugin, or one whose pane was closed
+    // mid-render) never unblocked and anything piping to it hung forever
+    let size = Size { cols: 60, rows: 10 };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen.drop_all_pty_messages();
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    std::thread::sleep(std::time::Duration::from_millis(450));
+
+    // no pane exists for plugin 99, and none is ever created for it
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(99, 1, b"ORPHAN_BYTES".to_vec()),
+        ]))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let unblocked_plugin_ids: Vec<_> = plugin_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::UnblockCliPipes(assets) => Some(
+                assets
+                    .into_iter()
+                    .map(|asset| asset.plugin_id)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+
+    assert!(
+        unblocked_plugin_ids.contains(&99),
+        "a plugin that rendered without a pane must still unblock, got {unblocked_plugin_ids:?}"
+    );
+}
+
+#[test]
+fn closed_or_rejected_global_plugins_unload_exactly_once_through_pty() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_bus = Bus::new(
+        vec![mock_screen.pty_receiver.take().unwrap()],
+        Some(&mock_screen.to_screen),
+        Some(&mock_screen.to_pty),
+        Some(&mock_screen.to_plugin),
+        Some(&mock_screen.to_server),
+        Some(&mock_screen.to_pty_writer),
+        Some(&mock_screen.to_background_jobs),
+        Some(Box::new(mock_screen.os_input.clone())),
+    );
+    let pty = Pty::new(pty_bus, false, None, None);
+    let pty_thread = std::thread::spawn(move || {
+        pty_thread_main(pty, Box::new(Layout::default())).expect("pty thread")
+    });
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin/77", &None, None, None).unwrap();
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(77),
+            initial_pane_title: Some("global plugin".to_owned()),
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(run_plugin)),
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(completion_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    assert_eq!(
+        completion_rx.blocking_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(77))
+    );
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ClosePane(
+            PaneId::Plugin(77),
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+
+    let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(78),
+            initial_pane_title: Some("invalid global plugin".to_owned()),
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(
+                RunPluginOrAlias::from_url("file:/path/to/global/plugin/78", &None, None, None)
+                    .unwrap(),
+            )),
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(10),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(failed_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    let failed = failed_rx.blocking_recv().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let unloaded_plugin_ids: Vec<_> = plugin_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Unload(plugin_id) => Some(plugin_id),
+            _ => None,
+        })
+        .collect();
+    mock_screen.teardown(vec![screen_thread, pty_thread]);
+
+    assert_eq!(failed.exit_status, Some(1));
+    assert_eq!(failed.affected_pane_id, None);
+    assert_eq!(unloaded_plugin_ids, vec![77, 78]);
+}
+
+fn add_matching_global_plugin(
+    screen: &mut Screen,
+    plugin_id: u32,
+    run_plugin: RunPluginOrAlias,
+    hidden: bool,
+) {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let pane = PaneFactory::plugin(
+        plugin_id,
+        Default::default(),
+        plugin_sender,
+        "global plugin".to_owned(),
+        "global plugin".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin)),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    screen
+        .global_panes
+        .insert(
+            pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(5),
+            },
+            hidden,
+        )
+        .unwrap();
+    screen
+        .global_panes
+        .resize(zellij_utils::pane_size::Viewport {
+            x: 0,
+            y: 0,
+            cols: screen.size.cols,
+            rows: screen.size.rows,
+        })
+        .unwrap();
+}
+
+fn add_global_terminal(screen: &mut Screen, terminal_id: u32) {
+    add_global_terminal_on_edge(
+        screen,
+        terminal_id,
+        zellij_utils::data::GlobalPaneEdge::Bottom,
+    )
+}
+
+fn add_global_terminal_on_edge(
+    screen: &mut Screen,
+    terminal_id: u32,
+    edge: zellij_utils::data::GlobalPaneEdge,
+) {
+    use zellij_utils::data::GlobalPanePlacement;
+
+    let pane = PaneFactory::terminal(
+        terminal_id,
+        Default::default(),
+        screen.style,
+        1,
+        "global terminal".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global terminal".to_owned()),
+        None,
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+        screen.osc8_hyperlinks,
+        screen.explicitly_disable_kitty_keyboard_protocol,
+        None,
+    );
+    screen
+        .global_panes
+        .insert(
+            pane,
+            GlobalPanePlacement {
+                edge,
+                size: PercentOrFixed::Fixed(3),
+            },
+            false,
+        )
+        .unwrap();
+    let center = screen.global_panes.resize(screen.size.into()).unwrap();
+    for tab in screen.tabs.values_mut() {
+        tab.resize_whole_tab_to(center).unwrap();
+    }
+}
+
+#[test]
+fn global_pane_manifest_reports_each_global_once_outside_tabs() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    add_global_terminal(&mut screen, 42);
+    screen.global_panes.hide(PaneId::Terminal(42)).unwrap();
+
+    let manifest = screen.generate_and_report_pane_state().unwrap();
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Bottom,
+        size: PercentOrFixed::Fixed(3),
+    };
+
+    assert_eq!(manifest.panes.len(), 2);
+    assert!(manifest.panes.values().flatten().all(|pane| pane.id != 42));
+    assert_eq!(manifest.global_panes.len(), 1);
+    assert_eq!(manifest.global_panes[0].id, 42);
+    assert_eq!(manifest.global_panes[0].global_placement, Some(placement));
+    assert!(manifest.global_panes[0].is_hidden);
+
+    let layout_manifest: zellij_utils::session_serialization::GlobalLayoutManifest =
+        screen.get_layout_metadata(None, None).into();
+    assert_eq!(layout_manifest.global_panes.len(), 1);
+    assert_eq!(
+        layout_manifest.global_panes[0].global_placement,
+        Some(placement)
+    );
+    assert!(layout_manifest.global_panes[0].is_hidden);
+}
+
+fn assert_global_tab_command_rejected(
+    mock_screen: &MockScreen,
+    command_name: &str,
+    build: impl FnOnce(NotificationEnd) -> ScreenInstruction,
+) {
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(build(NotificationEnd::new(completion_tx)))
+        .unwrap();
+    let completion = completion_rx.blocking_recv().unwrap();
+    assert_eq!(completion.exit_status, Some(1), "{command_name}");
+    assert_eq!(
+        completion.error_message.as_deref(),
+        Some("global pane has no tab"),
+        "{command_name}"
+    );
+}
+
+#[test]
+fn global_tab_only_screen_instructions_report_exact_completion_errors() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let global_id = PaneId::Terminal(42);
+    let (created_tx, created_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: global_id,
+            initial_pane_title: Some("global".to_owned()),
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(3),
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(created_tx)),
+            set_blocking: false,
+            declaration_order: None,
+        })
+        .unwrap();
+    created_rx.blocking_recv().unwrap();
+
+    assert_global_tab_command_rejected(&mock_screen, "move", |completion| {
+        ScreenInstruction::MovePane(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "swap", |completion| {
+        ScreenInstruction::MovePaneBackwards(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-down", |completion| {
+        ScreenInstruction::MovePaneDown(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-up", |completion| {
+        ScreenInstruction::MovePaneUp(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-right", |completion| {
+        ScreenInstruction::MovePaneRight(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-left", |completion| {
+        ScreenInstruction::MovePaneLeft(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "previous-swap-layout", |completion| {
+        ScreenInstruction::PreviousSwapLayout(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "next-swap-layout", |completion| {
+        ScreenInstruction::NextSwapLayout(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break", |completion| {
+        ScreenInstruction::BreakPane(None, 1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break-right", |completion| {
+        ScreenInstruction::BreakPaneRight(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break-left", |completion| {
+        ScreenInstruction::BreakPaneLeft(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "floating", |completion| {
+        ScreenInstruction::TogglePaneEmbedOrFloating(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "fullscreen", |completion| {
+        ScreenInstruction::ToggleActiveTerminalFullscreen(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "no-ui-fullscreen", |completion| {
+        ScreenInstruction::ToggleActiveTerminalNoUiFullscreen(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "pin", |completion| {
+        ScreenInstruction::TogglePanePinned(1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "stack", |completion| {
+        ScreenInstruction::StackPanes(vec![global_id], 1, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "coordinates", |completion| {
+        ScreenInstruction::ChangeFloatingPanesCoordinates(
+            vec![(global_id, FloatingPaneCoordinates::default())],
+            Some(completion),
+        )
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-id", |completion| {
+        ScreenInstruction::MovePaneWithPaneIdCli(global_id, None, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "move-backwards-id", |completion| {
+        ScreenInstruction::MovePaneBackwardsWithPaneId(global_id, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "fullscreen-id", |completion| {
+        ScreenInstruction::ToggleFullscreenWithPaneId(global_id, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "no-ui-fullscreen-id", |completion| {
+        ScreenInstruction::ToggleNoUiFullscreenWithPaneId(global_id, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "floating-id", |completion| {
+        ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(global_id, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "pin-id", |completion| {
+        ScreenInstruction::TogglePanePinnedWithPaneId(global_id, Some(completion))
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break-to-new-tab", |completion| {
+        ScreenInstruction::BreakPanesToNewTab {
+            pane_ids: vec![global_id],
+            default_shell: None,
+            should_change_focus_to_new_tab: false,
+            new_tab_name: None,
+            client_id: 1,
+            completion_tx: Some(completion),
+        }
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break-to-tab", |completion| {
+        ScreenInstruction::BreakPanesToTabWithIndex {
+            pane_ids: vec![global_id],
+            tab_index: 0,
+            should_change_focus_to_new_tab: false,
+            client_id: 1,
+            completion_tx: Some(completion),
+        }
+    });
+    assert_global_tab_command_rejected(&mock_screen, "break-to-tab-id", |completion| {
+        ScreenInstruction::BreakPanesToTabWithId {
+            pane_ids: vec![global_id],
+            tab_id: 0,
+            should_change_focus_to_target_tab: false,
+            client_id: 1,
+            completion_tx: Some(completion),
+        }
+    });
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
+fn global_pane_commands_resolve_generic_ids_and_reject_tab_only_ids() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement, Resize, ResizeStrategy};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    let global_id = PaneId::Terminal(42);
+
+    screen
+        .focus_pane_with_id(global_id, false, false, 1)
+        .unwrap();
+    assert_eq!(screen.active_pane_id(1), Some(global_id));
+
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen
+        .write_to_pane_id(
+            &None,
+            b"global input".to_vec(),
+            false,
+            global_id,
+            Some(1),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        pty_writer_rx.recv().unwrap().0,
+        PtyWriteInstruction::Write(bytes, 42, None) if bytes == b"global input"
+    ));
+
+    screen
+        .with_pane(global_id, |pane| {
+            pane.handle_pty_bytes(b"global command output".to_vec());
+            pane.rename(b"renamed global".to_vec());
+        })
+        .unwrap();
+    assert!(screen
+        .with_pane(global_id, |pane| pane.dump_screen(false, None))
+        .unwrap()
+        .contains("global command output"));
+    assert_eq!(
+        screen
+            .with_pane(global_id, |pane| pane.current_title())
+            .unwrap(),
+        "renamed global"
+    );
+
+    screen
+        .resize_pane_with_id(ResizeStrategy::new(Resize::Increase, None), global_id)
+        .unwrap();
+    assert_eq!(
+        screen.global_pane_placement(global_id).unwrap().size,
+        PercentOrFixed::Fixed(4)
+    );
+
+    screen.hide_pane(global_id).unwrap();
+    assert!(screen.global_panes.is_hidden(global_id).unwrap());
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(1)));
+    screen.show_pane(global_id).unwrap();
+    assert!(!screen.global_panes.is_hidden(global_id).unwrap());
+
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Right,
+        size: PercentOrFixed::Fixed(6),
+    };
+    screen
+        .set_global_pane_placement(global_id, placement)
+        .unwrap();
+    assert_eq!(screen.global_pane_placement(global_id), Some(placement));
+
+    let (pty_tx, pty_rx) = channels::unbounded::<(PtyInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let rerun = RunCommand {
+        command: PathBuf::from("rerun-global"),
+        ..Default::default()
+    };
+    screen
+        .with_pane(global_id, |pane| pane.hold(Some(0), false, rerun.clone()))
+        .unwrap();
+    screen.rerun_command_pane_with_id(42, None);
+    assert!(matches!(
+        pty_rx.recv().unwrap().0,
+        PtyInstruction::ReRunCommandInPane(PaneId::Terminal(42), command, None)
+            if command == rerun
+    ));
+
+    let snapshot = (
+        screen.global_pane_placement(global_id),
+        screen.global_panes.is_hidden(global_id),
+        screen
+            .with_pane(global_id, |pane| pane.current_title())
+            .unwrap(),
+    );
+    for command in [
+        "move",
+        "swap",
+        "move-to-tab",
+        "break",
+        "stack",
+        "floating",
+        "fullscreen",
+        "pin",
+    ] {
+        assert_eq!(
+            screen
+                .reject_global_for_tab_operation(global_id)
+                .unwrap_err()
+                .to_string(),
+            "global pane has no tab",
+            "{command}"
+        );
+        assert_eq!(
+            (
+                screen.global_pane_placement(global_id),
+                screen.global_panes.is_hidden(global_id),
+                screen
+                    .with_pane(global_id, |pane| pane.current_title())
+                    .unwrap(),
+            ),
+            snapshot,
+            "{command} mutated the global pane"
+        );
+    }
+}
+
+#[test]
+fn global_plugin_commands_use_the_global_first_resolver() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin/77", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+    let global_id = PaneId::Plugin(77);
+    while plugin_rx.try_recv().is_ok() {}
+
+    screen
+        .focus_pane_with_id(global_id, false, false, 1)
+        .unwrap();
+    assert_eq!(screen.active_pane_id(1), Some(global_id));
+    while plugin_rx.try_recv().is_ok() {}
+    screen
+        .write_to_pane_id(&None, b"x".to_vec(), false, global_id, Some(1), None)
+        .unwrap();
+    assert!(matches!(
+        plugin_rx.recv().unwrap().0,
+        PluginInstruction::Update(updates)
+            if updates.iter().any(|(plugin_id, client_id, event)| {
+                *plugin_id == Some(77)
+                    && *client_id == Some(1)
+                    && matches!(event, Event::Key(_))
+            })
+    ));
+
+    screen
+        .with_pane(global_id, |pane| pane.rename(b"renamed plugin".to_vec()))
+        .unwrap();
+    assert_eq!(
+        screen
+            .with_pane(global_id, |pane| pane.current_title())
+            .unwrap(),
+        "renamed plugin"
+    );
+    screen.hide_pane(global_id).unwrap();
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(1)));
+    screen.show_pane(global_id).unwrap();
+
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Top,
+        size: PercentOrFixed::Fixed(2),
+    };
+    screen
+        .set_global_pane_placement(global_id, placement)
+        .unwrap();
+    assert_eq!(screen.global_pane_placement(global_id), Some(placement));
+    assert_eq!(
+        screen
+            .reject_global_for_tab_operation(global_id)
+            .unwrap_err()
+            .to_string(),
+        "global pane has no tab"
+    );
+
+    assert!(screen.close_global_pane(global_id, None).unwrap());
+    assert!(screen.global_panes.pane(global_id).is_none());
+}
+
+#[test]
+fn switching_tabs_retains_global_pane_focus() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    add_global_terminal(&mut screen, 42);
+
+    screen
+        .focus_pane_with_id(PaneId::Terminal(42), false, false, 1)
+        .unwrap();
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(42)));
+
+    screen.switch_active_tab(0, None, true, 1).unwrap();
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(42))
+    );
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(42)));
+    // the destination tab still remembers its own focus for when the global pane is released
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_active_pane_id(1),
+        Some(PaneId::Terminal(1))
+    );
+}
+
+#[test]
+fn global_focus_keeps_tab_focus_remembered_but_reports_the_tab_inactive() {
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    let (pty_tx, pty_rx) = channels::unbounded::<(PtyInstruction, ErrorContext)>();
+    let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+
+    screen.render_to_clients().unwrap();
+    while server_rx.try_recv().is_ok() {}
+    while pty_rx.try_recv().is_ok() {}
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(8, 1)), 1);
+    screen.render_to_clients().unwrap();
+
+    let focused_render = server_rx.recv().unwrap().0;
+    let focused_cursor = take_snapshots_and_cursor_coordinates_from_render_events(
+        [&focused_render].into_iter(),
+        size,
+    )[0]
+    .0;
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_active_pane_id(1),
+        Some(PaneId::Terminal(1))
+    );
+    assert!(pty_rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PtyInstruction::UpdateActivePane(None, 1))));
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(1, 1)), 1);
+    screen.render_to_clients().unwrap();
+
+    let tab_focused_render = server_rx.recv().unwrap().0;
+    let tab_focused_cursor = take_snapshots_and_cursor_coordinates_from_render_events(
+        [&tab_focused_render].into_iter(),
+        size,
+    )[0]
+    .0;
+
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_active_pane_id(1),
+        Some(PaneId::Terminal(1))
+    );
+    assert!(pty_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PtyInstruction::UpdateActivePane(Some(PaneId::Terminal(1)), 1)
+    )));
+    assert_eq!(focused_cursor, Some((0, 7)));
+    assert_eq!(tab_focused_cursor, Some((0, 0)));
+}
+
+#[test]
+fn mouse_click_focuses_global_pane_and_center_click_restores_tab_focus() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(8, 1)), 1);
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(42)));
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(1, 1)), 1);
+    assert_eq!(screen.global_panes.focused_pane_id(1), None);
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn global_terminal_mouse_uses_content_coordinates_and_ignores_frames() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .global_panes
+        .set_pane_frame_style(PaneFrameStyle::Full)
+        .unwrap();
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"\x1b[?1000h\x1b[?1006h".to_vec());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(8, 3)), 1);
+    assert!(matches!(
+        pty_writer_rx.recv().unwrap().0,
+        PtyWriteInstruction::Write(bytes, 42, None) if bytes == b"\x1b[<0;3;1M"
+    ));
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 3)), 1);
+    assert!(pty_writer_rx.try_recv().is_err());
+}
+
+#[test]
+fn global_terminal_mouse_drag_uses_the_existing_selection_behavior() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"select me".to_vec());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 0)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(7, 6)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(7, 6)), 1);
+
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Terminal(42), |pane| pane.get_selected_text(1))
+            .flatten()
+            .as_deref(),
+        Some("select")
+    );
+    assert!(plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .any(|(_, _, event)| matches!(event, Event::CopyToClipboard(_))),
+            _ => false,
+        }));
+}
+
+#[test]
+fn global_terminal_mouse_wheel_sends_cursor_keys_in_alternate_mode() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"\x1b[?1049h".to_vec());
+
+    screen.handle_mouse_event(MouseEvent::new_scroll_up_event(Position::new(7, 1)), 1);
+
+    let writes: Vec<_> = pty_writer_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::Write(bytes, 42, None) => Some(bytes),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, vec![b"\x1b[A".to_vec(); 3]);
+}
+
+#[test]
+fn global_plugin_mouse_and_paste_use_the_existing_plugin_events() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin/77", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+    screen
+        .global_panes
+        .set_pane_frame_style(PaneFrameStyle::Full)
+        .unwrap();
+    while plugin_rx.try_recv().is_ok() {}
+
+    for event in [
+        MouseEvent::new_left_press_event(Position::new(2, 2)),
+        MouseEvent::new_left_motion_event(Position::new(3, 3)),
+        MouseEvent::new_left_release_event(Position::new(3, 3)),
+        MouseEvent::new_right_press_event(Position::new(2, 2)),
+        MouseEvent::new_scroll_up_event(Position::new(2, 2)),
+        MouseEvent::new_scroll_down_event(Position::new(2, 2)),
+    ] {
+        screen.handle_mouse_event(event, 1);
+    }
+    screen
+        .paste_to_pane_id(b"global paste".to_vec(), PaneId::Plugin(77), Some(1), None)
+        .unwrap();
+
+    let events: Vec<_> = plugin_rx
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .filter_map(|(plugin_id, client_id, event)| {
+                    (plugin_id == Some(77) && client_id == Some(1)).then_some(event)
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+    assert!(
+        events.contains(&Event::Mouse(Mouse::LeftClick(1, 1))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::Hold(2, 2))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::Release(2, 2))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::RightClick(1, 1))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::ScrollUp(3))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::ScrollDown(3))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::PastedText("global paste".to_owned())),
+        "{events:?}"
+    );
+}
+
+/// A plugin opts into text selection with `set_self_mouse_selection_support`, which arrives as
+/// `ScreenInstruction::SetMouseSelectionSupport`. That used to search only the tabs, so a global
+/// pane - which belongs to no tab - never got the opt-in and its drags stayed click events.
+#[test]
+fn global_plugin_pane_selection_copies_once_the_plugin_opts_in() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, 0);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin/77", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+    screen
+        .global_panes
+        .handle_plugin_bytes(77, 1, b"abc".to_vec());
+
+    // the lookup the `SetMouseSelectionSupport` handler does - `None` here means the instruction
+    // gets parked in `pending_events_waiting_for_tab` and the opt-in is lost
+    assert!(
+        screen
+            .with_pane(PaneId::Plugin(77), |pane| pane
+                .set_mouse_selection_support(true))
+            .is_some(),
+        "the plugin's mouse selection opt-in must reach a global pane"
+    );
+    while plugin_rx.try_recv().is_ok() {}
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(0, 0)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(0, 3)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(0, 3)), 1);
+
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Plugin(77), |pane| pane.get_selected_text(1))
+            .flatten()
+            .as_deref(),
+        Some("abc")
+    );
+    assert!(plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .any(|(_, _, event)| matches!(event, Event::CopyToClipboard(_))),
+            _ => false,
+        }));
+}
+
+/// A left global pane reserves its own last column for the tab separator, so a drag to end-of-line
+/// crosses it. That cell is "on the frame", and bailing out there used to drop the release and
+/// leave the client's mouse captured by the global pane.
+#[test]
+fn global_terminal_selection_survives_a_release_on_the_frame() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal_on_edge(&mut screen, 42, GlobalPaneEdge::Left);
+    screen
+        .set_global_pane_placement(
+            PaneId::Terminal(42),
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(11),
+            },
+        )
+        .unwrap();
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"select me".to_vec());
+    // 11 columns wide, the last of which is the separator the tab draws into
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Terminal(42), |pane| pane.get_content_columns())
+            .unwrap(),
+        10
+    );
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(0, 0)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(0, 6)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(0, 10)), 1);
+
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Terminal(42), |pane| pane.get_selected_text(1))
+            .flatten()
+            .as_deref(),
+        Some("select me")
+    );
+    // and the client is no longer captured: a motion over the tab area is the tab's again
+    assert_eq!(
+        screen
+            .global_panes
+            .pane_id_for_mouse_event(&MouseEvent::new_left_motion_event(Position::new(5, 30)), 1),
+        None
+    );
+}
+
+/// A release outside the pane is clamped into the content box, the same way the tab path clamps it.
+#[test]
+fn global_terminal_selection_clamps_a_release_outside_the_pane() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"line one\r\nline two".to_vec());
+
+    // the bottom pane starts at row 7 - drag up from its second row and release above it entirely
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(8, 4)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(2, 4)), 1);
+
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Terminal(42), |pane| pane.get_selected_text(1))
+            .flatten()
+            .as_deref(),
+        Some(" one\nline")
+    );
+}
+
+/// A wheel event is also a `Press`, and used to reset the drag bookkeeping mid-selection.
+#[test]
+fn global_terminal_wheel_does_not_cancel_a_selection_drag() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"select me".to_vec());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 0)), 1);
+    screen.handle_mouse_event(MouseEvent::new_scroll_up_event(Position::new(7, 3)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(7, 9)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(7, 9)), 1);
+
+    assert_eq!(
+        screen
+            .with_pane(PaneId::Terminal(42), |pane| pane.get_selected_text(1))
+            .flatten()
+            .as_deref(),
+        Some("select me")
+    );
+}
+
+/// The `Copy` action reads the focused pane, which may be a global one.
+#[test]
+fn copy_action_copies_the_selection_of_a_focused_global_pane() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen.copy_options.copy_on_select = false;
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"select me".to_vec());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 0)), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(7, 6)), 1);
+    while plugin_rx.try_recv().is_ok() {}
+
+    screen.copy_selection(1).unwrap();
+
+    assert!(plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .any(|(_, _, event)| matches!(event, Event::CopyToClipboard(_))),
+            _ => false,
+        }));
+}
+
+/// The status bar drops its "copied to clipboard" message on `InputReceived`, so the event that
+/// caused the copy must not send one - every other one must.
+#[test]
+fn global_terminal_copy_leaves_the_clipboard_message_alone() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    screen
+        .global_panes
+        .handle_pty_bytes(42, b"select me".to_vec());
+    // stand in for the status bar: something that wants to hear about this client's input
+    screen
+        .background_plugin_subscriptions
+        .insert((99, 1), HashSet::from([EventType::InputReceived]));
+
+    let input_received_since = |rx: &channels::Receiver<(PluginInstruction, ErrorContext)>| {
+        rx.try_iter().any(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .any(|(_, _, event)| matches!(event, Event::InputReceived)),
+            _ => false,
+        })
+    };
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 0)), 1);
+    while plugin_rx.try_recv().is_ok() {}
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(Position::new(7, 6)), 1);
+    assert!(!input_received_since(&plugin_rx), "copy was announced away");
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(7, 0)), 1);
+    assert!(input_received_since(&plugin_rx));
+}
+
+#[test]
+fn global_terminal_and_plugin_output_is_delivered_to_dock_panes() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/output/plugin", &None, None, None).unwrap();
+    add_global_terminal(&mut screen, 42);
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+    screen.global_panes.resize(screen.size.into()).unwrap();
+
+    assert!(screen
+        .global_panes
+        .handle_pty_bytes(42, b"terminal dock output".to_vec()));
+    assert!(screen
+        .global_panes
+        .handle_plugin_bytes(77, 1, b"plugin dock output".to_vec()));
+
+    let terminal_contents = screen
+        .global_panes
+        .pane(PaneId::Terminal(42))
+        .unwrap()
+        .pane_contents(None, false, None)
+        .viewport
+        .join("\n");
+    let plugin_contents = screen
+        .global_panes
+        .pane(PaneId::Plugin(77))
+        .unwrap()
+        .pane_contents(Some(1), false, None)
+        .viewport
+        .join("\n");
+    assert!(terminal_contents.contains("terminal dock output"));
+    assert!(plugin_contents
+        .replace('\n', "")
+        .contains("plugin dock output"));
+}
+
+#[test]
+fn global_process_exit_removes_the_dock_and_restores_tab_geometry() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+    assert_eq!(screen.tabs.get(&0).unwrap().size.rows, 7);
+
+    assert!(screen
+        .close_global_pane(PaneId::Terminal(42), None)
+        .unwrap());
+
+    assert!(screen.global_panes.pane(PaneId::Terminal(42)).is_none());
+    assert_eq!(screen.tabs.get(&0).unwrap().size.rows, 10);
+}
+
+#[test]
+fn global_close_cleans_up_once_before_a_failing_reflow() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    let (pty_tx, pty_rx) = channels::unbounded::<(PtyInstruction, ErrorContext)>();
+    screen.global_panes = GlobalPaneManager::new(
+        ThreadSenders {
+            to_pty_writer: Some(SenderWithContext::new(pty_writer_tx)),
+            ..Default::default()
+        },
+        screen.character_cell_size.clone(),
+        PaneFrameStyle::None,
+    );
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    screen.bus.senders.should_silently_fail = false;
+    add_global_terminal(&mut screen, 42);
+    // a second pane, on a free edge and allocated after the first, so removing the first regrows it
+    // and the reflow has a resize to send (which the dropped receiver below makes fail)
+    add_global_terminal_on_edge(&mut screen, 43, zellij_utils::data::GlobalPaneEdge::Left);
+    while pty_writer_rx.try_recv().is_ok() {}
+    drop(pty_writer_rx);
+
+    assert!(screen
+        .close_global_pane(PaneId::Terminal(42), None)
+        .is_err());
+
+    assert!(screen.global_panes.pane(PaneId::Terminal(42)).is_none());
+    assert_eq!(
+        pty_rx
+            .try_iter()
+            .filter(|(instruction, _)| matches!(
+                instruction,
+                PtyInstruction::ClosePane(PaneId::Terminal(42), None)
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn resurrection_layout_global_panes_launch_once_in_declaration_order_before_tab_panes() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let terminal_placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Bottom,
+        size: PercentOrFixed::Fixed(3),
+    };
+    let plugin_placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Right,
+        size: PercentOrFixed::Fixed(8),
+    };
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/layout/plugin", &None, None, None).unwrap();
+    mock_screen.default_layout.global_panes = vec![
+        GlobalPaneLayout {
+            run: Some(Run::Command(RunCommand {
+                command: PathBuf::from("layout-command"),
+                ..Default::default()
+            })),
+            placement: terminal_placement,
+            borderless: true,
+            focus: false,
+            hidden: true,
+        },
+        GlobalPaneLayout {
+            run: Some(Run::Plugin(run_plugin)),
+            placement: plugin_placement,
+            borderless: false,
+            focus: true,
+            hidden: false,
+        },
+    ];
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    mock_screen.new_tab(TiledPaneLayout::default());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let pty_instructions: Vec<_> = pty_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                PtyInstruction::SpawnTerminal(..) | PtyInstruction::FillPluginCwd(..)
+            )
+        })
+        .collect();
+    let plugin_instructions: Vec<_> = plugin_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                PluginInstruction::Load(..) | PluginInstruction::NewTab(..)
+            )
+        })
+        .collect();
+    mock_screen.teardown(vec![screen_thread]);
+
+    assert_eq!(pty_instructions.len(), 1);
+    assert!(matches!(
+        &pty_instructions[0],
+        PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(_)),
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            Some(properties),
+        ) if properties.placement == terminal_placement
+            && properties.borderless
+            && properties.initially_hidden
+            && !properties.should_focus
+            && properties.declaration_order == Some(0)
+    ));
+    assert_eq!(plugin_instructions.len(), 3);
+    assert!(matches!(
+        &plugin_instructions[0],
+        PluginInstruction::Load(
+            _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(properties)
+        ) if properties.placement == plugin_placement
+            && !properties.borderless
+            && !properties.initially_hidden
+            && properties.should_focus
+            && properties.declaration_order == Some(1)
+    ));
+    assert!(matches!(
+        plugin_instructions[1],
+        PluginInstruction::NewTab(..)
+    ));
+    assert!(matches!(
+        plugin_instructions[2],
+        PluginInstruction::NewTab(..)
+    ));
+}
+
+#[test]
+fn global_plugin_launch_retains_placement_when_not_loaded() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Right,
+        size: PercentOrFixed::Fixed(9),
+    };
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let session_metadata = mock_screen.clone_session_metadata();
+    let screen_thread = mock_screen.run(None, vec![]);
+    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::Exit,
+        pty_receiver
+    );
+    route_arbitrary_action_to_server(
+        &session_metadata,
+        Action::LaunchOrFocusPlugin {
+            plugin: RunPluginOrAlias::from_url("file:/path/to/global/plugin", &None, None, None)
+                .unwrap(),
+            should_float: false,
+            move_to_focused_tab: false,
+            should_open_in_place: false,
+            close_replaced_pane: false,
+            skip_cache: false,
+            tab_id: None,
+            global_placement: Some(placement),
+        },
+        10,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    mock_screen.teardown(vec![pty_thread, screen_thread]);
+
+    assert!(received_pty_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|instruction| matches!(
+            instruction,
+            PtyInstruction::FillPluginCwd(
+                _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(actual)
+            ) if actual.placement == placement
+        )));
+}
+
+#[test]
+fn global_hocus_sidebar_restore_reuses_the_hidden_plugin() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/hocus.wasm", &None, None, None).unwrap();
+    let global_id = PaneId::Plugin(77);
+    add_matching_global_plugin(&mut screen, 77, run_plugin.clone(), false);
+    screen
+        .focus_pane_with_id(global_id, false, false, 1)
+        .unwrap();
+    // move the focus back into a tab - switching tabs alone would keep it on the global pane
+    screen
+        .focus_pane_with_id(PaneId::Terminal(1), false, false, 1)
+        .unwrap();
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(1)));
+    assert!(screen.global_panes.visible_pane_ids().contains(&global_id));
+
+    screen.hide_pane(global_id).unwrap();
+    assert!(screen.global_panes.is_hidden(global_id).unwrap());
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let mut completion = Some(NotificationEnd::new(completion_tx));
+
+    assert!(screen
+        .focus_global_plugin_pane(&run_plugin, 1, &mut completion)
+        .unwrap());
+    drop(completion);
+
+    assert_eq!(screen.active_tab_ids[&1], 0);
+    assert_eq!(screen.global_panes.plugin_ids(), vec![77]);
+    assert!(screen.global_panes.visible_pane_ids().contains(&global_id));
+    assert_eq!(screen.global_panes.focused_pane_id(1), Some(global_id));
+    assert_eq!(
+        completion_rx.blocking_recv().unwrap().affected_pane_id,
+        Some(global_id)
+    );
+    assert!(screen.tabs.values().all(|tab| tab
+        .pane_infos()
+        .iter()
+        .all(|pane| !(pane.is_plugin && pane.id == 77))));
+    assert!(screen.tabs.values().all(|tab| tab
+        .get_floating_panes()
+        .all(|(pane_id, _)| *pane_id != global_id)));
+    assert!(!plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::Load(..))));
+}
+
+#[test]
+fn global_plugin_launch_focuses_visible_match_without_moving_tabs_or_loading() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/global/plugin", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin.clone(), false);
+    let active_tab = screen.active_tab_ids[&1];
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let mut completion = Some(NotificationEnd::new(completion_tx));
+
+    assert!(screen
+        .focus_global_plugin_pane(&run_plugin, 1, &mut completion)
+        .unwrap());
+    drop(completion);
+
+    assert_eq!(screen.active_tab_ids[&1], active_tab);
+    assert_eq!(screen.global_panes.plugin_ids(), vec![77]);
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Plugin(77))
+    );
+    assert_eq!(
+        completion_rx.blocking_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(77))
+    );
+}
+
+#[test]
+fn global_plugin_launch_rejects_a_matching_tab_local_plugin() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/plugin", &None, None, None).unwrap();
+    let mut initial_layout = TiledPaneLayout::default();
+    initial_layout.run = Some(Run::Plugin(run_plugin.clone()));
+    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::LaunchOrFocusPlugin(
+            run_plugin,
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+            1,
+            Some(NotificationEnd::new(completion_tx)),
+            None,
+            Some(GlobalPanePlacement {
+                edge: GlobalPaneEdge::Right,
+                size: PercentOrFixed::Fixed(8),
+            }),
+        ))
+        .unwrap();
+    let completion = completion_rx.blocking_recv().unwrap();
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    mock_screen.teardown(vec![screen_thread]);
+
+    assert_eq!(completion.exit_status, Some(1));
+    assert!(completion.error_message.unwrap().contains("tab-local pane"));
+    assert!(!pty_receiver
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PtyInstruction::FillPluginCwd(..))));
 }
 
 #[test]
@@ -3366,6 +6560,9 @@ pub fn send_cli_new_pane_action_with_default_parameters() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -3402,6 +6599,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         no_focus: false,
         borderless: None,
         tab_id: Some(0),
+        global_placement: None,
     };
     route_arbitrary_action_to_server(&session_metadata, action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -3476,6 +6674,9 @@ pub fn send_cli_new_pane_action_with_split_direction() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -3532,6 +6733,9 @@ pub fn send_cli_new_pane_action_with_command_and_cwd() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -3599,6 +6803,9 @@ pub fn send_cli_new_pane_action_with_floating_pane_and_coordinates() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -4305,6 +7512,9 @@ pub fn send_cli_launch_or_focus_plugin_action() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -4368,6 +7578,9 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -4453,6 +7666,9 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         url: "fixture_plugin_for_tests".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -5427,6 +8643,9 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -5525,6 +8744,9 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -8161,6 +11383,9 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -8224,6 +11449,9 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -8336,6 +11564,9 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
+        global: false,
+        edge: None,
+        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -8398,6 +11629,9 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
+        global: false,
+        edge: None,
+        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -9308,16 +12542,21 @@ struct ThemeCapture {
 }
 
 impl ThemeCapture {
-    fn drain_plugin_events(&self) -> Vec<Event> {
+    fn drain_plugin_updates(&self) -> Vec<(Option<u32>, Option<ClientId>, Event)> {
         let mut out = Vec::new();
         while let Ok((instr, _ctx)) = self.plugin_rx.try_recv() {
             if let PluginInstruction::Update(updates) = instr {
-                for (_pid, _cid, ev) in updates {
-                    out.push(ev);
-                }
+                out.extend(updates);
             }
         }
         out
+    }
+
+    fn drain_plugin_events(&self) -> Vec<Event> {
+        self.drain_plugin_updates()
+            .into_iter()
+            .map(|(_, _, event)| event)
+            .collect()
     }
     fn drain_pty_writes(&self) -> Vec<(Vec<u8>, u32)> {
         let mut out = Vec::new();
@@ -9397,6 +12636,116 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
             pty_writer_rx,
         },
     )
+}
+
+fn add_hidden_global_plugin(screen: &mut Screen, plugin_id: u32) {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let pane = PaneFactory::plugin(
+        plugin_id,
+        Default::default(),
+        screen.bus.senders.to_plugin.clone().unwrap(),
+        "global plugin".to_owned(),
+        "global plugin".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        None,
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    screen
+        .global_panes
+        .insert(
+            pane,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(1),
+            },
+            true,
+        )
+        .unwrap();
+}
+
+#[test]
+fn reconfigure_sends_global_plugin_the_updated_client_mode_info_once() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, 0);
+    screen.mode_info.insert(1, ModeInfo::default());
+    add_hidden_global_plugin(&mut screen, 77);
+    capture.drain_plugin_updates();
+
+    screen
+        .reconfigure(
+            Keybinds::default(),
+            InputMode::Locked,
+            Styling::default(),
+            true,
+            None,
+            PaneFrameStyle::None,
+            None,
+            None,
+            false,
+            true,
+            false,
+            true,
+            true,
+            false,
+            None,
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+            NestedSessionHandling::default(),
+            1,
+        )
+        .unwrap();
+
+    let mode_infos: Vec<_> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(
+            |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
+                (Some(77), Some(1), Event::ModeUpdate(mode_info)) => Some(mode_info),
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(mode_infos.len(), 1);
+    assert_eq!(mode_infos[0].base_mode, Some(InputMode::Locked));
+    assert!(mode_infos[0].capabilities.arrow_fonts);
+    assert!(mode_infos[0].style.hide_session_name);
+}
+
+#[test]
+fn group_marking_updates_global_plugin_mode_info_once() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, 0);
+    add_hidden_global_plugin(&mut screen, 77);
+    capture.drain_plugin_updates();
+
+    screen.toggle_group_marking(1).unwrap();
+
+    let mode_infos: Vec<_> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(
+            |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
+                (Some(77), Some(1), Event::ModeUpdate(mode_info)) => Some(mode_info),
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(mode_infos.len(), 1);
+    assert_eq!(mode_infos[0].currently_marking_pane_group, Some(true));
 }
 
 #[test]
@@ -9967,6 +13316,115 @@ fn recompute_tab_size_takes_independent_min_across_axes() {
         screen.tabs.get(&0).unwrap().size,
         Size { cols: 80, rows: 24 },
         "Tab size = (min cols across viewers, min rows across viewers)"
+    );
+}
+
+#[test]
+fn resize_to_clients_takes_the_min_across_clients_and_grows_back_on_detach() {
+    let initial_size = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_new_screen(initial_size, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2, false).expect("TEST");
+
+    screen.set_client_size(
+        1,
+        Size {
+            cols: 100,
+            rows: 50,
+        },
+    );
+    screen.set_client_size(
+        2,
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+    );
+    screen.resize_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.size,
+        Size {
+            cols: 100,
+            rows: 40
+        },
+        "Screen size = (min cols across clients, min rows across clients)"
+    );
+
+    screen.remove_client(2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.size,
+        Size {
+            cols: 100,
+            rows: 50
+        },
+        "Screen grows back to the remaining client once the constraining one detaches"
+    );
+}
+
+#[test]
+fn resize_to_clients_reflows_global_panes_and_survives_a_render() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 50, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    insert_left_global_pane(&mut screen, 10);
+    screen.set_client_size(1, Size { cols: 50, rows: 12 });
+    screen.resize_to_clients().expect("TEST");
+
+    screen.set_client_size(1, Size { cols: 40, rows: 10 });
+    screen.resize_to_clients().expect("TEST");
+
+    let global_pane_geom = screen
+        .global_panes
+        .panes()
+        .next()
+        .expect("TEST")
+        .0
+        .position_and_size();
+    assert_eq!(
+        global_pane_geom.rows.as_usize(),
+        10,
+        "Global pane reflows to the new screen height"
+    );
+    let tab = screen.tabs.get(&0).unwrap();
+    assert_eq!(tab.get_display_area(), Size { cols: 30, rows: 10 });
+    assert_eq!(tab.get_display_area_origin(), (10, 0));
+
+    // render_to_clients lays every tab out against Screen::size on each frame, so a resize that
+    // did not reach Screen::size would be snapped back here
+    screen.render_to_clients().expect("TEST");
+    let tab = screen.tabs.get(&0).unwrap();
+    assert_eq!(tab.get_display_area(), Size { cols: 30, rows: 10 });
+    assert_eq!(tab.get_display_area_origin(), (10, 0));
+}
+
+#[test]
+fn character_cell_size_is_derived_from_the_resized_screen() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    new_tab(&mut screen, 1, 0);
+
+    // a font-size change: the terminal keeps its pixel size but reports fewer, larger cells
+    screen.set_client_size(1, Size { cols: 40, rows: 12 });
+    screen.resize_to_clients().expect("TEST");
+    screen.update_pixel_dimensions(PixelDimensions {
+        text_area_size: Some(SizeInPixels {
+            width: 800,
+            height: 480,
+        }),
+        character_cell_size: None,
+    });
+
+    assert_eq!(
+        *screen.character_cell_size.borrow(),
+        Some(SizeInPixels {
+            width: 20,
+            height: 40
+        }),
+        "Cell size is derived from the new screen size, not the one at session start"
     );
 }
 
@@ -10653,7 +14111,7 @@ fn fit_disabled_tab_repins_on_desktop_resize() {
             rows: 40,
         },
     );
-    screen.recompute_fit_disabled_tabs().expect("TEST");
+    screen.resize_to_clients().expect("TEST");
 
     assert_eq!(
         screen.tabs.get(&0).unwrap().size,
@@ -11376,5 +14834,762 @@ fn attaching_web_watcher_follows_the_host_tab() {
         screen.active_tab_ids.get(&2),
         Some(&1),
         "watcher client mirrors the host tab"
+    );
+}
+
+// =====================================================================================
+// GP validation-phase regression tests (see global-pane-review-checklist.md).
+// Retained from Phase 1 validation: the failing tests below demonstrate confirmed defects
+// and must pass in their respective fix stages.
+// - gp01_* (stage 2A): FAIL - resize below a fixed pane / percentage rounding to zero aborts
+// - gp02_* (stage 2B): FAIL - moved floating panes drift by the global-pane origin on reflow
+// - gp04_* (stage 3B): PASS - protects the strip-change frame reapplication
+// - gp05_* (stage 4A): FAIL - borderless left/top panes' content is overwritten by separators
+// - gp06_* (stage 4B): FAIL - same-edge global panes have no internal separator
+// =====================================================================================
+
+fn gp_insert_global_pane(
+    screen: &mut Screen,
+    id: u32,
+    edge: zellij_utils::data::GlobalPaneEdge,
+    size: PercentOrFixed,
+    borderless: bool,
+) {
+    gp_try_insert_global_pane(screen, id, edge, size, borderless, false).unwrap()
+}
+
+fn gp_try_insert_global_pane(
+    screen: &mut Screen,
+    id: u32,
+    edge: zellij_utils::data::GlobalPaneEdge,
+    size: PercentOrFixed,
+    borderless: bool,
+    hidden: bool,
+) -> Result<(), String> {
+    use zellij_utils::data::GlobalPanePlacement;
+
+    let mut global_pane = PaneFactory::terminal(
+        id,
+        Default::default(),
+        screen.style,
+        1,
+        "global".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    if borderless {
+        global_pane.set_borderless(true);
+    }
+    screen
+        .global_panes
+        .insert(global_pane, GlobalPanePlacement { edge, size }, hidden)
+}
+
+fn gp_drain_client_1_snapshot(
+    server_receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
+    grid: &mut Grid,
+) -> String {
+    let mut snapshot = String::new();
+    while let Ok((instruction, _)) = server_receiver.try_recv() {
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            if let Some(output) = rendered_clients.remove(&1) {
+                snapshot = take_snapshot_and_cursor_coordinates(&output, grid).1;
+            }
+        }
+    }
+    snapshot
+}
+
+fn gp_line_content(snapshot_line: &str) -> &str {
+    // grid debug lines are formatted as `00 (C): <content>`
+    match snapshot_line.find("): ") {
+        Some(index) => &snapshot_line[index + 3..],
+        None => snapshot_line,
+    }
+}
+
+#[test]
+fn gp01_fixed_size_global_pane_keeps_rendering_when_terminal_shrinks() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 12);
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (12, 0)
+    );
+
+    let resize_result = screen.resize_to_screen(Size { cols: 12, rows: 10 });
+    assert!(
+        resize_result.is_ok(),
+        "shrinking the terminal to the global pane width failed: {:?}",
+        resize_result.err().map(|e| format!("{:#}", e))
+    );
+    let render_result = screen.render_to_clients();
+    assert!(
+        render_result.is_ok(),
+        "rendering after the shrink failed: {:?}",
+        render_result.err().map(|e| format!("{:#}", e))
+    );
+
+    screen
+        .resize_to_screen(Size { cols: 40, rows: 10 })
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (12, 0)
+    );
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area(),
+        Size { cols: 28, rows: 10 }
+    );
+}
+
+#[test]
+fn gp01_percent_global_pane_keeps_rendering_when_thickness_rounds_to_zero() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Percent(20),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (8, 0)
+    );
+
+    // 20% of 4 columns rounds down to zero, which the allocator rejects
+    let resize_result = screen.resize_to_screen(Size { cols: 4, rows: 10 });
+    assert!(
+        resize_result.is_ok(),
+        "shrinking until the percentage rounds to zero failed: {:?}",
+        resize_result.err().map(|e| format!("{:#}", e))
+    );
+    let render_result = screen.render_to_clients();
+    assert!(
+        render_result.is_ok(),
+        "rendering after the shrink failed: {:?}",
+        render_result.err().map(|e| format!("{:#}", e))
+    );
+}
+
+#[test]
+fn gp02_moved_floating_pane_keeps_position_across_noop_reflows_beside_left_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+    use zellij_utils::pane_size::Viewport;
+
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 10);
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (10, 0)
+    );
+
+    {
+        let tab = screen.get_active_tab_mut(1).unwrap();
+        tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
+            .expect("TEST");
+        tab.change_floating_pane_coordinates(
+            &PaneId::Terminal(2),
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(10)),
+                y: Some(PercentOrFixed::Fixed(5)),
+                ..Default::default()
+            },
+        )
+        .expect("TEST");
+    }
+    let before = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(before.x, 20, "moved pane should sit at tab-local x=10");
+
+    let display_area = Viewport {
+        x: 10,
+        y: 0,
+        cols: 111,
+        rows: 20,
+    };
+    for iteration in 0..3 {
+        screen
+            .tabs
+            .get_mut(&0)
+            .unwrap()
+            .resize_whole_tab_to(display_area)
+            .expect("TEST");
+        let after = screen
+            .tabs
+            .get(&0)
+            .unwrap()
+            .get_pane_with_id(PaneId::Terminal(2))
+            .unwrap()
+            .position_and_size();
+        assert_eq!(
+            after.x,
+            before.x,
+            "floating pane x drifted on no-op reflow {}",
+            iteration + 1
+        );
+        assert_eq!(
+            after.y,
+            before.y,
+            "floating pane y drifted on no-op reflow {}",
+            iteration + 1
+        );
+    }
+}
+
+#[test]
+fn gp02_moved_floating_pane_keeps_position_across_noop_reflows_beneath_top_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+    use zellij_utils::pane_size::Viewport;
+
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Top,
+        PercentOrFixed::Fixed(4),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (0, 4)
+    );
+
+    {
+        let tab = screen.get_active_tab_mut(1).unwrap();
+        tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
+            .expect("TEST");
+        tab.change_floating_pane_coordinates(
+            &PaneId::Terminal(2),
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(10)),
+                y: Some(PercentOrFixed::Fixed(2)),
+                ..Default::default()
+            },
+        )
+        .expect("TEST");
+    }
+    let before = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(before.y, 6, "moved pane should sit at tab-local y=2");
+
+    let display_area = Viewport {
+        x: 0,
+        y: 4,
+        cols: 121,
+        rows: 16,
+    };
+    for iteration in 0..3 {
+        screen
+            .tabs
+            .get_mut(&0)
+            .unwrap()
+            .resize_whole_tab_to(display_area)
+            .expect("TEST");
+        let after = screen
+            .tabs
+            .get(&0)
+            .unwrap()
+            .get_pane_with_id(PaneId::Terminal(2))
+            .unwrap()
+            .position_and_size();
+        assert_eq!(
+            after.x,
+            before.x,
+            "floating pane x drifted on no-op reflow {}",
+            iteration + 1
+        );
+        assert_eq!(
+            after.y,
+            before.y,
+            "floating pane y drifted on no-op reflow {}",
+            iteration + 1
+        );
+    }
+}
+
+#[test]
+fn gp02_moved_floating_pane_keeps_position_across_noop_reflows_with_left_and_top_global_panes() {
+    use zellij_utils::data::GlobalPaneEdge;
+    use zellij_utils::pane_size::Viewport;
+
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(10),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Top,
+        PercentOrFixed::Fixed(4),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area_origin(),
+        (10, 4)
+    );
+
+    {
+        let tab = screen.get_active_tab_mut(1).unwrap();
+        tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
+            .expect("TEST");
+        tab.change_floating_pane_coordinates(
+            &PaneId::Terminal(2),
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(10)),
+                y: Some(PercentOrFixed::Fixed(2)),
+                ..Default::default()
+            },
+        )
+        .expect("TEST");
+    }
+    let before = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(
+        (before.x, before.y),
+        (20, 6),
+        "moved pane should sit at tab-local (10, 2)"
+    );
+
+    let display_area = Viewport {
+        x: 10,
+        y: 4,
+        cols: 111,
+        rows: 16,
+    };
+    for iteration in 0..3 {
+        screen
+            .tabs
+            .get_mut(&0)
+            .unwrap()
+            .resize_whole_tab_to(display_area)
+            .expect("TEST");
+        let after = screen
+            .tabs
+            .get(&0)
+            .unwrap()
+            .get_pane_with_id(PaneId::Terminal(2))
+            .unwrap()
+            .position_and_size();
+        assert_eq!(
+            after.x,
+            before.x,
+            "floating pane x drifted on no-op reflow {}",
+            iteration + 1
+        );
+        assert_eq!(
+            after.y,
+            before.y,
+            "floating pane y drifted on no-op reflow {}",
+            iteration + 1
+        );
+    }
+}
+
+#[test]
+fn gp04_placement_change_to_opposite_edge_updates_boundary_reservation_on_next_render() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 8);
+    screen.render_to_clients().expect("TEST");
+
+    screen
+        .set_global_pane_placement(
+            PaneId::Terminal(99),
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Right,
+                size: PercentOrFixed::Fixed(8),
+            },
+        )
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    let pane = screen
+        .tabs
+        .get(&0)
+        .unwrap()
+        .get_pane_with_id(PaneId::Terminal(1))
+        .unwrap();
+    let offset = pane.get_content_offset();
+    assert_eq!(
+        offset.right, 1,
+        "tab pane now abuts the right global pane and must reserve its last column"
+    );
+    assert_eq!(
+        offset.left, 0,
+        "tab pane no longer abuts a left global pane"
+    );
+}
+
+fn gp_fill_global_rows_left(screen: &mut Screen, rows: usize, cols: usize) {
+    let mut content = Vec::new();
+    for row in 0..rows {
+        content.extend(std::iter::repeat(b'G').take(cols));
+        if row + 1 < rows {
+            content.extend_from_slice(b"\r\n");
+        }
+    }
+    screen
+        .global_panes
+        .pane_mut(PaneId::Terminal(99))
+        .unwrap()
+        .handle_pty_bytes(content);
+}
+
+// `borderless` on a global pane means "no outer frame", not "no tab/global separator": the tab
+// grows its boundary viewport over every visible strip and draws the separator one cell inside a
+// left/top global pane, so a borderless pane reserves that cell exactly like a bordered one does.
+// Neither layer can then overwrite the other, whichever renders last.
+#[test]
+fn gp05_borderless_left_global_pane_reserves_the_tab_separator_column() {
+    use zellij_utils::data::{GlobalPaneEdge, ResizeStrategy};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size); // PaneFrameStyle::None
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        true,
+    );
+    // 8 columns wide, of which the last is reserved for the tab separator
+    gp_fill_global_rows_left(&mut screen, 10, 7);
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Terminal(1))
+        .unwrap()
+        .handle_pty_bytes(b"TTTTTTTTTTTTTTTTTTTT".to_vec());
+
+    screen.render_to_clients().expect("TEST");
+    let mut grid = grid_for_render_snapshot(size);
+    let first_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // split the tab so the boundary layout changes (this also clears the host display, which
+    // force-renders the global panes back on top)
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Down),
+                borderless: None,
+            },
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let second_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // resize the top tab pane without clearing the host display - boundaries are re-emitted
+    // while the borderless global pane has no new output, so they must not land inside its
+    // content area
+    screen
+        .focus_pane_with_id(PaneId::Terminal(1), false, false, 1)
+        .expect("TEST");
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy {
+                resize: Resize::Increase,
+                direction: Some(Direction::Down),
+                invert_on_boundaries: false,
+            },
+        )
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let third_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // stable across all three renders: the global pane never writes column 7, the tab always draws
+    // its separator there
+    for (render, snapshot) in [
+        ("first", &first_snapshot),
+        ("second", &second_snapshot),
+        ("third", &third_snapshot),
+    ] {
+        for row in 0..10 {
+            let content = gp_line_content(snapshot.lines().nth(row).unwrap_or(""));
+            assert_eq!(
+                content.chars().take(7).collect::<String>(),
+                "GGGGGGG",
+                "{render} render, row {row}: the borderless left global pane must keep its 7 content \
+                 columns, got: {content:?}"
+            );
+            // a separator or one of its junctions, never pane content
+            assert!(
+                matches!(content.chars().nth(7), Some('\u{2502}') | Some('\u{251c}')),
+                "{render} render, row {row}: column 7 is reserved for the tab separator, \
+                 got: {content:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gp05_borderless_top_global_pane_reserves_the_tab_separator_row() {
+    use zellij_utils::data::{GlobalPaneEdge, ResizeStrategy};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size); // PaneFrameStyle::None
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Top,
+        PercentOrFixed::Fixed(3),
+        true,
+    );
+    // 3 rows tall, of which the last is reserved for the tab separator
+    let mut global_content = Vec::new();
+    for row in 0..2 {
+        global_content.extend(std::iter::repeat(b'G').take(40));
+        if row + 1 < 2 {
+            global_content.extend_from_slice(b"\r\n");
+        }
+    }
+    screen
+        .global_panes
+        .pane_mut(PaneId::Terminal(99))
+        .unwrap()
+        .handle_pty_bytes(global_content);
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Terminal(1))
+        .unwrap()
+        .handle_pty_bytes(b"TTTTTTTTTTTTTTTTTTTT".to_vec());
+
+    screen.render_to_clients().expect("TEST");
+    let mut grid = grid_for_render_snapshot(size);
+    let first_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // split the tab so the boundary layout changes (this also clears the host display, which
+    // force-renders the global panes back on top)
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Right),
+                borderless: None,
+            },
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let second_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // resize the tab pane without clearing the host display - boundaries are re-emitted while the
+    // borderless global pane has no new output, so they must not land inside its content row
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy {
+                resize: Resize::Increase,
+                direction: Some(Direction::Left),
+                invert_on_boundaries: false,
+            },
+        )
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let third_snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    // stable across all three renders: the global pane never writes row 2, the tab always draws its
+    // separator there
+    for (render, snapshot) in [
+        ("first", &first_snapshot),
+        ("second", &second_snapshot),
+        ("third", &third_snapshot),
+    ] {
+        for row in 0..2 {
+            let content = gp_line_content(snapshot.lines().nth(row).unwrap_or(""));
+            assert!(
+                content.starts_with(&"G".repeat(40)),
+                "{render} render: the borderless top global pane's content row {row} must not be \
+                 overwritten by the tab separator, got: {content:?}"
+            );
+        }
+        let separator_row = gp_line_content(snapshot.lines().nth(2).unwrap_or(""));
+        assert!(
+            !separator_row.contains('G') && separator_row.contains('\u{2500}'),
+            "{render} render: row 2 is reserved for the tab separator, got: {separator_row:?}"
+        );
+    }
+}
+
+// Same-edge global panes have no separator geometry between them (only strips are grown over, they
+// never contribute rects of their own), so they are rejected rather than half-supported.
+#[test]
+fn gp06_same_edge_global_panes_are_rejected() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size); // PaneFrameStyle::None
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    let geom_before = screen
+        .global_panes
+        .pane(PaneId::Terminal(98))
+        .unwrap()
+        .position_and_size();
+
+    // inserting a second visible pane on the occupied edge
+    assert_eq!(
+        gp_try_insert_global_pane(
+            &mut screen,
+            99,
+            GlobalPaneEdge::Left,
+            PercentOrFixed::Fixed(8),
+            false,
+            false,
+        ),
+        Err("a global pane is already docked to the left edge".to_owned())
+    );
+    assert!(screen.global_panes.pane(PaneId::Terminal(99)).is_none());
+
+    // a free edge is still fine
+    gp_insert_global_pane(
+        &mut screen,
+        97,
+        GlobalPaneEdge::Right,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+
+    // a hidden pane may be parked on an occupied edge, but showing it is rejected
+    gp_try_insert_global_pane(
+        &mut screen,
+        96,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+        true,
+    )
+    .expect("a hidden pane on an occupied edge is legal");
+    let area = zellij_utils::pane_size::Viewport::from(size);
+    assert_eq!(
+        screen.global_panes.show(PaneId::Terminal(96), area),
+        Err("a global pane is already docked to the left edge".to_owned())
+    );
+
+    // as is moving a visible pane onto an occupied edge
+    assert_eq!(
+        screen.global_panes.set_placement(
+            PaneId::Terminal(97),
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(8),
+            },
+            area,
+        ),
+        Err("a global pane is already docked to the left edge".to_owned())
+    );
+
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen
+            .global_panes
+            .pane(PaneId::Terminal(98))
+            .unwrap()
+            .position_and_size(),
+        geom_before,
+        "the rejected placements left the docked pane untouched"
     );
 }

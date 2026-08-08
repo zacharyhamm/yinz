@@ -16,6 +16,7 @@ use crate::resize_pty;
 use tiled_pane_grid::{split, TiledPaneGrid, RESIZE_PERCENT};
 
 use crate::{
+    global_panes::{expand_viewport_over_global_panes, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
     panes::{ActivePanes, PaneId},
@@ -36,6 +37,7 @@ use zellij_utils::{
         options::PaneFrameStyle,
     },
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
+    position::Position,
 };
 
 use std::{
@@ -45,29 +47,60 @@ use std::{
     time::Instant,
 };
 
-fn pane_content_offset(position_and_size: &PaneGeom, viewport: &Viewport) -> (usize, usize) {
+pub(crate) fn pane_content_offset(
+    position_and_size: &PaneGeom,
+    viewport: &Viewport,
+) -> (usize, usize) {
     // (columns_offset, rows_offset)
     // if the pane is not on the bottom or right edge on the screen, we need to reserve one space
     // from its content to leave room for the boundary between it and the next pane (if it doesn't
     // draw its own frame)
-    let columns_offset = if position_and_size.x + position_and_size.cols.as_usize() < viewport.cols
-    {
-        1
-    } else {
-        0
-    };
-    let rows_offset = if position_and_size.y + position_and_size.rows.as_usize() < viewport.rows {
-        1
-    } else {
-        0
-    };
+    let columns_offset =
+        if position_and_size.x + position_and_size.cols.as_usize() < viewport.x + viewport.cols {
+            1
+        } else {
+            0
+        };
+    let rows_offset =
+        if position_and_size.y + position_and_size.rows.as_usize() < viewport.y + viewport.rows {
+            1
+        } else {
+            0
+        };
     (columns_offset, rows_offset)
+}
+
+/// The tab's display area as a viewport, ie. including the origin it was placed at. This is
+/// non-zero when global panes are docked to the left or top of the screen, and is what keeps the
+/// layout solver from laying panes out over them.
+fn display_area_viewport(
+    display_area: &Rc<RefCell<Size>>,
+    origin: &Rc<RefCell<(usize, usize)>>,
+) -> Viewport {
+    let display_area = display_area.borrow();
+    let (x, y) = *origin.borrow();
+    Viewport {
+        x,
+        y,
+        cols: display_area.cols,
+        rows: display_area.rows,
+    }
+}
+
+/// A borderless plugin pane is part of the ui (eg. the tab-bar or the status-bar) and so is offset
+/// out of the viewport just like a non-selectable pane - we cannot rely on selectability alone here,
+/// because a plugin only reports it once it has loaded, and until then we'd be calculating (and
+/// sending to the pty) wrong sizes for the other panes in this tab.
+fn is_ui_pane(pane: &dyn Pane) -> bool {
+    !pane.selectable() || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)))
 }
 
 pub struct TiledPanes {
     pub panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
+    display_area_origin: Rc<RefCell<(usize, usize)>>,
     viewport: Rc<RefCell<Viewport>>,
+    global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -95,7 +128,9 @@ impl TiledPanes {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         display_area: Rc<RefCell<Size>>,
+        display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
+        global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -114,7 +149,9 @@ impl TiledPanes {
         TiledPanes {
             panes: BTreeMap::new(),
             display_area,
+            display_area_origin,
             viewport,
+            global_pane_strips,
             connected_clients,
             connected_clients_in_app,
             mode_info,
@@ -236,7 +273,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let has_room_for_new_pane = pane_grid
@@ -248,7 +285,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         pane_grid.room_left_in_stack_of_pane_id(pane_id)
@@ -283,7 +320,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(pane_id_in_stack) {
@@ -330,7 +367,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let pane_id_and_split_direction =
@@ -377,7 +414,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let Some(active_pane_id) = self.active_panes.get(&client_id) else {
@@ -450,7 +487,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let Some(active_pane_id) = self.active_panes.get(&client_id) else {
@@ -485,7 +522,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let pane_id_is_stacked = pane_grid
@@ -540,20 +577,20 @@ impl TiledPanes {
             .values()
             .filter_map(|p| {
                 let geom = p.position_and_size();
-                // a borderless plugin pane is part of the ui (eg. the tab-bar or the status-bar)
-                // and so is offset out of the viewport just like a non-selectable pane - we cannot
-                // rely on selectability alone here, because a plugin only reports it once it has
-                // loaded, and until then we'd be calculating (and sending to the pty) wrong sizes
-                // for the other panes in this tab
-                let is_ui_pane =
-                    !p.selectable() || (p.borderless() && matches!(p.pid(), PaneId::Plugin(_)));
-                if is_ui_pane && is_inside_viewport(&self.viewport.borrow(), p) {
+                if is_ui_pane(&**p) && is_inside_viewport(&self.viewport.borrow(), p) {
                     Some(geom.into())
                 } else {
                     None
                 }
             })
             .collect()
+    }
+    /// Whether `position` lands on one of the tab's ui panes (tab bar, status bar). Those draw no
+    /// boundaries, so the cell beside a global pane is theirs to handle rather than a border to drag.
+    pub fn position_is_on_ui_pane(&self, position: &Position) -> bool {
+        self.panes
+            .values()
+            .any(|pane| is_ui_pane(&**pane) && pane.contains(position))
     }
     pub fn first_selectable_pane_id(&self) -> Option<PaneId> {
         self.panes
@@ -576,7 +613,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         match direction {
@@ -597,8 +634,57 @@ impl TiledPanes {
         // same as set_pane_frames except it reapplies the current situation
         self.set_pane_frames(self.pane_frame_style);
     }
+    /// Grow the tab's ui strips (tab bar, status bar) over the left/right global panes beside them,
+    /// so they span the full screen width while the panes between them stay inset.
+    /// `allocate_global_panes` is the other half of this deal: it keeps left/right strips out of the
+    /// chrome rows, so the two never overlap.
+    ///
+    /// Only the geometry's `inner` value is touched, never the `Dimension` constraint the layout
+    /// solver reads - every re-solve resizes the strip back to the tab's width and this pass widens
+    /// it again, so the widening can never feed back into the layout.
+    pub fn expand_ui_panes_over_global_strips(&mut self) {
+        let display_area = display_area_viewport(&self.display_area, &self.display_area_origin);
+        // the same adjacency test the boundaries use, so this is a no-op while the panes are parked
+        // at origin 0 mid-resize and the strips do not abut them
+        let expanded =
+            expand_viewport_over_global_panes(display_area, &self.global_pane_strips.borrow());
+        if expanded.x == display_area.x && expanded.cols == display_area.cols {
+            return;
+        }
+        for pane in self.panes.values_mut() {
+            let mut geom = pane.position_and_size();
+            // ">= the display area" rather than "== it", so a strip that changed size re-expands an
+            // already widened pane instead of leaving it stale
+            let covers_display_area_width = geom.x <= display_area.x
+                && geom.x + geom.cols.as_usize() >= display_area.x + display_area.cols;
+            let touches_top_or_bottom = geom.y == display_area.y
+                || geom.y + geom.rows.as_usize() == display_area.y + display_area.rows;
+            if !is_ui_pane(&**pane) || !covers_display_area_width || !touches_top_or_bottom {
+                continue;
+            }
+            if geom.x == expanded.x && geom.cols.as_usize() == expanded.cols {
+                continue;
+            }
+            geom.x = expanded.x;
+            geom.cols.set_inner(expanded.cols);
+            pane.set_geom(geom);
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+        }
+    }
+
+    /// The tab viewport grown over any global panes that abut it, so pane boundaries can be drawn
+    /// on the cell between the two. Equal to the tab viewport when no global panes are open.
+    fn boundary_viewport(&self) -> Viewport {
+        expand_viewport_over_global_panes(
+            *self.viewport.borrow(),
+            &self.global_pane_strips.borrow(),
+        )
+    }
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
         self.pane_frame_style = pane_frame_style;
+        // every path that re-solves the layout ends up here, and each solve resizes the ui panes
+        // back to the tab's width
+        self.expand_ui_panes_over_global_strips();
         let draws_full_frames = pane_frame_style.draws_full_frames();
         let draws_titles = pane_frame_style.draws_titles();
         let single_selectable_tiled_pane = self
@@ -608,6 +694,7 @@ impl TiledPanes {
             .count()
             == 1;
         let viewport = *self.viewport.borrow();
+        let boundary_viewport = self.boundary_viewport();
         let no_ui_fullscreen_pane_id = if *self.fullscreen_covers_ui.borrow() {
             self.fullscreen_is_active
         } else {
@@ -649,7 +736,7 @@ impl TiledPanes {
                 } else {
                     let position_and_size = pane.current_geom();
                     let (pane_columns_offset, pane_rows_offset) =
-                        pane_content_offset(&position_and_size, pane_viewport);
+                        pane_content_offset(&position_and_size, &boundary_viewport);
                     let visible_member_title_rows = if draws_full_frames { 1 } else { 0 };
                     pane.set_content_offset(Offset {
                         top: visible_member_title_rows + reserved_rows,
@@ -676,7 +763,7 @@ impl TiledPanes {
                     position_and_size = *position_and_size_of_stack;
                 };
                 let (pane_columns_offset, pane_rows_offset) =
-                    pane_content_offset(&position_and_size, pane_viewport);
+                    pane_content_offset(&position_and_size, &boundary_viewport);
                 let reserve_title_row = if draws_titles {
                     !pane_is_borderless && is_flexible && !single_selectable_tiled_pane
                 } else {
@@ -1133,6 +1220,7 @@ impl TiledPanes {
         mouse_hover_pane_id: &HashMap<ClientId, PaneId>,
         current_pane_group: HashMap<ClientId, Vec<PaneId>>,
         client_id_override: Option<ClientId>,
+        inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
     ) -> Result<()> {
@@ -1148,13 +1236,16 @@ impl TiledPanes {
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let multiple_users_exist_in_session = { self.connected_clients_in_app.borrow().len() > 1 };
+        let boundary_viewport = self.boundary_viewport();
         let mut client_id_to_boundaries: HashMap<ClientId, Boundaries> = HashMap::new();
         let active_panes = if floating_panes_are_visible {
             HashMap::new()
         } else {
             self.active_panes
                 .iter()
-                .filter(|(client_id, _pane_id)| connected_clients.contains(client_id))
+                .filter(|(client_id, _pane_id)| {
+                    connected_clients.contains(client_id) && !inactive_clients.contains(client_id)
+                })
                 .map(|(client_id, pane_id)| (*client_id, *pane_id))
                 .collect()
         };
@@ -1306,7 +1397,7 @@ impl TiledPanes {
                             .with_context(err_context)?;
                         let boundaries = client_id_to_boundaries
                             .entry(*client_id)
-                            .or_insert_with(|| Boundaries::new(*self.viewport.borrow()));
+                            .or_insert_with(|| Boundaries::new(boundary_viewport));
                         pane_contents_and_ui.render_pane_boundaries(
                             *client_id,
                             client_mode,
@@ -1318,7 +1409,7 @@ impl TiledPanes {
                     } else {
                         let boundaries = client_id_to_boundaries
                             .entry(*client_id)
-                            .or_insert_with(|| Boundaries::new(*self.viewport.borrow()));
+                            .or_insert_with(|| Boundaries::new(boundary_viewport));
                         pane_contents_and_ui.render_pane_boundaries(
                             *client_id,
                             client_mode,
@@ -1437,6 +1528,9 @@ impl TiledPanes {
             },
         }
     }
+    pub fn display_area_origin(&self) -> (usize, usize) {
+        *self.display_area_origin.borrow()
+    }
     fn display_area_changed(&self, new_screen_size: Size) -> bool {
         let display_area = self.display_area.borrow();
         new_screen_size.rows != display_area.rows || new_screen_size.cols != display_area.cols
@@ -1454,10 +1548,16 @@ impl TiledPanes {
             let mut display_area = self.display_area.borrow_mut();
             let mut viewport = self.viewport.borrow_mut();
             let Size { rows, cols } = new_screen_size;
+            let (origin_x, origin_y) = *self.display_area_origin.borrow();
             let mut pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *display_area,
+                Viewport {
+                    x: origin_x,
+                    y: origin_y,
+                    cols: display_area.cols,
+                    rows: display_area.rows,
+                },
                 *viewport,
             );
 
@@ -1552,7 +1652,7 @@ impl TiledPanes {
             let mut pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_up(&pane_id) {
@@ -1582,7 +1682,7 @@ impl TiledPanes {
             let mut pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_down(&pane_id) {
@@ -1612,7 +1712,7 @@ impl TiledPanes {
             let mut pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_left(&pane_id) {
@@ -1642,7 +1742,7 @@ impl TiledPanes {
             let mut pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_right(&pane_id) {
@@ -1770,7 +1870,7 @@ impl TiledPanes {
                     let pane_grid = TiledPaneGrid::new(
                         &mut self.panes,
                         &self.panes_to_hide,
-                        *self.display_area.borrow(),
+                        display_area_viewport(&self.display_area, &self.display_area_origin),
                         *self.viewport.borrow(),
                     );
                     (
@@ -1857,7 +1957,7 @@ impl TiledPanes {
                 let mut pane_grid = TiledPaneGrid::new(
                     &mut self.panes,
                     &self.panes_to_hide,
-                    *self.display_area.borrow(),
+                    display_area_viewport(&self.display_area, &self.display_area_origin),
                     *self.viewport.borrow(),
                 );
                 if let Some(pane_ids_to_resize) = pane_grid.unstack_pane_up(&pane_id) {
@@ -1913,7 +2013,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
 
@@ -1974,7 +2074,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
 
@@ -1991,13 +2091,43 @@ impl TiledPanes {
         Ok(())
     }
 
+    /// Whether the client's active pane is the last one in focus-cycling order (ie. the next
+    /// `focus_next_pane` would wrap around to the first pane).
+    pub fn active_pane_is_last_in_cycle(&mut self, client_id: ClientId) -> bool {
+        let Some(active_pane_id) = self.get_active_pane_id(client_id) else {
+            return false;
+        };
+        let pane_grid = TiledPaneGrid::new(
+            &mut self.panes,
+            &self.panes_to_hide,
+            display_area_viewport(&self.display_area, &self.display_area_origin),
+            *self.viewport.borrow(),
+        );
+        pane_grid.is_last_selectable_pane_id(&active_pane_id)
+    }
+
+    pub fn active_pane_is_first_in_cycle(&mut self, client_id: ClientId) -> bool {
+        let Some(active_pane_id) = self.get_active_pane_id(client_id) else {
+            return false;
+        };
+        let pane_grid = TiledPaneGrid::new(
+            &mut self.panes,
+            &self.panes_to_hide,
+            display_area_viewport(&self.display_area, &self.display_area_origin),
+            *self.viewport.borrow(),
+        );
+        pane_grid.is_first_selectable_pane_id(&active_pane_id)
+    }
+
     pub fn focus_next_pane(&mut self, client_id: ClientId) {
-        let active_pane_id = self.get_active_pane_id(client_id).unwrap();
+        let Some(active_pane_id) = self.get_active_pane_id(client_id) else {
+            return;
+        };
         let next_active_pane_id = {
             let pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             pane_grid.next_selectable_pane_id(&active_pane_id)
@@ -2022,12 +2152,14 @@ impl TiledPanes {
         self.reset_boundaries();
     }
     pub fn focus_previous_pane(&mut self, client_id: ClientId) {
-        let active_pane_id = self.get_active_pane_id(client_id).unwrap();
+        let Some(active_pane_id) = self.get_active_pane_id(client_id) else {
+            return;
+        };
         let next_active_pane_id = {
             let pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             pane_grid.previous_selectable_pane_id(&active_pane_id)
@@ -2057,7 +2189,11 @@ impl TiledPanes {
             return;
         };
 
-        let previously_active_pane_id = *self.active_panes.get(&client_id).unwrap();
+        // active_panes is cleared when the last pane is removed, but last_panes is not, so
+        // get_last_pane_id can hand us an id with nothing focused to move away from
+        let Some(&previously_active_pane_id) = self.active_panes.get(&client_id) else {
+            return;
+        };
         if !self.panes.contains_key(&last_pane_id) || last_pane_id == previously_active_pane_id {
             self.focus_previous_pane(client_id);
             return;
@@ -2102,16 +2238,20 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
-        let next_index = pane_grid.pane_id_on_edge(direction).unwrap();
+        let Some(next_index) = pane_grid.pane_id_on_edge(direction) else {
+            return;
+        };
         // render previously active pane so that its frame does not remain actively
         // colored
-        let previously_active_pane = self
-            .panes
-            .get_mut(self.active_panes.get(&client_id).unwrap())
-            .unwrap();
+        let Some(&previously_active_pane_id) = self.active_panes.get(&client_id) else {
+            return;
+        };
+        let Some(previously_active_pane) = self.panes.get_mut(&previously_active_pane_id) else {
+            return;
+        };
 
         previously_active_pane.set_should_render(true);
         // we render the full viewport to remove any ui elements that might have been
@@ -2139,7 +2279,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let next_index = match direction {
@@ -2171,7 +2311,7 @@ impl TiledPanes {
                 let pane_grid = TiledPaneGrid::new(
                     &mut self.panes,
                     &self.panes_to_hide,
-                    *self.display_area.borrow(),
+                    display_area_viewport(&self.display_area, &self.display_area_origin),
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid.next_selectable_pane_id_to_the_left(&active_pane_id);
@@ -2212,7 +2352,7 @@ impl TiledPanes {
                 let mut pane_grid = TiledPaneGrid::new(
                     &mut self.panes,
                     &self.panes_to_hide,
-                    *self.display_area.borrow(),
+                    display_area_viewport(&self.display_area, &self.display_area_origin),
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid
@@ -2263,7 +2403,7 @@ impl TiledPanes {
                 let mut pane_grid = TiledPaneGrid::new(
                     &mut self.panes,
                     &self.panes_to_hide,
-                    *self.display_area.borrow(),
+                    display_area_viewport(&self.display_area, &self.display_area_origin),
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid
@@ -2314,7 +2454,7 @@ impl TiledPanes {
                 let pane_grid = TiledPaneGrid::new(
                     &mut self.panes,
                     &self.panes_to_hide,
-                    *self.display_area.borrow(),
+                    display_area_viewport(&self.display_area, &self.display_area_origin),
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid.next_selectable_pane_id_to_the_right(&active_pane_id);
@@ -2403,7 +2543,7 @@ impl TiledPanes {
             let pane_grid = TiledPaneGrid::new(
                 &mut self.panes,
                 &self.panes_to_hide,
-                *self.display_area.borrow(),
+                display_area_viewport(&self.display_area, &self.display_area_origin),
                 *self.viewport.borrow(),
             );
             if search_backwards {
@@ -2468,7 +2608,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let next_index = pane_grid
@@ -2521,7 +2661,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_left(&pane_id);
@@ -2572,7 +2712,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_right(&pane_id);
@@ -2623,7 +2763,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let next_index = pane_grid
@@ -2728,7 +2868,7 @@ impl TiledPanes {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         if pane_grid.fill_space_over_pane(pane_id) {
@@ -2889,7 +3029,14 @@ impl TiledPanes {
 
     fn expand_pane_over_whole_display(&mut self, pane_id: PaneId) {
         let display_area = { *self.display_area.borrow() };
-        self.expand_pane_over_area(pane_id, 0, 0, display_area.rows, display_area.cols);
+        let (origin_x, origin_y) = *self.display_area_origin.borrow();
+        self.expand_pane_over_area(
+            pane_id,
+            origin_x,
+            origin_y,
+            display_area.rows,
+            display_area.cols,
+        );
     }
 
     fn expand_pane_over_whole_viewport(&mut self, pane_id: PaneId) {
@@ -3058,7 +3205,8 @@ impl TiledPanes {
     pub fn pane_info(&self, current_pane_group: &HashMap<ClientId, Vec<PaneId>>) -> Vec<PaneInfo> {
         let mut pane_infos = vec![];
         for (pane_id, pane) in self.panes.iter() {
-            let mut pane_info_for_pane = pane_info_for_pane(pane_id, pane, &current_pane_group);
+            let mut pane_info_for_pane =
+                pane_info_for_pane(pane_id, pane.as_ref(), &current_pane_group);
             let is_focused = self.active_panes.pane_id_is_focused(pane_id);
             pane_info_for_pane.is_floating = false;
             pane_info_for_pane.is_suppressed = false;
@@ -3121,7 +3269,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
@@ -3131,7 +3279,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
@@ -3141,7 +3289,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         pane_grid.next_selectable_pane_id_to_the_left(&pane_id)
@@ -3150,7 +3298,7 @@ impl TiledPanes {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
-            *self.display_area.borrow(),
+            display_area_viewport(&self.display_area, &self.display_area_origin),
             *self.viewport.borrow(),
         );
         pane_grid.next_selectable_pane_id_to_the_right(&pane_id)
@@ -3170,4 +3318,49 @@ pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> boo
         && geom.y + geom.rows.as_usize() <= viewport.y + viewport.rows
         && geom.x >= viewport.x
         && geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols
+}
+
+#[cfg(test)]
+mod content_offset_tests {
+    use super::pane_content_offset;
+    use zellij_utils::pane_size::{Dimension, PaneGeom, Viewport};
+
+    fn geom(x: usize, cols: usize, y: usize, rows: usize) -> PaneGeom {
+        PaneGeom {
+            x,
+            y,
+            cols: Dimension::fixed(cols),
+            rows: Dimension::fixed(rows),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn offsets_are_reserved_relative_to_the_viewport_origin() {
+        // a 100x40 screen with a 20-column global pane on the left
+        let viewport = Viewport {
+            x: 20,
+            y: 0,
+            cols: 80,
+            rows: 40,
+        };
+
+        // a pane whose right edge lands mid-viewport still needs a boundary column, even though
+        // its absolute right edge (85) is past `viewport.cols` (80)
+        assert_eq!(pane_content_offset(&geom(20, 65, 0, 40), &viewport).0, 1);
+        // a pane flush with the viewport's right edge does not
+        assert_eq!(pane_content_offset(&geom(20, 80, 0, 40), &viewport).0, 0);
+    }
+
+    #[test]
+    fn offsets_are_unchanged_for_an_origin_viewport() {
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            cols: 100,
+            rows: 40,
+        };
+        assert_eq!(pane_content_offset(&geom(0, 100, 0, 40), &viewport), (0, 0));
+        assert_eq!(pane_content_offset(&geom(0, 50, 0, 20), &viewport), (1, 1));
+    }
 }

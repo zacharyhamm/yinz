@@ -219,6 +219,7 @@ enum CommandName {
   ToggleFocusNoUiFullscreen = 227;
   FocusHostSession = 228;
   CancelWebRequest = 229;
+  SetGlobalPanePlacement = 230;
 }
 
 message PluginCommand {
@@ -380,6 +381,7 @@ message PluginCommand {
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
     CancelWebRequestPayload cancel_web_request_payload = 172;
+    SetGlobalPanePlacementPayload set_global_pane_placement_payload = 173;
   }
 }
 
@@ -526,6 +528,11 @@ message StackPanesPayload {
 message SetFloatingPanePinnedPayload {
   PaneId pane_id = 1;
   bool should_be_pinned = 2;
+}
+
+message SetGlobalPanePlacementPayload {
+  PaneId pane_id = 1;
+  action.GlobalPanePlacement placement = 2;
 }
 
 message TogglePaneBorderlessPayload {
@@ -1386,4 +1393,3 @@ message DeleteAllDeadSessionsResponse {
 message SetSoftKeyboardPayload {
   bool on = 1;
 }
-

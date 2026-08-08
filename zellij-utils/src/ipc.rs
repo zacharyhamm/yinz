@@ -384,7 +384,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     }
 
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
-        let proto_msg: ProtoClientToServerMsg = msg.into();
+        let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
         write_protobuf_message(&mut self.sender, &proto_msg)?;
         let _ = self.sender.flush();
         Ok(())
@@ -496,7 +496,7 @@ pub fn send_protobuf_client_to_server(
     sender: &mut IpcSenderWithContext<ClientToServerMsg>,
     msg: ClientToServerMsg,
 ) -> Result<()> {
-    let proto_msg: ProtoClientToServerMsg = msg.into();
+    let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
     write_protobuf_message(&mut sender.sender, &proto_msg)?;
     let _ = sender.sender.flush();
     Ok(())
@@ -562,7 +562,10 @@ pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()>
     let mut stream: interprocess::local_socket::tokio::Stream =
         interprocess::local_socket::tokio::Stream::connect(fs_name).await?;
 
-    let proto_msg: ProtoClientToServerMsg = crate::ipc::ClientToServerMsg::KillSession.into();
+    let proto_msg: ProtoClientToServerMsg =
+        crate::ipc::ClientToServerMsg::KillSession
+            .try_into()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let encoded = proto_msg.encode_to_vec();
     let len_bytes = (encoded.len() as u32).to_le_bytes();
 

@@ -143,7 +143,7 @@ fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier
     }
 
     if mi.mode == IM::Pane { vec![
-        (s("New"), s("New"), action_key(&km, &[A::NewPane{direction: None, pane_name: None, start_suppressed: false}, TO_NORMAL])),
+        (s("New"), s("New"), action_key(&km, &[A::NewPane{direction: None, pane_name: None, start_suppressed: false, global_placement: None}, TO_NORMAL])),
         (s("Change Focus"), s("Move"),
             action_key_group(&km, &[&[A::MoveFocus{direction: Dir::Left}], &[A::MoveFocus{direction: Dir::Down}],
                 &[A::MoveFocus{direction: Dir::Up}], &[A::MoveFocus{direction: Dir::Right}]])),
@@ -254,14 +254,14 @@ fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier
             action_key(&km, &[A::SearchToggleOption{option: SOpt::WholeWord}])),
     ]} else if mi.mode == IM::Session { vec![
         (s("Detach"), s("Detach"), action_key(&km, &[Action::Detach])),
-        (s("Session Manager"), s("Manager"), action_key(&km, &[A::LaunchOrFocusPlugin{plugin: Default::default(), should_float: true, move_to_focused_tab: true, should_open_in_place: false, close_replaced_pane: false, skip_cache: false, tab_id: None}, TO_NORMAL])), // not entirely accurate
+        (s("Session Manager"), s("Manager"), action_key(&km, &[A::LaunchOrFocusPlugin{plugin: Default::default(), should_float: true, move_to_focused_tab: true, should_open_in_place: false, close_replaced_pane: false, skip_cache: false, tab_id: None, global_placement: None}, TO_NORMAL])), // not entirely accurate
         (s("Select pane"), s("Select"), to_normal_key),
     ]} else if mi.mode == IM::Tmux { vec![
         (s("Move focus"), s("Move"), action_key_group(&km, &[
             &[A::MoveFocus{direction: Dir::Left}], &[A::MoveFocus{direction: Dir::Down}],
             &[A::MoveFocus{direction: Dir::Up}], &[A::MoveFocus{direction: Dir::Right}]])),
-        (s("Split down"), s("Down"), action_key(&km, &[A::NewPane{direction: Some(Dir::Down), pane_name: None, start_suppressed: false}, TO_NORMAL])),
-        (s("Split right"), s("Right"), action_key(&km, &[A::NewPane{direction: Some(Dir::Right), pane_name: None, start_suppressed: false}, TO_NORMAL])),
+        (s("Split down"), s("Down"), action_key(&km, &[A::NewPane{direction: Some(Dir::Down), pane_name: None, start_suppressed: false, global_placement: None}, TO_NORMAL])),
+        (s("Split right"), s("Right"), action_key(&km, &[A::NewPane{direction: Some(Dir::Right), pane_name: None, start_suppressed: false, global_placement: None}, TO_NORMAL])),
         (s("Fullscreen"), s("Fullscreen"), action_key(&km, &[A::ToggleFocusFullscreen, TO_NORMAL])),
         (s("New tab"), s("New"), action_key(&km, &[A::NewTab{
             tiled_layout: None,
@@ -773,6 +773,7 @@ mod tests {
                                 direction: None,
                                 pane_name: None,
                                 start_suppressed: false,
+                                global_placement: None,
                             },
                             TO_NORMAL,
                         ],
@@ -838,6 +839,7 @@ mod tests {
                                 direction: None,
                                 pane_name: None,
                                 start_suppressed: false,
+                                global_placement: None,
                             },
                             TO_NORMAL,
                         ],
@@ -899,6 +901,7 @@ mod tests {
                                 direction: None,
                                 pane_name: None,
                                 start_suppressed: false,
+                                global_placement: None,
                             },
                             TO_NORMAL,
                         ],

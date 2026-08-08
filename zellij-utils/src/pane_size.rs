@@ -270,6 +270,9 @@ impl PaneGeom {
             SplitDirection::Horizontal => self.rows.is_percent(),
         }
     }
+    /// `origin` is where the tab's display area starts on screen - non-zero when global panes are
+    /// docked to the left or top - so that coordinates are relative to the tab rather than to the
+    /// screen.
     pub fn apply_floating_pane_position(
         &mut self,
         x: Option<PercentOrFixed>,
@@ -278,6 +281,7 @@ impl PaneGeom {
         height: Option<PercentOrFixed>,
         viewport_cols: usize,
         viewport_rows: usize,
+        origin: (usize, usize),
     ) {
         if let Some(width) = &width {
             self.cols = Dimension::fixed(width.to_fixed(viewport_cols));
@@ -286,13 +290,17 @@ impl PaneGeom {
             self.rows = Dimension::fixed(height.to_fixed(viewport_rows));
         }
         self.x = match &x {
-            Some(x) => x.to_fixed(viewport_cols),
-            None if width.is_some() => viewport_cols.saturating_sub(self.cols.as_usize()) / 2,
+            Some(x) => origin.0 + x.to_fixed(viewport_cols),
+            None if width.is_some() => {
+                origin.0 + viewport_cols.saturating_sub(self.cols.as_usize()) / 2
+            },
             None => self.x,
         };
         self.y = match &y {
-            Some(y) => y.to_fixed(viewport_rows),
-            None if height.is_some() => viewport_rows.saturating_sub(self.rows.as_usize()) / 2,
+            Some(y) => origin.1 + y.to_fixed(viewport_rows),
+            None if height.is_some() => {
+                origin.1 + viewport_rows.saturating_sub(self.rows.as_usize()) / 2
+            },
             None => self.y,
         };
     }
@@ -300,6 +308,7 @@ impl PaneGeom {
         &mut self,
         floating_pane_coordinates: FloatingPaneCoordinates,
         viewport: Viewport,
+        origin: (usize, usize),
     ) {
         self.apply_floating_pane_position(
             floating_pane_coordinates.x,
@@ -308,6 +317,7 @@ impl PaneGeom {
             floating_pane_coordinates.height,
             viewport.cols,
             viewport.rows,
+            origin,
         );
         if self.x < viewport.x {
             self.x = viewport.x;

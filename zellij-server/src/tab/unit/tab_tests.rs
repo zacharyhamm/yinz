@@ -10,10 +10,12 @@ use std::path::PathBuf;
 use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
 use zellij_utils::data::{Direction, NewPanePlacement, Resize, ResizeStrategy, WebSharing};
 use zellij_utils::errors::prelude::*;
-use zellij_utils::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
+use zellij_utils::input::layout::{
+    FloatingPaneLayout, PercentOrFixed, SplitDirection, SplitSize, TiledPaneLayout,
+};
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels};
+use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 
 use crate::os_input_output::AsyncReader;
 use std::cell::RefCell;
@@ -1474,6 +1476,18 @@ fn floating_pane_geom(tab: &Tab, pane_id: PaneId) -> PaneGeom {
         .current_geom()
 }
 
+/// Places the tab as `Screen` would when a 10 column global pane is docked to the left of the
+/// screen: the tab keeps `cols` columns, starting at column 10.
+fn dock_tab_beside_left_global_pane(tab: &mut Tab, cols: usize, rows: usize) {
+    tab.resize_whole_tab_to(Viewport {
+        x: 10,
+        y: 0,
+        cols,
+        rows,
+    })
+    .unwrap();
+}
+
 #[test]
 pub fn toggle_floating_pane_fullscreen_expands_over_viewport() {
     let mut tab = create_tab_with_two_floating_panes();
@@ -1967,6 +1981,69 @@ pub fn toggle_floating_fullscreen_by_pane_id() {
     assert!(
         !tab.is_fullscreen_active(),
         "By-id toggle off clears floating fullscreen"
+    );
+}
+
+#[test]
+pub fn floating_no_ui_fullscreen_respects_the_tab_origin() {
+    let mut tab = create_tab_with_two_floating_panes();
+    dock_tab_beside_left_global_pane(&mut tab, 111, 20);
+    let active_pane_id = tab
+        .floating_panes
+        .active_pane_id(1)
+        .expect("a floating pane is focused");
+
+    tab.toggle_active_pane_no_ui_fullscreen(1);
+
+    let geom = floating_pane_geom(&tab, active_pane_id);
+    assert_eq!(geom.x, 10, "No-ui fullscreen starts at the tab origin");
+    assert_eq!(geom.y, 0, "No-ui fullscreen starts at the tab origin");
+    assert_eq!(
+        geom.x + geom.cols.as_usize(),
+        121,
+        "No-ui fullscreen reaches the right edge of the screen"
+    );
+    assert_eq!(geom.rows.as_usize(), 20, "No-ui fullscreen covers all rows");
+}
+
+#[test]
+pub fn layout_floating_pane_is_positioned_from_the_tab_origin() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    dock_tab_beside_left_global_pane(&mut tab, 111, 20);
+
+    let floating_layout = FloatingPaneLayout {
+        x: Some(PercentOrFixed::Fixed(0)),
+        y: Some(PercentOrFixed::Fixed(0)),
+        width: Some(PercentOrFixed::Fixed(20)),
+        height: Some(PercentOrFixed::Fixed(5)),
+        ..Default::default()
+    };
+    tab.apply_layout(
+        TiledPaneLayout::default(),
+        vec![floating_layout],
+        vec![(2, None)],
+        vec![(3, None)],
+        HashMap::new(),
+        1,
+        None,
+    )
+    .unwrap();
+
+    let geom = floating_pane_geom(&tab, PaneId::Terminal(3));
+    assert_eq!(
+        (geom.x, geom.y),
+        (10, 0),
+        "a floating pane at x 0 y 0 is placed at the tab origin, not the screen origin"
+    );
+    assert!(
+        geom.x + geom.cols.as_usize() <= 121,
+        "the floating pane stays inside the screen"
     );
 }
 

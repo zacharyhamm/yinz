@@ -648,7 +648,10 @@ pub struct Output {
     osc8_hyperlinks: bool,
     pane_render_report: PaneRenderReport,
     pub collect_ansi_pane_contents: bool,
-    cursor_coordinates: Option<(usize, usize)>,
+    // per client: a smaller client (eg. a watcher) must be cropped against its own cursor, not
+    // against whichever client happened to render last
+    cursor_coordinates: HashMap<ClientId, (usize, usize)>,
+    clients_with_hidden_cursor: HashSet<ClientId>,
 }
 
 impl Output {
@@ -686,6 +689,21 @@ impl Output {
         for client_id in client_ids {
             self.client_character_chunks.insert(*client_id, vec![]);
         }
+    }
+    /// The cursor is only positioned once all panes contributed to the frame, so this can be
+    /// reached from more than one place - hide each client's cursor at most once per frame.
+    pub fn hide_cursor_for_clients(&mut self, client_ids: impl Iterator<Item = ClientId>) {
+        let client_ids: Vec<ClientId> = client_ids
+            .filter(|client_id| self.clients_with_hidden_cursor.insert(*client_id))
+            .collect();
+        for client_id in client_ids {
+            self.add_pre_vte_instruction_to_client(client_id, "\u{1b}[?25l");
+        }
+    }
+    /// `add_clients` sets the stack of whichever tab is rendering, so a later pass over the tabs
+    /// (eg. positioning the cursor) needs to point the output back at its own tab's stack.
+    pub fn set_floating_panes_stack(&mut self, floating_panes_stack: Option<FloatingPanesStack>) {
+        self.floating_panes_stack = floating_panes_stack;
     }
     pub fn add_character_chunks_to_client(
         &mut self,
@@ -756,6 +774,9 @@ impl Output {
     }
     pub fn mark_host_display_cleared_for_client(&mut self, client_id: ClientId) {
         self.clients_with_cleared_host_display.insert(client_id);
+    }
+    pub fn any_host_display_cleared(&self) -> bool {
+        !self.clients_with_cleared_host_display.is_empty()
     }
     pub fn add_post_vte_instruction_to_client(
         &mut self,
@@ -1039,7 +1060,7 @@ impl Output {
 
             // Check if cursor was cropped and hide it if necessary
             if let (Some(max_size), Some((cursor_x, cursor_y))) =
-                (max_size, self.cursor_coordinates)
+                (max_size, self.cursor_coordinates.get(&client_id).copied())
             {
                 let cursor_was_cropped = cursor_y >= max_size.rows || cursor_x >= max_size.cols;
                 if cursor_was_cropped {
@@ -1081,13 +1102,24 @@ impl Output {
                 .values()
                 .any(|chunks_by_pane| chunks_by_pane.values().any(|c| !c.is_empty()))
     }
-    pub fn cursor_is_visible(
+    /// Where `client_id`'s own cursor was placed, so `serialize_with_size` can tell whether it fell
+    /// outside *this* client's size and must be hidden. Only the real cursor is recorded - a fake
+    /// cursor belongs to another client and must not decide this one's crop.
+    pub fn set_cursor_coordinates(
         &mut self,
+        client_id: ClientId,
+        cursor_x: usize,
+        cursor_y: usize,
+    ) {
+        self.cursor_coordinates
+            .insert(client_id, (cursor_x, cursor_y));
+    }
+    pub fn cursor_is_visible(
+        &self,
         cursor_x: usize,
         cursor_y: usize,
         z_index: Option<usize>,
     ) -> bool {
-        self.cursor_coordinates = Some((cursor_x, cursor_y));
         self.floating_panes_stack
             .as_ref()
             .map(|s| s.cursor_is_visible(cursor_x, cursor_y, z_index))
@@ -1397,7 +1429,7 @@ impl FloatingPanesStack {
                 c_chunk.x = pane_right_edge + 1;
                 return Ok(None);
             } else if pane_left_edge >= c_chunk_left_side
-                && pane_left_edge >= c_chunk_left_side
+                && pane_left_edge <= c_chunk_right_side
                 && pane_right_edge >= c_chunk_right_side
             {
                 // pane covers chunk partially to the right

@@ -38,6 +38,9 @@ const RESIZE_INCREMENT_HEIGHT: usize = 2;
 pub struct FloatingPanes {
     panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
+    // where the display area starts on screen, non-zero when global panes are docked to the left or
+    // top - panes are positioned from it (see `TiledPanes::display_area_origin`)
+    display_area_origin: Rc<RefCell<(usize, usize)>>,
     viewport: Rc<RefCell<Viewport>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
@@ -67,6 +70,7 @@ pub struct FloatingPanes {
 impl FloatingPanes {
     pub fn new(
         display_area: Rc<RefCell<Size>>,
+        display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
@@ -83,6 +87,7 @@ impl FloatingPanes {
         FloatingPanes {
             panes: BTreeMap::new(),
             display_area,
+            display_area_origin,
             viewport,
             connected_clients,
             connected_clients_in_app,
@@ -338,6 +343,7 @@ impl FloatingPanes {
         let err_context = || format!("failed to find position for floating pane");
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
+        let (origin_x, origin_y) = *self.display_area_origin.borrow();
         let floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -354,6 +360,7 @@ impl FloatingPanes {
             floating_pane_layout.height.clone(),
             viewport.cols,
             viewport.rows,
+            (origin_x, origin_y),
         );
         if let Some(is_pinned) = &floating_pane_layout.pinned {
             position.is_pinned = *is_pinned;
@@ -367,15 +374,17 @@ impl FloatingPanes {
         if position.rows.as_usize() > viewport.rows {
             position.rows = Dimension::fixed(viewport.rows);
         }
-        if position.x + position.cols.as_usize() > viewport.cols {
+        let right_edge = origin_x + viewport.cols;
+        let bottom_edge = origin_y + viewport.rows;
+        if position.x + position.cols.as_usize() > right_edge {
             position.x = position
                 .x
-                .saturating_sub((position.x + position.cols.as_usize()) - viewport.cols);
+                .saturating_sub((position.x + position.cols.as_usize()) - right_edge);
         }
-        if position.y + position.rows.as_usize() > viewport.rows {
+        if position.y + position.rows.as_usize() > bottom_edge {
             position.y = position
                 .y
-                .saturating_sub((position.y + position.rows.as_usize()) - viewport.rows);
+                .saturating_sub((position.y + position.rows.as_usize()) - bottom_edge);
         }
         Ok(position)
     }
@@ -468,6 +477,7 @@ impl FloatingPanes {
         mouse_hover_pane_id: &HashMap<ClientId, PaneId>,
         current_pane_group: HashMap<ClientId, Vec<PaneId>>,
         client_id_override: Option<ClientId>,
+        inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
     ) -> Result<()> {
@@ -482,7 +492,9 @@ impl FloatingPanes {
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let active_panes = if self.panes_are_visible() {
-            self.active_panes.clone_active_panes()
+            let mut active_panes = self.active_panes.clone_active_panes();
+            active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
+            active_panes
         } else {
             Default::default()
         };
@@ -664,6 +676,23 @@ impl FloatingPanes {
         );
         floating_pane_grid.resize(new_screen_size).non_fatal();
         self.set_force_render();
+    }
+
+    // desired positions live in the same coordinate space as the panes themselves, so callers
+    // that translate the panes (eg. the origin normalization in Tab::resize_whole_tab_to) must
+    // translate these too - otherwise the next resize restores them into the wrong space
+    pub fn translate_desired_positions(&mut self, x_offset: isize, y_offset: isize) {
+        fn translate_coordinate(coordinate: usize, offset: isize) -> usize {
+            if offset.is_negative() {
+                coordinate.saturating_sub(offset.unsigned_abs())
+            } else {
+                coordinate.saturating_add(offset as usize)
+            }
+        }
+        for desired_pane_position in self.desired_pane_positions.values_mut() {
+            desired_pane_position.x = translate_coordinate(desired_pane_position.x, x_offset);
+            desired_pane_position.y = translate_coordinate(desired_pane_position.y, y_offset);
+        }
     }
 
     pub fn resize_pty_all_panes(&mut self, _os_api: &mut Box<dyn ServerOsApi>) -> Result<()> {
@@ -1097,6 +1126,7 @@ impl FloatingPanes {
 
         {
             let viewport = { self.viewport.borrow().clone() };
+            let origin = { *self.display_area_origin.borrow() };
             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
             let mut pane_geom = pane.position_and_size();
             if let Some(pinned) = new_coordinates.pinned.as_ref() {
@@ -1109,7 +1139,7 @@ impl FloatingPanes {
                     pane.set_borderless(false);
                 };
             }
-            pane_geom.adjust_coordinates(new_coordinates, viewport);
+            pane_geom.adjust_coordinates(new_coordinates, viewport, origin);
             pane.set_geom(pane_geom);
             pane.set_should_render(true);
 
@@ -1219,7 +1249,14 @@ impl FloatingPanes {
         }
         if covers_ui {
             let display_area = { *self.display_area.borrow() };
-            self.expand_pane_over_area(pane_id, 0, 0, display_area.rows, display_area.cols);
+            let (origin_x, origin_y) = { *self.display_area_origin.borrow() };
+            self.expand_pane_over_area(
+                pane_id,
+                origin_x,
+                origin_y,
+                display_area.rows,
+                display_area.cols,
+            );
         } else {
             let viewport = { *self.viewport.borrow() };
             self.expand_pane_over_area(
@@ -1646,7 +1683,8 @@ impl FloatingPanes {
     pub fn pane_info(&self, current_pane_group: &HashMap<ClientId, Vec<PaneId>>) -> Vec<PaneInfo> {
         let mut pane_infos = vec![];
         for (pane_id, pane) in self.panes.iter() {
-            let mut pane_info_for_pane = pane_info_for_pane(pane_id, pane, current_pane_group);
+            let mut pane_info_for_pane =
+                pane_info_for_pane(pane_id, pane.as_ref(), current_pane_group);
             let is_focused = self.active_panes.pane_id_is_focused(pane_id);
             pane_info_for_pane.is_floating = true;
             pane_info_for_pane.is_suppressed = false;

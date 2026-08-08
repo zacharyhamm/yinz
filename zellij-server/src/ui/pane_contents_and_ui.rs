@@ -190,15 +190,17 @@ impl<'a> PaneContentsAndUi<'a> {
                 self.z_index,
             );
             if let Some(raw_vte_output) = raw_vte_output {
-                self.output.add_post_vte_instruction_to_client(
-                    client_id,
-                    &format!(
-                        "\u{1b}[{};{}H\u{1b}[m{}",
-                        self.pane.y() + 1,
-                        self.pane.x() + 1,
-                        raw_vte_output
-                    ),
-                );
+                if !raw_vte_output.is_empty() {
+                    self.output.add_post_vte_instruction_to_client(
+                        client_id,
+                        &format!(
+                            "\u{1b}[{};{}H\u{1b}[m{}",
+                            self.pane.y() + 1,
+                            self.pane.x() + 1,
+                            raw_vte_output
+                        ),
+                    );
+                }
             }
         }
         Ok(())
@@ -236,6 +238,16 @@ impl<'a> PaneContentsAndUi<'a> {
             .add_character_chunks_to_client(client_id, chunks, self.z_index)
             .with_context(err_context)?;
         Ok(())
+    }
+    /// Save the host terminal cursor position, so a following `restore_host_cursor_position` can
+    /// undo any cursor movement a fake cursor causes as a side effect of drawing itself.
+    pub fn save_host_cursor_position(&mut self, client_id: ClientId) {
+        self.output
+            .add_post_vte_instruction_to_client(client_id, "\u{1b}[s");
+    }
+    pub fn restore_host_cursor_position(&mut self, client_id: ClientId) {
+        self.output
+            .add_post_vte_instruction_to_client(client_id, "\u{1b}[u");
     }
     pub fn render_fake_cursor_if_needed(&mut self, client_id: ClientId) -> Result<()> {
         let pane_focused_for_client_id = self.focused_clients.contains(&client_id);

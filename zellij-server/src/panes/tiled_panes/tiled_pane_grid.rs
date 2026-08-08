@@ -9,7 +9,7 @@ use zellij_utils::data::{Direction, Resize, ResizeStrategy};
 use zellij_utils::{
     errors::prelude::*,
     input::layout::SplitDirection,
-    pane_size::{Dimension, PaneGeom, Size, Viewport},
+    pane_size::{Dimension, PaneGeom, Viewport},
 };
 
 use std::cell::RefCell;
@@ -27,15 +27,15 @@ fn no_pane_id(pane_id: &PaneId) -> String {
 
 pub struct TiledPaneGrid<'a> {
     panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,
-    display_area: Size, // includes all panes (including eg. the status bar and tab bar in the default layout)
-    viewport: Viewport, // includes all non-UI panes
+    display_area: Viewport, // includes all panes (including eg. the status bar and tab bar in the default layout), its x/y is the tab origin (non-zero when global panes are docked left/top)
+    viewport: Viewport,     // includes all non-UI panes
 }
 
 impl<'a> TiledPaneGrid<'a> {
     pub fn new(
         panes: impl IntoIterator<Item = (&'a PaneId, &'a mut Box<dyn Pane>)>,
         panes_to_hide: &HashSet<PaneId>,
-        display_area: Size,
+        display_area: Viewport,
         viewport: Viewport,
     ) -> Self {
         let panes: HashMap<_, _> = panes
@@ -52,7 +52,13 @@ impl<'a> TiledPaneGrid<'a> {
 
     pub fn layout(&mut self, direction: SplitDirection, space: usize) -> Result<()> {
         let mut pane_resizer = PaneResizer::new(self.panes.clone());
-        pane_resizer.layout(direction, space)
+        pane_resizer.layout(direction, space, self.layout_origin(direction))
+    }
+    fn layout_origin(&self, direction: SplitDirection) -> usize {
+        match direction {
+            SplitDirection::Horizontal => self.display_area.x,
+            SplitDirection::Vertical => self.display_area.y,
+        }
     }
     pub fn get_pane_geom(&self, pane_id: &PaneId) -> Option<PaneGeom> {
         let panes = self.panes.borrow();
@@ -387,11 +393,19 @@ impl<'a> TiledPaneGrid<'a> {
             let mut pane_resizer = PaneResizer::new(self.panes.clone());
             if direction.is_horizontal() {
                 pane_resizer
-                    .layout(SplitDirection::Horizontal, self.display_area.cols)
+                    .layout(
+                        SplitDirection::Horizontal,
+                        self.display_area.cols,
+                        self.display_area.x,
+                    )
                     .with_context(err_context)?;
             } else {
                 pane_resizer
-                    .layout(SplitDirection::Vertical, self.display_area.rows)
+                    .layout(
+                        SplitDirection::Vertical,
+                        self.display_area.rows,
+                        self.display_area.y,
+                    )
                     .with_context(err_context)?;
             }
         } else {
@@ -866,7 +880,8 @@ impl<'a> TiledPaneGrid<'a> {
         is_inside_viewport(&self.viewport, self.panes.borrow().get(pane_id).unwrap())
     }
 
-    pub fn next_selectable_pane_id(&self, current_pane_id: &PaneId) -> PaneId {
+    /// The selectable panes in focus-cycling order: top-to-bottom, then left-to-right.
+    fn sorted_selectable_pane_ids(&self) -> Vec<PaneId> {
         let panes = self.panes.borrow();
         let mut panes: Vec<(&PaneId, &&mut Box<dyn Pane>)> =
             panes.iter().filter(|(_, p)| p.selectable()).collect();
@@ -877,40 +892,44 @@ impl<'a> TiledPaneGrid<'a> {
                 a_pane.y().cmp(&b_pane.y())
             }
         });
+        panes.iter().map(|(id, _)| **id).collect()
+    }
+
+    pub fn is_last_selectable_pane_id(&self, pane_id: &PaneId) -> bool {
+        self.sorted_selectable_pane_ids().last() == Some(pane_id)
+    }
+
+    pub fn is_first_selectable_pane_id(&self, pane_id: &PaneId) -> bool {
+        self.sorted_selectable_pane_ids().first() == Some(pane_id)
+    }
+
+    pub fn next_selectable_pane_id(&self, current_pane_id: &PaneId) -> PaneId {
+        let panes = self.sorted_selectable_pane_ids();
         let active_pane_position = panes
             .iter()
-            .position(|(id, _)| *id == current_pane_id) // TODO: better
+            .position(|id| id == current_pane_id) // TODO: better
             .unwrap();
 
         let next_active_pane_id = panes
             .get(active_pane_position + 1)
             .or_else(|| panes.get(0))
-            .map(|p| *p.0)
+            .copied()
             .unwrap();
         next_active_pane_id
     }
 
     pub fn previous_selectable_pane_id(&self, current_pane_id: &PaneId) -> PaneId {
-        let panes = self.panes.borrow();
-        let mut panes: Vec<(&PaneId, &&mut Box<dyn Pane>)> =
-            panes.iter().filter(|(_, p)| p.selectable()).collect();
-        panes.sort_by(|(_a_id, a_pane), (_b_id, b_pane)| {
-            if a_pane.y() == b_pane.y() {
-                a_pane.x().cmp(&b_pane.x())
-            } else {
-                a_pane.y().cmp(&b_pane.y())
-            }
-        });
-        let last_pane = panes.last().unwrap();
+        let panes = self.sorted_selectable_pane_ids();
+        let last_pane = *panes.last().unwrap();
         let active_pane_position = panes
             .iter()
-            .position(|(id, _)| *id == current_pane_id) // TODO: better
+            .position(|id| id == current_pane_id) // TODO: better
             .unwrap();
 
         let previous_active_pane_id = if active_pane_position == 0 {
-            *last_pane.0
+            last_pane
         } else {
-            *panes.get(active_pane_position - 1).unwrap().0
+            *panes.get(active_pane_position - 1).unwrap()
         };
         previous_active_pane_id
     }
@@ -1341,7 +1360,7 @@ impl<'a> TiledPaneGrid<'a> {
                 };
                 self.panes.borrow_mut().remove(&id);
                 let mut pane_resizer = PaneResizer::new(self.panes.clone());
-                let _ = pane_resizer.layout(direction, side_length);
+                let _ = pane_resizer.layout(direction, side_length, self.layout_origin(direction));
                 return true;
             }
         } else {
@@ -1349,8 +1368,16 @@ impl<'a> TiledPaneGrid<'a> {
             // this might happen if we are closing a fixed pane
             self.panes.borrow_mut().remove(&id);
             let mut pane_resizer = PaneResizer::new(self.panes.clone());
-            let _ = pane_resizer.layout(SplitDirection::Horizontal, self.display_area.cols);
-            let _ = pane_resizer.layout(SplitDirection::Vertical, self.display_area.rows);
+            let _ = pane_resizer.layout(
+                SplitDirection::Horizontal,
+                self.display_area.cols,
+                self.display_area.x,
+            );
+            let _ = pane_resizer.layout(
+                SplitDirection::Vertical,
+                self.display_area.rows,
+                self.display_area.y,
+            );
             return true;
         }
         false

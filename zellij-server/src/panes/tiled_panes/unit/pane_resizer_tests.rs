@@ -39,7 +39,7 @@ impl Fixture {
         }
     }
     fn run(&self) -> Run {
-        run_layout(&self.specs, self.direction, self.space)
+        run_layout(&self.specs, self.direction, self.space, 0)
     }
     fn has_stacked(&self) -> bool {
         self.specs.iter().any(|s| s.stacked.is_some())
@@ -908,4 +908,27 @@ fn stacked_pane_with_override() {
     let f = fixture("stacked_pane_with_override");
     let run = f.run();
     println!("{} = {}", f.name, canonical(&run));
+}
+
+#[test]
+fn spans_start_at_the_given_origin() {
+    // panes laid out beside a global pane docked to the left of the screen start at its far edge
+    // rather than at column 0
+    let specs = vec![
+        spec(1, 10, 0, dim_pct(50.0, 20), dim_pct(100.0, 10)),
+        spec(2, 30, 0, dim_pct(50.0, 20), dim_pct(100.0, 10)),
+    ];
+    let run = run_layout(&specs, SplitDirection::Horizontal, 40, 10);
+    assert_eq!(run.outcome, Outcome::PaneSizeUnchanged); // sizes are already correct
+    assert_eq!(run.panes[0].geom.x, 10);
+    assert_eq!(
+        run.panes[1].geom.x,
+        10 + run.panes[0].geom.cols.as_usize(),
+        "second pane starts where the first ends"
+    );
+    assert_eq!(
+        run.panes[1].geom.x + run.panes[1].geom.cols.as_usize(),
+        50,
+        "panes span the whole display area from the origin"
+    );
 }

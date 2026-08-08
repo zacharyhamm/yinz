@@ -303,7 +303,7 @@ pub struct OverrideLayoutPayload {
 pub struct Action {
     #[prost(enumeration="ActionName", tag="1")]
     pub name: i32,
-    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61")]
+    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63")]
     pub optional_payload: ::core::option::Option<action::OptionalPayload>,
 }
 /// Nested message and enum types in `Action`.
@@ -425,6 +425,10 @@ pub mod action {
         AreFloatingPanesVisiblePayload(super::AreFloatingPanesVisiblePayload),
         #[prost(message, tag="61")]
         SetPaneFrameStylePayload(super::SetPaneFrameStylePayload),
+        #[prost(message, tag="62")]
+        NewStackedPanePayload(super::NewStackedPanePayload),
+        #[prost(message, tag="63")]
+        SetGlobalPanePlacementPayload(super::SetGlobalPanePlacementPayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -514,6 +518,8 @@ pub struct LaunchOrFocusPluginPayload {
     pub should_open_in_place: bool,
     #[prost(bool, tag="6")]
     pub skip_plugin_cache: bool,
+    #[prost(message, optional, tag="7")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -530,6 +536,8 @@ pub struct NewFloatingPanePayload {
     pub command: ::core::option::Option<RunCommandAction>,
     #[prost(bool, tag="2")]
     pub near_current_pane: bool,
+    #[prost(message, optional, tag="3")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -542,6 +550,8 @@ pub struct NewTiledPanePayload {
     pub near_current_pane: bool,
     #[prost(bool, optional, tag="4")]
     pub borderless: ::core::option::Option<bool>,
+    #[prost(message, optional, tag="5")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -564,6 +574,8 @@ pub struct EditFilePayload {
     pub should_float: bool,
     #[prost(bool, tag="6")]
     pub near_current_pane: bool,
+    #[prost(message, optional, tag="7")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -578,6 +590,8 @@ pub struct NewPanePayload {
     pub direction: ::core::option::Option<i32>,
     #[prost(string, optional, tag="2")]
     pub pane_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="3")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -592,6 +606,8 @@ pub struct NewBlockingPanePayload {
     pub unblock_condition: ::core::option::Option<i32>,
     #[prost(bool, tag="5")]
     pub near_current_pane: bool,
+    #[prost(message, optional, tag="6")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -606,6 +622,22 @@ pub struct NewInPlacePanePayload {
     pub pane_id_to_replace: ::core::option::Option<PaneId>,
     #[prost(bool, tag="5")]
     pub close_replace_pane: bool,
+    #[prost(message, optional, tag="6")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NewStackedPanePayload {
+    #[prost(message, optional, tag="1")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetGlobalPanePlacementPayload {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(message, optional, tag="2")]
+    pub placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -688,6 +720,31 @@ pub mod pane_id {
         #[prost(uint32, tag="2")]
         Plugin(u32),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GlobalPaneSize {
+    #[prost(oneof="global_pane_size::SizeType", tags="1, 2")]
+    pub size_type: ::core::option::Option<global_pane_size::SizeType>,
+}
+/// Nested message and enum types in `GlobalPaneSize`.
+pub mod global_pane_size {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum SizeType {
+        #[prost(uint32, tag="1")]
+        Fixed(u32),
+        #[prost(uint32, tag="2")]
+        Percent(u32),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GlobalPanePlacement {
+    #[prost(enumeration="GlobalPaneEdge", tag="1")]
+    pub edge: i32,
+    #[prost(message, optional, tag="2")]
+    pub size: ::core::option::Option<GlobalPaneSize>,
 }
 /// FloatingPaneCoordinates specifies the position and size of a floating pane
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -824,6 +881,8 @@ pub struct RunCommandAction {
     pub hold_on_close: bool,
     #[prost(bool, tag="7")]
     pub hold_on_start: bool,
+    #[prost(message, optional, tag="8")]
+    pub global_placement: ::core::option::Option<GlobalPanePlacement>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1139,6 +1198,7 @@ pub enum ActionName {
     FocusHostSession = 107,
     ToggleHostFullscreen = 108,
     FocusGuestSession = 109,
+    SetGlobalPanePlacement = 110,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1254,6 +1314,7 @@ impl ActionName {
             ActionName::FocusHostSession => "FocusHostSession",
             ActionName::ToggleHostFullscreen => "ToggleHostFullscreen",
             ActionName::FocusGuestSession => "FocusGuestSession",
+            ActionName::SetGlobalPanePlacement => "SetGlobalPanePlacement",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1366,6 +1427,42 @@ impl ActionName {
             "FocusHostSession" => Some(Self::FocusHostSession),
             "ToggleHostFullscreen" => Some(Self::ToggleHostFullscreen),
             "FocusGuestSession" => Some(Self::FocusGuestSession),
+            "SetGlobalPanePlacement" => Some(Self::SetGlobalPanePlacement),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum GlobalPaneEdge {
+    Unspecified = 0,
+    Left = 1,
+    Right = 2,
+    Top = 3,
+    Bottom = 4,
+}
+impl GlobalPaneEdge {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            GlobalPaneEdge::Unspecified => "GLOBAL_PANE_EDGE_UNSPECIFIED",
+            GlobalPaneEdge::Left => "GLOBAL_PANE_EDGE_LEFT",
+            GlobalPaneEdge::Right => "GLOBAL_PANE_EDGE_RIGHT",
+            GlobalPaneEdge::Top => "GLOBAL_PANE_EDGE_TOP",
+            GlobalPaneEdge::Bottom => "GLOBAL_PANE_EDGE_BOTTOM",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "GLOBAL_PANE_EDGE_UNSPECIFIED" => Some(Self::Unspecified),
+            "GLOBAL_PANE_EDGE_LEFT" => Some(Self::Left),
+            "GLOBAL_PANE_EDGE_RIGHT" => Some(Self::Right),
+            "GLOBAL_PANE_EDGE_TOP" => Some(Self::Top),
+            "GLOBAL_PANE_EDGE_BOTTOM" => Some(Self::Bottom),
             _ => None,
         }
     }

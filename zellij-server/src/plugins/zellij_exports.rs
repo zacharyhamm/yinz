@@ -791,6 +791,15 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::ClearPaneHighlights(pane_id) => {
                         clear_pane_highlights(env, pane_id)
                     },
+                    PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
+                        let _ =
+                            env.senders
+                                .send_to_screen(ScreenInstruction::SetGlobalPanePlacement(
+                                    pane_id.into(),
+                                    placement,
+                                    None,
+                                ));
+                    },
                 },
                 (PermissionStatus::Denied, permission) => {
                     log::error!(
@@ -1428,6 +1437,7 @@ fn open_file(env: &PluginEnv, file_to_open: FileToOpen, context: BTreeMap<String
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1524,6 +1534,7 @@ fn open_file_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1566,6 +1577,7 @@ fn open_file_in_place(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1608,6 +1620,7 @@ fn open_file_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     );
     let _ = env.senders.send_to_pty(pty_instr);
 
@@ -1651,6 +1664,7 @@ fn open_file_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     );
     let _ = env.senders.send_to_pty(pty_instr);
 
@@ -1728,6 +1742,7 @@ fn open_terminal(env: &PluginEnv, cwd: PathBuf) {
         no_focus: false,
         borderless: None,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1766,6 +1781,7 @@ fn open_terminal_near_plugin(env: &PluginEnv, cwd: PathBuf) {
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     ));
 
     // Wait for completion
@@ -1805,6 +1821,7 @@ fn open_terminal_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1845,6 +1862,7 @@ fn open_terminal_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     ));
 
     // Wait for completion
@@ -1882,6 +1900,7 @@ fn open_terminal_in_place(env: &PluginEnv, cwd: PathBuf) {
         pane_id_to_replace: None,
         close_replaced_pane: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2168,6 +2187,7 @@ fn open_command_pane(
         no_focus: false,
         borderless: None,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2226,6 +2246,7 @@ fn open_command_pane_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     ));
 
     // Wait for completion
@@ -2277,6 +2298,7 @@ fn open_command_pane_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2333,6 +2355,7 @@ fn open_command_pane_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     ));
 
     // Wait for completion
@@ -2389,6 +2412,7 @@ fn open_command_pane_in_place(
         pane_id_to_replace: None,
         close_replaced_pane: false,
         tab_id: None,
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2446,6 +2470,7 @@ fn open_command_pane_background(
         ClientTabIndexOrPaneId::ClientId(env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
+        None,
     ));
 
     // Wait for completion
@@ -2885,6 +2910,7 @@ fn new_tiled_pane_in_tab(env: &PluginEnv, tab_position: usize) {
         no_focus: false,
         borderless: None,
         tab_id: Some(tab_position),
+        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -3214,6 +3240,7 @@ fn new_pane(env: &PluginEnv) {
         direction: None,
         pane_name: None,
         start_suppressed: false,
+        global_placement: None,
     };
     apply_action!(action, error_msg, env);
 }
@@ -4726,6 +4753,7 @@ fn try_edit_layout(
         near_current_pane: true,
         no_focus: false,
         tab_id: None,
+        global_placement: None,
     };
     // Route the action - this is fallible
     route_action(
@@ -5060,6 +5088,7 @@ fn load_new_plugin(
                     cwd,
                     None,
                     skip_cache,
+                    None,
                     None,
                     None,
                     None,
@@ -5593,6 +5622,7 @@ fn check_command_permission(
         | PluginCommand::HideFloatingPanes { .. }
         | PluginCommand::SetPaneRegexHighlights(..)
         | PluginCommand::ClearPaneHighlights(..)
+        | PluginCommand::SetGlobalPanePlacement(..)
         | PluginCommand::SetSoftKeyboard(..) => PermissionType::ChangeApplicationState,
         PluginCommand::UnblockCliPipeInput(..)
         | PluginCommand::BlockCliPipeInput(..)

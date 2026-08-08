@@ -2310,6 +2310,9 @@ pub struct TabInfo {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PaneManifest {
     pub panes: HashMap<usize, Vec<PaneInfo>>, // usize is the tab position
+    /// The session-global panes, in declaration order.
+    #[serde(default)]
+    pub global_panes: Vec<PaneInfo>,
 }
 
 /// Contains all the information for a currently open pane
@@ -2374,6 +2377,12 @@ pub struct PaneInfo {
     pub default_fg: Option<String>,
     /// The default background color of this pane, if set (e.g. "#001a3a")
     pub default_bg: Option<String>,
+    /// The global pane placement, if this pane is global.
+    #[serde(default)]
+    pub global_placement: Option<GlobalPanePlacement>,
+    /// True if this global pane is hidden.
+    #[serde(default)]
+    pub is_hidden: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -2859,6 +2868,29 @@ pub struct NewPluginArgs {
 pub enum PaneId {
     Terminal(u32),
     Plugin(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GlobalPaneEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GlobalPanePlacement {
+    pub edge: GlobalPaneEdge,
+    pub size: PercentOrFixed,
+}
+
+impl Default for GlobalPanePlacement {
+    fn default() -> Self {
+        Self {
+            edge: GlobalPaneEdge::Left,
+            size: PercentOrFixed::Fixed(1),
+        }
+    }
 }
 
 impl Default for PaneId {
@@ -3558,6 +3590,7 @@ pub enum PluginCommand {
     ListClients,
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned
+    SetGlobalPanePlacement(PaneId, GlobalPanePlacement),
     StackPanes(Vec<PaneId>),
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     TogglePaneBorderless(PaneId),

@@ -247,6 +247,8 @@ message Action {
     HideFloatingPanesPayload hide_floating_panes_payload = 59;
     AreFloatingPanesVisiblePayload are_floating_panes_visible_payload = 60;
     SetPaneFrameStylePayload set_pane_frame_style_payload = 61;
+    NewStackedPanePayload new_stacked_pane_payload = 62;
+    SetGlobalPanePlacementPayload set_global_pane_placement_payload = 63;
   }
 }
 
@@ -318,6 +320,7 @@ message LaunchOrFocusPluginPayload {
   bool move_to_focused_tab = 4;
   bool should_open_in_place = 5;
   bool skip_plugin_cache = 6;
+  optional GlobalPanePlacement global_placement = 7;
 }
 
 message GoToTabNamePayload {
@@ -328,6 +331,7 @@ message GoToTabNamePayload {
 message NewFloatingPanePayload {
   optional RunCommandAction command = 1;
   bool near_current_pane = 2;
+  optional GlobalPanePlacement global_placement = 3;
 }
 
 message NewTiledPanePayload {
@@ -335,6 +339,7 @@ message NewTiledPanePayload {
   optional resize.ResizeDirection direction = 2;
   bool near_current_pane = 3;
   optional bool borderless = 4;
+  optional GlobalPanePlacement global_placement = 5;
 }
 
 message MovePanePayload {
@@ -348,6 +353,7 @@ message EditFilePayload {
   optional resize.ResizeDirection direction = 4;
   bool should_float = 5;
   bool near_current_pane = 6;
+  optional GlobalPanePlacement global_placement = 7;
 }
 
 message ScrollAtPayload {
@@ -357,6 +363,7 @@ message ScrollAtPayload {
 message NewPanePayload {
   optional resize.ResizeDirection direction = 1;
   optional string pane_name = 2;
+  optional GlobalPanePlacement global_placement = 3;
 }
 
 message NewBlockingPanePayload {
@@ -365,6 +372,7 @@ message NewBlockingPanePayload {
   optional RunCommandAction command = 3;
   optional UnblockCondition unblock_condition = 4;
   bool near_current_pane = 5;
+  optional GlobalPanePlacement global_placement = 6;
 }
 
 message NewInPlacePanePayload {
@@ -373,6 +381,16 @@ message NewInPlacePanePayload {
   bool near_current_pane = 3;
   optional PaneId pane_id_to_replace = 4;
   bool close_replace_pane = 5;
+  optional GlobalPanePlacement global_placement = 6;
+}
+
+message NewStackedPanePayload {
+  optional GlobalPanePlacement global_placement = 1;
+}
+
+message SetGlobalPanePlacementPayload {
+  PaneId pane_id = 1;
+  GlobalPanePlacement placement = 2;
 }
 
 message SwitchToModePayload {
@@ -505,6 +523,7 @@ enum ActionName {
     FocusHostSession = 107;
     ToggleHostFullscreen = 108;
     FocusGuestSession = 109;
+    SetGlobalPanePlacement = 110;
 }
 
 message Position {
@@ -526,6 +545,26 @@ message PaneId {
     uint32 terminal = 1;
     uint32 plugin = 2;
   }
+}
+
+enum GlobalPaneEdge {
+  GLOBAL_PANE_EDGE_UNSPECIFIED = 0;
+  GLOBAL_PANE_EDGE_LEFT = 1;
+  GLOBAL_PANE_EDGE_RIGHT = 2;
+  GLOBAL_PANE_EDGE_TOP = 3;
+  GLOBAL_PANE_EDGE_BOTTOM = 4;
+}
+
+message GlobalPaneSize {
+  oneof size_type {
+    uint32 fixed = 1;
+    uint32 percent = 2;
+  }
+}
+
+message GlobalPanePlacement {
+  GlobalPaneEdge edge = 1;
+  GlobalPaneSize size = 2;
 }
 
 // FloatingPaneCoordinates specifies the position and size of a floating pane
@@ -610,6 +649,7 @@ message RunCommandAction {
   optional string pane_name = 5;
   bool hold_on_close = 6;
   bool hold_on_start = 7;
+  optional GlobalPanePlacement global_placement = 8;
 }
 
 message PluginConfiguration {

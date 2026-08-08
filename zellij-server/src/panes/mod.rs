@@ -10,6 +10,7 @@ pub mod terminal_character;
 
 mod active_panes;
 pub mod floating_panes;
+mod pane_factory;
 mod plugin_pane;
 mod search;
 pub mod terminal_pane;
@@ -21,6 +22,7 @@ pub use floating_panes::*;
 pub use grid::*;
 pub use kitty_graphics::*;
 pub use link_handler::*;
+pub(crate) use pane_factory::*;
 pub(crate) use plugin_pane::*;
 pub use selection::Selection;
 pub use sixel::*;

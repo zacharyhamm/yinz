@@ -16,6 +16,9 @@ pub use super::generated_api::api::{
         FloatingPaneCoordinates as ProtobufFloatingPaneCoordinates,
         FloatingPaneLayout as ProtobufFloatingPaneLayout,
         FloatingPlacement as ProtobufFloatingPlacement,
+        GlobalPaneEdge as ProtobufGlobalPaneEdge,
+        GlobalPanePlacement as ProtobufGlobalPanePlacement,
+        GlobalPaneSize as ProtobufGlobalPaneSize,
         GoToTabNamePayload,
         HideFloatingPanesPayload,
         IdAndName,
@@ -37,6 +40,7 @@ pub use super::generated_api::api::{
         NewPanePayload,
         NewPanePlacement as ProtobufNewPanePlacement,
         NewPluginPanePayload,
+        NewStackedPanePayload,
         NewTabPayload,
         NewTiledPanePayload,
         OverrideLayoutPayload,
@@ -58,6 +62,7 @@ pub use super::generated_api::api::{
         ScrollAtPayload,
         SearchDirection as ProtobufSearchDirection,
         SearchOption as ProtobufSearchOption,
+        SetGlobalPanePlacementPayload,
         SetPaneFrameStylePayload,
         ShowFloatingPanesPayload,
         SplitDirection as ProtobufSplitDirection,
@@ -79,8 +84,9 @@ pub use super::generated_api::api::{
     resize::{Resize as ProtobufResize, ResizeDirection as ProtobufResizeDirection},
 };
 use crate::data::{
-    CommandOrPlugin, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier,
-    NewPanePlacement, PaneId, PluginTag, ResizeStrategy, UnblockCondition,
+    CommandOrPlugin, Direction, FloatingPaneCoordinates, GlobalPaneEdge, GlobalPanePlacement,
+    InputMode, KeyWithModifier, NewPanePlacement, PaneId, PluginTag, ResizeStrategy,
+    UnblockCondition,
 };
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
@@ -332,10 +338,15 @@ impl TryFrom<ProtobufAction> for Action {
                         .and_then(|d| ProtobufResizeDirection::from_i32(d))
                         .and_then(|d| d.try_into().ok());
                     let pane_name = payload.pane_name;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     Ok(Action::NewPane {
                         direction,
                         pane_name,
                         start_suppressed: false,
+                        global_placement,
                     })
                 },
                 _ => Err("Wrong payload for Action::NewPane"),
@@ -351,6 +362,10 @@ impl TryFrom<ProtobufAction> for Action {
                         .and_then(|d| d.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
                     let should_float = payload.should_float;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     let should_be_in_place = false;
                     Ok(Action::EditFile {
                         payload: OpenFilePayload::new(file_to_edit, line_number, cwd),
@@ -363,6 +378,7 @@ impl TryFrom<ProtobufAction> for Action {
                         near_current_pane,
                         no_focus: false,
                         tab_id: None,
+                        global_placement,
                     })
                 },
                 _ => Err("Wrong payload for Action::NewPane"),
@@ -370,6 +386,10 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::NewFloatingPane) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::NewFloatingPanePayload(payload)) => {
                     let near_current_pane = payload.near_current_pane;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     if let Some(payload) = payload.command {
                         let pane_name = payload.pane_name.clone();
                         let run_command_action: RunCommandAction = payload.try_into()?;
@@ -380,6 +400,7 @@ impl TryFrom<ProtobufAction> for Action {
                             near_current_pane,
                             no_focus: false,
                             tab_id: None,
+                            global_placement,
                         })
                     } else {
                         Ok(Action::NewFloatingPane {
@@ -389,6 +410,7 @@ impl TryFrom<ProtobufAction> for Action {
                             near_current_pane,
                             no_focus: false,
                             tab_id: None,
+                            global_placement,
                         })
                     }
                 },
@@ -402,6 +424,10 @@ impl TryFrom<ProtobufAction> for Action {
                         .and_then(|d| d.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
                     let borderless = payload.borderless;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     if let Some(payload) = payload.command {
                         let pane_name = payload.pane_name.clone();
                         let run_command_action: RunCommandAction = payload.try_into()?;
@@ -413,6 +439,7 @@ impl TryFrom<ProtobufAction> for Action {
                             no_focus: false,
                             borderless,
                             tab_id: None,
+                            global_placement,
                         })
                     } else {
                         Ok(Action::NewTiledPane {
@@ -423,6 +450,7 @@ impl TryFrom<ProtobufAction> for Action {
                             no_focus: false,
                             borderless,
                             tab_id: None,
+                            global_placement,
                         })
                     }
                 },
@@ -626,12 +654,18 @@ impl TryFrom<ProtobufAction> for Action {
                 _ => Err("Wrong payload for Action::MoveTab"),
             },
             Some(ProtobufActionName::Run) => match protobuf_action.optional_payload {
-                Some(OptionalPayload::RunPayload(run_command_action)) => {
+                Some(OptionalPayload::RunPayload(mut run_command_action)) => {
+                    let global_placement = run_command_action
+                        .global_placement
+                        .take()
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     let run_command_action = run_command_action.try_into()?;
                     Ok(Action::Run {
                         command: run_command_action,
                         near_current_pane: false,
                         no_focus: false,
+                        global_placement,
                     })
                 },
                 _ => Err("Wrong payload for Action::Run"),
@@ -697,6 +731,10 @@ impl TryFrom<ProtobufAction> for Action {
                         let move_to_focused_tab = payload.move_to_focused_tab;
                         let should_open_in_place = payload.should_open_in_place;
                         let skip_plugin_cache = payload.skip_plugin_cache;
+                        let global_placement = payload
+                            .global_placement
+                            .map(TryInto::try_into)
+                            .transpose()?;
                         Ok(Action::LaunchOrFocusPlugin {
                             plugin: run_plugin_or_alias,
                             should_float,
@@ -705,6 +743,7 @@ impl TryFrom<ProtobufAction> for Action {
                             close_replaced_pane: false,
                             skip_cache: skip_plugin_cache,
                             tab_id: None,
+                            global_placement,
                         })
                     },
                     _ => Err("Wrong payload for Action::LaunchOrFocusPlugin"),
@@ -728,6 +767,10 @@ impl TryFrom<ProtobufAction> for Action {
                                                                             // this action
                     let should_open_in_place = payload.should_open_in_place;
                     let skip_plugin_cache = payload.skip_plugin_cache;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     Ok(Action::LaunchPlugin {
                         plugin: run_plugin_or_alias,
                         should_float,
@@ -737,6 +780,7 @@ impl TryFrom<ProtobufAction> for Action {
                         cwd: None,
                         no_focus: false,
                         tab_id: None,
+                        global_placement,
                     })
                 },
                 _ => Err("Wrong payload for Action::LaunchOrFocusPlugin"),
@@ -1032,13 +1076,27 @@ impl TryFrom<ProtobufAction> for Action {
                 }),
             },
             Some(ProtobufActionName::NewStackedPane) => match protobuf_action.optional_payload {
-                Some(_) => Err("NewStackedPane should not have a payload"),
+                Some(OptionalPayload::NewStackedPanePayload(payload)) => {
+                    Ok(Action::NewStackedPane {
+                        command: None,
+                        pane_name: None,
+                        near_current_pane: false,
+                        no_focus: false,
+                        tab_id: None,
+                        global_placement: payload
+                            .global_placement
+                            .map(TryInto::try_into)
+                            .transpose()?,
+                    })
+                },
+                Some(_) => Err("Wrong payload for Action::NewStackedPane"),
                 None => Ok(Action::NewStackedPane {
                     command: None,
                     pane_name: None,
                     near_current_pane: false,
                     no_focus: false,
                     tab_id: None,
+                    global_placement: None,
                 }),
             },
             Some(ProtobufActionName::NewBlockingPane) => match protobuf_action.optional_payload {
@@ -1054,6 +1112,10 @@ impl TryFrom<ProtobufAction> for Action {
                         .and_then(|uc| ProtobufUnblockCondition::from_i32(uc))
                         .and_then(|uc| uc.try_into().ok());
                     let near_current_pane = payload.near_current_pane;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     Ok(Action::NewBlockingPane {
                         placement,
                         pane_name,
@@ -1062,6 +1124,7 @@ impl TryFrom<ProtobufAction> for Action {
                         near_current_pane,
                         no_focus: false,
                         tab_id: None,
+                        global_placement,
                     })
                 },
                 _ => Err("Wrong payload for Action::NewBlockingPane"),
@@ -1072,6 +1135,10 @@ impl TryFrom<ProtobufAction> for Action {
                     let pane_id_to_replace =
                         payload.pane_id_to_replace.and_then(|p| p.try_into().ok());
                     let close_replaced_pane = payload.close_replace_pane;
+                    let global_placement = payload
+                        .global_placement
+                        .map(TryInto::try_into)
+                        .transpose()?;
                     if let Some(command) = payload.command {
                         let pane_name = command.pane_name.clone();
                         let run_command_action: RunCommandAction = command.try_into()?;
@@ -1083,6 +1150,7 @@ impl TryFrom<ProtobufAction> for Action {
                             pane_id_to_replace,
                             close_replaced_pane,
                             tab_id: None,
+                            global_placement,
                         })
                     } else {
                         Ok(Action::NewInPlacePane {
@@ -1093,6 +1161,7 @@ impl TryFrom<ProtobufAction> for Action {
                             pane_id_to_replace,
                             close_replaced_pane,
                             tab_id: None,
+                            global_placement,
                         })
                     }
                 },
@@ -1110,6 +1179,23 @@ impl TryFrom<ProtobufAction> for Action {
                 match protobuf_action.optional_payload {
                     Some(_) => Err("ToggleHostFullscreen should not have a payload"),
                     None => Ok(Action::ToggleHostFullscreen),
+                }
+            },
+            Some(ProtobufActionName::SetGlobalPanePlacement) => {
+                match protobuf_action.optional_payload {
+                    Some(OptionalPayload::SetGlobalPanePlacementPayload(payload)) => {
+                        Ok(Action::SetGlobalPanePlacement {
+                            pane_id: payload
+                                .pane_id
+                                .ok_or("SetGlobalPanePlacement payload missing pane_id")?
+                                .try_into()?,
+                            placement: payload
+                                .placement
+                                .ok_or("SetGlobalPanePlacement payload missing placement")?
+                                .try_into()?,
+                        })
+                    },
+                    _ => Err("Wrong payload for Action::SetGlobalPanePlacement"),
                 }
             },
             _ => Err("Unknown Action"),
@@ -1369,6 +1455,7 @@ impl TryFrom<Action> for ProtobufAction {
                 direction,
                 pane_name: new_pane_name,
                 start_suppressed: _start_suppressed,
+                global_placement,
             } => {
                 let direction = direction.and_then(|direction| {
                     let protobuf_direction: ProtobufResizeDirection = direction.try_into().ok()?;
@@ -1379,6 +1466,7 @@ impl TryFrom<Action> for ProtobufAction {
                     optional_payload: Some(OptionalPayload::NewPanePayload(NewPanePayload {
                         direction,
                         pane_name: new_pane_name,
+                        global_placement: global_placement.map(TryInto::try_into).transpose()?,
                     })),
                 })
             },
@@ -1391,6 +1479,7 @@ impl TryFrom<Action> for ProtobufAction {
                 start_suppressed: _start_suppressed,
                 coordinates: _floating_pane_coordinates,
                 near_current_pane,
+                global_placement,
                 ..
             } => {
                 let file_to_edit = open_file_payload.path.display().to_string();
@@ -1408,6 +1497,7 @@ impl TryFrom<Action> for ProtobufAction {
                         direction,
                         cwd,
                         near_current_pane,
+                        global_placement: global_placement.map(TryInto::try_into).transpose()?,
                     })),
                 })
             },
@@ -1416,6 +1506,7 @@ impl TryFrom<Action> for ProtobufAction {
                 pane_name,
                 coordinates: _coordinates,
                 near_current_pane,
+                global_placement,
                 ..
             } => {
                 let command = run_command_action.and_then(|r| {
@@ -1430,6 +1521,9 @@ impl TryFrom<Action> for ProtobufAction {
                         NewFloatingPanePayload {
                             command,
                             near_current_pane,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1440,6 +1534,7 @@ impl TryFrom<Action> for ProtobufAction {
                 pane_name,
                 near_current_pane,
                 borderless,
+                global_placement,
                 ..
             } => {
                 let direction = direction.and_then(|direction| {
@@ -1461,6 +1556,9 @@ impl TryFrom<Action> for ProtobufAction {
                             command,
                             near_current_pane,
                             borderless,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1637,8 +1735,12 @@ impl TryFrom<Action> for ProtobufAction {
                 command: run_command_action,
                 near_current_pane: _,
                 no_focus: _,
+                global_placement,
             } => {
-                let run_command_action: ProtobufRunCommandAction = run_command_action.try_into()?;
+                let mut run_command_action: ProtobufRunCommandAction =
+                    run_command_action.try_into()?;
+                run_command_action.global_placement =
+                    global_placement.map(TryInto::try_into).transpose()?;
                 Ok(ProtobufAction {
                     name: ProtobufActionName::Run as i32,
                     optional_payload: Some(OptionalPayload::RunPayload(run_command_action)),
@@ -1667,6 +1769,7 @@ impl TryFrom<Action> for ProtobufAction {
                 should_open_in_place,
                 close_replaced_pane: _close_replaced_pane,
                 skip_cache: skip_plugin_cache,
+                global_placement,
                 ..
             } => {
                 let configuration = run_plugin_or_alias.get_configuration().unwrap_or_default();
@@ -1680,6 +1783,9 @@ impl TryFrom<Action> for ProtobufAction {
                             should_open_in_place,
                             plugin_configuration: Some(configuration.try_into()?),
                             skip_plugin_cache,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1691,6 +1797,7 @@ impl TryFrom<Action> for ProtobufAction {
                 close_replaced_pane: _close_replaced_pane,
                 skip_cache: skip_plugin_cache,
                 cwd: _cwd,
+                global_placement,
                 ..
             } => {
                 let configuration = run_plugin_or_alias.get_configuration().unwrap_or_default();
@@ -1704,6 +1811,9 @@ impl TryFrom<Action> for ProtobufAction {
                             should_open_in_place,
                             plugin_configuration: Some(configuration.try_into()?),
                             skip_plugin_cache,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1919,10 +2029,19 @@ impl TryFrom<Action> for ProtobufAction {
                 command: _,
                 pane_name: _,
                 near_current_pane: _,
+                global_placement,
                 ..
             } => Ok(ProtobufAction {
                 name: ProtobufActionName::NewStackedPane as i32,
-                optional_payload: None,
+                optional_payload: global_placement
+                    .map(|placement| {
+                        placement.try_into().map(|placement| {
+                            OptionalPayload::NewStackedPanePayload(NewStackedPanePayload {
+                                global_placement: Some(placement),
+                            })
+                        })
+                    })
+                    .transpose()?,
             }),
             Action::NewBlockingPane {
                 placement,
@@ -1930,6 +2049,7 @@ impl TryFrom<Action> for ProtobufAction {
                 command,
                 unblock_condition,
                 near_current_pane,
+                global_placement,
                 ..
             } => {
                 let placement: ProtobufNewPanePlacement = placement.try_into()?;
@@ -1952,6 +2072,9 @@ impl TryFrom<Action> for ProtobufAction {
                             command,
                             unblock_condition,
                             near_current_pane,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1962,6 +2085,7 @@ impl TryFrom<Action> for ProtobufAction {
                 near_current_pane,
                 pane_id_to_replace,
                 close_replaced_pane,
+                global_placement,
                 ..
             } => {
                 let command = run_command_action.and_then(|r| {
@@ -1981,6 +2105,9 @@ impl TryFrom<Action> for ProtobufAction {
                             near_current_pane,
                             pane_id_to_replace,
                             close_replace_pane: close_replaced_pane,
+                            global_placement: global_placement
+                                .map(TryInto::try_into)
+                                .transpose()?,
                         },
                     )),
                 })
@@ -1996,6 +2123,15 @@ impl TryFrom<Action> for ProtobufAction {
             Action::ToggleHostFullscreen => Ok(ProtobufAction {
                 name: ProtobufActionName::ToggleHostFullscreen as i32,
                 optional_payload: None,
+            }),
+            Action::SetGlobalPanePlacement { pane_id, placement } => Ok(ProtobufAction {
+                name: ProtobufActionName::SetGlobalPanePlacement as i32,
+                optional_payload: Some(OptionalPayload::SetGlobalPanePlacementPayload(
+                    SetGlobalPanePlacementPayload {
+                        pane_id: Some(pane_id.try_into()?),
+                        placement: Some(placement.try_into()?),
+                    },
+                )),
             }),
             Action::NoOp
             | Action::Confirm
@@ -2140,6 +2276,77 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
             hold_on_close,
             hold_on_start,
             pane_name: None,
+            global_placement: None,
+        })
+    }
+}
+
+impl TryFrom<ProtobufGlobalPanePlacement> for GlobalPanePlacement {
+    type Error = &'static str;
+
+    fn try_from(placement: ProtobufGlobalPanePlacement) -> Result<Self, Self::Error> {
+        use super::generated_api::api::action::global_pane_size::SizeType;
+
+        let edge = match ProtobufGlobalPaneEdge::try_from(placement.edge) {
+            Ok(ProtobufGlobalPaneEdge::Left) => GlobalPaneEdge::Left,
+            Ok(ProtobufGlobalPaneEdge::Right) => GlobalPaneEdge::Right,
+            Ok(ProtobufGlobalPaneEdge::Top) => GlobalPaneEdge::Top,
+            Ok(ProtobufGlobalPaneEdge::Bottom) => GlobalPaneEdge::Bottom,
+            _ => return Err("Invalid global pane edge"),
+        };
+        let size = match placement
+            .size
+            .and_then(|size| size.size_type)
+            .ok_or("Global pane placement missing size")?
+        {
+            SizeType::Fixed(0) | SizeType::Percent(0) => {
+                return Err("Global pane size must be greater than zero")
+            },
+            SizeType::Percent(size) if size > 100 => {
+                return Err("Global pane percent must be between 1 and 100")
+            },
+            SizeType::Fixed(size) => PercentOrFixed::Fixed(
+                usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
+            ),
+            SizeType::Percent(size) => PercentOrFixed::Percent(
+                usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
+            ),
+        };
+        Ok(Self { edge, size })
+    }
+}
+
+impl TryFrom<GlobalPanePlacement> for ProtobufGlobalPanePlacement {
+    type Error = &'static str;
+
+    fn try_from(placement: GlobalPanePlacement) -> Result<Self, Self::Error> {
+        use super::generated_api::api::action::global_pane_size::SizeType;
+
+        let edge = match placement.edge {
+            GlobalPaneEdge::Left => ProtobufGlobalPaneEdge::Left,
+            GlobalPaneEdge::Right => ProtobufGlobalPaneEdge::Right,
+            GlobalPaneEdge::Top => ProtobufGlobalPaneEdge::Top,
+            GlobalPaneEdge::Bottom => ProtobufGlobalPaneEdge::Bottom,
+        };
+        let size_type = match placement.size {
+            PercentOrFixed::Fixed(0) | PercentOrFixed::Percent(0) => {
+                return Err("Global pane size must be greater than zero")
+            },
+            PercentOrFixed::Percent(size) if size > 100 => {
+                return Err("Global pane percent must be between 1 and 100")
+            },
+            PercentOrFixed::Fixed(size) => SizeType::Fixed(
+                u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
+            ),
+            PercentOrFixed::Percent(size) => SizeType::Percent(
+                u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
+            ),
+        };
+        Ok(Self {
+            edge: edge as i32,
+            size: Some(ProtobufGlobalPaneSize {
+                size_type: Some(size_type),
+            }),
         })
     }
 }
@@ -3311,6 +3518,7 @@ impl TryFrom<SwapFloatingLayout> for ProtobufSwapFloatingLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
     use crate::input::options::PaneFrameStyle;
 
     #[test]
@@ -3324,6 +3532,161 @@ mod tests {
             let protobuf: ProtobufAction = original.clone().try_into().expect("encode");
             let decoded: Action = protobuf.try_into().expect("decode");
             assert_eq!(original, decoded);
+        }
+    }
+
+    #[test]
+    fn global_placement_action_protobuf_round_trips() {
+        let fixed = Some(GlobalPanePlacement {
+            edge: GlobalPaneEdge::Left,
+            size: PercentOrFixed::Fixed(12),
+        });
+        let percent = Some(GlobalPanePlacement {
+            edge: GlobalPaneEdge::Bottom,
+            size: PercentOrFixed::Percent(25),
+        });
+        let actions = vec![
+            Action::NewPane {
+                direction: None,
+                pane_name: None,
+                start_suppressed: false,
+                global_placement: fixed,
+            },
+            Action::NewBlockingPane {
+                placement: NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: None,
+                },
+                pane_name: None,
+                command: None,
+                unblock_condition: None,
+                near_current_pane: false,
+                no_focus: false,
+                tab_id: None,
+                global_placement: percent,
+            },
+            Action::EditFile {
+                payload: OpenFilePayload::new(PathBuf::from("file"), None, None),
+                direction: None,
+                floating: false,
+                in_place: false,
+                close_replaced_pane: false,
+                start_suppressed: false,
+                coordinates: None,
+                near_current_pane: false,
+                no_focus: false,
+                tab_id: None,
+                global_placement: fixed,
+            },
+            Action::NewFloatingPane {
+                command: None,
+                pane_name: None,
+                coordinates: None,
+                near_current_pane: false,
+                no_focus: false,
+                tab_id: None,
+                global_placement: percent,
+            },
+            Action::NewTiledPane {
+                direction: None,
+                command: None,
+                pane_name: None,
+                near_current_pane: false,
+                no_focus: false,
+                borderless: None,
+                tab_id: None,
+                global_placement: fixed,
+            },
+            Action::NewInPlacePane {
+                command: None,
+                pane_name: None,
+                near_current_pane: false,
+                no_focus: false,
+                pane_id_to_replace: None,
+                close_replaced_pane: false,
+                tab_id: None,
+                global_placement: percent,
+            },
+            Action::NewStackedPane {
+                command: None,
+                pane_name: None,
+                near_current_pane: false,
+                no_focus: false,
+                tab_id: None,
+                global_placement: fixed,
+            },
+            Action::Run {
+                command: RunCommandAction::default(),
+                near_current_pane: false,
+                no_focus: false,
+                global_placement: percent,
+            },
+            Action::LaunchOrFocusPlugin {
+                plugin: RunPluginOrAlias::RunPlugin(RunPlugin::default()),
+                should_float: false,
+                move_to_focused_tab: false,
+                should_open_in_place: false,
+                close_replaced_pane: false,
+                skip_cache: false,
+                tab_id: None,
+                global_placement: fixed,
+            },
+            Action::LaunchPlugin {
+                plugin: RunPluginOrAlias::RunPlugin(RunPlugin::default()),
+                should_float: false,
+                should_open_in_place: false,
+                close_replaced_pane: false,
+                skip_cache: false,
+                cwd: None,
+                no_focus: false,
+                tab_id: None,
+                global_placement: percent,
+            },
+            Action::SetGlobalPanePlacement {
+                pane_id: PaneId::Plugin(7),
+                placement: fixed.unwrap(),
+            },
+        ];
+
+        for original in actions {
+            let protobuf: ProtobufAction = original.clone().try_into().expect("encode");
+            let decoded: Action = protobuf.try_into().expect("decode");
+            assert_eq!(original, decoded);
+        }
+    }
+
+    #[test]
+    fn global_placement_protobuf_rejects_invalid_sizes() {
+        use super::super::generated_api::api::action::global_pane_size::SizeType;
+
+        for size_type in [
+            SizeType::Fixed(0),
+            SizeType::Percent(0),
+            SizeType::Percent(101),
+        ] {
+            let placement = ProtobufGlobalPanePlacement {
+                edge: ProtobufGlobalPaneEdge::Left as i32,
+                size: Some(ProtobufGlobalPaneSize {
+                    size_type: Some(size_type),
+                }),
+            };
+            assert!(GlobalPanePlacement::try_from(placement).is_err());
+        }
+
+        for size in [PercentOrFixed::Fixed(0), PercentOrFixed::Percent(101)] {
+            let placement = GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size,
+            };
+            assert!(ProtobufGlobalPanePlacement::try_from(placement).is_err());
+        }
+
+        if let Ok(overflow) = usize::try_from(u64::from(u32::MAX) + 1) {
+            let placement = GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(overflow),
+            };
+            assert!(ProtobufGlobalPanePlacement::try_from(placement).is_err());
         }
     }
 }

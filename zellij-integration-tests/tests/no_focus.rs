@@ -36,6 +36,9 @@ fn no_focus_new_pane_action(command: &[&str]) -> CliAction {
         no_focus: true,
         borderless: None,
         tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
     }
 }
 

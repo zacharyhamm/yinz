@@ -181,6 +181,9 @@ fn new_pane_cli_action(
         no_focus: false,
         borderless: None,
         tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
     }
 }
 

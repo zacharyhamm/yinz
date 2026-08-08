@@ -98,6 +98,9 @@ fn main() {
                 no_focus,
                 borderless,
                 tab_id,
+                global: false,
+                edge: None,
+                size: None,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
             std::process::exit(0);
@@ -152,6 +155,9 @@ fn main() {
                 no_focus,
                 borderless,
                 tab_id,
+                global: false,
+                edge: None,
+                size: None,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
             std::process::exit(0);
@@ -331,7 +337,7 @@ fn main() {
                         version, web_server_base_url
                     );
                     if version != VERSION {
-                        println!("");
+                        println!();
                         println!(
                             "Note: this version differs from the current Zellij version: {}.",
                             VERSION
@@ -349,7 +355,7 @@ fn main() {
             match commands::create_auth_token(web_opts.token_name.clone(), read_only) {
                 Ok(token_and_name) => {
                     println!("Created token successfully");
-                    println!("");
+                    println!();
                     println!("{}", token_and_name);
                 },
                 Err(e) => {
@@ -362,7 +368,7 @@ fn main() {
             match commands::create_auth_token(web_opts.token_name.clone(), read_only) {
                 Ok(token_and_name) => {
                     println!("Created token successfully");
-                    println!("");
+                    println!();
                     println!("{}", token_and_name);
                 },
                 Err(e) => {

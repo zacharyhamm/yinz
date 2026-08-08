@@ -86,7 +86,7 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
         .map(|s| s.0.clone())
         .collect();
     let (_live_sessions, resurrectable_map) =
-        scan_session_list_default_dirs(&String::new(), &[], &BTreeMap::new());
+        scan_session_list_default_dirs("", &[], &BTreeMap::new());
     let mut resurrectable_sessions: Vec<(String, Duration)> =
         resurrectable_map.into_iter().collect();
     if force {
@@ -700,13 +700,10 @@ pub(crate) fn start_client(opts: CliArgs) {
             insecure,
         })) = opts.command.clone()
         {
-            if let Some(remote_session_url) = session_name.as_ref().and_then(|s| {
-                if s.starts_with("http://") || s.starts_with("https://") {
-                    Some(s)
-                } else {
-                    None
-                }
-            }) {
+            if let Some(remote_session_url) = session_name
+                .as_ref()
+                .filter(|&s| s.starts_with("http://") || s.starts_with("https://"))
+            {
                 if !cfg!(feature = "web_server_capability") {
                     eprintln!("This version of Zellij was compiled without web/remote-attach capabilities.");
                     std::process::exit(2);
@@ -733,9 +730,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 }
             } else {
                 let config_options = match options.as_deref() {
-                    Some(SessionCommand::Options(o)) => {
-                        config_options.merge_from_cli(o.to_owned().into())
-                    },
+                    Some(SessionCommand::Options(o)) => config_options.merge_from_cli(o.to_owned()),
                     None => config_options,
                 };
                 should_create_detached = create_background;
@@ -749,12 +744,12 @@ pub(crate) fn start_client(opts: CliArgs) {
                 } else {
                     let session_exists = session_name
                         .as_ref()
-                        .and_then(|s| session_exists(&s).ok())
+                        .and_then(|s| session_exists(s).ok())
                         .unwrap_or(false);
                     let resurrection_layout =
                         session_name
                             .as_ref()
-                            .and_then(|s| match resurrection_layout(&s) {
+                            .and_then(|s| match resurrection_layout(s) {
                                 Ok(layout) => layout,
                                 Err(e) => {
                                     eprintln!("{}", e);
@@ -801,12 +796,9 @@ pub(crate) fn start_client(opts: CliArgs) {
                     client.set_cwd(new_session_cwd);
                 }
 
-                let tab_position_to_focus = reconnect_to_session
-                    .as_ref()
-                    .and_then(|r| r.tab_position.clone());
-                let pane_id_to_focus = reconnect_to_session
-                    .as_ref()
-                    .and_then(|r| r.pane_id.clone());
+                let tab_position_to_focus =
+                    reconnect_to_session.as_ref().and_then(|r| r.tab_position);
+                let pane_id_to_focus = reconnect_to_session.as_ref().and_then(|r| r.pane_id);
                 reconnect_to_session = start_client_impl(
                     Box::new(os_input),
                     opts,
@@ -1017,7 +1009,7 @@ fn reload_config_from_disk(
     config_options_without_layout: &mut Options,
     opts: &CliArgs,
 ) {
-    match Setup::from_cli_args(&opts) {
+    match Setup::from_cli_args(opts) {
         Ok((_, _, _, reloaded_config_without_layout, reloaded_config_options_without_layout)) => {
             *config_without_layout = reloaded_config_without_layout;
             *config_options_without_layout = reloaded_config_options_without_layout;
@@ -1029,7 +1021,7 @@ fn reload_config_from_disk(
 }
 
 pub fn get_config_options_from_cli_args(opts: &CliArgs) -> Result<Options, String> {
-    Setup::from_cli_args(&opts)
+    Setup::from_cli_args(opts)
         .map(|(_, _, config_options, _, _)| config_options)
         .map_err(|e| e.to_string())
 }

@@ -1,5 +1,8 @@
 pub use super::generated_api::api::{
-    action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
+    action::{
+        Action as ProtobufAction, GlobalPanePlacement as ProtobufGlobalPanePlacement,
+        PaneIdAndShouldFloat, SwitchToModePayload,
+    },
     event::{
         EventNameList as ProtobufEventNameList, Header,
         ResurrectableSession as ProtobufResurrectableSession,
@@ -121,7 +124,7 @@ pub use super::generated_api::api::{
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetFloatingPanePinnedPayload,
-        SetPaneBorderlessPayload, SetPaneColorPayload,
+        SetGlobalPanePlacementPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetSelfMouseSelectionSupportPayload,
         SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTimeoutPayload,
@@ -2045,6 +2048,21 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetFloatingPanePinned"),
             },
+            Some(CommandName::SetGlobalPanePlacement) => match protobuf_plugin_command.payload {
+                Some(Payload::SetGlobalPanePlacementPayload(payload)) => {
+                    Ok(PluginCommand::SetGlobalPanePlacement(
+                        payload
+                            .pane_id
+                            .ok_or("SetGlobalPanePlacement missing pane_id")?
+                            .try_into()?,
+                        payload
+                            .placement
+                            .ok_or("SetGlobalPanePlacement missing placement")?
+                            .try_into()?,
+                    ))
+                },
+                _ => Err("Mismatched payload for SetGlobalPanePlacement"),
+            },
             Some(CommandName::StackPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::StackPanesPayload(stack_panes_payload)) => {
                     Ok(PluginCommand::StackPanes(
@@ -3900,6 +3918,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
+            PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
+                let placement: ProtobufGlobalPanePlacement = placement.try_into()?;
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::SetGlobalPanePlacement as i32,
+                    payload: Some(Payload::SetGlobalPanePlacementPayload(
+                        SetGlobalPanePlacementPayload {
+                            pane_id: Some(pane_id.try_into()?),
+                            placement: Some(placement),
+                        },
+                    )),
+                })
+            },
             PluginCommand::StackPanes(pane_ids) => Ok(ProtobufPluginCommand {
                 name: CommandName::StackPanes as i32,
                 payload: Some(Payload::StackPanesPayload(StackPanesPayload {
@@ -5240,7 +5270,7 @@ impl From<OpenPluginPaneFloatingResponse> for ProtobufOpenPluginPaneFloatingResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::PluginCommand;
+    use crate::data::{GlobalPaneEdge, GlobalPanePlacement, PluginCommand};
 
     #[test]
     fn set_pane_frame_style_protobuf_round_trip() {
@@ -5270,6 +5300,24 @@ mod tests {
         match decoded {
             PluginCommand::NewPane => {},
             other => panic!("expected NewPane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_global_pane_placement_protobuf_round_trip() {
+        let placement = GlobalPanePlacement {
+            edge: GlobalPaneEdge::Top,
+            size: PercentOrFixed::Percent(20),
+        };
+        let original = PluginCommand::SetGlobalPanePlacement(PaneId::Terminal(9), placement);
+        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        match decoded {
+            PluginCommand::SetGlobalPanePlacement(pane_id, decoded_placement) => {
+                assert_eq!(pane_id, PaneId::Terminal(9));
+                assert_eq!(decoded_placement, placement);
+            },
+            other => panic!("expected SetGlobalPanePlacement, got {:?}", other),
         }
     }
 

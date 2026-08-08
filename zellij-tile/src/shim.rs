@@ -2457,6 +2457,18 @@ pub fn close_tab_with_id(tab_id: u64) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Focus the tab with the given stable ID.
+///
+/// Unlike `go_to_tab`, this function identifies the tab by its stable `tab_id`
+/// rather than its display position, which may change as tabs are moved or
+/// closed. The tab_id can be obtained from `TabInfo.tab_id`.
+pub fn go_to_tab_with_id(tab_id: u64) {
+    let plugin_command = PluginCommand::GoToTabWithId(tab_id);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Rename the specified pane
 pub fn rename_pane_with_id<S: AsRef<str>>(pane_id: PaneId, new_name: S)
 where
@@ -2590,6 +2602,13 @@ pub fn change_host_folder(new_host_folder: PathBuf) {
 
 pub fn set_floating_pane_pinned(pane_id: PaneId, should_be_pinned: bool) {
     let plugin_command = PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+pub fn set_global_pane_placement(pane_id: PaneId, placement: GlobalPanePlacement) {
+    let plugin_command = PluginCommand::SetGlobalPanePlacement(pane_id, placement);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

@@ -119,10 +119,19 @@ fn plugin_asset_path(plugin_name: &str) -> PathBuf {
 
 fn newest_plugin_source_time() -> Option<std::time::SystemTime> {
     let root = crate::project_root();
-    ["default-plugins", "zellij-tile", "zellij-tile-utils"]
-        .iter()
-        .filter_map(|dir| newest_file_time(&root.join(dir)))
-        .max()
+    // zellij-utils/src is in here because plugins depend on it through zellij-tile: changing eg.
+    // an `Action` variant in it invalidates the built wasm just as much as touching a plugin
+    // source. It is scoped to src/ on purpose - zellij-utils/assets/plugins holds the built wasm
+    // we are comparing against, and including it would make the assets permanently stale
+    [
+        "default-plugins",
+        "zellij-tile",
+        "zellij-tile-utils",
+        "zellij-utils/src",
+    ]
+    .iter()
+    .filter_map(|dir| newest_file_time(&root.join(dir)))
+    .max()
 }
 
 fn newest_file_time(dir: &Path) -> Option<std::time::SystemTime> {

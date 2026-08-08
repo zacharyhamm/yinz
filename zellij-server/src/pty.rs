@@ -18,7 +18,8 @@ use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
         CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse, GetPanePidResponse,
-        GetPaneRunningCommandResponse, NewPanePlacement, OriginatingPlugin, SessionInfo,
+        GetPaneRunningCommandResponse, GlobalPanePlacement, NewPanePlacement, OriginatingPlugin,
+        SessionInfo,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -37,12 +38,79 @@ pub type VteBytes = Vec<u8>;
 pub type TabIndex = u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlobalPaneSpawnContext {
+    pub placement: GlobalPanePlacement,
+    pub borderless: bool,
+    pub initially_hidden: bool,
+    pub should_focus: bool,
+    pub declaration_order: Option<usize>,
+}
+
+impl From<GlobalPanePlacement> for GlobalPaneSpawnContext {
+    fn from(placement: GlobalPanePlacement) -> Self {
+        Self {
+            placement,
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            declaration_order: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
     ClientId(ClientId),
     ClientIdNoFocus(ClientId),
     TabIndex(usize),
     TabIndexNoFocus(usize),
     PaneId(PaneId),
+}
+
+fn new_terminal_screen_instruction(
+    pane_id: PaneId,
+    pane_title: Option<String>,
+    hold_for_command: Option<RunCommand>,
+    invoked_with: Option<Run>,
+    new_pane_placement: NewPanePlacement,
+    start_suppressed: bool,
+    client_or_tab_index: ClientTabIndexOrPaneId,
+    completion_tx: Option<NotificationEnd>,
+    set_blocking: bool,
+    global_context: Option<GlobalPaneSpawnContext>,
+) -> ScreenInstruction {
+    match global_context {
+        Some(context) => ScreenInstruction::NewGlobalPane {
+            pane_id,
+            initial_pane_title: pane_title,
+            hold_for_command,
+            invoked_with,
+            placement: context.placement,
+            borderless: context.borderless,
+            initially_hidden: context.initially_hidden || start_suppressed,
+            should_focus: context.should_focus
+                && matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_)),
+            client_id: match client_or_tab_index {
+                ClientTabIndexOrPaneId::ClientId(client_id)
+                | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => Some(client_id),
+                _ => None,
+            },
+            completion_tx,
+            set_blocking,
+            declaration_order: context.declaration_order,
+        },
+        None => ScreenInstruction::NewPane(
+            pane_id,
+            pane_title,
+            hold_for_command,
+            invoked_with,
+            new_pane_placement,
+            start_suppressed,
+            client_or_tab_index,
+            completion_tx,
+            set_blocking,
+        ),
+    }
 }
 
 /// Instructions related to PTYs (pseudoterminals).
@@ -56,6 +124,7 @@ pub enum PtyInstruction {
         ClientTabIndexOrPaneId,
         Option<NotificationEnd>, // completion signal
         bool,                    // set_blocking
+        Option<GlobalPaneSpawnContext>,
     ), // bool (if Some) is
     // should_float, String is an optional pane name
     OpenInPlaceEditor(
@@ -132,6 +201,7 @@ pub enum PtyInstruction {
         Option<bool>,    // should focus plugin
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>,
+        Option<GlobalPaneSpawnContext>,
     ),
     ListClientsMetadata(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     Reconfigure {
@@ -224,6 +294,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_or_tab_index,
                 completion_tx,
                 set_blocking,
+                global_placement,
             ) => {
                 let err_context =
                     || format!("failed to spawn terminal for {:?}", client_or_tab_index);
@@ -304,38 +375,42 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 .with_context(err_context)?;
                         }
 
+                        let instruction = new_terminal_screen_instruction(
+                            PaneId::Terminal(pid),
+                            pane_title,
+                            hold_for_command,
+                            invoked_with,
+                            new_pane_placement,
+                            start_suppressed,
+                            client_or_tab_index,
+                            completion_tx,
+                            set_blocking,
+                            global_placement,
+                        );
                         pty.bus
                             .senders
-                            .send_to_screen(ScreenInstruction::NewPane(
-                                PaneId::Terminal(pid),
-                                pane_title,
-                                hold_for_command,
-                                invoked_with,
-                                new_pane_placement,
-                                start_suppressed,
-                                client_or_tab_index,
-                                completion_tx,
-                                set_blocking,
-                            ))
+                            .send_to_screen(instruction)
                             .with_context(err_context)?;
                     },
                     Err(err) => match err.downcast_ref::<ZellijError>() {
                         Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
                             if hold_on_close {
                                 let hold_for_command = None; // we do not hold an "error" pane
+                                let instruction = new_terminal_screen_instruction(
+                                    PaneId::Terminal(*terminal_id),
+                                    pane_title,
+                                    hold_for_command,
+                                    invoked_with,
+                                    new_pane_placement,
+                                    start_suppressed,
+                                    client_or_tab_index,
+                                    completion_tx,
+                                    set_blocking,
+                                    global_placement,
+                                );
                                 pty.bus
                                     .senders
-                                    .send_to_screen(ScreenInstruction::NewPane(
-                                        PaneId::Terminal(*terminal_id),
-                                        pane_title,
-                                        hold_for_command,
-                                        invoked_with,
-                                        new_pane_placement,
-                                        start_suppressed,
-                                        client_or_tab_index,
-                                        completion_tx,
-                                        set_blocking,
-                                    ))
+                                    .send_to_screen(instruction)
                                     .with_context(err_context)?;
                                 if let Some(run_command) = run_command {
                                     send_command_not_found_to_screen(
@@ -842,6 +917,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 should_focus_plugin,
                 floating_pane_coordinates,
                 completion_tx,
+                global_placement,
             ) => {
                 pty.fill_plugin_cwd(
                     should_float,
@@ -858,6 +934,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     should_focus_plugin,
                     floating_pane_coordinates,
                     completion_tx,
+                    global_placement,
                 )?;
             },
             PtyInstruction::Reconfigure {
@@ -2009,6 +2086,7 @@ impl Pty {
         should_focus_plugin: Option<bool>,
         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
         completion_tx: Option<NotificationEnd>,
+        global_placement: Option<GlobalPaneSpawnContext>,
     ) -> Result<()> {
         let get_focused_cwd = || {
             self.active_panes
@@ -2059,6 +2137,7 @@ impl Pty {
             should_focus_plugin,
             floating_pane_coordinates,
             completion_tx,
+            global_placement,
         ))?;
         Ok(())
     }

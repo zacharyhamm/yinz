@@ -354,6 +354,7 @@ message TabUpdatePayload {
 
 message PaneUpdatePayload {
   repeated PaneManifest pane_manifest = 1;
+  repeated PaneInfo global_panes = 2;
 }
 
 message PaneManifest {
@@ -374,6 +375,7 @@ message SessionManifest {
   repeated ClientTabHistory tab_history = 10;
   repeated ClientPaneHistory pane_history = 11;
   uint64 creation_time = 12;
+  repeated PaneInfo global_panes = 13;
 }
 
 message ClientTabHistory {
@@ -476,6 +478,8 @@ message PaneInfo {
     repeated IndexInPaneGroup index_in_pane_group = 23;
     optional string default_fg = 24;
     optional string default_bg = 25;
+    optional action.GlobalPanePlacement global_placement = 26;
+    bool is_hidden = 27;
 }
 
 message IndexInPaneGroup {
@@ -608,4 +612,3 @@ message HighlightClickedPayload {
 message InitialKeybindsPayload {
   repeated InputModeKeybinds keybinds = 1;
 }
-

@@ -21,7 +21,11 @@ use crate::panes::PaneId;
 use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
-use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
+use crate::{
+    pty::{GlobalPaneSpawnContext, PtyInstruction},
+    thread_bus::Bus,
+    ClientId, ServerInstruction,
+};
 use zellij_utils::data::PaneRenderReport;
 use zellij_utils::input::layout::TabLayoutInfo;
 
@@ -72,6 +76,7 @@ pub enum PluginInstruction {
         Option<bool>,     // should focus plugin
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>, // completion signal
+        Option<GlobalPaneSpawnContext>,
     ),
     LoadBackgroundPlugin(RunPluginOrAlias, ClientId),
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
@@ -364,6 +369,7 @@ pub(crate) fn plugin_thread_main(
                 should_focus_plugin,
                 floating_pane_coordinates,
                 completion_tx,
+                global_placement,
             ) => {
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 let cwd = run_plugin_or_alias.get_initial_cwd().or(cwd).or_else(|| {
@@ -384,22 +390,52 @@ pub(crate) fn plugin_thread_main(
                     Some(client_id),
                 ) {
                     Ok((plugin_id, client_id)) => {
-                        drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                            should_float,
-                            should_be_open_in_place,
-                            close_replaced_pane,
-                            run_plugin_or_alias,
-                            pane_title,
-                            tab_index,
-                            plugin_id,
-                            pane_id_to_replace,
-                            cwd.clone(),
-                            start_suppressed,
-                            floating_pane_coordinates,
-                            should_focus_plugin,
-                            Some(client_id),
-                            completion_tx,
-                        )));
+                        if let Some(properties) = global_placement {
+                            let pane_title = pane_title.unwrap_or_else(|| {
+                                format!(
+                                    "({}) - {}",
+                                    cwd.as_ref()
+                                        .map(|cwd| cwd.display().to_string())
+                                        .unwrap_or(".".to_owned()),
+                                    run_plugin_or_alias.location_string()
+                                )
+                            });
+                            drop(
+                                bus.senders
+                                    .send_to_screen(ScreenInstruction::NewGlobalPane {
+                                        pane_id: PaneId::Plugin(plugin_id),
+                                        initial_pane_title: Some(pane_title),
+                                        hold_for_command: None,
+                                        invoked_with: Some(Run::Plugin(run_plugin_or_alias)),
+                                        placement: properties.placement,
+                                        borderless: properties.borderless,
+                                        initially_hidden: properties.initially_hidden,
+                                        should_focus: properties.should_focus
+                                            && should_focus_plugin.unwrap_or(true),
+                                        client_id: Some(client_id),
+                                        completion_tx,
+                                        set_blocking: false,
+                                        declaration_order: properties.declaration_order,
+                                    }),
+                            );
+                        } else {
+                            drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
+                                should_float,
+                                should_be_open_in_place,
+                                close_replaced_pane,
+                                run_plugin_or_alias,
+                                pane_title,
+                                tab_index,
+                                plugin_id,
+                                pane_id_to_replace,
+                                cwd.clone(),
+                                start_suppressed,
+                                floating_pane_coordinates,
+                                should_focus_plugin,
+                                Some(client_id),
+                                completion_tx,
+                            )));
+                        }
 
                         drop(bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
                             plugin_id,
