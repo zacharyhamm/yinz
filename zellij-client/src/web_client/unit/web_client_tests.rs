@@ -3311,7 +3311,7 @@ impl SessionManager for MockSessionManager {
         session_name: &str,
         _os_input: Box<dyn ClientOsApi>,
         session_exists: bool,
-        _zellij_ipc_pipe: &PathBuf,
+        _zellij_ipc_pipe: &std::path::Path,
         first_message: ClientToServerMsg,
     ) {
         self.first_messages_sent
