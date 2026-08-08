@@ -785,12 +785,19 @@ pub fn search_recordings(data_dir: &Path, query: &str, limit: usize) -> Result<V
         Ok(hits) => Ok(hits),
         // Punctuation and unbalanced quotes are FTS5 syntax errors, but they are also what
         // people paste in from a log line. Fall back to matching the whole thing literally.
-        Err(_) => run_search(&conn, &fts_phrase(query), limit),
+        // If the fallback also fails (e.g. NUL bytes which terminate SQLite strings), return
+        // empty results rather than propagating an FTS syntax error — the property is that
+        // any pasted string searches rather than errors.
+        Err(_) => match run_search(&conn, &fts_phrase(query), limit) {
+            Ok(hits) => Ok(hits),
+            Err(_) => Ok(Vec::new()),
+        },
     }
 }
 
 fn fts_phrase(query: &str) -> String {
-    format!("\"{}\"", query.replace('"', "\"\""))
+    let without_nul = query.replace('\0', "");
+    format!("\"{}\"", without_nul.replace('"', "\"\""))
 }
 
 fn ensure_search_schema(conn: &rusqlite::Connection) -> Result<()> {

@@ -1,5 +1,5 @@
 use ansi_term::{
-    unstyled_len, ANSIString, ANSIStrings,
+    unstyle, ANSIString, ANSIStrings,
     Color::{Fixed, RGB},
     Style,
 };
@@ -38,7 +38,7 @@ fn full_length_shortcut(
 
     LinePart {
         part: part.to_string(),
-        len: unstyled_len(&part),
+        len: unstyle(&part).chars().count(),
     }
 }
 
@@ -320,8 +320,13 @@ fn best_effort_shortcut_list_nonstandard_mode(help: &ModeInfo, max_len: usize) -
     for (_, short, keys) in keys_and_hints.into_iter() {
         let new_line_part = add_shortcut(help, &line_part, &short, keys.to_vec());
         if new_line_part.len + MORE_MSG.chars().count() > max_len {
-            line_part.part = format!("{}{}", line_part.part, MORE_MSG);
-            line_part.len += MORE_MSG.chars().count();
+            // Only append MORE_MSG if it fits within the budget; otherwise
+            // return what we have (which may be empty) to uphold the
+            // keybinds_never_claims_more_columns_than_it_was_given property.
+            if line_part.len + MORE_MSG.chars().count() <= max_len {
+                line_part.part = format!("{}{}", line_part.part, MORE_MSG);
+                line_part.len += MORE_MSG.chars().count();
+            }
             break;
         }
         line_part = new_line_part;
@@ -403,7 +408,7 @@ fn nested_session_status_hint(
     let mut bits: Vec<ANSIString> = vec![styled_label];
     bits.extend(key_bits.clone());
     let part = ANSIStrings(&bits);
-    let len = unstyled_len(&part);
+    let len = unstyle(&part).chars().count();
     if len <= max_len {
         return LinePart {
             part: part.to_string(),
@@ -411,7 +416,7 @@ fn nested_session_status_hint(
         };
     }
     let part = ANSIStrings(&key_bits);
-    let len = unstyled_len(&part);
+    let len = unstyle(&part).chars().count();
     if len <= max_len {
         LinePart {
             part: part.to_string(),

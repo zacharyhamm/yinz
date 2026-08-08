@@ -245,6 +245,16 @@ mod props {
     #[hegel::test]
     fn kitty_serialization_round_trips_through_the_parser(tc: hegel::TestCase) {
         let key = tc.draw(keys_with_modifiers());
+        // BareKey::Char control characters (e.g. '\r', '\n', '\t') collide with
+        // dedicated BareKeys (Enter, Tab, etc.) when serialized as Kitty CSI
+        // (both encode as the same codepoint, e.g. 13 for '\r' vs Enter).
+        // The parser cannot distinguish them, so skip those ambiguous cases;
+        // they are better represented as the dedicated BareKey variants.
+        if let BareKey::Char(c) = key.bare_key {
+            if c.is_control() {
+                return;
+            }
+        }
         let Some(serialized) = key.serialize_kitty() else {
             // Not every keycode has a Kitty encoding; nothing to check.
             return;

@@ -715,7 +715,7 @@ mod setup_test {
     use crate::data::LayoutInfo;
     use crate::input::options::Options;
     use insta::assert_snapshot;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     #[test]
     fn default_config_with_no_cli_arguments() {

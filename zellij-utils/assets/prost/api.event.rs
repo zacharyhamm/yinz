@@ -14,11 +14,9 @@ pub struct Event {
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
-#[allow(clippy::module_inception)]
 pub mod event {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
-    #[allow(clippy::large_enum_variant)]
     pub enum Payload {
         #[prost(message, tag="2")]
         ModeUpdatePayload(super::ModeUpdatePayload),
@@ -523,7 +521,6 @@ pub mod layout_parsing_error {
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
-#[allow(clippy::len_without_is_empty)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KdlErrorVariant {
     #[prost(message, optional, tag="1")]
@@ -539,7 +536,6 @@ pub struct KdlErrorVariant {
 pub struct SyntaxError {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
-#[allow(clippy::len_without_is_empty)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KdlError {
     #[prost(string, tag="1")]

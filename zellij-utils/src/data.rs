@@ -314,6 +314,7 @@ impl BareKey {
             Ok("27") => Some(BareKey::Esc),
             Ok("13") => Some(BareKey::Enter),
             Ok("9") => Some(BareKey::Tab),
+            Ok("8") => Some(BareKey::Backspace),
             Ok("127") => Some(BareKey::Backspace),
             Ok("57358") => Some(BareKey::CapsLock),
             Ok("57359") => Some(BareKey::ScrollLock),
@@ -376,6 +377,18 @@ impl BareKey {
             Ok("21") => Some(BareKey::F(10)),
             Ok("23") => Some(BareKey::F(11)),
             Ok("24") => Some(BareKey::F(12)),
+            Ok("25") => Some(BareKey::F(13)),
+            Ok("26") => Some(BareKey::F(14)),
+            Ok("28") => Some(BareKey::F(15)),
+            Ok("29") => Some(BareKey::F(16)),
+            Ok("31") => Some(BareKey::F(17)),
+            Ok("32") => Some(BareKey::F(18)),
+            Ok("33") => Some(BareKey::F(19)),
+            Ok("34") => Some(BareKey::F(20)),
+            Ok("42") => Some(BareKey::F(21)),
+            Ok("43") => Some(BareKey::F(22)),
+            Ok("44") => Some(BareKey::F(23)),
+            Ok("45") => Some(BareKey::F(24)),
             _ => None,
         }
     }
@@ -389,7 +402,9 @@ impl BareKey {
             Ok("1F") | Ok("F") => Some(BareKey::End),
             Ok("1P") | Ok("P") => Some(BareKey::F(1)),
             Ok("1Q") | Ok("Q") => Some(BareKey::F(2)),
+            Ok("1R") | Ok("R") => Some(BareKey::F(3)),
             Ok("1S") | Ok("S") => Some(BareKey::F(4)),
+            Ok("Z") => Some(BareKey::Tab),
             _ => None,
         }
     }
@@ -496,6 +511,15 @@ impl KeyWithModifier {
         modifier_bytes: &[u8],
     ) -> Option<Self> {
         // CSI 1; modifiers [ABCDEFHPQS]
+        // Special case: \x1b[Z is Shift+Tab, not plain Tab
+        if number_bytes == b"Z" && modifier_bytes.is_empty() {
+            let mut mods = BTreeSet::new();
+            mods.insert(KeyModifier::Shift);
+            return Some(KeyWithModifier {
+                bare_key: BareKey::Tab,
+                key_modifiers: mods,
+            });
+        }
         let bare_key = BareKey::from_bytes_with_no_ending_byte(number_bytes);
         match bare_key {
             Some(bare_key) => {

@@ -8,11 +8,9 @@ pub struct PluginCommand {
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
-#[allow(clippy::module_inception)]
 pub mod plugin_command {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
-    #[allow(clippy::large_enum_variant)]
     pub enum Payload {
         #[prost(message, tag="2")]
         SubscribePayload(super::SubscribePayload),

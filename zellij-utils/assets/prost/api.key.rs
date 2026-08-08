@@ -10,7 +10,6 @@ pub struct Key {
     pub main_key: ::core::option::Option<key::MainKey>,
 }
 /// Nested message and enum types in `Key`.
-#[allow(clippy::module_inception)]
 pub mod key {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]

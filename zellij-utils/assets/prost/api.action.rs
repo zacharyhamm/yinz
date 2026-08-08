@@ -307,11 +307,9 @@ pub struct Action {
     pub optional_payload: ::core::option::Option<action::OptionalPayload>,
 }
 /// Nested message and enum types in `Action`.
-#[allow(clippy::module_inception)]
 pub mod action {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
-    #[allow(clippy::large_enum_variant)]
     pub enum OptionalPayload {
         #[prost(message, tag="2")]
         SwitchToModePayload(super::SwitchToModePayload),

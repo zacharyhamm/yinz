@@ -39,6 +39,9 @@ impl Modifiers {
         if self.contains(Self::CTRL) {
             number |= 4;
         }
+        if self.contains(Self::SUPER) {
+            number |= 8;
+        }
         number
     }
 
@@ -357,13 +360,19 @@ impl KeyCode {
 
         use KeyCode::*;
 
-        let key = self.normalize_shift_to_upper_case(mods);
+        let key = if matches!(modes.encoding, KeyboardEncoding::Kitty(_)) {
+            *self
+        } else {
+            self.normalize_shift_to_upper_case(mods)
+        };
         // Normalize the modifier state for Char's that are uppercase; remove
-        // the SHIFT modifier so that reduce ambiguity below
+        // the SHIFT modifier so that reduce ambiguity below. For Kitty
+        // disambiguate mode the shift must be preserved for round-trip.
         let mods = match key {
             Char(c)
                 if (c.is_ascii_punctuation() || c.is_ascii_uppercase())
-                    && mods.contains(Modifiers::SHIFT) =>
+                    && mods.contains(Modifiers::SHIFT)
+                    && !matches!(modes.encoding, KeyboardEncoding::Kitty(_)) =>
             {
                 mods & !Modifiers::SHIFT
             },
@@ -409,12 +418,19 @@ impl KeyCode {
             // eg: on macOS generates altgr style glyphs and keeps the ALT key
             // in the modifier set.  This confuses eg: zsh which then just displays
             // <fffffffff> as the input, so we want to avoid that.
+            // For Kitty keyboard protocol with disambiguation, modified keys are
+            // encoded as CSI-u so the parser can round-trip modifiers like Alt+ '['
+            // (which would otherwise be ambiguous as plain ESC '[').
             Char(c)
                 if (c.is_ascii_alphanumeric() || c.is_ascii_punctuation())
                     && mods.contains(Modifiers::ALT) =>
             {
-                buf.push(0x1b as char);
-                buf.push(c);
+                if matches!(modes.encoding, KeyboardEncoding::Kitty(_)) {
+                    csi_u_encode(&mut buf, c, mods, &modes)?;
+                } else {
+                    buf.push(0x1b as char);
+                    buf.push(c);
+                }
             },
 
             Backspace => {
@@ -517,6 +533,7 @@ impl KeyCode {
                 if mods.contains(Modifiers::ALT)
                     || mods.contains(Modifiers::SHIFT)
                     || mods.contains(Modifiers::CTRL)
+                    || mods.contains(Modifiers::SUPER)
                 {
                     write!(buf, "{}1;{}{}", CSI, 1 + mods.encode_xterm(), c)?;
                 } else {
@@ -536,6 +553,7 @@ impl KeyCode {
                 if mods.contains(Modifiers::ALT)
                     || mods.contains(Modifiers::SHIFT)
                     || mods.contains(Modifiers::CTRL)
+                    || mods.contains(Modifiers::SUPER)
                 {
                     write!(buf, "\x1b[{};{}~", c, 1 + mods.encode_xterm())?;
                 } else {
@@ -678,7 +696,10 @@ fn csi_u_encode(
     mods: Modifiers,
     modes: &KeyCodeEncodeModes,
 ) -> Result<()> {
-    if modes.encoding == KeyboardEncoding::CsiU && is_ascii(c) {
+    if (modes.encoding == KeyboardEncoding::CsiU
+        || matches!(modes.encoding, KeyboardEncoding::Kitty(_)))
+        && is_ascii(c)
+    {
         write!(buf, "\x1b[{};{}u", c as u32, 1 + mods.encode_xterm())?;
         return Ok(());
     }
