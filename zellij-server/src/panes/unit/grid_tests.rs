@@ -4269,8 +4269,6 @@ fn single_click_drag_selection_preserved_after_scroll() {
 
 #[test]
 fn osc_11_set_and_query_pane_default_bg() {
-    use crate::panes::terminal_character::AnsiCode;
-
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
@@ -4317,8 +4315,6 @@ fn osc_11_set_and_query_pane_default_bg() {
 
 #[test]
 fn osc_10_set_and_query_pane_default_fg() {
-    use crate::panes::terminal_character::AnsiCode;
-
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
@@ -4362,8 +4358,6 @@ fn osc_10_set_and_query_pane_default_fg() {
 
 #[test]
 fn osc_110_111_reset_pane_default_colors() {
-    use crate::panes::terminal_character::AnsiCode;
-
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
@@ -4408,8 +4402,6 @@ fn osc_110_111_reset_pane_default_colors() {
 
 #[test]
 fn osc_11_set_bg_produces_ansi_in_render_output() {
-    use crate::panes::terminal_character::AnsiCode;
-
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));

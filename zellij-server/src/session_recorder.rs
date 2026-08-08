@@ -254,7 +254,6 @@ fn recorder_thread(
     };
     let mut batch: Vec<RecordedEvent> = Vec::new();
     let mut batch_start: Option<Instant> = None;
-    let mut stopped = false;
     loop {
         // check batch timeout
         let timeout = if let Some(start) = batch_start {
@@ -313,7 +312,6 @@ fn recorder_thread(
                 if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
             },
             Ok(RecorderInstruction::Stop) => {
-                stopped = true;
                 break;
             },
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
@@ -340,7 +338,6 @@ fn recorder_thread(
                                 if !batch.is_empty() {
                                     if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                                     batch.clear();
-                                    batch_start = None;
                                 }
                                 if let Err(e) = store.update_panes(&panes, elapsed_us) { log::error!("failed to update panes: {}", e); }
                             },
@@ -351,12 +348,10 @@ fn recorder_thread(
                                 if !batch.is_empty() {
                                     if let Err(e) = store.record_events(&batch) { log::error!("failed to record events: {}", e); }
                                     batch.clear();
-                                    batch_start = None;
                                 }
                                 if let Err(e) = store.finish_pane(terminal_id, elapsed_us) { log::error!("failed to finish pane {}: {}", terminal_id, e); }
                             },
                             RecorderInstruction::Stop => {
-                                stopped = true;
                                 break;
                             },
                         }
@@ -370,9 +365,6 @@ fn recorder_thread(
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                 break;
             },
-        }
-        if stopped {
-            break;
         }
         if !enabled.load(Ordering::Relaxed) {
             // flush and mark incomplete
@@ -436,7 +428,6 @@ fn recorder_thread(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use zellij_utils::session_recording::RecordingStore;
 
     #[test]
     fn records_through_thread() -> anyhow::Result<()> {

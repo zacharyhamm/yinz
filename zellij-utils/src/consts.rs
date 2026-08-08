@@ -194,7 +194,16 @@ mod not_wasm {
                 add_plugin!(assets, "multiple-select.wasm");
                 add_plugin!(assets, "layout-manager.wasm");
                 add_plugin!(assets, "link.wasm");
-                add_plugin!(assets, "shared-test.wasm");
+                // shared-test is not part of the default build, so there is nothing for
+                // `plugins_from_target` to pick up - always embed the committed asset
+                assets.insert(
+                    PathBuf::from("plugins").join("shared-test.wasm"),
+                    include_bytes!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/assets/plugins/shared-test.wasm"
+                    ))
+                    .to_vec(),
+                );
             }
             assets
         };

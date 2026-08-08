@@ -6340,9 +6340,9 @@ fn focus_last_stacked_pane() {
         None,
     )
     .unwrap();
-    tab.move_focus_right(client_id);
-    tab.move_focus_up(client_id);
-    tab.move_focus_up(client_id);
+    tab.move_focus_right(client_id).unwrap();
+    tab.move_focus_up(client_id).unwrap();
+    tab.move_focus_up(client_id).unwrap();
     tab.focus_last_pane(client_id);
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(

@@ -16207,7 +16207,6 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
 #[test]
 fn recorder_pane_metadata() {
     use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
-    use zellij_utils::session_recording::PaneMetadata;
     // Create one tab with one terminal pane and one plugin pane
     let mut pane_manifest = PaneManifest::default();
     let terminal_pane = PaneInfo {

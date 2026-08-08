@@ -140,7 +140,7 @@ mod tests {
     use async_trait::async_trait;
     use std::io;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize},
         Arc,
     };
     use std::time::Instant;

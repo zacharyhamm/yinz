@@ -126,7 +126,6 @@ pub struct Action {
 /// Nested message and enum types in `Action`.
 pub mod action {
     #[allow(clippy::derive_partial_eq_without_eq)]
-    #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum ActionType {
         #[prost(message, tag="1")]

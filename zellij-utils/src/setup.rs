@@ -24,9 +24,11 @@ use std::{
     fmt::Write as FmtWrite,
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process,
 };
+#[cfg(not(target_family = "wasm"))]
+use std::path::Path;
 
 const CONFIG_NAME: &str = "config.kdl";
 static ARROW_SEPARATOR: &str = "";
