@@ -1036,18 +1036,6 @@ pub fn start_server_impl(
                     is_web_client,
                 );
 
-                session_data
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_screen(ScreenInstruction::RecomputeTabSize(
-                        client_id,
-                        client_attributes.size,
-                    ))
-                    .unwrap();
-
                 let default_shell = runtime_config_options.default_shell.map(|shell| {
                     TerminalAction::RunCommand(RunCommand {
                         command: shell,
@@ -2212,7 +2200,9 @@ fn init_session(
                 Some(&to_plugin),
                 Some(&to_server),
                 Some(&to_pty_writer),
-                None,
+                // this thread sends to itself: streamed_web_request reports back with
+                // WebRequestStreamFinished so the stream terminator is emitted from the loop
+                Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
             let web_server_base_url = web_server_base_url(

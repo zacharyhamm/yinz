@@ -2481,10 +2481,7 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
                             send_to_screen_or_retry_queue!(
                                 senders,
-                                ScreenInstruction::TerminalPixelDimensions(
-                                    client_id,
-                                    pixel_dimensions,
-                                ),
+                                ScreenInstruction::TerminalPixelDimensions(pixel_dimensions),
                                 instruction,
                                 retry_queue
                             )

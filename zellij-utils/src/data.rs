@@ -1000,6 +1000,17 @@ pub enum Event {
     // headers,
     // body,
     // context
+    /// A chunk of a streamed web request body (see `web_request_stream`). Chunks arrive in
+    /// order after the leading `WebRequestResult`, and are always terminated by exactly one
+    /// chunk with `done: true` - on clean EOF, on network error and on cancellation alike.
+    WebRequestStreamChunk {
+        stream_id: String,
+        chunk: Vec<u8>,
+        /// no further chunks will arrive for this stream_id
+        done: bool,
+        /// set only on the final chunk, when the stream was aborted rather than completed
+        error: Option<String>,
+    },
     CommandPaneOpened(u32, Context), // u32 - terminal_pane_id
     CommandPaneExited(u32, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> -
     // exit_code
@@ -3465,7 +3476,10 @@ pub enum PluginCommand {
         BTreeMap<String, String>, // headers
         Vec<u8>,                  // body
         BTreeMap<String, String>, // context
+        Option<String>,           // stream_id: Some(_) => stream the response body back as
+                                  // WebRequestStreamChunk events under this id
     ),
+    CancelWebRequest(String),      // String -> stream_id
     RenameSession(String),         // String -> new session name
     UnblockCliPipeInput(String),   // String => pipe name
     BlockCliPipeInput(String),     // String => pipe name

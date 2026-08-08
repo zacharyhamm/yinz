@@ -218,6 +218,7 @@ enum CommandName {
   NewPane = 226;
   ToggleFocusNoUiFullscreen = 227;
   FocusHostSession = 228;
+  CancelWebRequest = 229;
 }
 
 message PluginCommand {
@@ -378,6 +379,7 @@ message PluginCommand {
     NewTiledPaneInTabPayload new_tiled_pane_in_tab_payload = 169;
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
+    CancelWebRequestPayload cancel_web_request_payload = 172;
   }
 }
 
@@ -767,6 +769,13 @@ message WebRequestPayload {
   repeated event.Header headers = 3;
   bytes body = 4;
   repeated ContextItem context = 5;
+  // when set, the response body is streamed back as WebRequestStreamChunk events and this id
+  // can be passed to CancelWebRequest
+  optional string stream_id = 6;
+}
+
+message CancelWebRequestPayload {
+  string stream_id = 1;
 }
 
 enum HttpVerb {

@@ -246,8 +246,11 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::RunCommand(command_line, env_variables, cwd, context) => {
                         run_command(env, command_line, env_variables, cwd, context)
                     },
-                    PluginCommand::WebRequest(url, verb, headers, body, context) => {
-                        web_request(env, url, verb, headers, body, context)
+                    PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
+                        web_request(env, url, verb, headers, body, context, stream_id)
+                    },
+                    PluginCommand::CancelWebRequest(stream_id) => {
+                        cancel_web_request(env, stream_id)
                     },
                     PluginCommand::PostMessageTo(plugin_message) => {
                         post_message_to(env, plugin_message)?
@@ -2570,6 +2573,7 @@ fn web_request(
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     context: BTreeMap<String, String>,
+    stream_id: Option<String>,
 ) {
     let _ = env
         .senders
@@ -2581,6 +2585,17 @@ fn web_request(
             headers,
             body,
             context,
+            stream_id,
+        ));
+}
+
+fn cancel_web_request(env: &PluginEnv, stream_id: String) {
+    let _ = env
+        .senders
+        .send_to_background_jobs(BackgroundJob::CancelWebRequest(
+            env.plugin_id,
+            env.client_id,
+            stream_id,
         ));
 }
 
@@ -5461,7 +5476,9 @@ fn check_command_permission(
         | PluginCommand::OpenCommandPaneInPlaceOfPaneId(..)
         | PluginCommand::RunCommand(..)
         | PluginCommand::ExecCmd(..) => PermissionType::RunCommands,
-        PluginCommand::WebRequest(..) => PermissionType::WebAccess,
+        PluginCommand::WebRequest(..) | PluginCommand::CancelWebRequest(..) => {
+            PermissionType::WebAccess
+        },
         PluginCommand::Write(..)
         | PluginCommand::WriteChars(..)
         | PluginCommand::WriteToPaneId(..)

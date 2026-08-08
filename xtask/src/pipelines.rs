@@ -91,12 +91,20 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             .context("Can't determine current working directory")?
             .join(&flags.destination)
     };
+    // `sh.copy_file` accepts a directory destination, keep supporting that
+    let destination = if destination.is_dir() {
+        destination.join("zellij")
+    } else {
+        destination
+    };
     sh.change_dir(crate::project_root());
-    sh.copy_file(
-        crate::target_dir().join("release").join("zellij"),
-        &destination,
-    )
-    .with_context(err_context)
+    // Copy to a temp file and rename, rather than overwriting in place: on macOS an in-place
+    // overwrite keeps the inode, so the kernel serves its cached (now stale) code signature and
+    // SIGKILLs the binary on exec. A rename gives it a fresh inode.
+    let tmp = destination.with_extension("xtask-install-tmp");
+    sh.copy_file(crate::target_dir().join("release").join("zellij"), &tmp)
+        .with_context(err_context)?;
+    std::fs::rename(&tmp, &destination).with_context(err_context)
 }
 
 /// Run zellij debug build.
