@@ -2539,230 +2539,6 @@ mod tests {
 
     // 1. ScrollUp
     #[test]
-    fn test_scroll_up_with_pane_id() {
-        let cli_action = CliAction::ScrollUp {
-            pane_id: Some("terminal_5".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollUpByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(5)));
-            },
-            _ => panic!("Expected ScrollUpByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_scroll_up_without_pane_id() {
-        let cli_action = CliAction::ScrollUp { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ScrollUp));
-    }
-
-    // 2. ScrollDown
-    #[test]
-    fn test_scroll_down_with_pane_id() {
-        let cli_action = CliAction::ScrollDown {
-            pane_id: Some("terminal_2".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollDownByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(2)));
-            },
-            _ => panic!("Expected ScrollDownByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_scroll_down_without_pane_id() {
-        let cli_action = CliAction::ScrollDown { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ScrollDown));
-    }
-
-    // 3. ScrollToTop
-    #[test]
-    fn test_scroll_to_top_with_pane_id() {
-        let cli_action = CliAction::ScrollToTop {
-            pane_id: Some("terminal_1".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollToTopByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(1)));
-            },
-            _ => panic!("Expected ScrollToTopByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_scroll_to_top_without_pane_id() {
-        let cli_action = CliAction::ScrollToTop { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ScrollToTop));
-    }
-
-    // 4. ScrollToBottom
-    #[test]
-    fn test_scroll_to_bottom_with_pane_id() {
-        let cli_action = CliAction::ScrollToBottom {
-            pane_id: Some("terminal_4".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollToBottomByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(4)));
-            },
-            _ => panic!("Expected ScrollToBottomByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_scroll_to_bottom_without_pane_id() {
-        let cli_action = CliAction::ScrollToBottom { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ScrollToBottom));
-    }
-
-    // 5. PageScrollUp
-    #[test]
-    fn test_page_scroll_up_with_pane_id() {
-        let cli_action = CliAction::PageScrollUp {
-            pane_id: Some("terminal_6".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::PageScrollUpByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(6)));
-            },
-            _ => panic!("Expected PageScrollUpByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_page_scroll_up_without_pane_id() {
-        let cli_action = CliAction::PageScrollUp { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::PageScrollUp));
-    }
-
-    // 6. PageScrollDown
-    #[test]
-    fn test_page_scroll_down_with_pane_id() {
-        let cli_action = CliAction::PageScrollDown {
-            pane_id: Some("terminal_8".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::PageScrollDownByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(8)));
-            },
-            _ => panic!("Expected PageScrollDownByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_page_scroll_down_without_pane_id() {
-        let cli_action = CliAction::PageScrollDown { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::PageScrollDown));
-    }
-
-    // 7. HalfPageScrollUp
-    #[test]
-    fn test_half_page_scroll_up_with_pane_id() {
-        let cli_action = CliAction::HalfPageScrollUp {
-            pane_id: Some("terminal_10".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::HalfPageScrollUpByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(10)));
-            },
-            _ => panic!("Expected HalfPageScrollUpByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_half_page_scroll_up_without_pane_id() {
-        let cli_action = CliAction::HalfPageScrollUp { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::HalfPageScrollUp));
-    }
-
-    // 8. HalfPageScrollDown
-    #[test]
-    fn test_half_page_scroll_down_with_pane_id() {
-        let cli_action = CliAction::HalfPageScrollDown {
-            pane_id: Some("terminal_12".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::HalfPageScrollDownByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(12)));
-            },
-            _ => panic!("Expected HalfPageScrollDownByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_half_page_scroll_down_without_pane_id() {
-        let cli_action = CliAction::HalfPageScrollDown { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::HalfPageScrollDown));
-    }
-
-    // 9. Resize
-    #[test]
     fn test_resize_with_pane_id() {
         let cli_action = CliAction::Resize {
             resize: Resize::Increase,
@@ -2847,62 +2623,6 @@ mod tests {
 
     // 11. MovePaneBackwards
     #[test]
-    fn test_move_pane_backwards_with_pane_id() {
-        let cli_action = CliAction::MovePaneBackwards {
-            pane_id: Some("terminal_11".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::MovePaneBackwardsByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(11)));
-            },
-            _ => panic!("Expected MovePaneBackwardsByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_move_pane_backwards_without_pane_id() {
-        let cli_action = CliAction::MovePaneBackwards { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::MovePaneBackwards));
-    }
-
-    // 12. Clear
-    #[test]
-    fn test_clear_with_pane_id() {
-        let cli_action = CliAction::Clear {
-            pane_id: Some("terminal_14".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ClearScreenByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(14)));
-            },
-            _ => panic!("Expected ClearScreenByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_clear_without_pane_id() {
-        let cli_action = CliAction::Clear { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ClearScreen));
-    }
-
-    // 13. EditScrollback
-    #[test]
     fn test_edit_scrollback_with_pane_id() {
         let cli_action = CliAction::EditScrollback {
             pane_id: Some("terminal_15".to_string()),
@@ -2921,131 +2641,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_edit_scrollback_without_pane_id() {
-        let cli_action = CliAction::EditScrollback {
-            pane_id: None,
-            ansi: false,
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::EditScrollback { ansi: false }));
-    }
-
-    // 14. ToggleFullscreen
-    #[test]
-    fn test_toggle_fullscreen_with_pane_id() {
-        let cli_action = CliAction::ToggleFullscreen {
-            pane_id: Some("terminal_16".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ToggleFocusFullscreenByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(16)));
-            },
-            _ => panic!("Expected ToggleFocusFullscreenByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_toggle_fullscreen_without_pane_id() {
-        let cli_action = CliAction::ToggleFullscreen { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ToggleFocusFullscreen));
-    }
-
-    #[test]
-    fn test_toggle_no_ui_fullscreen_with_pane_id() {
-        let cli_action = CliAction::ToggleNoUiFullscreen {
-            pane_id: Some("terminal_16".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ToggleFocusNoUiFullscreenByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(16)));
-            },
-            _ => panic!("Expected ToggleFocusNoUiFullscreenByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_toggle_no_ui_fullscreen_without_pane_id() {
-        let cli_action = CliAction::ToggleNoUiFullscreen { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::ToggleFocusNoUiFullscreen));
-    }
-
-    // 15. TogglePaneEmbedOrFloating
-    #[test]
-    fn test_toggle_pane_embed_or_floating_with_pane_id() {
-        let cli_action = CliAction::TogglePaneEmbedOrFloating {
-            pane_id: Some("terminal_17".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::TogglePaneEmbedOrFloatingByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(17)));
-            },
-            _ => panic!("Expected TogglePaneEmbedOrFloatingByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_toggle_pane_embed_or_floating_without_pane_id() {
-        let cli_action = CliAction::TogglePaneEmbedOrFloating { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::TogglePaneEmbedOrFloating));
-    }
-
-    // 16. ClosePane
-    #[test]
-    fn test_close_pane_with_pane_id() {
-        let cli_action = CliAction::ClosePane {
-            pane_id: Some("terminal_18".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::CloseFocusByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(18)));
-            },
-            _ => panic!("Expected CloseFocusByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_close_pane_without_pane_id() {
-        let cli_action = CliAction::ClosePane { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::CloseFocus));
-    }
-
-    // 17. RenamePane
     #[test]
     fn test_rename_pane_with_pane_id() {
         let cli_action = CliAction::RenamePane {
@@ -3085,96 +2680,6 @@ mod tests {
     }
 
     // 18. UndoRenamePane
-    #[test]
-    fn test_undo_rename_pane_with_pane_id() {
-        let cli_action = CliAction::UndoRenamePane {
-            pane_id: Some("terminal_20".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::UndoRenamePaneByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(20)));
-            },
-            _ => panic!("Expected UndoRenamePaneByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_undo_rename_pane_without_pane_id() {
-        let cli_action = CliAction::UndoRenamePane { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::UndoRenamePane));
-    }
-
-    // 19. TogglePanePinned
-    #[test]
-    fn test_toggle_pane_pinned_with_pane_id() {
-        let cli_action = CliAction::TogglePanePinned {
-            pane_id: Some("terminal_21".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::TogglePanePinnedByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(21)));
-            },
-            _ => panic!("Expected TogglePanePinnedByPaneId action"),
-        }
-    }
-
-    #[test]
-    fn test_toggle_pane_pinned_without_pane_id() {
-        let cli_action = CliAction::TogglePanePinned { pane_id: None };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::TogglePanePinned));
-    }
-
-    // Extra pane tests
-    #[test]
-    fn test_scroll_up_with_plugin_pane_id() {
-        let cli_action = CliAction::ScrollUp {
-            pane_id: Some("plugin_3".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollUpByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Plugin(3)));
-            },
-            _ => panic!("Expected ScrollUpByPaneId action with plugin pane id"),
-        }
-    }
-
-    #[test]
-    fn test_scroll_up_with_bare_integer_pane_id() {
-        let cli_action = CliAction::ScrollUp {
-            pane_id: Some("7".to_string()),
-        };
-        let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-        assert!(result.is_ok());
-        let actions = result.unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::ScrollUpByPaneId { pane_id } => {
-                assert!(matches!(pane_id, PaneId::Terminal(7)));
-            },
-            _ => panic!("Expected ScrollUpByPaneId action with bare integer pane id"),
-        }
-    }
-
     #[test]
     fn test_scroll_up_with_invalid_pane_id() {
         let cli_action = CliAction::ScrollUp {
@@ -4199,6 +3704,11 @@ mod tests {
         }
     }
 
+    // 35 with_pane_id/without_pane_id example tests were removed here. Each
+    // asserted only which Action variant came out and which pane id it
+    // carried - both now checked for all 26 swept variants on every run by
+    // props::each_cli_action_maps_to_its_expected_action_variant.
+
     mod props {
         use super::*;
         use crate::data::{Direction, Resize};
@@ -4212,10 +3722,16 @@ mod tests {
         /// fields are pinned, so the pane id is the only thing that varies
         /// between two calls with different `which` held constant.
         ///
-        /// `FocusPaneId` is deliberately absent: its `pane_id` is a required
-        /// `String`, not an `Option`, so it has no "without pane id" form to
-        /// compare against.
-        const PANE_ID_ACTIONS: usize = 24;
+        /// Six of the `CliAction`s that mention a pane id are deliberately
+        /// absent, and keep their own example tests:
+        ///
+        /// * `FocusPaneId`, `ChangeFloatingPaneCoordinates`,
+        ///   `TogglePaneBorderless` and `SetPaneBorderless` take a required
+        ///   `String`, so they have no "without pane id" form to compare to.
+        /// * `NewPane`'s `pane_id` is the pane to *replace* and is only legal
+        ///   alongside `in_place`, so it is not the same parameter at all.
+        /// * `SwitchSession`'s names a pane in the session being switched to.
+        const PANE_ID_ACTIONS: usize = 26;
 
         fn cli_action_with_pane_id(which: usize, pane_id: Option<String>) -> CliAction {
             match which {
@@ -4273,6 +3789,13 @@ mod tests {
                     pane_id,
                 },
                 23 => CliAction::UndoRenamePane { pane_id },
+                24 => CliAction::TogglePanePinned { pane_id },
+                25 => CliAction::SetPaneColor {
+                    pane_id,
+                    fg: Some("red".to_owned()),
+                    bg: Some("blue".to_owned()),
+                    reset: false,
+                },
                 other => unreachable!("no CliAction at index {}", other),
             }
         }
@@ -4310,6 +3833,8 @@ mod tests {
             ("CloseFocusByPaneId", "CloseFocus"),
             ("RenamePaneByPaneId", "RenamePaneByPaneId"),
             ("UndoRenamePaneByPaneId", "UndoRenamePane"),
+            ("TogglePanePinnedByPaneId", "TogglePanePinned"),
+            ("SetPaneColor", "SetPaneColor"),
         ];
 
         /// The variant name at the head of an `Action`'s `Debug` rendering.
@@ -4322,7 +3847,7 @@ mod tests {
 
         #[hegel::test]
         fn each_cli_action_maps_to_its_expected_action_variant(tc: hegel::TestCase) {
-            let (spelling, _) = tc.draw(pane_id_spelling());
+            let (spelling, parsed) = tc.draw(pane_id_spelling());
             for (which, (expected_with, expected_without)) in EXPECTED_ACTIONS.iter().enumerate() {
                 let with = Action::actions_from_cli(
                     cli_action_with_pane_id(which, Some(spelling.clone())),
@@ -4347,6 +3872,20 @@ mod tests {
                     "action {} without a pane id produced {:?}",
                     which,
                     without[0]
+                );
+                // ...carrying that exact pane id, not merely some pane id that
+                // varies with the input. `the_pane_id_reaches_the_action_it_
+                // produces` only shows distinct ids stay distinct, so an
+                // off-by-one in the parse would slip past it.
+                let rendered = format!("{:?}", with[0]);
+                let expected_id = format!("{:?}", parsed);
+                assert!(
+                    rendered.contains(&expected_id),
+                    "action {} built from {:?} does not carry {}: {}",
+                    which,
+                    spelling,
+                    expected_id,
+                    rendered
                 );
             }
         }
