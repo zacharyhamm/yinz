@@ -2805,153 +2805,6 @@ fn serialize_timer_event() {
 }
 
 #[test]
-fn serialize_copy_to_clipboard_event() {
-    use prost::Message;
-    let copy_event = Event::CopyToClipboard(CopyDestination::Primary);
-    let protobuf_event: ProtobufEvent = copy_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        copy_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_clipboard_failure_event() {
-    use prost::Message;
-    let copy_event = Event::SystemClipboardFailure;
-    let protobuf_event: ProtobufEvent = copy_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        copy_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_input_received_event() {
-    use prost::Message;
-    let input_received_event = Event::InputReceived;
-    let protobuf_event: ProtobufEvent = input_received_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        input_received_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_visible_event() {
-    use prost::Message;
-    let visible_event = Event::Visible(true);
-    let protobuf_event: ProtobufEvent = visible_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        visible_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_custom_message_event() {
-    use prost::Message;
-    let custom_message_event = Event::CustomMessage("foo".to_owned(), "bar".to_owned());
-    let protobuf_event: ProtobufEvent = custom_message_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        custom_message_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_file_system_create_event() {
-    use prost::Message;
-    let file_system_event = Event::FileSystemCreate(vec![
-        ("/absolute/path".into(), None),
-        ("./relative_path".into(), Default::default()),
-    ]);
-    let protobuf_event: ProtobufEvent = file_system_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        file_system_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_file_system_read_event() {
-    use prost::Message;
-    let file_system_event = Event::FileSystemRead(vec![
-        ("/absolute/path".into(), None),
-        ("./relative_path".into(), Default::default()),
-    ]);
-    let protobuf_event: ProtobufEvent = file_system_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        file_system_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_file_system_update_event() {
-    use prost::Message;
-    let file_system_event = Event::FileSystemUpdate(vec![
-        ("/absolute/path".into(), None),
-        ("./relative_path".into(), Some(Default::default())),
-    ]);
-    let protobuf_event: ProtobufEvent = file_system_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        file_system_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
-fn serialize_file_system_delete_event() {
-    use prost::Message;
-    let file_system_event = Event::FileSystemDelete(vec![
-        ("/absolute/path".into(), None),
-        ("./relative_path".into(), Default::default()),
-    ]);
-    let protobuf_event: ProtobufEvent = file_system_event.clone().try_into().unwrap();
-    let serialized_protobuf_event = protobuf_event.encode_to_vec();
-    let deserialized_protobuf_event: ProtobufEvent =
-        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
-    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
-    assert_eq!(
-        file_system_event, deserialized_event,
-        "Event properly serialized/deserialized without change"
-    );
-}
-
-#[test]
 fn serialize_session_update_event() {
     use prost::Message;
     let session_update_event = Event::SessionUpdate(Default::default(), Default::default());
@@ -3454,6 +3307,15 @@ impl TryFrom<SelectedText> for ProtobufSelectedText {
         })
     }
 }
+
+
+// serialize_{copy_to_clipboard,clipboard_failure,input_received,visible,
+// custom_message,file_system_create,file_system_read,file_system_update,
+// file_system_delete}_event were removed here: each was the same eight-line
+// encode/decode body over one literal, and every one of those variants is in
+// the sweep of tests::props::every_event_survives_a_protobuf_round_trip.
+// serialize_timer_event stays as the exemplar of the shape, and because
+// Timer's payload narrows to f32 - see the note on the generator.
 
 #[cfg(test)]
 mod tests {
