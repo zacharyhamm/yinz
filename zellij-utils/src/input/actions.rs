@@ -4198,4 +4198,220 @@ mod tests {
             _ => panic!("Expected NewFloatingPluginPane action"),
         }
     }
+
+    mod props {
+        use super::*;
+        use crate::data::{Direction, Resize};
+        use hegel::generators;
+
+        fn cwd() -> Box<dyn Fn() -> PathBuf> {
+            Box::new(|| PathBuf::from("/tmp"))
+        }
+
+        /// Every `CliAction` carrying an optional `--pane-id`. All the other
+        /// fields are pinned, so the pane id is the only thing that varies
+        /// between two calls with different `which` held constant.
+        ///
+        /// `FocusPaneId` is deliberately absent: its `pane_id` is a required
+        /// `String`, not an `Option`, so it has no "without pane id" form to
+        /// compare against.
+        const PANE_ID_ACTIONS: usize = 24;
+
+        fn cli_action_with_pane_id(which: usize, pane_id: Option<String>) -> CliAction {
+            match which {
+                0 => CliAction::Write {
+                    bytes: vec![10],
+                    pane_id,
+                },
+                1 => CliAction::WriteChars {
+                    chars: "foo".to_owned(),
+                    pane_id,
+                },
+                2 => CliAction::Paste {
+                    chars: "foo".to_owned(),
+                    pane_id,
+                },
+                3 => CliAction::SendKeys {
+                    keys: vec!["Enter".to_owned()],
+                    pane_id,
+                },
+                4 => CliAction::Resize {
+                    resize: Resize::Increase,
+                    direction: Some(Direction::Left),
+                    pane_id,
+                },
+                5 => CliAction::MovePane {
+                    direction: Some(Direction::Right),
+                    pane_id,
+                },
+                6 => CliAction::MovePaneBackwards { pane_id },
+                7 => CliAction::Clear { pane_id },
+                8 => CliAction::DumpScreen {
+                    path: Some(PathBuf::from("/tmp/dump")),
+                    full: false,
+                    pane_id,
+                    ansi: false,
+                },
+                9 => CliAction::EditScrollback {
+                    pane_id,
+                    ansi: false,
+                },
+                10 => CliAction::ScrollUp { pane_id },
+                11 => CliAction::ScrollDown { pane_id },
+                12 => CliAction::ScrollToBottom { pane_id },
+                13 => CliAction::ScrollToTop { pane_id },
+                14 => CliAction::PageScrollUp { pane_id },
+                15 => CliAction::PageScrollDown { pane_id },
+                16 => CliAction::HalfPageScrollUp { pane_id },
+                17 => CliAction::HalfPageScrollDown { pane_id },
+                18 => CliAction::ToggleFullscreen { pane_id },
+                19 => CliAction::ToggleNoUiFullscreen { pane_id },
+                20 => CliAction::TogglePaneEmbedOrFloating { pane_id },
+                21 => CliAction::ClosePane { pane_id },
+                22 => CliAction::RenamePane {
+                    name: "new-name".to_owned(),
+                    pane_id,
+                },
+                23 => CliAction::UndoRenamePane { pane_id },
+                other => unreachable!("no CliAction at index {}", other),
+            }
+        }
+
+        /// The three spellings `PaneId::from_str` accepts, as
+        /// `(rendered id, parsed id)`.
+        #[hegel::composite]
+        fn pane_id_spelling(tc: &hegel::TestCase) -> (String, PaneId) {
+            let n = tc.draw(generators::integers::<u32>());
+            if tc.draw(generators::booleans()) {
+                (format!("plugin_{}", n), PaneId::Plugin(n))
+            } else if tc.draw(generators::booleans()) {
+                (format!("terminal_{}", n), PaneId::Terminal(n))
+            } else {
+                // a bare integer is a terminal pane id
+                (format!("{}", n), PaneId::Terminal(n))
+            }
+        }
+
+        // Each property sweeps all of `0..PANE_ID_ACTIONS` per test case rather
+        // than drawing one index. Drawing it looks equivalent but is not: with
+        // 24 variants the higher indices come up only a handful of times in a
+        // default run, so a single variant dropping its pane id passed
+        // unnoticed. These properties stand in for one example test per
+        // variant, so every variant has to be exercised on every case.
+
+        #[hegel::test]
+        fn a_pane_id_bearing_cli_action_always_yields_exactly_one_action(tc: hegel::TestCase) {
+            let (spelling, _) = tc.draw(pane_id_spelling());
+            for which in 0..PANE_ID_ACTIONS {
+                let with = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(spelling.clone())),
+                    cwd(),
+                    None,
+                );
+                let without =
+                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None);
+                for (label, result) in [("with", &with), ("without", &without)] {
+                    let actions = result.as_ref().unwrap_or_else(|e| {
+                        panic!("action {} {} pane id errored: {}", which, label, e)
+                    });
+                    assert_eq!(
+                        actions.len(),
+                        1,
+                        "action {} {} pane id {:?} produced {:?}",
+                        which,
+                        label,
+                        spelling,
+                        actions
+                    );
+                }
+            }
+        }
+
+        /// `"5"`, `"terminal_5"` both parse to `PaneId::Terminal(5)`, so an
+        /// action built from either spelling has to come out identical. This is
+        /// what pins the id to `PaneId::from_str` rather than to some
+        /// variant-local parse.
+        #[hegel::test]
+        fn equivalent_pane_id_spellings_produce_the_same_action(tc: hegel::TestCase) {
+            let n = tc.draw(generators::integers::<u32>());
+            for which in 0..PANE_ID_ACTIONS {
+                let bare = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(format!("{}", n))),
+                    cwd(),
+                    None,
+                );
+                let prefixed = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(format!("terminal_{}", n))),
+                    cwd(),
+                    None,
+                );
+                assert_eq!(
+                    bare, prefixed,
+                    "action {} read {:?} and terminal_{} differently",
+                    which, n, n
+                );
+            }
+        }
+
+        /// The pane id has to actually reach the produced action. If a variant
+        /// dropped it on the floor, two different ids would collapse to the
+        /// same action - and so would the no-pane-id form.
+        #[hegel::test]
+        fn the_pane_id_reaches_the_action_it_produces(tc: hegel::TestCase) {
+            let (first, first_id) = tc.draw(pane_id_spelling());
+            let (second, second_id) = tc.draw(pane_id_spelling());
+            tc.assume(first_id != second_id);
+
+            for which in 0..PANE_ID_ACTIONS {
+                let a = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(first.clone())),
+                    cwd(),
+                    None,
+                );
+                let b = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(second.clone())),
+                    cwd(),
+                    None,
+                );
+                let none =
+                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None);
+
+                assert_ne!(
+                    a, b,
+                    "action {} produced the same thing for pane ids {:?} and {:?}",
+                    which, first, second
+                );
+                assert_ne!(
+                    a, none,
+                    "action {} with pane id {:?} is indistinguishable from without one",
+                    which, first
+                );
+            }
+        }
+
+        /// Anything `PaneId::from_str` rejects must come back as an `Err` from
+        /// every one of these variants - never a panic, and never a silently
+        /// accepted action. The "Malformed pane id" branch is written out ~15
+        /// times in `actions_from_cli`; this is what checks they all fire.
+        #[hegel::test]
+        fn a_malformed_pane_id_is_always_an_error(tc: hegel::TestCase) {
+            let spelling = tc.draw(generators::text());
+            tc.assume(PaneId::from_str(&spelling).is_err());
+
+            for which in 0..PANE_ID_ACTIONS {
+                let result = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(spelling.clone())),
+                    cwd(),
+                    None,
+                );
+                assert!(
+                    result.is_err(),
+                    "action {} accepted malformed pane id {:?} as {:?}",
+                    which,
+                    spelling,
+                    result
+                );
+            }
+        }
+    }
 }
