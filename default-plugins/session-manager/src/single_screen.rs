@@ -393,88 +393,6 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn test_1_1_active_sessions_sorted_by_recency() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        let active = vec![
-            make_active_session("sess-300", 1, 1, 1, false, 300),
-            make_active_session("sess-100", 1, 1, 1, false, 100),
-            make_active_session("sess-200", 1, 1, 1, false, 200),
-        ];
-        state.update_search_term(&active, &[]);
-        assert_eq!(state.unified_results.len(), 3);
-        // Ascending creation_time: 100, 200, 300 (most recent first)
-        assert_eq!(state.unified_results[0].session_name(), "sess-100");
-        assert_eq!(state.unified_results[1].session_name(), "sess-200");
-        assert_eq!(state.unified_results[2].session_name(), "sess-300");
-        for r in &state.unified_results {
-            assert!(matches!(r, UnifiedSearchResult::ActiveSession { .. }));
-        }
-    }
-
-    #[test]
-    fn test_1_2_resurrectable_sessions_sorted_by_recency() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        let resurrectable = vec![
-            make_resurrectable("res-300", 300),
-            make_resurrectable("res-100", 100),
-            make_resurrectable("res-200", 200),
-        ];
-        state.update_search_term(&[], &resurrectable);
-        assert_eq!(state.unified_results.len(), 3);
-        assert_eq!(state.unified_results[0].session_name(), "res-100");
-        assert_eq!(state.unified_results[1].session_name(), "res-200");
-        assert_eq!(state.unified_results[2].session_name(), "res-300");
-        for r in &state.unified_results {
-            assert!(matches!(
-                r,
-                UnifiedSearchResult::ResurrectableSession { .. }
-            ));
-        }
-    }
-
-    #[test]
-    fn test_1_3_mixed_active_and_resurrectable_active_first() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        let active = vec![
-            make_active_session("active-200", 1, 1, 1, false, 200),
-            make_active_session("active-100", 1, 1, 1, false, 100),
-        ];
-        let resurrectable = vec![
-            make_resurrectable("res-50", 50),
-            make_resurrectable("res-150", 150),
-        ];
-        state.update_search_term(&active, &resurrectable);
-        assert_eq!(state.unified_results.len(), 4);
-        assert_eq!(state.unified_results[0].session_name(), "active-100");
-        assert_eq!(state.unified_results[1].session_name(), "active-200");
-        assert_eq!(state.unified_results[2].session_name(), "res-50");
-        assert_eq!(state.unified_results[3].session_name(), "res-150");
-    }
-
-    #[test]
-    fn test_1_4_current_session_included_in_results() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        let active = vec![
-            make_active_session("current-sess", 1, 1, 1, true, 100),
-            make_active_session("other-sess", 1, 1, 1, false, 200),
-        ];
-        state.update_search_term(&active, &[]);
-        assert_eq!(state.unified_results.len(), 2);
-        // Current session should be present (filtering is done in renderer)
-        let has_current = state.unified_results.iter().any(|r| match r {
-            UnifiedSearchResult::ActiveSession {
-                is_current_session, ..
-            } => *is_current_session,
-            _ => false,
-        });
-        assert!(has_current);
-    }
-
-    #[test]
     fn test_1_5_pane_counts_reflect_tab_structure() {
         let mut state = SingleScreenState::default();
         state.search_term = String::new();
@@ -494,31 +412,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_1_6_empty_sessions_list() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        state.update_search_term(&[], &[]);
-        assert!(state.unified_results.is_empty());
-    }
-
     // ---------------------------------------------------------------
     // Section 2: Search and Fuzzy Matching
     // ---------------------------------------------------------------
-
-    #[test]
-    fn test_2_1_empty_search_term_shows_all() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
-        let active = vec![
-            make_active_session("a", 1, 1, 1, false, 100),
-            make_active_session("b", 1, 1, 1, false, 200),
-            make_active_session("c", 1, 1, 1, false, 300),
-        ];
-        let resurrectable = vec![make_resurrectable("d", 400), make_resurrectable("e", 500)];
-        state.update_search_term(&active, &resurrectable);
-        assert_eq!(state.unified_results.len(), 5);
-    }
 
     #[test]
     fn test_2_2_typing_filters_results() {
@@ -586,67 +482,6 @@ mod tests {
     }
 
     #[test]
-    fn test_2_5_tie_breaking_active_before_resurrectable() {
-        let mut state = SingleScreenState::default();
-        let active = vec![make_active_session("test-session", 1, 1, 1, false, 100)];
-        let resurrectable = vec![make_resurrectable("test-session", 100)];
-        state.search_term = "test".to_string();
-        state.update_search_term(&active, &resurrectable);
-        assert!(state.unified_results.len() >= 2);
-        // Find positions of active and resurrectable with the same name
-        let active_pos = state
-            .unified_results
-            .iter()
-            .position(|r| {
-                matches!(r, UnifiedSearchResult::ActiveSession { session_name, .. } if session_name == "test-session")
-            });
-        let resurrectable_pos = state
-            .unified_results
-            .iter()
-            .position(|r| {
-                matches!(r, UnifiedSearchResult::ResurrectableSession { session_name, .. } if session_name == "test-session")
-            });
-        assert!(active_pos.unwrap() < resurrectable_pos.unwrap());
-    }
-
-    #[test]
-    fn test_2_6_tie_breaking_more_recent_first_at_equal_score_and_type() {
-        let mut state = SingleScreenState::default();
-        let active = vec![
-            make_active_session("test-a", 1, 1, 1, false, 100),
-            make_active_session("test-b", 1, 1, 1, false, 50),
-        ];
-        state.search_term = "test".to_string();
-        state.update_search_term(&active, &[]);
-        // At equal scores, ascending creation_time places test-b (50s) before test-a (100s)
-        let pos_a = state
-            .unified_results
-            .iter()
-            .position(|r| r.session_name() == "test-a");
-        let pos_b = state
-            .unified_results
-            .iter()
-            .position(|r| r.session_name() == "test-b");
-        if let (Some(a), Some(b)) = (pos_a, pos_b) {
-            // If scores are equal, test-b should come first (more recent)
-            let score_a = match &state.unified_results[a] {
-                UnifiedSearchResult::ActiveSession { score, .. } => *score,
-                _ => 0,
-            };
-            let score_b = match &state.unified_results[b] {
-                UnifiedSearchResult::ActiveSession { score, .. } => *score,
-                _ => 0,
-            };
-            if score_a == score_b {
-                assert!(
-                    b < a,
-                    "test-b (50s, more recent) should appear before test-a (100s)"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_2_7_search_term_matches_nothing() {
         let mut state = SingleScreenState::default();
         let active = vec![
@@ -656,210 +491,6 @@ mod tests {
         state.search_term = "zzz".to_string();
         state.update_search_term(&active, &[]);
         assert!(state.unified_results.is_empty());
-    }
-
-    #[test]
-    fn test_2_8_selection_preserved_across_search_updates() {
-        let mut state = SingleScreenState::default();
-        let active = vec![
-            make_active_session("alpha", 1, 1, 1, false, 100),
-            make_active_session("beta", 1, 1, 1, false, 200),
-            make_active_session("gamma", 1, 1, 1, false, 300),
-        ];
-        // Step 1: empty search, populate results
-        state.search_term = String::new();
-        state.update_search_term(&active, &[]);
-        // Step 2: select "beta" (find its index)
-        let beta_idx = state
-            .unified_results
-            .iter()
-            .position(|r| r.session_name() == "beta")
-            .unwrap();
-        state.selected_index = Some(beta_idx);
-        // Step 3: search for "a" — beta does not match
-        state.search_term = "a".to_string();
-        state.update_search_term(&active, &[]);
-        // "beta" does not contain "a" in a way that fuzzy matches well.
-        // Check: if beta is not in results, selected_index should be None
-        let beta_still_present = state
-            .unified_results
-            .iter()
-            .any(|r| r.session_name() == "beta");
-        if !beta_still_present {
-            assert_eq!(state.selected_index, None);
-        } else {
-            // If beta still matches, selected_index should point to its new position
-            let new_beta_idx = state
-                .unified_results
-                .iter()
-                .position(|r| r.session_name() == "beta")
-                .unwrap();
-            assert_eq!(state.selected_index, Some(new_beta_idx));
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Section 3: Selection and Navigation
-    // ---------------------------------------------------------------
-
-    fn setup_results_with_current(state: &mut SingleScreenState, names: &[(&str, bool)]) {
-        // Directly populate unified_results for navigation tests
-        state.unified_results = names
-            .iter()
-            .enumerate()
-            .map(
-                |(i, (name, is_current))| UnifiedSearchResult::ActiveSession {
-                    score: 0,
-                    indices: vec![],
-                    session_name: name.to_string(),
-                    connected_users: 1,
-                    tab_count: 1,
-                    pane_count: 1,
-                    is_current_session: *is_current,
-                    creation_time: Duration::from_secs(i as u64 * 100),
-                },
-            )
-            .collect();
-    }
-
-    #[test]
-    fn test_3_1_down_from_none_selects_first_non_current() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[("current", true), ("other-a", false), ("other-b", false)],
-        );
-        state.selected_index = None;
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(1));
-    }
-
-    #[test]
-    fn test_3_2_down_from_last_wraps_to_first_non_current() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[("other-a", false), ("current", true), ("other-b", false)],
-        );
-        state.selected_index = Some(2); // other-b, the last
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(0)); // wraps, skips current at 1
-    }
-
-    #[test]
-    fn test_3_3_up_from_none_selects_last_non_current() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[("other-a", false), ("current", true), ("other-b", false)],
-        );
-        state.selected_index = None;
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(2)); // other-b
-    }
-
-    #[test]
-    fn test_3_4_up_from_first_wraps_to_last_non_current() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[("other-a", false), ("current", true), ("other-b", false)],
-        );
-        state.selected_index = Some(0);
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(2)); // wraps, skips current
-    }
-
-    #[test]
-    fn test_3_5_navigation_with_only_current_session() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(&mut state, &[("current", true)]);
-        state.selected_index = None;
-        state.move_selection_down();
-        assert_eq!(state.selected_index, None);
-        state.move_selection_up();
-        assert_eq!(state.selected_index, None);
-    }
-
-    #[test]
-    fn test_3_6_navigation_with_empty_results() {
-        let mut state = SingleScreenState::default();
-        state.unified_results = vec![];
-        state.selected_index = None;
-        state.move_selection_down();
-        assert_eq!(state.selected_index, None);
-        state.move_selection_up();
-        assert_eq!(state.selected_index, None);
-    }
-
-    #[test]
-    fn test_3_7_sequential_down_visits_all_non_current() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[
-                ("a", false),
-                ("current", true),
-                ("b", false),
-                ("c", false),
-                ("d", false),
-            ],
-        );
-        state.selected_index = None;
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(0)); // "a"
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(2)); // "b", skip current at 1
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(3)); // "c"
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(4)); // "d"
-        state.move_selection_down();
-        assert_eq!(state.selected_index, Some(0)); // "a", wrapped
-    }
-
-    #[test]
-    fn test_3_8_sequential_up_visits_all_non_current_in_reverse() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(
-            &mut state,
-            &[
-                ("a", false),
-                ("current", true),
-                ("b", false),
-                ("c", false),
-                ("d", false),
-            ],
-        );
-        state.selected_index = None;
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(4)); // "d"
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(3)); // "c"
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(2)); // "b"
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(0)); // "a", skip current at 1
-        state.move_selection_up();
-        assert_eq!(state.selected_index, Some(4)); // "d", wrapped
-    }
-
-    #[test]
-    fn test_3_9_get_selected_result_returns_correct_result() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(&mut state, &[("a", false), ("b", false), ("c", false)]);
-        state.selected_index = Some(1);
-        let result = state.get_selected_result();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().session_name(), "b");
-    }
-
-    #[test]
-    fn test_3_10_get_selected_result_returns_none_when_nothing_selected() {
-        let mut state = SingleScreenState::default();
-        setup_results_with_current(&mut state, &[("a", false), ("b", false), ("c", false)]);
-        state.selected_index = None;
-        assert!(state.get_selected_result().is_none());
     }
 
     // ---------------------------------------------------------------
@@ -970,5 +601,397 @@ mod tests {
         state.transition_to_search();
         assert_eq!(state.search_term, "my-new-session");
         assert_eq!(state.mode, SingleScreenMode::SearchAndSelect);
+    }
+    mod props {
+        use super::*;
+        use hegel::generators;
+
+        /// A results list built directly, as the navigation tests do: one `is_current`
+        /// flag per entry, with distinct names, so every index is identifiable.
+        #[hegel::composite]
+        fn any_current_flags(tc: &hegel::TestCase) -> Vec<bool> {
+            // capped for allocation sanity; the empty list stays reachable
+            tc.draw(generators::vecs(generators::booleans()).max_size(6))
+        }
+
+        fn build_results(flags: &[bool]) -> Vec<UnifiedSearchResult> {
+            flags
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, is_current)| UnifiedSearchResult::ActiveSession {
+                    score: 0,
+                    indices: vec![],
+                    session_name: format!("sess-{}", i),
+                    connected_users: 1,
+                    tab_count: 1,
+                    pane_count: 1,
+                    is_current_session: is_current,
+                    creation_time: Duration::from_secs(i as u64 * 100),
+                })
+                .collect()
+        }
+
+        fn selectable_indices(results: &[UnifiedSearchResult]) -> Vec<usize> {
+            results
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    !matches!(
+                        r,
+                        UnifiedSearchResult::ActiveSession {
+                            is_current_session: true,
+                            ..
+                        }
+                    )
+                })
+                .map(|(i, _)| i)
+                .collect()
+        }
+
+        fn state_with(flags: &[bool]) -> SingleScreenState {
+            let mut state = SingleScreenState::default();
+            state.unified_results = build_results(flags);
+            state
+        }
+
+        /// Replaces `test_3_1_down_from_none_selects_first_non_current`,
+        /// `test_3_3_up_from_none_selects_last_non_current`,
+        /// `test_3_5_navigation_with_only_current_session` and
+        /// `test_3_6_navigation_with_empty_results`.
+        #[hegel::test]
+        fn navigating_from_no_selection_lands_on_the_first_or_last_selectable(tc: hegel::TestCase) {
+            let flags = tc.draw(any_current_flags());
+            let selectable = selectable_indices(&build_results(&flags));
+
+            let mut down = state_with(&flags);
+            down.selected_index = None;
+            down.move_selection_down();
+            assert_eq!(
+                down.selected_index,
+                selectable.first().copied(),
+                "down from no selection, selectable: {:?}",
+                selectable
+            );
+
+            let mut up = state_with(&flags);
+            up.selected_index = None;
+            up.move_selection_up();
+            assert_eq!(
+                up.selected_index,
+                selectable.last().copied(),
+                "up from no selection, selectable: {:?}",
+                selectable
+            );
+        }
+
+        /// The wrap-around law that `test_3_2_down_from_last_wraps_to_first_non_current`,
+        /// `test_3_4_up_from_first_wraps_to_last_non_current`,
+        /// `test_3_7_sequential_down_visits_all_non_current` and
+        /// `test_3_8_sequential_up_visits_all_non_current_in_reverse` each write out for
+        /// one starting index.
+        #[hegel::test]
+        fn navigation_cycles_through_every_selectable_entry(tc: hegel::TestCase) {
+            let flags = tc.draw(any_current_flags());
+            let selectable = selectable_indices(&build_results(&flags));
+            if selectable.is_empty() {
+                return;
+            }
+            // sweep every starting index rather than drawing one
+            for start in selectable.iter().copied() {
+                let mut state = state_with(&flags);
+                state.selected_index = Some(start);
+
+                // one full cycle of `down` visits every selectable index, in order, and
+                // returns to where it started
+                let mut visited = vec![];
+                for _ in 0..selectable.len() {
+                    state.move_selection_down();
+                    let selected = state.selected_index.expect("selection was lost");
+                    assert!(
+                        selectable.contains(&selected),
+                        "landed on the current session at {} (selectable: {:?})",
+                        selected,
+                        selectable
+                    );
+                    visited.push(selected);
+                }
+                assert_eq!(
+                    state.selected_index,
+                    Some(start),
+                    "a full cycle of {} downs from {} did not return (selectable: {:?})",
+                    selectable.len(),
+                    start,
+                    selectable
+                );
+                let mut sorted_visited = visited.clone();
+                sorted_visited.sort_unstable();
+                assert_eq!(
+                    sorted_visited, selectable,
+                    "a full cycle from {} visited {:?}",
+                    start, visited
+                );
+
+                // and `up` undoes `down`
+                state.move_selection_down();
+                state.move_selection_up();
+                assert_eq!(
+                    state.selected_index,
+                    Some(start),
+                    "up did not undo down from {} (selectable: {:?})",
+                    start,
+                    selectable
+                );
+            }
+        }
+
+        /// Replaces `test_3_9_get_selected_result_returns_correct_result` and
+        /// `test_3_10_get_selected_result_returns_none_when_nothing_selected`.
+        #[hegel::test]
+        fn the_selected_result_is_the_one_at_the_selected_index(tc: hegel::TestCase) {
+            let flags = tc.draw(any_current_flags());
+            let mut state = state_with(&flags);
+            // sweep every index plus "nothing selected"
+            for selected in (0..flags.len()).map(Some).chain(std::iter::once(None)) {
+                state.selected_index = selected;
+                assert_eq!(
+                    state
+                        .get_selected_result()
+                        .map(|r| r.session_name().to_owned()),
+                    selected.map(|i| format!("sess-{}", i)),
+                    "selected_index {:?} of {} results",
+                    selected,
+                    flags.len()
+                );
+            }
+        }
+
+        /// The session lists the state machine searches over, mirrored so the invariants
+        /// can be stated without reaching into the plugin's own bookkeeping.
+        struct SingleScreenModel {
+            real: SingleScreenState,
+            active: Vec<SessionUiInfo>,
+            resurrectable: Vec<(String, Duration)>,
+        }
+
+        /// A tiny name pool, so that added sessions collide with existing ones and the
+        /// fuzzy search terms below actually match something.
+        fn any_session_name(tc: &hegel::TestCase) -> String {
+            tc.draw(generators::sampled_from(vec![
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "gamma".to_owned(),
+                "alpaca".to_owned(),
+            ]))
+        }
+
+        impl SingleScreenModel {
+            /// The order `update_search_term` is documented to produce for an empty
+            /// search term: actives before resurrectables, each by ascending creation
+            /// time, ties keeping input order (the production sort is stable).
+            fn expected_order_for_empty_search(&self) -> Vec<String> {
+                let mut actives: Vec<&SessionUiInfo> = self.active.iter().collect();
+                actives.sort_by_key(|s| s.creation_time);
+                let mut resurrectable = self.resurrectable.clone();
+                resurrectable.sort_by_key(|(_, ctime)| *ctime);
+                actives
+                    .into_iter()
+                    .map(|s| s.name.clone())
+                    .chain(resurrectable.into_iter().map(|(name, _)| name))
+                    .collect()
+            }
+
+            fn selected_name(&self) -> Option<String> {
+                self.real
+                    .get_selected_result()
+                    .map(|r| r.session_name().to_owned())
+            }
+        }
+
+        #[hegel::state_machine]
+        impl SingleScreenModel {
+            #[rule]
+            fn add_active_session(&mut self, tc: hegel::TestCase) {
+                let name = any_session_name(&tc);
+                if self.active.iter().any(|s| s.name == name) {
+                    return;
+                }
+                let creation_secs = tc.draw(generators::integers::<u64>().max_value(3));
+                let is_current = self.active.iter().all(|s| !s.is_current_session)
+                    && tc.draw(generators::booleans());
+                self.active.push(make_active_session(
+                    &name,
+                    1,
+                    1,
+                    1,
+                    is_current,
+                    creation_secs,
+                ));
+                // the plugin re-runs the search whenever new session info arrives
+                self.real
+                    .update_search_term(&self.active, &self.resurrectable);
+            }
+
+            #[rule]
+            fn add_resurrectable_session(&mut self, tc: hegel::TestCase) {
+                // deliberately allowed to share a name with an active session: that is
+                // the tie the active-before-resurrectable rule exists to break
+                let name = any_session_name(&tc);
+                if self.resurrectable.iter().any(|(n, _)| n == &name) {
+                    return;
+                }
+                let ctime_secs = tc.draw(generators::integers::<u64>().max_value(3));
+                self.resurrectable
+                    .push(make_resurrectable(&name, ctime_secs));
+                self.real
+                    .update_search_term(&self.active, &self.resurrectable);
+            }
+
+            #[rule]
+            fn search(&mut self, tc: hegel::TestCase) {
+                self.real.search_term = tc.draw(generators::sampled_from(vec![
+                    String::new(),
+                    "a".to_owned(),
+                    "al".to_owned(),
+                    "zzz".to_owned(),
+                ]));
+                // a selection survives a search only by name - this is exactly what
+                // `test_2_8_selection_preserved_across_search_updates` checks once
+                let previously_selected = self.selected_name();
+                self.real
+                    .update_search_term(&self.active, &self.resurrectable);
+                match previously_selected {
+                    Some(name) => assert_eq!(
+                        self.selected_name(),
+                        self.real
+                            .unified_results
+                            .iter()
+                            .any(|r| r.session_name() == name)
+                            .then_some(name.clone()),
+                        "selection {:?} was not carried across the search",
+                        name
+                    ),
+                    None => assert_eq!(
+                        self.selected_name(),
+                        None,
+                        "a search invented a selection out of nothing"
+                    ),
+                }
+            }
+
+            #[rule]
+            fn move_selection_down(&mut self, _: hegel::TestCase) {
+                self.real.move_selection_down();
+            }
+
+            #[rule]
+            fn move_selection_up(&mut self, _: hegel::TestCase) {
+                self.real.move_selection_up();
+            }
+
+            #[rule]
+            fn tab_complete(&mut self, _: hegel::TestCase) {
+                self.real.tab_complete(&self.active, &self.resurrectable);
+            }
+
+            #[rule]
+            fn delete_selected_session(&mut self, _: hegel::TestCase) {
+                let Some(name) = self.selected_name() else {
+                    return;
+                };
+                let previous_index = self.real.selected_index;
+                self.active.retain(|s| s.name != name);
+                self.resurrectable.retain(|(n, _)| n != &name);
+                self.real
+                    .update_search_term(&self.active, &self.resurrectable);
+                self.real.restore_selection_after_delete(previous_index);
+            }
+
+            #[invariant]
+            fn the_selection_and_the_results_stay_consistent(&self, _: hegel::TestCase) {
+                if let Some(selected_index) = self.real.selected_index {
+                    assert!(
+                        selected_index < self.real.unified_results.len(),
+                        "selected index {} is out of range for {} results",
+                        selected_index,
+                        self.real.unified_results.len()
+                    );
+                }
+                let known: Vec<&str> = self
+                    .active
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .chain(self.resurrectable.iter().map(|(name, _)| name.as_str()))
+                    .collect();
+                for result in &self.real.unified_results {
+                    assert!(
+                        known.contains(&result.session_name()),
+                        "{:?} is not one of the sessions {:?}",
+                        result.session_name(),
+                        known
+                    );
+                }
+                if self.real.search_term.is_empty() {
+                    let rendered: Vec<String> = self
+                        .real
+                        .unified_results
+                        .iter()
+                        .map(|r| r.session_name().to_owned())
+                        .collect();
+                    assert_eq!(
+                        rendered,
+                        self.expected_order_for_empty_search(),
+                        "an empty search term did not show every session in order"
+                    );
+                } else {
+                    // Under a search term the order is by score descending, then the same
+                    // type-and-recency tie-break. Skim's scores are read back off the
+                    // results rather than modelled - the law under test is the ordering,
+                    // not the scoring.
+                    let mut expected: Vec<&UnifiedSearchResult> =
+                        self.real.unified_results.iter().collect();
+                    expected.sort_by(|a, b| {
+                        b.score()
+                            .cmp(&a.score())
+                            .then_with(|| a.cmp_by_type_then_recency(b))
+                    });
+                    let key = |r: &UnifiedSearchResult| {
+                        (
+                            r.session_name().to_owned(),
+                            matches!(r, UnifiedSearchResult::ActiveSession { .. }),
+                        )
+                    };
+                    assert_eq!(
+                        self.real
+                            .unified_results
+                            .iter()
+                            .map(key)
+                            .collect::<Vec<_>>(),
+                        expected.into_iter().map(key).collect::<Vec<_>>(),
+                        "search results for {:?} are not in score-then-recency order",
+                        self.real.search_term
+                    );
+                }
+            }
+        }
+
+        /// Replaces `test_1_1_active_sessions_sorted_by_recency`,
+        /// `test_1_2_resurrectable_sessions_sorted_by_recency`,
+        /// `test_1_3_mixed_active_and_resurrectable_active_first`,
+        /// `test_1_4_current_session_included_in_results`, `test_1_6_empty_sessions_list`,
+        /// `test_2_1_empty_search_term_shows_all`, `test_2_5_tie_breaking_active_before_resurrectable`,
+        /// `test_2_6_tie_breaking_more_recent_first_at_equal_score_and_type` and
+        /// `test_2_8_selection_preserved_across_search_updates`.
+        #[hegel::test]
+        fn the_selection_follows_its_session_through_any_sequence_of_operations(
+            tc: hegel::TestCase,
+        ) {
+            let machine = SingleScreenModel {
+                real: SingleScreenState::default(),
+                active: vec![],
+                resurrectable: vec![],
+            };
+            hegel::stateful::run(machine, tc);
+        }
     }
 }
