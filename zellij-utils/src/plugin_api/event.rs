@@ -3488,4 +3488,182 @@ mod tests {
         let decoded: EventType = protobuf.try_into().unwrap();
         assert_eq!(decoded, EventType::WebRequestStreamChunk);
     }
+
+    mod props {
+        use super::*;
+        use crate::data::{
+            ClientId, CopyDestination, FileMetadata, HostTerminalThemeMode, PaneId,
+            PermissionStatus, WebServerStatus,
+        };
+        use hegel::generators;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        fn strings(tc: &hegel::TestCase) -> String {
+            tc.draw(generators::text())
+        }
+
+        fn context(tc: &hegel::TestCase) -> BTreeMap<String, String> {
+            tc.draw(
+                generators::vecs(generators::tuples!(generators::text(), generators::text()))
+                    .max_size(4),
+            )
+            .into_iter()
+            .collect()
+        }
+
+        fn bytes(tc: &hegel::TestCase) -> Vec<u8> {
+            tc.draw(generators::binary().max_size(16))
+        }
+
+        fn pane_id(tc: &hegel::TestCase) -> PaneId {
+            let n = tc.draw(generators::integers::<u32>());
+            if tc.draw(generators::booleans()) {
+                PaneId::Terminal(n)
+            } else {
+                PaneId::Plugin(n)
+            }
+        }
+
+        fn client_ids(tc: &hegel::TestCase) -> Vec<ClientId> {
+            tc.draw(generators::vecs(generators::integers::<ClientId>()).max_size(4))
+        }
+
+        fn paths_with_metadata(tc: &hegel::TestCase) -> Vec<(PathBuf, Option<FileMetadata>)> {
+            let count = tc.draw(generators::integers::<usize>().max_value(3));
+            (0..count)
+                .map(|_| {
+                    let path = PathBuf::from(tc.draw(generators::text()));
+                    let metadata = if tc.draw(generators::booleans()) {
+                        Some(FileMetadata {
+                            is_dir: tc.draw(generators::booleans()),
+                            is_file: tc.draw(generators::booleans()),
+                            is_symlink: tc.draw(generators::booleans()),
+                            len: tc.draw(generators::integers::<u64>()),
+                        })
+                    } else {
+                        None
+                    };
+                    (path, metadata)
+                })
+                .collect()
+        }
+
+        /// Every `Event` variant whose payload is built from plain scalars,
+        /// collections and small enums.
+        ///
+        /// `ModeUpdate`, `TabUpdate`, `PaneUpdate`, `Key`, `Mouse`,
+        /// `SessionUpdate`, `ListClients`, `UserAction`, `ActionComplete`,
+        /// `PaneRenderReport`, `InitialKeybinds`, `AvailableLayoutInfo`,
+        /// `HintText` and `InterceptedKeyPress` are not here: they carry
+        /// `ModeInfo`, `Action` and friends, which need generators of their
+        /// own. Their example tests stay.
+        ///
+        /// `Timer` draws a finite f64 on purpose - a NaN payload would fail the
+        /// round-trip assertion on `NaN != NaN` rather than on anything the
+        /// encoding did wrong.
+        #[hegel::composite]
+        fn any_event(tc: &hegel::TestCase) -> Event {
+            match tc.draw(generators::integers::<u8>().max_value(30)) {
+                // The protobuf field is a float, not a double (see
+                // `TimerPayload(f32)` in assets/prost/api.event.rs), so the
+                // conversion is lossy for any f64 that is not exactly
+                // representable in 32 bits - `Timer(16777217.0)` comes back as
+                // `Timer(16777216.0)`. Drawing through f32 keeps this property
+                // about the encoding rather than about that rounding.
+                0 => Event::Timer(
+                    tc.draw(generators::floats::<f32>().min_value(-1.0e9).max_value(1.0e9)) as f64,
+                ),
+                1 => Event::Visible(tc.draw(generators::booleans())),
+                2 => Event::InputReceived,
+                3 => Event::SystemClipboardFailure,
+                4 => Event::ConfigWasWrittenToDisk,
+                5 => Event::BeforeClose,
+                6 => Event::CopyToClipboard(tc.draw(generators::sampled_from(vec![
+                    CopyDestination::Command,
+                    CopyDestination::Primary,
+                    CopyDestination::System,
+                ]))),
+                7 => Event::CustomMessage(strings(tc), strings(tc)),
+                8 => Event::FileSystemCreate(paths_with_metadata(tc)),
+                9 => Event::FileSystemRead(paths_with_metadata(tc)),
+                10 => Event::FileSystemUpdate(paths_with_metadata(tc)),
+                11 => Event::FileSystemDelete(paths_with_metadata(tc)),
+                12 => Event::PermissionRequestResult(tc.draw(generators::sampled_from(vec![
+                    PermissionStatus::Granted,
+                    PermissionStatus::Denied,
+                ]))),
+                13 => Event::RunCommandResult(
+                    tc.draw(generators::optional(generators::integers::<i32>())),
+                    bytes(tc),
+                    bytes(tc),
+                    context(tc),
+                ),
+                14 => Event::WebRequestResult(
+                    tc.draw(generators::integers::<u16>()),
+                    context(tc),
+                    bytes(tc),
+                    context(tc),
+                ),
+                15 => Event::WebRequestStreamChunk {
+                    stream_id: strings(tc),
+                    chunk: bytes(tc),
+                    done: tc.draw(generators::booleans()),
+                    error: tc.draw(generators::optional(generators::text())),
+                },
+                16 => Event::CommandPaneOpened(tc.draw(generators::integers::<u32>()), context(tc)),
+                17 => Event::CommandPaneExited(
+                    tc.draw(generators::integers::<u32>()),
+                    tc.draw(generators::optional(generators::integers::<i32>())),
+                    context(tc),
+                ),
+                18 => Event::PaneClosed(pane_id(tc)),
+                19 => Event::EditPaneOpened(tc.draw(generators::integers::<u32>()), context(tc)),
+                20 => Event::EditPaneExited(
+                    tc.draw(generators::integers::<u32>()),
+                    tc.draw(generators::optional(generators::integers::<i32>())),
+                    context(tc),
+                ),
+                21 => Event::CommandPaneReRun(tc.draw(generators::integers::<u32>()), context(tc)),
+                22 => Event::FailedToWriteConfigToDisk(
+                    tc.draw(generators::optional(generators::text())),
+                ),
+                23 => Event::HostFolderChanged(PathBuf::from(strings(tc))),
+                24 => Event::FailedToChangeHostFolder(
+                    tc.draw(generators::optional(generators::text())),
+                ),
+                25 => Event::PastedText(strings(tc)),
+                26 => Event::FailedToStartWebServer(strings(tc)),
+                27 => Event::PluginConfigurationChanged(context(tc)),
+                28 => Event::SoftKeyboardVisibilityChanged(tc.draw(generators::booleans())),
+                29 => Event::WebServerStatus(match tc.draw(generators::integers::<u8>().max_value(2))
+                {
+                    0 => WebServerStatus::Online(strings(tc)),
+                    1 => WebServerStatus::Offline,
+                    _ => WebServerStatus::DifferentVersion(strings(tc)),
+                }),
+                _ => Event::HostTerminalThemeChanged(tc.draw(generators::sampled_from(vec![
+                    HostTerminalThemeMode::Dark,
+                    HostTerminalThemeMode::Light,
+                ]))),
+            }
+        }
+
+        #[hegel::test]
+        fn every_event_survives_a_protobuf_round_trip(tc: hegel::TestCase) {
+            use prost::Message;
+            let event = tc.draw(any_event());
+            let protobuf: ProtobufEvent = event
+                .clone()
+                .try_into()
+                .unwrap_or_else(|e| panic!("{:?} failed to encode: {:?}", event, e));
+            let bytes = protobuf.encode_to_vec();
+            let decoded_protobuf: ProtobufEvent = Message::decode(bytes.as_slice())
+                .unwrap_or_else(|e| panic!("{:?} failed to decode: {:?}", event, e));
+            let round_tripped: Event = decoded_protobuf
+                .try_into()
+                .unwrap_or_else(|e| panic!("{:?} failed to convert back: {:?}", event, e));
+            assert_eq!(round_tripped, event, "protobuf round trip changed the event");
+        }
+    }
 }
