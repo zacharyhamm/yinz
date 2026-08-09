@@ -511,19 +511,14 @@ impl KeyWithModifier {
         modifier_bytes: &[u8],
     ) -> Option<Self> {
         // CSI 1; modifiers [ABCDEFHPQS]
-        // Special case: \x1b[Z is Shift+Tab, not plain Tab
-        if number_bytes == b"Z" && modifier_bytes.is_empty() {
-            let mut mods = BTreeSet::new();
-            mods.insert(KeyModifier::Shift);
-            return Some(KeyWithModifier {
-                bare_key: BareKey::Tab,
-                key_modifiers: mods,
-            });
-        }
         let bare_key = BareKey::from_bytes_with_no_ending_byte(number_bytes);
         match bare_key {
             Some(bare_key) => {
-                let key_modifiers = KeyModifier::from_bytes(modifier_bytes);
+                let mut key_modifiers = KeyModifier::from_bytes(modifier_bytes);
+                // Z is BackTab, so Shift is implicit even when other modifiers are explicit.
+                if number_bytes == b"Z" {
+                    key_modifiers.insert(KeyModifier::Shift);
+                }
                 Some(KeyWithModifier {
                     bare_key,
                     key_modifiers,
@@ -3764,6 +3759,18 @@ pub fn can_parse_unicode_bare_keys() {
 mod tests {
     use super::*;
     use hegel::generators::{self, Generator};
+
+    #[test]
+    fn modified_backtab_keeps_implicit_shift() {
+        assert_eq!(
+            KeyWithModifier::from_bytes_with_no_ending_byte(b"Z", b"5"),
+            Some(
+                KeyWithModifier::new(BareKey::Tab)
+                    .with_ctrl_modifier()
+                    .with_shift_modifier()
+            )
+        );
+    }
 
     /// Any `BareKey`, including `F` indices and characters outside the ones the
     /// parser knows about.

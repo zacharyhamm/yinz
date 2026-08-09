@@ -2059,10 +2059,7 @@ fn init_session(
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);
-    let input_enabled = config
-        .options
-        .session_recording_input
-        .unwrap_or(false);
+    let input_enabled = config.options.session_recording_input.unwrap_or(false);
     if input_enabled && !recording_enabled {
         log::warn!(
             "session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
@@ -2071,34 +2068,33 @@ fn init_session(
             "Warning: session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
         );
     }
-    let (session_recorder_handle, session_recorder_thread) =
-        if recording_enabled {
-            let capture_input = recording_enabled && input_enabled;
-            let session_name = envs::get_session_name()
-                .ok()
-                .or_else(|| config.options.session_name.clone())
-                .unwrap_or_else(|| "default".to_string());
-            match crate::session_recorder::spawn_session_recorder(
-                data_dir.clone(),
-                session_name,
-                capture_input,
-            ) {
-                Some((handle, thread)) => (Some(handle), Some(thread)),
-                None => {
-                    log::error!(
+    let (session_recorder_handle, session_recorder_thread) = if recording_enabled {
+        let capture_input = recording_enabled && input_enabled;
+        let session_name = envs::get_session_name()
+            .ok()
+            .or_else(|| config.options.session_name.clone())
+            .unwrap_or_else(|| "default".to_string());
+        match crate::session_recorder::spawn_session_recorder(
+            data_dir.clone(),
+            session_name,
+            capture_input,
+        ) {
+            Some((handle, thread)) => (Some(handle), Some(thread)),
+            None => {
+                log::error!(
                         "Failed to start session recorder for data_dir {:?}; recording will be disabled",
                         data_dir
                     );
-                    eprintln!(
+                eprintln!(
                         "Warning: failed to start session recording for {:?} — check permissions/data_dir is a directory; recording disabled",
                         data_dir
                     );
-                    (None, None)
-                },
-            }
-        } else {
-            (None, None)
-        };
+                (None, None)
+            },
+        }
+    } else {
+        (None, None)
+    };
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);

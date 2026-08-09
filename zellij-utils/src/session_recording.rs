@@ -1216,7 +1216,8 @@ mod search_tests {
                 record(&mut store, 100, chunk);
             }
         }
-        let mut conn = rusqlite::Connection::open(dir.path().join("session-recordings.db")).unwrap();
+        let mut conn =
+            rusqlite::Connection::open(dir.path().join("session-recordings.db")).unwrap();
         ensure_search_schema(&conn).unwrap();
         index_pending(&mut conn).unwrap();
         let mut stmt = conn

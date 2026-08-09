@@ -19,16 +19,9 @@ use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::{
-    convert::TryFrom,
-    fmt::Write as FmtWrite,
-    fs,
-    io::Write,
-    path::PathBuf,
-    process,
-};
 #[cfg(not(target_family = "wasm"))]
 use std::path::Path;
+use std::{convert::TryFrom, fmt::Write as FmtWrite, fs, io::Write, path::PathBuf, process};
 
 const CONFIG_NAME: &str = "config.kdl";
 static ARROW_SEPARATOR: &str = "";

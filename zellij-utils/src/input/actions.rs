@@ -3839,8 +3839,14 @@ mod tests {
             ("HalfPageScrollUpByPaneId", "HalfPageScrollUp"),
             ("HalfPageScrollDownByPaneId", "HalfPageScrollDown"),
             ("ToggleFocusFullscreenByPaneId", "ToggleFocusFullscreen"),
-            ("ToggleFocusNoUiFullscreenByPaneId", "ToggleFocusNoUiFullscreen"),
-            ("TogglePaneEmbedOrFloatingByPaneId", "TogglePaneEmbedOrFloating"),
+            (
+                "ToggleFocusNoUiFullscreenByPaneId",
+                "ToggleFocusNoUiFullscreen",
+            ),
+            (
+                "TogglePaneEmbedOrFloatingByPaneId",
+                "TogglePaneEmbedOrFloating",
+            ),
             ("CloseFocusByPaneId", "CloseFocus"),
             ("RenamePaneByPaneId", "RenamePaneByPaneId"),
             ("UndoRenamePaneByPaneId", "UndoRenamePane"),

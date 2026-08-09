@@ -3308,7 +3308,6 @@ impl TryFrom<SelectedText> for ProtobufSelectedText {
     }
 }
 
-
 // serialize_{copy_to_clipboard,clipboard_failure,input_received,visible,
 // custom_message,file_system_create,file_system_read,file_system_update,
 // file_system_delete}_event were removed here: each was the same eight-line
@@ -3434,7 +3433,11 @@ mod tests {
                 // `Timer(16777216.0)`. Drawing through f32 keeps this property
                 // about the encoding rather than about that rounding.
                 0 => Event::Timer(
-                    tc.draw(generators::floats::<f32>().min_value(-1.0e9).max_value(1.0e9)) as f64,
+                    tc.draw(
+                        generators::floats::<f32>()
+                            .min_value(-1.0e9)
+                            .max_value(1.0e9),
+                    ) as f64,
                 ),
                 1 => Event::Visible(tc.draw(generators::booleans())),
                 2 => Event::InputReceived,
@@ -3498,12 +3501,13 @@ mod tests {
                 26 => Event::FailedToStartWebServer(strings(tc)),
                 27 => Event::PluginConfigurationChanged(context(tc)),
                 28 => Event::SoftKeyboardVisibilityChanged(tc.draw(generators::booleans())),
-                29 => Event::WebServerStatus(match tc.draw(generators::integers::<u8>().max_value(2))
-                {
-                    0 => WebServerStatus::Online(strings(tc)),
-                    1 => WebServerStatus::Offline,
-                    _ => WebServerStatus::DifferentVersion(strings(tc)),
-                }),
+                29 => Event::WebServerStatus(
+                    match tc.draw(generators::integers::<u8>().max_value(2)) {
+                        0 => WebServerStatus::Online(strings(tc)),
+                        1 => WebServerStatus::Offline,
+                        _ => WebServerStatus::DifferentVersion(strings(tc)),
+                    },
+                ),
                 _ => Event::HostTerminalThemeChanged(tc.draw(generators::sampled_from(vec![
                     HostTerminalThemeMode::Dark,
                     HostTerminalThemeMode::Light,
@@ -3525,7 +3529,10 @@ mod tests {
             let round_tripped: Event = decoded_protobuf
                 .try_into()
                 .unwrap_or_else(|e| panic!("{:?} failed to convert back: {:?}", event, e));
-            assert_eq!(round_tripped, event, "protobuf round trip changed the event");
+            assert_eq!(
+                round_tripped, event,
+                "protobuf round trip changed the event"
+            );
         }
     }
 }

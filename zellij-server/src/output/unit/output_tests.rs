@@ -762,10 +762,7 @@ mod character_chunk_props {
             left_width, middle_start,
             "cutting {}..{} out of a {}-wide chunk left a {}-wide left piece, \
              which does not end exactly where the cut begins",
-            middle_start,
-            middle_end,
-            width,
-            left_width
+            middle_start, middle_end, width, left_width
         );
         assert_eq!(
             right_width,

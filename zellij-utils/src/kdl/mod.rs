@@ -480,11 +480,12 @@ fn parse_global_plugin_pane_placement(
     // Plugin user config may legitimately contain keys named `edge`/`size` with arbitrary
     // values (e.g. `edge "soft"` `size "large"` in `non_global_plugin_placement_…` test),
     // so we only treat valid global values as a typo that should be reported.
-    let edge = command_metadata
-        .and_then(|m| kdl_child_string_value_for_entry(m, "edge"));
-    let is_valid_edge = matches!(edge, Some("left") | Some("right") | Some("top") | Some("bottom"));
-    let size_str = command_metadata
-        .and_then(|m| kdl_child_string_value_for_entry(m, "size"));
+    let edge = command_metadata.and_then(|m| kdl_child_string_value_for_entry(m, "edge"));
+    let is_valid_edge = matches!(
+        edge,
+        Some("left") | Some("right") | Some("top") | Some("bottom")
+    );
+    let size_str = command_metadata.and_then(|m| kdl_child_string_value_for_entry(m, "size"));
     let is_valid_size = size_str
         .as_ref()
         .map(|s| crate::input::layout::PercentOrFixed::from_str(s).is_ok())

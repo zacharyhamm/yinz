@@ -3088,7 +3088,6 @@ mod test {
     // Properties
     // =====================================================================
 
-
     mod props {
         use super::*;
         use hegel::generators;

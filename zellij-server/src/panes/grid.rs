@@ -4117,11 +4117,9 @@ impl Perform for Grid {
             },
 
             // define hyperlink
-            b"8" => {
-                self.cursor.pending_styles.update(|styles| {
-                    styles.link_anchor = self.link_handler.borrow_mut().dispatch_osc8(params)
-                })
-            },
+            b"8" => self.cursor.pending_styles.update(|styles| {
+                styles.link_anchor = self.link_handler.borrow_mut().dispatch_osc8(params)
+            }),
 
             // Get/set Foreground (b"10") or background (b"11") colors
             b"10" | b"11" => {

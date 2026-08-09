@@ -98,9 +98,9 @@ fn serialize_global_panes(
 ) -> Result<Option<KdlNode>, String> {
     let mut global_panes_children = KdlDocument::new();
     for (idx, pane) in global_panes.into_iter().enumerate() {
-        let placement = pane.global_placement.ok_or_else(|| {
-            format!("global pane {idx} requires placement")
-        })?;
+        let placement = pane
+            .global_placement
+            .ok_or_else(|| format!("global pane {idx} requires placement"))?;
         let (command, args) = extract_command_and_args(&pane.run);
         let (plugin, plugin_config) = extract_plugin_and_config(&pane.run);
         let (edit, _line_number) = extract_edit_and_line_number(&pane.run);
