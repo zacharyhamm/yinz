@@ -130,6 +130,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "layout-manager",
     "link",
     "shared-test",
+    "hocus",
 ];
 
 #[cfg(not(target_family = "wasm"))]
@@ -194,6 +195,7 @@ mod not_wasm {
                 add_plugin!(assets, "multiple-select.wasm");
                 add_plugin!(assets, "layout-manager.wasm");
                 add_plugin!(assets, "link.wasm");
+                add_plugin!(assets, "hocus.wasm");
                 // shared-test is not part of the default build, so there is nothing for
                 // `plugins_from_target` to pick up - always embed the committed asset
                 assets.insert(

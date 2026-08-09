@@ -7933,6 +7933,20 @@ Config {
                     "/",
                 ),
             },
+            "hocus": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+            },
             "plugin-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(
