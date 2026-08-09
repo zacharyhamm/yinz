@@ -2,14 +2,14 @@ use crate::plugins::plugin_map::{
     PluginEnv, PluginMap, RunningPlugin, VecDequeInputStream, WriteOutputStream,
 };
 use crate::plugins::plugin_worker::{plugin_worker, RunningWorker};
-use crate::plugins::wasm_bridge::{LoadingContext, PluginCache};
+use crate::plugins::wasm_bridge::{LoadingContext, PluginCache, PluginCacheKey};
 use crate::plugins::zellij_exports::{wasi_write_object, zellij_exports};
 use crate::plugins::PluginId;
 use prost::Message;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use wasmi::{Engine, Instance, Linker, Module, Store, StoreLimits};
@@ -59,6 +59,18 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
     }
 }
 
+fn plugin_cache_key(
+    plugin_config: &PluginConfig,
+    builtin_plugins_dir: Option<&Path>,
+) -> PluginCacheKey {
+    let builtin_plugins_dir = if plugin_config.is_builtin() {
+        builtin_plugins_dir.map(Path::to_path_buf)
+    } else {
+        None
+    };
+    (plugin_config.path.clone(), builtin_plugins_dir)
+}
+
 pub struct PluginLoader<'a> {
     skip_cache: bool,
     plugin_id: PluginId,
@@ -72,6 +84,7 @@ pub struct PluginLoader<'a> {
     session_env_vars: std::collections::BTreeMap<String, String>,
     default_shell: Option<TerminalAction>,
     layout_dir: Option<PathBuf>,
+    builtin_plugins_dir: Option<PathBuf>,
     default_mode: InputMode,
     keybinds: Keybinds,
     plugin_dir: PathBuf,
@@ -114,6 +127,7 @@ impl<'a> PluginLoader<'a> {
             session_env_vars: loading_context.session_env_vars,
             default_shell: loading_context.default_shell,
             layout_dir: loading_context.layout_dir,
+            builtin_plugins_dir: loading_context.builtin_plugins_dir,
             default_mode: loading_context.default_mode,
             keybinds: loading_context.keybinds,
             plugin_dir: loading_context.plugin_dir,
@@ -147,7 +161,9 @@ impl<'a> PluginLoader<'a> {
     }
     fn interpret_module(&mut self) -> Result<Module> {
         self.loading_indication.override_previous_error();
-        let wasm_bytes = self.plugin_config.resolve_wasm_bytes(&self.plugin_dir)?;
+        let wasm_bytes = self
+            .plugin_config
+            .resolve_wasm_bytes(&self.plugin_dir, self.builtin_plugins_dir.as_deref())?;
         let timer = std::time::Instant::now();
         let module = Module::new(&self.engine, &wasm_bytes)?;
         log::info!(
@@ -162,7 +178,10 @@ impl<'a> PluginLoader<'a> {
             .plugin_cache
             .lock()
             .unwrap()
-            .remove(&self.plugin_config.path) // TODO: do we still bring it back later?
+            .remove(&plugin_cache_key(
+                &self.plugin_config,
+                self.builtin_plugins_dir.as_deref(),
+            )) // TODO: do we still bring it back later?
             // maybe we can forgo this dance?
             .ok_or(anyhow!("Plugin is not stored in memory"))?;
         Ok(module)
@@ -262,7 +281,8 @@ impl<'a> PluginLoader<'a> {
             stdin_pipe.clone(),
             stdout_pipe.clone(),
         )?;
-        let plugin_path = self.plugin_config.path.clone();
+        let plugin_cache_key =
+            plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref());
         let plugin_env = PluginEnv {
             plugin_id: self.plugin_id,
             client_id: self.client_id,
@@ -314,7 +334,7 @@ impl<'a> PluginLoader<'a> {
         self.plugin_cache
             .lock()
             .unwrap()
-            .insert(plugin_path.clone(), module);
+            .insert(plugin_cache_key, module);
         Ok((store, instance))
     }
     pub fn clone_instance_for_other_clients(&mut self) -> Result<()> {
@@ -355,7 +375,10 @@ impl<'a> PluginLoader<'a> {
             .plugin_cache
             .lock()
             .unwrap()
-            .get(&self.plugin_config.path)
+            .get(&plugin_cache_key(
+                &self.plugin_config,
+                self.builtin_plugins_dir.as_deref(),
+            ))
             .with_context(err_context)?
             .clone();
         let (store, instance) = self.create_plugin_instance_env(&module)?;
@@ -490,6 +513,38 @@ impl<'a> PluginLoader<'a> {
         )))));
 
         Ok(ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_cache_key;
+    use std::path::Path;
+    use zellij_utils::data::PluginTag;
+    use zellij_utils::input::layout::{RunPlugin, RunPluginLocation};
+    use zellij_utils::input::plugins::PluginConfig;
+
+    #[test]
+    fn builtin_plugin_cache_key_includes_only_its_configured_source_directory() {
+        let builtin = PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::Zellij(PluginTag::new("tab-bar")),
+            ..Default::default()
+        })
+        .unwrap();
+        let external = PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::File("external.wasm".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_ne!(
+            plugin_cache_key(&builtin, Some(Path::new("one"))),
+            plugin_cache_key(&builtin, Some(Path::new("two")))
+        );
+        assert_eq!(
+            plugin_cache_key(&external, Some(Path::new("one"))),
+            plugin_cache_key(&external, Some(Path::new("two")))
+        );
     }
 }
 

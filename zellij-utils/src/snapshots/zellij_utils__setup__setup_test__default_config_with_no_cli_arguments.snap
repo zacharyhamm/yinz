@@ -6062,6 +6062,7 @@ Config {
         default_cwd: None,
         default_layout: None,
         layout_dir: None,
+        builtin_plugins_dir: None,
         theme_dir: None,
         mouse_mode: None,
         pane_frames: None,

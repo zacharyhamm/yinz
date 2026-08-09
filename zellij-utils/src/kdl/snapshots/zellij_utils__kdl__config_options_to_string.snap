@@ -9,6 +9,7 @@ default_shell "fish"
 default_cwd "/tmp/foo"
 default_layout "compact"
 layout_dir "/tmp/layouts"
+builtin_plugins_dir "/tmp/builtin-plugins"
 theme_dir "/tmp/themes"
 mouse_mode false
 pane_frames false
@@ -31,4 +32,3 @@ disable_session_metadata true
 support_kitty_keyboard_protocol false
 web_server true
 web_sharing "disabled"
-

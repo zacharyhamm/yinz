@@ -373,6 +373,7 @@ fn create_plugin_thread(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                None,
                 initiating_client_id,
             )
             .expect("TEST")
@@ -461,6 +462,7 @@ fn create_plugin_thread_with_server_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                None,
                 initiating_client_id,
             )
             .expect("TEST");
@@ -557,6 +559,7 @@ fn create_plugin_thread_with_pty_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                None,
                 initiating_client_id,
             )
             .expect("TEST")
@@ -646,6 +649,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                None,
                 initiating_client_id,
             )
             .expect("TEST")
@@ -13259,6 +13263,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         default_mode: None,
         default_shell: None,
         layout_dir: None,
+        builtin_plugins_dir: None,
         was_written_to_disk: false,
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -13405,6 +13410,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         default_mode: None,
         default_shell: None,
         layout_dir: None,
+        builtin_plugins_dir: None,
         was_written_to_disk: false,
     });
     std::thread::sleep(std::time::Duration::from_millis(500));

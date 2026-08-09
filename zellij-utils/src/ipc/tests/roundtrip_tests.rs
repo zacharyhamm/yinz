@@ -501,6 +501,7 @@ fn test_client_messages() {
                 default_cwd: Some(PathBuf::from("default_cwd")),
                 default_layout: Some(PathBuf::from("default_layout")),
                 layout_dir: Some(PathBuf::from("layout_dir")),
+                builtin_plugins_dir: Some(PathBuf::from("builtin_plugins_dir")),
                 theme_dir: Some(PathBuf::from("theme_dir")),
                 mouse_mode: Some(true),
                 pane_frames: Some(true),

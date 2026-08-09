@@ -760,6 +760,7 @@ mod config_test {
             default_cwd "/path"
             default_layout "/path/to/my/layout.kdl"
             layout_dir "/path/to/my/layout-dir"
+            builtin_plugins_dir "/path/to/my/builtin-plugins-dir"
             theme_dir "/path/to/my/theme-dir"
             mouse_mode false
             pane_frames false
@@ -807,6 +808,11 @@ mod config_test {
         assert_eq!(
             config.options.layout_dir,
             Some(PathBuf::from("/path/to/my/layout-dir")),
+            "Option set in config"
+        );
+        assert_eq!(
+            config.options.builtin_plugins_dir,
+            Some(PathBuf::from("/path/to/my/builtin-plugins-dir")),
             "Option set in config"
         );
         assert_eq!(

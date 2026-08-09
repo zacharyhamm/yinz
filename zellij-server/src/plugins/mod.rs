@@ -200,6 +200,7 @@ pub enum PluginInstruction {
         default_mode: Option<InputMode>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        builtin_plugins_dir: Option<PathBuf>,
         was_written_to_disk: bool,
     },
     FailedToWriteConfigToDisk {
@@ -317,6 +318,7 @@ pub(crate) fn plugin_thread_main(
     default_mode: InputMode,
     default_keybinds: Keybinds,
     background_plugins: HashSet<RunPluginOrAlias>,
+    builtin_plugins_dir: Option<PathBuf>,
     // the client id that started the session,
     // we need it here because the thread's own list of connected clients might not yet be updated
     // on session start when we need to load the background plugins, and so we must have an
@@ -343,6 +345,7 @@ pub(crate) fn plugin_thread_main(
         session_env_vars,
         default_shell,
         layout_dir,
+        builtin_plugins_dir,
         available_layouts,
         available_layout_errors,
         default_mode,
@@ -1203,10 +1206,18 @@ pub(crate) fn plugin_thread_main(
                 default_mode,
                 default_shell,
                 layout_dir,
+                builtin_plugins_dir,
                 was_written_to_disk,
             } => {
                 wasm_bridge
-                    .reconfigure(client_id, keybinds, default_mode, default_shell, layout_dir)
+                    .reconfigure(
+                        client_id,
+                        keybinds,
+                        default_mode,
+                        default_shell,
+                        layout_dir,
+                        builtin_plugins_dir,
+                    )
                     .non_fatal();
                 // TODO: notify plugins that this happened so that they can eg. rebind temporary keys that
                 // were lost

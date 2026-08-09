@@ -430,6 +430,11 @@ load_plugins {
 //
 // layout_dir "/path/to/my/layout_dir"
 
+// The folder in which Zellij will look for builtin plugin WASM files
+// It falls back to the embedded builtin plugins when a file is not present
+//
+// builtin_plugins_dir "/path/to/my/builtin_plugins_dir"
+
 // The folder in which Zellij will look for themes
 // (Requires restart)
 //

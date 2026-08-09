@@ -498,6 +498,7 @@ impl SessionMetaData {
                     default_mode: new_config.options.default_mode,
                     default_shell: self.default_shell.clone(),
                     layout_dir: new_config.options.layout_dir,
+                    builtin_plugins_dir: new_config.options.builtin_plugins_dir,
                     was_written_to_disk: config_was_written_to_disk,
                 })
                 .unwrap();
@@ -2216,6 +2217,7 @@ fn init_session(
                 .layout_dir
                 .clone()
                 .or_else(|| default_layout_dir());
+            let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
             let session_env_vars = session_env_vars.clone();
             move || {
@@ -2235,6 +2237,7 @@ fn init_session(
                     default_mode,
                     default_keybinds,
                     background_plugins,
+                    builtin_plugins_dir,
                     client_id,
                 )
                 .fatal()

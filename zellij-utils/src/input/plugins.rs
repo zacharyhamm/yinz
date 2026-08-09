@@ -106,9 +106,10 @@ impl PluginConfig {
     }
     /// Resolve wasm plugin bytes for the plugin path and given plugin directory.
     ///
-    /// If zellij was built without the 'disable_automatic_asset_installation' feature, builtin
-    /// plugins (Starting with 'zellij:' in the layout file) are loaded directly from the
-    /// binary-internal asset map. Otherwise:
+    /// If `builtin_plugins_dir` is set, builtin plugins (starting with 'zellij:' in the layout
+    /// file) are loaded from that directory when present, before falling back to embedded assets.
+    /// Otherwise, if zellij was built without the 'disable_automatic_asset_installation' feature,
+    /// builtin plugins are loaded directly from the binary-internal asset map. Otherwise:
     ///
     /// Attempts to first resolve the plugin path as an absolute path, then adds a ".wasm"
     /// extension to the path and resolves that, then the plugin directory joined with the path
@@ -123,9 +124,38 @@ impl PluginConfig {
     ///   /usr/share/zellij/plugins/tab-bar.wasm
     /// ```
     ///
-    pub fn resolve_wasm_bytes(&self, plugin_dir: &Path) -> Result<Vec<u8>> {
+    pub fn resolve_wasm_bytes(
+        &self,
+        plugin_dir: &Path,
+        builtin_plugins_dir: Option<&Path>,
+    ) -> Result<Vec<u8>> {
         let err_context =
             |err: std::io::Error, path: &PathBuf| format!("{}: '{}'", err, path.display());
+
+        if self.is_builtin() {
+            if let Some(builtin_plugins_dir) = builtin_plugins_dir {
+                let builtin_plugin_path =
+                    builtin_plugins_dir.join(&self.path).with_extension("wasm");
+                match fs::read(&builtin_plugin_path) {
+                    Ok(bytes) => {
+                        log::debug!(
+                            "Loaded builtin plugin '{}' from disk",
+                            builtin_plugin_path.display()
+                        );
+                        return Ok(bytes);
+                    },
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(anyhow!("{}", err)).with_context(|| {
+                            format!(
+                                "failed to load builtin plugin from '{}'",
+                                builtin_plugin_path.display()
+                            )
+                        });
+                    },
+                    Err(_) => {},
+                }
+            }
+        }
 
         // Locations we check for valid plugins
         #[allow(unused_mut)]
@@ -232,4 +262,48 @@ pub enum PluginsConfigError {
     InvalidUrlScheme(Url),
     #[error("Could not find plugin at the path: '{0:?}'")]
     InvalidPluginLocation(PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PluginConfig, PluginTag, RunPlugin, RunPluginLocation};
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn builtin_plugin(name: &str) -> PluginConfig {
+        PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::Zellij(PluginTag::new(name)),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn configured_builtin_plugin_directory_takes_precedence() {
+        let plugin_dir = tempdir().unwrap();
+        let builtin_plugins_dir = tempdir().unwrap();
+        let plugin_path = builtin_plugins_dir.path().join("tab-bar.wasm");
+        fs::write(&plugin_path, b"override").unwrap();
+
+        let plugin = builtin_plugin("tab-bar");
+        assert_eq!(
+            plugin
+                .resolve_wasm_bytes(plugin_dir.path(), Some(builtin_plugins_dir.path()))
+                .unwrap(),
+            b"override"
+        );
+    }
+
+    #[cfg(not(feature = "disable_automatic_asset_installation"))]
+    #[test]
+    fn missing_configured_builtin_plugin_falls_back_to_embedded_asset() {
+        let plugin_dir = tempdir().unwrap();
+        let builtin_plugins_dir = tempdir().unwrap();
+        let plugin = builtin_plugin("tab-bar");
+
+        assert!(!plugin
+            .resolve_wasm_bytes(plugin_dir.path(), Some(builtin_plugins_dir.path()))
+            .unwrap()
+            .is_empty());
+    }
 }

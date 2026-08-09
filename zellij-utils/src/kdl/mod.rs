@@ -2991,6 +2991,9 @@ impl Options {
                 .map(|(string, _entry)| PathBuf::from(string));
         let layout_dir = kdl_property_first_arg_as_string_or_error!(kdl_options, "layout_dir")
             .map(|(string, _entry)| PathBuf::from(string));
+        let builtin_plugins_dir =
+            kdl_property_first_arg_as_string_or_error!(kdl_options, "builtin_plugins_dir")
+                .map(|(string, _entry)| PathBuf::from(string));
         let theme_dir = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme_dir")
             .map(|(string, _entry)| PathBuf::from(string));
         let mouse_mode =
@@ -3163,6 +3166,7 @@ impl Options {
             default_cwd,
             default_layout,
             layout_dir,
+            builtin_plugins_dir,
             theme_dir,
             mouse_mode,
             pane_frames,
@@ -3483,6 +3487,34 @@ impl Options {
         };
         if let Some(layout_dir) = &self.layout_dir {
             let mut node = create_node(&layout_dir.display().to_string());
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node("/tmp");
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn builtin_plugins_dir_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}",
+            " ",
+            "// The folder in which Zellij will look for builtin plugin WASM files",
+            "// It falls back to the embedded builtin plugins when a file is not present",
+            "// ",
+        );
+
+        let create_node = |node_value: &str| -> KdlNode {
+            let mut node = KdlNode::new("builtin_plugins_dir");
+            node.push(node_value.to_owned());
+            node
+        };
+        if let Some(builtin_plugins_dir) = &self.builtin_plugins_dir {
+            let mut node = create_node(&builtin_plugins_dir.display().to_string());
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -4829,6 +4861,9 @@ impl Options {
         }
         if let Some(layout_dir) = self.layout_dir_to_kdl(add_comments) {
             nodes.push(layout_dir);
+        }
+        if let Some(builtin_plugins_dir) = self.builtin_plugins_dir_to_kdl(add_comments) {
+            nodes.push(builtin_plugins_dir);
         }
         if let Some(theme_dir) = self.theme_dir_to_kdl(add_comments) {
             nodes.push(theme_dir);
@@ -8005,6 +8040,7 @@ fn config_options_to_string() {
         default_cwd "/tmp/foo"
         default_layout "compact"
         layout_dir "/tmp/layouts"
+        builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
         mouse_mode false
         pane_frames false
@@ -8052,6 +8088,7 @@ fn config_options_to_string_with_comments() {
         default_cwd "/tmp/foo"
         default_layout "compact"
         layout_dir "/tmp/layouts"
+        builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
         mouse_mode false
         pane_frames false

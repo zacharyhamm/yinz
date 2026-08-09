@@ -110,6 +110,7 @@ pub struct LoadingContext {
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
+    pub builtin_plugins_dir: Option<PathBuf>,
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
     pub plugin_dir: PathBuf,
@@ -156,6 +157,7 @@ impl LoadingContext {
             plugin_cwd: cwd.unwrap_or_else(|| wasm_bridge.zellij_cwd.clone()),
             default_shell: wasm_bridge.default_shell.clone(),
             layout_dir: wasm_bridge.layout_dir.clone(),
+            builtin_plugins_dir: wasm_bridge.builtin_plugins_dir.clone(),
             keybinds,
             default_mode,
             plugin_own_data_dir,
@@ -172,7 +174,8 @@ impl LoadingContext {
     }
 }
 
-pub type PluginCache = Arc<Mutex<HashMap<PathBuf, Module>>>;
+pub type PluginCacheKey = (PathBuf, Option<PathBuf>);
+pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, Module>>>;
 
 pub struct WasmBridge {
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
@@ -202,6 +205,7 @@ pub struct WasmBridge {
         HashMap<RunPluginLocation, HashMap<PluginUserConfiguration, Vec<(PluginId, ClientId)>>>,
     pending_pipes: PendingPipes,
     layout_dir: Option<PathBuf>,
+    builtin_plugins_dir: Option<PathBuf>,
     available_layouts: Vec<LayoutInfo>,
     available_layout_errors: Vec<LayoutWithError>,
     default_mode: InputMode,
@@ -224,6 +228,7 @@ impl WasmBridge {
         session_env_vars: std::collections::BTreeMap<String, String>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        builtin_plugins_dir: Option<PathBuf>,
         available_layouts: Vec<LayoutInfo>,
         available_layout_errors: Vec<LayoutWithError>,
         default_mode: InputMode,
@@ -231,7 +236,7 @@ impl WasmBridge {
     ) -> Self {
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
-        let plugin_cache: Arc<Mutex<HashMap<PathBuf, Module>>> =
+        let plugin_cache: Arc<Mutex<HashMap<PluginCacheKey, Module>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let watcher = None;
         let downloader = Downloader::new(ZELLIJ_CACHE_DIR.to_path_buf());
@@ -267,6 +272,7 @@ impl WasmBridge {
             cached_plugin_map: HashMap::new(),
             pending_pipes: Default::default(),
             layout_dir,
+            builtin_plugins_dir,
             available_layouts,
             available_layout_errors,
             default_mode,
@@ -1440,6 +1446,7 @@ impl WasmBridge {
         default_mode: Option<InputMode>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        builtin_plugins_dir: Option<PathBuf>,
     ) -> Result<()> {
         let plugins_to_reconfigure: Vec<(PluginId, Arc<Mutex<RunningPlugin>>)> = self
             .plugin_map
@@ -1464,6 +1471,7 @@ impl WasmBridge {
         }
         self.default_shell = default_shell.clone();
         self.layout_dir = layout_dir.clone();
+        self.builtin_plugins_dir = builtin_plugins_dir;
         // Collect plugins subscribed to InitialKeybinds for post-reconfigure notification
         let plugins_subscribed_to_initial_keybinds: Vec<PluginId> = if keybinds.is_some() {
             self.plugin_map
