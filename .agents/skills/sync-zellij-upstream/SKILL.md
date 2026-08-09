@@ -1,18 +1,18 @@
 ---
 name: sync-zellij-upstream
-description: Sync local main with upstream Zellij, review new upstream/main changes against this fork's live default branch, recommend which changes to adapt, record rejected changes, and adapt approved changes to the divergent fork. Use when asked to sync, review, assess, backport, or adapt changes from zellij-org/zellij upstream main into this fork.
+description: Sync local upstream-main with upstream Zellij, review new upstream/main changes against this fork's live default branch, recommend which changes to adapt, record rejected changes, and adapt approved changes to the divergent fork. Use when asked to sync, review, assess, backport, or adapt changes from zellij-org/zellij upstream main into this fork.
 ---
 
 # Sync Zellij Upstream
 
-Treat `main` as a local mirror of `upstream/main`. Treat the fork's live default
+Treat `upstream-main` as a local mirror of `upstream/main`. Treat the fork's live default
 branch as the adaptation target. Never merge upstream wholesale into the fork.
 
 ## Guardrails
 
 - Preserve all unrelated worktree and index changes.
 - Never reset, rebase, force-update, or push.
-- Move `main` only by fast-forward.
+- Move `upstream-main` only by fast-forward.
 - Do not change the fork branch before the user approves specific changes.
 - Do not adapt a rejected change again unless a later change needs it and the
   user explicitly reopens the decision.
@@ -26,7 +26,7 @@ branch as the adaptation target. Never merge upstream wholesale into the fork.
    Do not trust the local `origin/HEAD`, because it can be stale.
 3. Fetch `origin` and `upstream/main`.
 4. Record these SHAs before changing a branch:
-   - local `main`
+   - local `upstream-main`
    - fetched `upstream/main`
    - local and remote tips of the live default branch
 5. Read `docs/upstream-sync-decisions.md` if it exists.
@@ -36,21 +36,21 @@ ahead of its remote branch. Use the fetched remote branch when the local branch
 is only behind. Stop and ask the user which tip is authoritative when the two
 tips diverge.
 
-## Fast-forward main
+## Fast-forward upstream-main
 
-Verify that the old `main` is an ancestor of `upstream/main`. If it is not, stop.
+Verify that the old `upstream-main` is an ancestor of `upstream/main`. If it is not, stop.
 
-If `main` is not checked out in any worktree, update it to `upstream/main` with
-a fast-forward ref update. If `main` is checked out, update it in that worktree
+If `upstream-main` is not checked out in any worktree, update it to `upstream/main` with
+a fast-forward ref update. If `upstream-main` is checked out, update it in that worktree
 with `git merge --ff-only upstream/main` only when that worktree and its index
-are clean. Do not push `main` to `origin`.
+are clean. Do not push `upstream-main` to `origin`.
 
-If the old and new `main` SHAs are equal, tell the user that upstream has no new
+If the old and new `upstream-main` SHAs are equal, tell the user that upstream has no new
 changes and stop.
 
 ## Analyze new upstream changes
 
-Inspect every commit and diff in `old-main..main`. Group commits only when they
+Inspect every commit and diff in `old-upstream-main..upstream-main`. Group commits only when they
 implement one logical change. For each group:
 
 1. State what upstream changed and why.
@@ -99,7 +99,7 @@ After the user rejects a candidate, append one entry to
 ## YYYY-MM-DD — <short change name>
 
 - Upstream commits: `<sha>`
-- Upstream range: `<old-main>..<new-main>`
+- Upstream range: `<old-upstream-main>..<new-upstream-main>`
 - Fork baseline: `<default-branch>` at `<sha>`
 - Decision: Skip
 - Reason: <specific reason>
