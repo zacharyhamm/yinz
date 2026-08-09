@@ -4277,6 +4277,80 @@ mod tests {
             }
         }
 
+        /// The `Action` each indexed `CliAction` must produce, as
+        /// `(with a pane id, without one)`.
+        ///
+        /// The relational properties below pin that the pane id reaches the
+        /// action; this pins *which* action, which is the other half of what
+        /// the per-variant example tests asserted. Without it a variant could
+        /// route to the wrong ById action and every other property here would
+        /// still pass.
+        const EXPECTED_ACTIONS: [(&str, &str); PANE_ID_ACTIONS] = [
+            ("WriteToPaneId", "Write"),
+            ("WriteCharsToPaneId", "WriteChars"),
+            ("Paste", "Paste"),
+            ("WriteToPaneId", "Write"),
+            ("ResizeByPaneId", "Resize"),
+            ("MovePaneByPaneId", "MovePane"),
+            ("MovePaneBackwardsByPaneId", "MovePaneBackwards"),
+            ("ClearScreenByPaneId", "ClearScreen"),
+            ("DumpScreen", "DumpScreen"),
+            ("EditScrollbackByPaneId", "EditScrollback"),
+            ("ScrollUpByPaneId", "ScrollUp"),
+            ("ScrollDownByPaneId", "ScrollDown"),
+            ("ScrollToBottomByPaneId", "ScrollToBottom"),
+            ("ScrollToTopByPaneId", "ScrollToTop"),
+            ("PageScrollUpByPaneId", "PageScrollUp"),
+            ("PageScrollDownByPaneId", "PageScrollDown"),
+            ("HalfPageScrollUpByPaneId", "HalfPageScrollUp"),
+            ("HalfPageScrollDownByPaneId", "HalfPageScrollDown"),
+            ("ToggleFocusFullscreenByPaneId", "ToggleFocusFullscreen"),
+            ("ToggleFocusNoUiFullscreenByPaneId", "ToggleFocusNoUiFullscreen"),
+            ("TogglePaneEmbedOrFloatingByPaneId", "TogglePaneEmbedOrFloating"),
+            ("CloseFocusByPaneId", "CloseFocus"),
+            ("RenamePaneByPaneId", "RenamePaneByPaneId"),
+            ("UndoRenamePaneByPaneId", "UndoRenamePane"),
+        ];
+
+        /// The variant name at the head of an `Action`'s `Debug` rendering.
+        fn variant_name(action: &Action) -> String {
+            format!("{:?}", action)
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect()
+        }
+
+        #[hegel::test]
+        fn each_cli_action_maps_to_its_expected_action_variant(tc: hegel::TestCase) {
+            let (spelling, _) = tc.draw(pane_id_spelling());
+            for (which, (expected_with, expected_without)) in EXPECTED_ACTIONS.iter().enumerate() {
+                let with = Action::actions_from_cli(
+                    cli_action_with_pane_id(which, Some(spelling.clone())),
+                    cwd(),
+                    None,
+                )
+                .unwrap();
+                let without =
+                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None)
+                        .unwrap();
+                assert_eq!(
+                    variant_name(&with[0]),
+                    *expected_with,
+                    "action {} with pane id {:?} produced {:?}",
+                    which,
+                    spelling,
+                    with[0]
+                );
+                assert_eq!(
+                    variant_name(&without[0]),
+                    *expected_without,
+                    "action {} without a pane id produced {:?}",
+                    which,
+                    without[0]
+                );
+            }
+        }
+
         /// The three spellings `PaneId::from_str` accepts, as
         /// `(rendered id, parsed id)`.
         #[hegel::composite]
