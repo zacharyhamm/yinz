@@ -333,8 +333,10 @@ fn adjust_middle_segment_for_wide_chars(
         )
     };
 
-    let mut absolute_middle_start_index = None;
-    let mut absolute_middle_end_index = None;
+    // a boundary at column 0 is already reached before the first character - without
+    // this the loop treats the first character as straddling it and pads over the cut
+    let mut absolute_middle_start_index = if middle_start == 0 { Some(0) } else { None };
+    let mut absolute_middle_end_index = if middle_end == 0 { Some(0) } else { None };
     let mut current_x = 0;
     let mut pad_left_end_by = 0;
     let mut pad_right_start_by = 0;
@@ -1765,9 +1767,10 @@ impl CharacterChunk {
         let mut characters_on_the_left: Vec<TerminalCharacter> = terminal_characters
             .drain(..absolute_middle_start_index)
             .collect();
-        if pad_left_end_by > 0 {
-            characters_on_the_left.resize(pad_left_end_by, EMPTY_TERMINAL_CHARACTER);
-        }
+        characters_on_the_left.extend(std::iter::repeat_n(
+            EMPTY_TERMINAL_CHARACTER,
+            pad_left_end_by,
+        ));
         if pad_right_start_by > 0 {
             for _ in 0..pad_right_start_by {
                 characters_on_the_right.insert(0, EMPTY_TERMINAL_CHARACTER);

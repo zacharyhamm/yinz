@@ -858,11 +858,19 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
     // transaction loses that race every time and search fails with "database is locked".
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (pane_id, last_event_id, mut buffer) in panes {
-        // Raw bytes, stripped only once a whole line is in hand: an escape sequence can be
-        // split across two PTY chunks, and stripping each chunk on its own leaks the tail
-        // of the sequence into the text as if it were content.
+        // One parser for the whole pane, not one per flush: an escape sequence can be split
+        // across two PTY chunks, and parsing each chunk on its own leaks the tail of the
+        // sequence into the text as if it were content. `buffer` holds the raw bytes since
+        // the last completed line, so that a later call can pick the pane back up.
         let mut lines: Vec<(String, i64)> = Vec::new();
         let mut last_seen: Option<i64> = None;
+        let mut parser = vte::Parser::new();
+        let mut sink = LineSink::default();
+        // ponytail: replaying `buffer` rebuilds the parser state across calls, except where a
+        // line completed while mid-escape-sequence. Persist the parser state alongside
+        // `pending` if that ever matters.
+        let mut parsed = utf8_safe_len(&buffer);
+        parser.advance(&mut sink, &buffer[..parsed]);
         {
             let mut stmt = tx.prepare(
                 "SELECT id, elapsed_us, data FROM recording_events
@@ -875,30 +883,34 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
                 let elapsed_us: i64 = row.get(1)?;
                 let data: Vec<u8> = row.get(2)?;
                 last_seen = Some(event_id);
-                // Everything already in the buffer was checked and held no newline, so only
-                // the bytes just appended need scanning. Rescanning the whole buffer makes
-                // this quadratic on redraw-heavy panes that go 64KiB without a newline.
-                let scan_from = buffer.len();
                 buffer.extend_from_slice(&data);
-                match buffer[scan_from..]
-                    .iter()
-                    .rposition(|byte| *byte == b'\n')
-                    .map(|idx| idx + scan_from)
-                {
-                    Some(idx) => {
-                        let tail = buffer.split_off(idx + 1);
-                        let stripped = strip_ansi_escapes::strip(&buffer);
-                        for line in String::from_utf8_lossy(&stripped).split('\n') {
-                            push_line(&mut lines, line, elapsed_us);
-                        }
-                        buffer = tail;
-                    },
-                    None if buffer.len() >= MAX_INDEXED_LINE => {
-                        let stripped = strip_ansi_escapes::strip(&buffer);
-                        push_line(&mut lines, &String::from_utf8_lossy(&stripped), elapsed_us);
-                        buffer.clear();
-                    },
-                    None => {},
+                // Bytes already handed to the parser are never re-parsed, so a redraw-heavy
+                // pane that goes 64KiB without a newline stays linear.
+                while parsed < buffer.len() {
+                    let rest = &buffer[parsed..];
+                    // A line can only end where the parser *executes* a linefeed, so feed it
+                    // everything up to the next raw `\n` in one go and that byte on its own:
+                    // that is what tells us how many raw bytes the completed line consumed.
+                    let Some(newline) = rest.iter().position(|byte| *byte == b'\n') else {
+                        let safe = utf8_safe_len(rest);
+                        parser.advance(&mut sink, &rest[..safe]);
+                        parsed += safe;
+                        break;
+                    };
+                    parser.advance(&mut sink, &rest[..newline]);
+                    parser.advance(&mut sink, &rest[newline..newline + 1]);
+                    parsed += newline + 1;
+                    if sink.done {
+                        sink.done = false;
+                        push_line(&mut lines, &std::mem::take(&mut sink.text), elapsed_us);
+                        buffer.drain(..parsed);
+                        parsed = 0;
+                    }
+                }
+                if buffer.len() >= MAX_INDEXED_LINE {
+                    push_line(&mut lines, &std::mem::take(&mut sink.text), elapsed_us);
+                    buffer.clear();
+                    parsed = 0;
                 }
             }
         }
@@ -920,6 +932,51 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// How much of `bytes` can be handed to the parser without splitting a UTF-8 sequence: vte
+/// drops the byte that follows the split when a codepoint straddles two `advance` calls, so a
+/// trailing partial sequence has to wait for the rest of its bytes.
+fn utf8_safe_len(bytes: &[u8]) -> usize {
+    for back in 1..=3.min(bytes.len()) {
+        let needed = match bytes[bytes.len() - back] {
+            0x00..=0x7f => 1,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            // a continuation byte (or an invalid lead, which vte handles on its own): keep
+            // looking back for the byte that started the sequence
+            _ => continue,
+        };
+        return if needed > back {
+            bytes.len() - back
+        } else {
+            bytes.len()
+        };
+    }
+    bytes.len()
+}
+
+/// One line of plain text, ended where the parser *executes* a linefeed rather than at any
+/// raw `\n` byte — a raw newline can sit inside an escape sequence, and cutting the line
+/// there is what made the indexed text depend on where the PTY chunks fell.
+#[derive(Default)]
+struct LineSink {
+    text: String,
+    done: bool,
+}
+
+impl vte::Perform for LineSink {
+    fn print(&mut self, c: char) {
+        self.text.push(c);
+    }
+    fn execute(&mut self, byte: u8) {
+        // Only a linefeed produces anything; every other C0 control is dropped, as it was
+        // when this went through strip_ansi_escapes.
+        if byte == b'\n' {
+            self.done = true;
+        }
+    }
 }
 
 fn push_line(lines: &mut Vec<(String, i64)>, line: &str, elapsed_us: i64) {
@@ -1176,11 +1233,14 @@ mod search_tests {
     /// A PTY hands us the same bytes cut at arbitrary offsets from one run to the next, so
     /// what gets indexed must depend on the stream and not on where the cuts fell. The two
     /// tests above are this property at two hand-picked offsets.
-    // 50 rather than the default 100: each case builds a sqlite database on disk.
-    #[hegel::test(test_cases = 50)]
+    // 30 rather than the default 100: each case builds two sqlite databases on disk, plus
+    // one transaction per chunk.
+    #[hegel::test(test_cases = 30)]
     fn indexing_is_independent_of_chunk_boundaries(tc: hegel::TestCase) {
         let stream = tc.draw(output_stream());
-        let cut_count = tc.draw(generators::integers::<usize>().max_value(stream.len()));
+        // a handful of cuts already lands them inside lines, escape sequences and UTF-8
+        // sequences; more only costs one sqlite transaction each.
+        let cut_count = tc.draw(generators::integers::<usize>().max_value(stream.len().min(8)));
         let mut cuts: Vec<usize> = tc.draw(
             generators::vecs(generators::integers::<usize>().max_value(stream.len()))
                 .min_size(cut_count)

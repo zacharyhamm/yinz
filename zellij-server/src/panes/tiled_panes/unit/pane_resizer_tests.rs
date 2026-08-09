@@ -948,7 +948,7 @@ use hegel::generators;
 fn any_pane_spec(tc: &hegel::TestCase, id: u32) -> PaneSpec {
     // percentages that under- and over-sum 100 across a layout, plus the degenerate ends
     let percents = vec![0.0, 0.1, 1.0, 25.0, 33.3, 50.0, 60.0, 100.0, 150.0];
-    let mut dimension = |tc: &hegel::TestCase| {
+    let dimension = |tc: &hegel::TestCase| {
         if tc.draw(generators::booleans()) {
             let mut d = zellij_utils::pane_size::Dimension::percent(
                 tc.draw(generators::sampled_from(percents.clone())),
@@ -990,8 +990,12 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
         SplitDirection::Horizontal,
         SplitDirection::Vertical,
     ]));
-    let space = tc.draw(generators::integers::<usize>());
-    let origin = tc.draw(generators::integers::<usize>());
+    // `space` and `origin` are terminal coordinates in production: every caller reaches
+    // `PaneResizer::layout` through `TiledPaneGrid::layout_origin`, which passes
+    // `display_area.x`/`y` and `display_area.cols`/`rows`. Values beyond screen scale are not
+    // reachable, and `origin + space` near `usize::MAX` overflows `discretize_spans`.
+    let space = tc.draw(generators::integers::<usize>().max_value(500));
+    let origin = tc.draw(generators::integers::<usize>().max_value(500));
 
     let fixture = Fixture {
         name: "generated",

@@ -758,17 +758,18 @@ mod character_chunk_props {
         // most the columns before the cut; likewise the right piece may occupy
         // at most the columns after it. Anything more overdraws the pane that
         // the cut was making room for.
-        assert!(
-            left_width <= middle_start,
+        assert_eq!(
+            left_width, middle_start,
             "cutting {}..{} out of a {}-wide chunk left a {}-wide left piece, \
-             which overdraws the cut-out region",
+             which does not end exactly where the cut begins",
             middle_start,
             middle_end,
             width,
             left_width
         );
-        assert!(
-            right_width <= width.saturating_sub(middle_end),
+        assert_eq!(
+            right_width,
+            width.saturating_sub(middle_end),
             "cutting {}..{} out of a {}-wide chunk left a {}-wide right piece",
             middle_start,
             middle_end,

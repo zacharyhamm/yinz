@@ -3733,6 +3733,15 @@ mod tests {
         /// * `SwitchSession`'s names a pane in the session being switched to.
         const PANE_ID_ACTIONS: usize = 26;
 
+        /// The prefix of `cli_action_with_pane_id` whose no-`--pane-id` form is
+        /// actually pane-id-free. `SetPaneColor` - the last index, and the only
+        /// one outside this prefix - falls back to `$ZELLIJ_PANE_ID` instead of
+        /// acting on the focused pane, so its "without" form is whatever the
+        /// environment says and cannot be compared against. Everything that
+        /// builds `pane_id: None` stops here; the with-a-pane-id sweeps still
+        /// run to `PANE_ID_ACTIONS`.
+        const PANE_ID_OPTIONAL_ACTIONS: usize = PANE_ID_ACTIONS - 1;
+
         fn cli_action_with_pane_id(which: usize, pane_id: Option<String>) -> CliAction {
             match which {
                 0 => CliAction::Write {
@@ -3801,7 +3810,9 @@ mod tests {
         }
 
         /// The `Action` each indexed `CliAction` must produce, as
-        /// `(with a pane id, without one)`.
+        /// `(with a pane id, without one)`. The second element is unused past
+        /// `PANE_ID_OPTIONAL_ACTIONS` - `SetPaneColor` has no pane-id-free
+        /// form - and is left empty there.
         ///
         /// The relational properties below pin that the pane id reaches the
         /// action; this pins *which* action, which is the other half of what
@@ -3834,7 +3845,7 @@ mod tests {
             ("RenamePaneByPaneId", "RenamePaneByPaneId"),
             ("UndoRenamePaneByPaneId", "UndoRenamePane"),
             ("TogglePanePinnedByPaneId", "TogglePanePinned"),
-            ("SetPaneColor", "SetPaneColor"),
+            ("SetPaneColor", ""),
         ];
 
         /// The variant name at the head of an `Action`'s `Debug` rendering.
@@ -3855,9 +3866,6 @@ mod tests {
                     None,
                 )
                 .unwrap();
-                let without =
-                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None)
-                        .unwrap();
                 assert_eq!(
                     variant_name(&with[0]),
                     *expected_with,
@@ -3866,13 +3874,18 @@ mod tests {
                     spelling,
                     with[0]
                 );
-                assert_eq!(
-                    variant_name(&without[0]),
-                    *expected_without,
-                    "action {} without a pane id produced {:?}",
-                    which,
-                    without[0]
-                );
+                if which < PANE_ID_OPTIONAL_ACTIONS {
+                    let without =
+                        Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None)
+                            .unwrap();
+                    assert_eq!(
+                        variant_name(&without[0]),
+                        *expected_without,
+                        "action {} without a pane id produced {:?}",
+                        which,
+                        without[0]
+                    );
+                }
                 // ...carrying that exact pane id, not merely some pane id that
                 // varies with the input. `the_pane_id_reaches_the_action_it_
                 // produces` only shows distinct ids stay distinct, so an
@@ -3921,9 +3934,14 @@ mod tests {
                     cwd(),
                     None,
                 );
-                let without =
-                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None);
-                for (label, result) in [("with", &with), ("without", &without)] {
+                let mut cases = vec![("with", with)];
+                if which < PANE_ID_OPTIONAL_ACTIONS {
+                    cases.push((
+                        "without",
+                        Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None),
+                    ));
+                }
+                for (label, result) in &cases {
                     let actions = result.as_ref().unwrap_or_else(|e| {
                         panic!("action {} {} pane id errored: {}", which, label, e)
                     });
@@ -3986,19 +4004,21 @@ mod tests {
                     cwd(),
                     None,
                 );
-                let none =
-                    Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None);
 
                 assert_ne!(
                     a, b,
                     "action {} produced the same thing for pane ids {:?} and {:?}",
                     which, first, second
                 );
-                assert_ne!(
-                    a, none,
-                    "action {} with pane id {:?} is indistinguishable from without one",
-                    which, first
-                );
+                if which < PANE_ID_OPTIONAL_ACTIONS {
+                    let none =
+                        Action::actions_from_cli(cli_action_with_pane_id(which, None), cwd(), None);
+                    assert_ne!(
+                        a, none,
+                        "action {} with pane id {:?} is indistinguishable from without one",
+                        which, first
+                    );
+                }
             }
         }
 

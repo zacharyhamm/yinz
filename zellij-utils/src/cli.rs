@@ -1667,10 +1667,30 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
 mod tests {
     use super::*;
     use clap::Parser;
+    use hegel::generators;
+
+    const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    /// clap's derived builder for `CliArgs` needs ~2.5MB of stack in a debug build (the
+    /// derive expands the huge `CliAction` enum into one unoptimized function), more than
+    /// libtest's 2MiB per-test threads. Parse on a thread with room.
+    fn try_parse_cli<I, S>(args: I) -> Result<CliArgs, clap::Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let args: Vec<String> = args.into_iter().map(Into::into).collect();
+        std::thread::Builder::new()
+            .stack_size(CLI_PARSE_STACK_SIZE)
+            .spawn(move || CliArgs::try_parse_from(args))
+            .expect("failed to spawn cli parse thread")
+            .join()
+            .expect("cli parse thread panicked")
+    }
 
     #[test]
     fn global_plugin_flags_are_all_required_and_conflict_with_other_placement_modes() {
-        let valid = CliArgs::try_parse_from([
+        let valid = try_parse_cli([
             "zellij",
             "action",
             "launch-or-focus-plugin",
@@ -1721,11 +1741,11 @@ mod tests {
                 "hocus",
             ],
         ] {
-            assert!(CliArgs::try_parse_from(args).is_err());
+            assert!(try_parse_cli(args).is_err());
         }
 
         for mode in ["--floating", "--in-place", "--move-to-focused-tab"] {
-            assert!(CliArgs::try_parse_from([
+            assert!(try_parse_cli([
                 "zellij",
                 "action",
                 "launch-or-focus-plugin",
@@ -1743,8 +1763,7 @@ mod tests {
 
     #[test]
     fn non_global_plugin_invocation_is_unchanged() {
-        let cli = CliArgs::try_parse_from(["zellij", "action", "launch-or-focus-plugin", "hocus"])
-            .unwrap();
+        let cli = try_parse_cli(["zellij", "action", "launch-or-focus-plugin", "hocus"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Action(action))
@@ -1757,70 +1776,82 @@ mod tests {
         ));
     }
 
-    fn parse_subscribe(args: &[&str]) -> SubscribeCli {
-        let mut full_args = vec!["zellij"];
-        full_args.extend_from_slice(args);
-        let cli = CliArgs::try_parse_from(full_args).unwrap();
-        match cli.command {
-            Some(Command::Subscribe(s)) => s,
-            other => panic!("Expected Subscribe, got {:?}", other),
+    /// Every field of a `zellij subscribe` invocation survives the argv round-trip, with
+    /// the documented convention that a bare `--scrollback` (all scrollback) is `Some(0)`.
+    #[hegel::test]
+    fn subscribe_argv_roundtrips(tc: hegel::TestCase) {
+        let pane_ids: Vec<String> = tc
+            .draw(
+                generators::vecs(generators::sampled_from(vec![
+                    "terminal_1",
+                    "terminal_42",
+                    "plugin_2",
+                    "3",
+                ]))
+                .min_size(1)
+                .max_size(4),
+            )
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // None = flag absent, Some(None) = bare flag, Some(Some(n)) = flag with a value
+        let scrollback_arg = tc.draw(generators::optional(generators::optional(
+            generators::integers::<usize>().max_value(10_000),
+        )));
+        let json = tc.draw(generators::booleans());
+        let ansi = tc.draw(generators::booleans());
+
+        let mut args = vec!["zellij".to_string(), "subscribe".to_string()];
+        for id in &pane_ids {
+            args.push("--pane-id".into());
+            args.push(id.clone());
         }
-    }
+        match scrollback_arg {
+            None => {},
+            Some(None) => args.push("--scrollback".into()),
+            Some(Some(n)) => {
+                args.push("--scrollback".into());
+                args.push(n.to_string());
+            },
+        }
+        if json {
+            args.push("--format".into());
+            args.push("json".into());
+        }
+        if ansi {
+            args.push("--ansi".into());
+        }
 
-    #[test]
-    fn subscribe_scrollback_bare_flag() {
-        let s = parse_subscribe(&["subscribe", "--pane-id", "terminal_1", "--scrollback"]);
-        assert_eq!(s.scrollback, Some(0));
-    }
+        let parsed = try_parse_cli(args.clone())
+            .unwrap_or_else(|e| panic!("failed to parse {:?}: {}", args, e));
+        let s = match parsed.command {
+            Some(Command::Subscribe(s)) => s,
+            other => panic!("expected Subscribe from {:?}, got {:?}", args, other),
+        };
 
-    #[test]
-    fn subscribe_scrollback_with_value() {
-        let s = parse_subscribe(&[
-            "subscribe",
-            "--pane-id",
-            "terminal_1",
-            "--scrollback",
-            "100",
-        ]);
-        assert_eq!(s.scrollback, Some(100));
-    }
-
-    #[test]
-    fn subscribe_scrollback_absent() {
-        let s = parse_subscribe(&["subscribe", "--pane-id", "terminal_1"]);
-        assert_eq!(s.scrollback, None);
-    }
-
-    #[test]
-    fn subscribe_format_json() {
-        let s = parse_subscribe(&["subscribe", "--pane-id", "terminal_1", "--format", "json"]);
-        assert!(matches!(s.format, SubscribeFormat::Json));
-    }
-
-    #[test]
-    fn subscribe_format_default_raw() {
-        let s = parse_subscribe(&["subscribe", "--pane-id", "terminal_1"]);
-        assert!(matches!(s.format, SubscribeFormat::Raw));
-    }
-
-    #[test]
-    fn subscribe_multiple_pane_ids() {
-        let s = parse_subscribe(&[
-            "subscribe",
-            "--pane-id",
-            "terminal_1",
-            "--pane-id",
-            "plugin_2",
-        ]);
+        assert_eq!(s.pane_id, pane_ids, "args: {:?}", args);
         assert_eq!(
-            s.pane_id,
-            vec!["terminal_1".to_string(), "plugin_2".to_string()]
+            s.scrollback,
+            match scrollback_arg {
+                None => None,
+                Some(None) => Some(0),
+                Some(Some(n)) => Some(n),
+            },
+            "args: {:?}",
+            args
         );
+        assert_eq!(
+            matches!(s.format, SubscribeFormat::Json),
+            json,
+            "args: {:?}",
+            args
+        );
+        assert_eq!(s.ansi, ansi, "args: {:?}", args);
     }
 
     #[test]
     fn subscribe_requires_pane_id() {
-        let result = CliArgs::try_parse_from(["zellij", "subscribe"]);
+        let result = try_parse_cli(["zellij", "subscribe"]);
         assert!(result.is_err());
     }
 }

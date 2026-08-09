@@ -3,14 +3,38 @@ use std::net::{IpAddr, Ipv4Addr};
 use clap::{CommandFactory, Parser};
 use zellij_utils::cli::{CliArgs, Command};
 
+const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+/// clap's derived builder for `CliArgs` needs megabytes of stack in a debug build (the
+/// derive expands the huge `CliAction` enum into one unoptimized function), close to
+/// libtest's 2MiB per-test threads. Parse on a thread with room.
+fn try_parse_cli<I, S>(args: I) -> Result<CliArgs, clap::Error>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    std::thread::Builder::new()
+        .stack_size(CLI_PARSE_STACK_SIZE)
+        .spawn(move || CliArgs::try_parse_from(args))
+        .expect("failed to spawn cli parse thread")
+        .join()
+        .expect("cli parse thread panicked")
+}
+
 #[test]
 fn verify_cli() {
-    CliArgs::command().debug_assert();
+    std::thread::Builder::new()
+        .stack_size(CLI_PARSE_STACK_SIZE)
+        .spawn(|| CliArgs::command().debug_assert())
+        .expect("failed to spawn cli parse thread")
+        .join()
+        .expect("cli parse thread panicked");
 }
 
 #[test]
 fn web_cli_status_alone_works() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status"]);
+    let args = try_parse_cli(["zellij", "web", "--status"]);
     assert!(args.is_ok());
     if let Ok(CliArgs {
         command: Some(Command::Web(web)),
@@ -26,7 +50,7 @@ fn web_cli_status_alone_works() {
 
 #[test]
 fn web_cli_status_with_timeout_works() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status", "--timeout", "5"]);
+    let args = try_parse_cli(["zellij", "web", "--status", "--timeout", "5"]);
     assert!(args.is_ok());
     if let Ok(CliArgs {
         command: Some(Command::Web(web)),
@@ -43,7 +67,7 @@ fn web_cli_status_with_timeout_works() {
 #[test]
 fn web_cli_timeout_with_status_works() {
     // Test with --timeout before --status (order shouldn't matter)
-    let args = CliArgs::try_parse_from(["zellij", "web", "--timeout", "10", "--status"]);
+    let args = try_parse_cli(["zellij", "web", "--timeout", "10", "--status"]);
     assert!(args.is_ok());
     if let Ok(CliArgs {
         command: Some(Command::Web(web)),
@@ -59,25 +83,25 @@ fn web_cli_timeout_with_status_works() {
 
 #[test]
 fn web_cli_timeout_without_status_fails() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--timeout", "5"]);
+    let args = try_parse_cli(["zellij", "web", "--timeout", "5"]);
     assert!(args.is_err());
 }
 
 #[test]
 fn web_cli_status_with_start_fails() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status", "--start"]);
+    let args = try_parse_cli(["zellij", "web", "--status", "--start"]);
     assert!(args.is_err());
 }
 
 #[test]
 fn web_cli_status_with_stop_fails() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status", "--stop"]);
+    let args = try_parse_cli(["zellij", "web", "--status", "--stop"]);
     assert!(args.is_err());
 }
 
 #[test]
 fn web_cli_status_with_ip_works() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status", "--ip", "127.0.0.1"]);
+    let args = try_parse_cli(["zellij", "web", "--status", "--ip", "127.0.0.1"]);
     assert!(args.is_ok());
     if let Ok(CliArgs {
         command: Some(Command::Web(web)),
@@ -93,7 +117,7 @@ fn web_cli_status_with_ip_works() {
 
 #[test]
 fn web_cli_status_with_port_works() {
-    let args = CliArgs::try_parse_from(["zellij", "web", "--status", "--port", "9000"]);
+    let args = try_parse_cli(["zellij", "web", "--status", "--port", "9000"]);
     assert!(args.is_ok());
     if let Ok(CliArgs {
         command: Some(Command::Web(web)),
@@ -109,7 +133,7 @@ fn web_cli_status_with_port_works() {
 
 #[test]
 fn web_cli_status_with_ip_and_port_works() {
-    let args = CliArgs::try_parse_from([
+    let args = try_parse_cli([
         "zellij", "web", "--status", "--ip", "0.0.0.0", "--port", "9000",
     ]);
     assert!(args.is_ok());
@@ -128,7 +152,7 @@ fn web_cli_status_with_ip_and_port_works() {
 
 #[test]
 fn cli_recordings_list_parses() {
-    let args = CliArgs::try_parse_from(["zellij", "recordings", "list"]).unwrap();
+    let args = try_parse_cli(["zellij", "recordings", "list"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: false })) => {},
         _ => panic!("Expected Recordings::List"),
@@ -137,7 +161,7 @@ fn cli_recordings_list_parses() {
 
 #[test]
 fn cli_recordings_list_json_parses() {
-    let args = CliArgs::try_parse_from(["zellij", "recordings", "list", "--json"]).unwrap();
+    let args = try_parse_cli(["zellij", "recordings", "list", "--json"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: true })) => {},
         _ => panic!("Expected Recordings::List with json"),
@@ -146,7 +170,7 @@ fn cli_recordings_list_json_parses() {
 
 #[test]
 fn cli_recordings_export_parses() {
-    let args = CliArgs::try_parse_from(["zellij", "recordings", "export", "42"]).unwrap();
+    let args = try_parse_cli(["zellij", "recordings", "export", "42"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
             recording_id: 42,
@@ -158,26 +182,26 @@ fn cli_recordings_export_parses() {
 
 #[test]
 fn cli_recordings_unknown_subcommand_fails() {
-    let res = CliArgs::try_parse_from(["zellij", "recordings", "bogus"]);
+    let res = try_parse_cli(["zellij", "recordings", "bogus"]);
     assert!(res.is_err(), "unknown subcommand should fail");
 }
 
 #[test]
 fn cli_recordings_export_missing_id_fails() {
-    let res = CliArgs::try_parse_from(["zellij", "recordings", "export"]);
+    let res = try_parse_cli(["zellij", "recordings", "export"]);
     assert!(res.is_err(), "missing recording_id should fail");
 }
 
 #[test]
 fn cli_recordings_export_non_numeric_id_fails() {
-    let res = CliArgs::try_parse_from(["zellij", "recordings", "export", "abc"]);
+    let res = try_parse_cli(["zellij", "recordings", "export", "abc"]);
     assert!(res.is_err(), "non-numeric id should fail");
 }
 
 #[test]
 fn cli_recordings_export_with_output_parses() {
     use std::path::PathBuf;
-    let args = CliArgs::try_parse_from([
+    let args = try_parse_cli([
         "zellij",
         "recordings",
         "export",
@@ -197,7 +221,7 @@ fn cli_recordings_export_with_output_parses() {
 
 #[test]
 fn cli_recordings_search_parses() {
-    let args = CliArgs::try_parse_from(["zellij", "recordings", "search", "needle"]).unwrap();
+    let args = try_parse_cli(["zellij", "recordings", "search", "needle"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Search { query, limit, json })) => {
             assert_eq!(query, "needle");
@@ -210,9 +234,7 @@ fn cli_recordings_search_parses() {
 
 #[test]
 fn cli_recordings_search_limit_parses() {
-    let args =
-        CliArgs::try_parse_from(["zellij", "recordings", "search", "needle", "--limit", "5"])
-            .unwrap();
+    let args = try_parse_cli(["zellij", "recordings", "search", "needle", "--limit", "5"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Search { limit: 5, .. })) => {},
         _ => panic!("Expected Recordings::Search with limit 5"),
@@ -221,7 +243,7 @@ fn cli_recordings_search_limit_parses() {
 
 #[test]
 fn cli_recordings_search_missing_query_fails() {
-    let res = CliArgs::try_parse_from(["zellij", "recordings", "search"]);
+    let res = try_parse_cli(["zellij", "recordings", "search"]);
     assert!(res.is_err(), "missing query should fail");
 }
 

@@ -4118,9 +4118,6 @@ impl Perform for Grid {
 
             // define hyperlink
             b"8" => {
-                if params.len() < 3 {
-                    return;
-                }
                 self.cursor.pending_styles.update(|styles| {
                     styles.link_anchor = self.link_handler.borrow_mut().dispatch_osc8(params)
                 })
