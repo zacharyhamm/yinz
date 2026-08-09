@@ -2643,52 +2643,10 @@ mod test {
         );
     }
 
-    #[test]
-    fn mouse_button1_release() {
-        let mut p = InputParser::new();
-        let res = p.parse_as_vec(b"\x1b[<0;42;12m", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 42,
-                y: 12,
-                mouse_buttons: MouseButtons::NONE,
-                modifiers: Modifiers::NONE,
-            })]
-        );
-    }
-
-    #[test]
-    fn mouse_button3_with_shift() {
-        let mut p = InputParser::new();
-        // button 2 (right) = 2, SHIFT adds 4 to p0 -> 6
-        let res = p.parse_as_vec(b"\x1b[<6;10;20M", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 10,
-                y: 20,
-                mouse_buttons: MouseButtons::RIGHT,
-                modifiers: Modifiers::SHIFT,
-            })]
-        );
-    }
-
-    #[test]
-    fn mouse_drag() {
-        let mut p = InputParser::new();
-        // button1 drag = 32
-        let res = p.parse_as_vec(b"\x1b[<32;5;5M", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 5,
-                y: 5,
-                mouse_buttons: MouseButtons::LEFT,
-                modifiers: Modifiers::NONE,
-            })]
-        );
-    }
+    // mouse_button1_release, mouse_button3_with_shift and mouse_drag were
+    // single well-formed reports, covered by
+    // `props::every_sgr_mouse_report_parses_to_its_button_and_modifiers`
+    // (table rows `(0, b'm')`, `(2, b'M')` + SHIFT, `(32, b'M')`).
 
     #[test]
     fn mouse_vertical_scroll_up() {
@@ -2706,37 +2664,9 @@ mod test {
         );
     }
 
-    #[test]
-    fn mouse_vertical_scroll_down() {
-        let mut p = InputParser::new();
-        // button5 press = 65
-        let res = p.parse_as_vec(b"\x1b[<65;1;1M", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 1,
-                y: 1,
-                mouse_buttons: MouseButtons::VERT_WHEEL,
-                modifiers: Modifiers::NONE,
-            })]
-        );
-    }
-
-    #[test]
-    fn mouse_motion_no_buttons() {
-        let mut p = InputParser::new();
-        // motion with no buttons = 35
-        let res = p.parse_as_vec(b"\x1b[<35;10;10M", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 10,
-                y: 10,
-                mouse_buttons: MouseButtons::NONE,
-                modifiers: Modifiers::NONE,
-            })]
-        );
-    }
+    // mouse_vertical_scroll_down and mouse_motion_no_buttons were single
+    // well-formed reports, covered by the `(65, b'M')` and `(35, b'M')` rows
+    // of the same property.
 
     #[test]
     fn mouse_with_ctrl_alt() {
@@ -2754,20 +2684,8 @@ mod test {
         );
     }
 
-    #[test]
-    fn mouse_large_coordinates() {
-        let mut p = InputParser::new();
-        let res = p.parse_as_vec(b"\x1b[<0;999;999M", true);
-        assert_eq!(
-            res,
-            vec![InputEvent::Mouse(MouseEvent {
-                x: 999,
-                y: 999,
-                mouse_buttons: MouseButtons::LEFT,
-                modifiers: Modifiers::NONE,
-            })]
-        );
-    }
+    // mouse_large_coordinates was a single well-formed report; the property
+    // draws x and y across the whole 1..=9999 range every run.
 
     #[test]
     fn mouse_followed_by_key() {
