@@ -1652,17 +1652,33 @@ impl InputParser {
                 self.state = InputState::Pasting(0);
             },
             (InputState::EscapeMaybeAlt, InputEvent::Key(KeyEvent { key, modifiers })) => {
-                // Treat this as ALT-key
                 let key = *key;
                 let modifiers = *modifiers;
                 self.state = InputState::Normal;
-                callback(
-                    InputEvent::Key(KeyEvent {
-                        key,
-                        modifiers: modifiers | Modifiers::ALT,
-                    }),
-                    self.buf.len(),
-                );
+                if modifiers.contains(Modifiers::ALT) {
+                    // This key already consumed an ESC of its own (`\x1b[` ->
+                    // ALT-`[`), so the parked ESC is a separate keystroke
+                    // rather than this key's ALT prefix. Flush it, same as
+                    // `flush_parked_esc_if_held` does ahead of a structured
+                    // sequence, and pass the key through untouched.
+                    callback(
+                        InputEvent::Key(KeyEvent {
+                            key: KeyCode::Escape,
+                            modifiers: Modifiers::NONE,
+                        }),
+                        self.buf.len(),
+                    );
+                    callback(InputEvent::Key(KeyEvent { key, modifiers }), self.buf.len());
+                } else {
+                    // Treat this as ALT-key
+                    callback(
+                        InputEvent::Key(KeyEvent {
+                            key,
+                            modifiers: modifiers | Modifiers::ALT,
+                        }),
+                        self.buf.len(),
+                    );
+                }
             },
             (InputState::EscapeMaybeAlt, _) => {
                 // The prior ESC was not part of an ALT sequence, so emit
@@ -3148,5 +3164,213 @@ mod test {
             panic!("wrong variant");
         };
         assert_eq!(&raw[..], bytes, "raw must be byte-identical to input");
+    }
+
+    // =====================================================================
+    // Properties
+    // =====================================================================
+
+    mod props {
+        use super::*;
+        use hegel::generators;
+
+        /// Every well-formed SGR mouse report, as `(p0, terminator, expected buttons)`.
+        ///
+        /// The expectations are spelled out here rather than derived from
+        /// `decode_mouse_button` and `From<MouseButton> for MouseButtons`, so the
+        /// property cannot agree with the parser by repeating its mistake. Drag
+        /// codes (32..=34) exist only in the press form; `35`/`3` are the
+        /// "no button" reports and appear in both.
+        fn sgr_button_table() -> Vec<(i64, u8, MouseButtons)> {
+            vec![
+                (0, b'M', MouseButtons::LEFT),
+                (0, b'm', MouseButtons::NONE),
+                (1, b'M', MouseButtons::MIDDLE),
+                (1, b'm', MouseButtons::NONE),
+                (2, b'M', MouseButtons::RIGHT),
+                (2, b'm', MouseButtons::NONE),
+                (3, b'M', MouseButtons::NONE),
+                (3, b'm', MouseButtons::NONE),
+                (32, b'M', MouseButtons::LEFT),
+                (33, b'M', MouseButtons::MIDDLE),
+                (34, b'M', MouseButtons::RIGHT),
+                (35, b'M', MouseButtons::NONE),
+                (35, b'm', MouseButtons::NONE),
+                (
+                    64,
+                    b'M',
+                    MouseButtons::VERT_WHEEL | MouseButtons::WHEEL_POSITIVE,
+                ),
+                (64, b'm', MouseButtons::NONE),
+                (65, b'M', MouseButtons::VERT_WHEEL),
+                (65, b'm', MouseButtons::NONE),
+                (
+                    66,
+                    b'M',
+                    MouseButtons::HORZ_WHEEL | MouseButtons::WHEEL_POSITIVE,
+                ),
+                (66, b'm', MouseButtons::NONE),
+                (67, b'M', MouseButtons::HORZ_WHEEL),
+                (67, b'm', MouseButtons::NONE),
+            ]
+        }
+
+        /// A complete SGR mouse report plus the event it must parse to.
+        ///
+        /// Modifier bits (4/8/16) are disjoint from the bits the button decode
+        /// looks at (`p0 & 0b110_0011`), so they compose freely with any row of
+        /// the table. Coordinates stay in 1..=9999 — the parser reads them as
+        /// `i64` and narrows to `u16`, and no terminal reports beyond that.
+        #[hegel::composite]
+        fn sgr_mouse_report(tc: &hegel::TestCase) -> (String, MouseEvent) {
+            let (base, control, mouse_buttons) =
+                tc.draw(generators::sampled_from(sgr_button_table()));
+
+            let mut p0 = base;
+            let mut modifiers = Modifiers::NONE;
+            if tc.draw(generators::booleans()) {
+                p0 |= 4;
+                modifiers |= Modifiers::SHIFT;
+            }
+            if tc.draw(generators::booleans()) {
+                p0 |= 8;
+                modifiers |= Modifiers::ALT;
+            }
+            if tc.draw(generators::booleans()) {
+                p0 |= 16;
+                modifiers |= Modifiers::CTRL;
+            }
+
+            let x = tc.draw(generators::integers::<u16>().max_value(9998)) + 1;
+            let y = tc.draw(generators::integers::<u16>().max_value(9998)) + 1;
+
+            let report = format!("\x1b[<{};{};{}{}", p0, x, y, control as char);
+            (
+                report,
+                MouseEvent {
+                    x,
+                    y,
+                    mouse_buttons,
+                    modifiers,
+                },
+            )
+        }
+
+        #[hegel::test]
+        fn every_sgr_mouse_report_parses_to_its_button_and_modifiers(tc: hegel::TestCase) {
+            let (report, expected) = tc.draw(sgr_mouse_report());
+            let mut p = InputParser::new();
+            assert_eq!(
+                p.parse_as_vec(report.as_bytes(), NO_MORE),
+                vec![InputEvent::Mouse(expected.clone())],
+                "{:?} did not parse to {:?}",
+                report,
+                expected
+            );
+        }
+
+        /// A mouse report is a single indivisible event: no matter where the
+        /// read boundary falls inside it, the parser must hold the fragment and
+        /// emit exactly the same event once the rest arrives.
+        #[hegel::test]
+        fn a_mouse_report_split_anywhere_parses_the_same(tc: hegel::TestCase) {
+            let (report, expected) = tc.draw(sgr_mouse_report());
+            let bytes = report.as_bytes();
+            let at = tc.draw(generators::integers::<usize>().max_value(bytes.len()));
+
+            let mut p = InputParser::new();
+            let mut events = p.parse_as_vec(&bytes[..at], MAYBE_MORE);
+            events.extend(p.parse_as_vec(&bytes[at..], NO_MORE));
+
+            assert_eq!(
+                events,
+                vec![InputEvent::Mouse(expected)],
+                "{:?} split at {} parsed differently",
+                report,
+                at
+            );
+        }
+
+        /// Fragments the parser has a dedicated path for, used to build inputs
+        /// that exercise real branches rather than mostly-rejected noise.
+        fn seq_fragments() -> Vec<&'static [u8]> {
+            vec![
+                b"\x1b[<0;42;12M",
+                b"\x1b[<35;1;1m",
+                b"\x1b[<64;10;20M",
+                b"\x1b]99;body\x07",
+                b"\x1b]99;body\x1b\\",
+                b"\x1b[4;600;800t",
+                b"\x1b[?2026;1$y",
+                b"\x1b[?62;1;6c",
+                b"\x1b[?997;1n",
+                b"\x1b[A",
+                b"\x1b[200~pasted\x1b[201~",
+                b"\x1b",
+                b"\x1b[",
+                b"\x1b[<0;42",
+                b"hello",
+                b"\x03",
+            ]
+        }
+
+        /// A stream of parser-relevant fragments interleaved with raw bytes.
+        #[hegel::composite]
+        fn input_bytes(tc: &hegel::TestCase) -> Vec<u8> {
+            let pieces = tc.draw(generators::integers::<usize>().max_value(16));
+            let mut out = Vec::new();
+            for _ in 0..pieces {
+                if tc.draw(generators::booleans()) {
+                    out.extend_from_slice(tc.draw(generators::sampled_from(seq_fragments())));
+                }
+                out.extend(tc.draw(generators::binary().max_size(8)));
+            }
+            out
+        }
+
+        fn drive(chunks: &[&[u8]]) -> Vec<InputEvent> {
+            let mut p = InputParser::new();
+            let mut events = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                let last = i + 1 == chunks.len();
+                events.extend(p.parse_as_vec(chunk, if last { NO_MORE } else { MAYBE_MORE }));
+            }
+            events
+        }
+
+        #[hegel::test(test_cases = 500)]
+        fn chunk_boundaries_do_not_change_what_is_parsed(tc: hegel::TestCase) {
+            let bytes = tc.draw(input_bytes());
+            let mut splits = tc.draw(
+                generators::vecs(generators::integers::<usize>().max_value(bytes.len()))
+                    .max_size(8),
+            );
+            splits.sort_unstable();
+            splits.dedup();
+
+            let mut chunks: Vec<&[u8]> = Vec::new();
+            let mut prev = 0;
+            for split in &splits {
+                chunks.push(&bytes[prev..*split]);
+                prev = *split;
+            }
+            chunks.push(&bytes[prev..]);
+
+            assert_eq!(
+                drive(&[&bytes[..]]),
+                drive(&chunks),
+                "parsing {:?} whole differs from parsing it split at {:?}",
+                bytes,
+                splits
+            );
+        }
+
+        #[hegel::test]
+        fn arbitrary_bytes_never_panic_the_parser(tc: hegel::TestCase) {
+            let bytes = tc.draw(generators::binary());
+            let mut p = InputParser::new();
+            let _ = p.parse_as_vec(&bytes, MAYBE_MORE);
+            let _ = p.parse_as_vec(&[], NO_MORE);
+        }
     }
 }
