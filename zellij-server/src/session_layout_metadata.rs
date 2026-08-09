@@ -1177,4 +1177,166 @@ mod tests {
             ))
         );
     }
+
+    mod props {
+        use super::*;
+        use hegel::generators;
+
+        /// File paths a pane could plausibly have been launched on. None start
+        /// with `-`, which `detect_editor_panes` treats as a flag rather than a
+        /// file.
+        fn file_paths() -> Vec<&'static str> {
+            vec![
+                "file.txt",
+                "src/main.rs",
+                "/home/user/file.txt",
+                "/tmp/a.log",
+                "a-b.txt",
+                "x",
+                "Cargo.toml",
+                "./relative.rs",
+            ]
+        }
+
+        /// Paths that themselves contain a `:`, so that appending `:N` for
+        /// helix produces more than one colon. The parser splits on the *last*
+        /// one; these are what make that distinguishable from the first.
+        fn file_paths_with_colons() -> Vec<&'static str> {
+            vec!["weird:name.txt", "a:b:c.rs", "/tmp/ns:1/file.txt", "x:9"]
+        }
+
+        /// A command invocation `detect_editor_panes` must turn into an
+        /// `EditFile` run, as `(configured editor, pane command, args, expected
+        /// path, expected line)`.
+        ///
+        /// The three groups mirror the three ways the function decides a pane
+        /// is an editor: the vi/vim/nvim lineage and the helix pair each
+        /// cross-match within themselves, everything else has to match its own
+        /// binary name exactly. Which argument syntax is legal depends on the
+        /// *pane's* binary, not the configured one - `vi` is outside
+        /// `is_vim_family`, so it never gets the `+N` form.
+        #[hegel::composite]
+        fn editor_invocation(
+            tc: &hegel::TestCase,
+        ) -> (String, String, Vec<String>, PathBuf, Option<usize>) {
+            let line = tc.draw(generators::integers::<usize>().max_value(999_999));
+            let group = tc.draw(generators::integers::<u8>().max_value(2));
+            let (configured, command) = match group {
+                0 => {
+                    let lineage = vec!["vi", "vim", "nvim"];
+                    (
+                        tc.draw(generators::sampled_from(lineage.clone())),
+                        tc.draw(generators::sampled_from(lineage)),
+                    )
+                },
+                1 => {
+                    let helix = vec!["hx", "helix"];
+                    (
+                        tc.draw(generators::sampled_from(helix.clone())),
+                        tc.draw(generators::sampled_from(helix)),
+                    )
+                },
+                _ => {
+                    let solo = tc.draw(generators::sampled_from(vec!["emacs", "nano", "kak"]));
+                    (solo, solo)
+                },
+            };
+
+            let is_vim_family = matches!(command, "vim" | "nvim" | "emacs" | "nano" | "kak");
+            let is_helix = matches!(command, "hx" | "helix");
+            let with_line = tc.draw(generators::booleans());
+
+            // Only the helix `file:N` form can carry a colon in the path: for
+            // everything else the path is passed through untouched, so a colon
+            // would add nothing.
+            let file = if with_line && is_helix && tc.draw(generators::booleans()) {
+                tc.draw(generators::sampled_from(file_paths_with_colons()))
+            } else {
+                tc.draw(generators::sampled_from(file_paths()))
+            };
+
+            let (args, expected_line) = if with_line && is_vim_family {
+                (vec![format!("+{}", line), file.to_string()], Some(line))
+            } else if with_line && is_helix {
+                (vec![format!("{}:{}", file, line)], Some(line))
+            } else {
+                (vec![file.to_string()], None)
+            };
+
+            (
+                configured.to_string(),
+                command.to_string(),
+                args,
+                PathBuf::from(file),
+                expected_line,
+            )
+        }
+
+        #[hegel::test]
+        fn any_known_editor_invocation_becomes_an_edit_file_run(tc: hegel::TestCase) {
+            let (configured, command, args, path, line) = tc.draw(editor_invocation());
+            let pane = make_command_pane(1, &command, args.iter().map(|s| s.as_str()).collect());
+            let mut meta = session_with_editor(&configured, vec![pane]);
+            meta.detect_editor_panes();
+            assert_eq!(
+                get_first_tiled_run(&meta),
+                Some(&Run::EditFile(path.clone(), line, None)),
+                "editor {:?} running {:?} {:?} did not become EditFile({:?}, {:?})",
+                configured,
+                command,
+                args,
+                path,
+                line
+            );
+        }
+
+        /// `detect_editor_panes` mutates the metadata in place, so running it
+        /// again on its own output must be a no-op - the second pass sees an
+        /// `EditFile` run rather than a `Command` and has to leave it alone.
+        #[hegel::test]
+        fn detecting_editor_panes_twice_changes_nothing(tc: hegel::TestCase) {
+            let (configured, command, args, _, _) = tc.draw(editor_invocation());
+            let pane = make_command_pane(1, &command, args.iter().map(|s| s.as_str()).collect());
+            let mut meta = session_with_editor(&configured, vec![pane]);
+            meta.detect_editor_panes();
+            let after_once = get_first_tiled_run(&meta).cloned();
+            meta.detect_editor_panes();
+            assert_eq!(
+                get_first_tiled_run(&meta),
+                after_once.as_ref(),
+                "second detect_editor_panes changed {:?} {:?}",
+                command,
+                args
+            );
+        }
+
+        /// Commands that are not the configured editor keep their `Run::Command`
+        /// verbatim. Cross-matching is deliberately narrow, so e.g. an `emacs`
+        /// pane under a `vim` config must not be rewritten.
+        #[hegel::test]
+        fn a_non_editor_command_is_never_rewritten(tc: hegel::TestCase) {
+            let configured = tc.draw(generators::sampled_from(vec![
+                "vim", "nvim", "vi", "hx", "helix", "emacs",
+            ]));
+            let command = tc.draw(generators::sampled_from(vec![
+                "grep", "cat", "tail", "ls", "cargo", "git", "bash",
+            ]));
+            let file = tc.draw(generators::sampled_from(file_paths()));
+
+            let pane = make_command_pane(1, command, vec![file]);
+            let mut meta = session_with_editor(configured, vec![pane]);
+            meta.detect_editor_panes();
+
+            match get_first_tiled_run(&meta) {
+                Some(Run::Command(run_command)) => {
+                    assert_eq!(run_command.command, PathBuf::from(command));
+                    assert_eq!(run_command.args, vec![file.to_string()]);
+                },
+                other => panic!(
+                    "{:?} under editor {:?} became {:?}",
+                    command, configured, other
+                ),
+            }
+        }
+    }
 }
