@@ -1007,16 +1007,9 @@ mod tests {
         assert_eq!(manifest.global_panes.len(), 1);
     }
 
-    #[test]
-    fn detects_editor_pane_no_line_number() {
-        let pane = make_command_pane(1, "nvim", vec!["file.txt"]);
-        let mut meta = session_with_editor("nvim", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(PathBuf::from("file.txt"), None, None))
-        );
-    }
+    // detects_editor_pane_no_line_number: covered by the group-0 draw with
+    // with_line = false. The two line-number cases below are kept as the
+    // documentation of the two argument syntaxes.
 
     #[test]
     fn detects_editor_pane_with_line_number_vim_family() {
@@ -1040,16 +1033,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detects_editor_pane_helix_no_line_number() {
-        let pane = make_command_pane(1, "helix", vec!["file.txt"]);
-        let mut meta = session_with_editor("helix", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(PathBuf::from("file.txt"), None, None))
-        );
-    }
+    // detects_editor_pane_helix_no_line_number: covered by the group-1 draw
+    // with with_line = false.
 
     #[test]
     fn skips_non_editor_command() {
@@ -1116,29 +1101,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detects_vi_when_editor_is_vim() {
-        // configured as vim, pane running vi (common alias)
-        let pane = make_command_pane(1, "vi", vec!["file.txt"]);
-        let mut meta = session_with_editor("vim", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(PathBuf::from("file.txt"), None, None))
-        );
-    }
-
-    #[test]
-    fn detects_nvim_when_editor_is_vi() {
-        // configured as vi, pane running nvim
-        let pane = make_command_pane(1, "nvim", vec!["file.txt"]);
-        let mut meta = session_with_editor("vi", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(PathBuf::from("file.txt"), None, None))
-        );
-    }
+    // detects_vi_when_editor_is_vim and detects_nvim_when_editor_is_vi: the
+    // group-0 draw picks the configured editor and the pane's binary
+    // independently from {vi, vim, nvim}, so it produces both pairings. The
+    // negative case below stays - the generator never crosses the groups.
 
     #[test]
     fn does_not_cross_match_vim_with_emacs() {
@@ -1152,31 +1118,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn detects_hx_when_editor_is_helix() {
-        let pane = make_command_pane(1, "hx", vec!["file.txt"]);
-        let mut meta = session_with_editor("helix", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(PathBuf::from("file.txt"), None, None))
-        );
-    }
-
-    #[test]
-    fn absolute_file_path_preserved() {
-        let pane = make_command_pane(1, "nvim", vec!["/home/user/file.txt"]);
-        let mut meta = session_with_editor("nvim", vec![pane]);
-        meta.detect_editor_panes();
-        assert_eq!(
-            get_first_tiled_run(&meta),
-            Some(&Run::EditFile(
-                PathBuf::from("/home/user/file.txt"),
-                None,
-                None
-            ))
-        );
-    }
+    // detects_hx_when_editor_is_helix: the group-1 draw pairs the configured
+    // editor and the pane binary independently across {hx, helix}.
+    //
+    // absolute_file_path_preserved: "/home/user/file.txt" is one of the
+    // generator's file_paths, drawn on every group.
 
     mod props {
         use super::*;
