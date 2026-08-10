@@ -260,15 +260,13 @@ impl Pane for PluginPane {
         if let Some(coordinates) =
             client_id.and_then(|client_id| self.cursor_visibility.get(&client_id))
         {
-            coordinates
-                .map(|(x, y)| (x + left, y + top))
-                .and_then(|(x, y)| {
-                    if x >= own_content_columns || y >= own_content_rows {
-                        None
-                    } else {
-                        Some((x, y, true)) // plugins always show cursor when position is set
-                    }
-                })
+            coordinates.and_then(|(x, y)| {
+                if x >= own_content_columns || y >= own_content_rows {
+                    None
+                } else {
+                    Some((x + left, y + top, true)) // plugins always show cursor when position is set
+                }
+            })
         } else {
             None
         }
@@ -1002,5 +1000,74 @@ impl PluginPane {
         }
 
         messages
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zellij_utils::channels;
+    use zellij_utils::pane_size::Dimension;
+
+    fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
+        let (plugin_tx, _plugin_rx) = channels::unbounded();
+        let mut geom = PaneGeom::default();
+        geom.rows = Dimension::fixed(rows);
+        geom.cols = Dimension::fixed(cols);
+        let mut pane = PluginPane::new(
+            1,
+            geom,
+            SenderWithContext::new(plugin_tx),
+            "test".to_owned(),
+            "test".to_owned(),
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Rc::new(RefCell::new(Palette::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            Rc::new(RefCell::new(None)),
+            vec![],
+            Style::default(),
+            None,
+            false,
+            false,
+            false,
+        );
+        pane.set_content_offset(content_offset);
+        pane
+    }
+
+    // regression test: a content offset (border/title reservation, as global panes and
+    // framed panes both apply) used to make `cursor_coordinates` reject any cursor on the
+    // last content row/column, because it bounds-checked the offset-shifted coordinates
+    // against the un-shifted content extents.
+    #[test]
+    fn cursor_coordinates_are_shown_on_the_last_content_row_with_a_top_offset() {
+        let mut pane = test_plugin_pane(10, 10, Offset { top: 1, bottom: 0, left: 0, right: 0 });
+        let last_content_row = pane.get_content_rows() - 1;
+        pane.show_cursor(1, Some((0, last_content_row)));
+        assert_eq!(
+            pane.cursor_coordinates(Some(1)),
+            Some((0, last_content_row + 1, true))
+        );
+    }
+
+    #[test]
+    fn cursor_coordinates_are_shown_on_the_last_content_column_with_a_left_offset() {
+        let mut pane = test_plugin_pane(10, 10, Offset { top: 0, bottom: 0, left: 1, right: 0 });
+        let last_content_column = pane.get_content_columns() - 1;
+        pane.show_cursor(1, Some((last_content_column, 0)));
+        assert_eq!(
+            pane.cursor_coordinates(Some(1)),
+            Some((last_content_column + 1, 0, true))
+        );
+    }
+
+    #[test]
+    fn cursor_coordinates_are_none_past_the_content_area() {
+        let mut pane = test_plugin_pane(10, 10, Offset { top: 1, bottom: 0, left: 0, right: 0 });
+        let content_rows = pane.get_content_rows();
+        pane.show_cursor(1, Some((0, content_rows)));
+        assert_eq!(pane.cursor_coordinates(Some(1)), None);
     }
 }
