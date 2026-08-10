@@ -129,9 +129,9 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
     if let Some(ref data_dir) = flags.data_dir {
         let data_dir = sh.current_dir().join(data_dir);
         let features = if flags.no_web {
-            "disable_automatic_asset_installation"
+            ""
         } else {
-            "disable_automatic_asset_installation web_server_capability"
+            "web_server_capability"
         };
 
         build::ensure_plugin_assets(sh).with_context(|| err_context(&flags))?;

@@ -199,17 +199,13 @@ fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
 
     let _pd = sh.push_dir(crate::project_root());
 
-    // set --no-default-features so the test binary gets built with the plugins from assets/plugins that just got built
     crate::cargo()
         .and_then(|cargo| {
             // e2e tests
-            cmd!(
-                sh,
-                "{cargo} test --no-default-features -- --ignored --nocapture --test-threads 1"
-            )
-            .args(args.clone())
-            .run()
-            .map_err(anyhow::Error::new)?;
+            cmd!(sh, "{cargo} test -- --ignored --nocapture --test-threads 1")
+                .args(args.clone())
+                .run()
+                .map_err(anyhow::Error::new)?;
 
             // plugin system tests are run here because they're medium-slow
             let _pd = sh.push_dir(Path::new("zellij-server"));

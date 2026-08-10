@@ -57,7 +57,25 @@ const AGENT_SECONDS: f64 = 5.0;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 3] = ["history", "models", "stop_jobs"];
+const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
+
+/// Full keybinding reference for `/keys`. The chat view has no persistent
+/// help line, so this is the one place all of these are written down.
+const KEYS_HELP: &str = "\
+Ctrl+`        toggle hocus
+Ctrl+l        new chat
+Ctrl+r        agent picker
+Up / Down     previous / next message in history
+Tab           complete a /command or @agent
+Alt+Enter, Shift+Enter   insert a newline
+PageUp / PageDown        scroll the transcript
+Esc           cancel a stream or tool, or hide hocus
+y / n         confirm or decline a pending tool call
+
+In a picker (history, models, agents):
+Up / Down     choose
+Enter         select
+Esc           back";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
@@ -1653,6 +1671,14 @@ impl State {
         }
         if line == "/stop_jobs" {
             return self.stop_jobs();
+        }
+        if line == "/keys" {
+            self.messages.push(Message::notice(KEYS_HELP));
+            self.log(
+                "notice",
+                serde_json::json!({"content": log::truncate(KEYS_HELP)}),
+            );
+            return true;
         }
         // A reply arriving is no reason to wait, but another *tool* is: the
         // queue runs one call at a time, and its head owns the deferred result
@@ -4938,6 +4964,16 @@ mod tests {
 
         state.run_local(&schedule_call(r#"{"seconds":60}"#));
         assert_eq!(state.jobs.len(), 1, "no prompt, no job");
+    }
+
+    #[test]
+    fn slash_keys_prints_the_keybinding_reference() {
+        let mut state = idle_state();
+        assert!(state.run_manual("/keys"));
+        let notice = state.messages.last().unwrap();
+        assert_eq!(notice.role, Role::Notice);
+        assert!(notice.content.contains("Ctrl+l"));
+        assert!(notice.content.contains("new chat"));
     }
 
     #[test]

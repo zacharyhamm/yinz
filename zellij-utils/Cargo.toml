@@ -75,12 +75,6 @@ expect-test = "1.4.1"
 hegeltest = "0.29.3"
 
 [features]
-# If this feature is NOT set (default):
-#   - builtin plugins (status-bar, tab-bar, ...) are loaded directly from the application binary
-# If this feature is set:
-#   - builtin plugins MUST be available from whatever is configured as `PLUGIN_DIR`
-disable_automatic_asset_installation = []
 unstable = []
-plugins_from_target = []
 web_server_capability = []
 vendored_curl = ["isahc/static-curl", "dep:openssl-sys", "dep:curl-sys"]

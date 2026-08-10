@@ -1,6 +1,4 @@
 #![allow(clippy::needless_borrow)]
-#[cfg(not(target_family = "wasm"))]
-use crate::consts::ASSET_MAP;
 use crate::input::theme::Themes;
 #[allow(unused_imports)]
 use crate::{
@@ -19,8 +17,6 @@ use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 use log::info;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_family = "wasm"))]
-use std::path::Path;
 use std::{convert::TryFrom, fmt::Write as FmtWrite, fs, io::Write, path::PathBuf, process};
 
 const CONFIG_NAME: &str = "config.kdl";
@@ -208,41 +204,6 @@ pub fn dump_specified_swap_layout(swap_layout: &str) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub fn dump_builtin_plugins(path: &Path) -> Result<()> {
-    for (asset_path, bytes) in ASSET_MAP.iter() {
-        let plugin_path = path.join(asset_path);
-        plugin_path
-            .parent()
-            .with_context(|| {
-                format!(
-                    "failed to acquire parent path of '{}'",
-                    plugin_path.display()
-                )
-            })
-            .and_then(|parent_path| {
-                std::fs::create_dir_all(parent_path).context("failed to create parent path")
-            })
-            .with_context(|| {
-                format!(
-                    "failed to create folder '{}' to dump plugin '{}' to",
-                    path.display(),
-                    plugin_path.display()
-                )
-            })?;
-
-        std::fs::write(plugin_path, bytes)
-            .with_context(|| format!("failed to dump builtin plugin '{}'", asset_path.display()))?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_family = "wasm")]
-pub fn dump_builtin_plugins(_path: &PathBuf) -> Result<()> {
-    Ok(())
-}
-
 #[derive(Debug, Default, Clone, Args, Serialize, Deserialize)]
 pub struct Setup {
     /// Dump the default configuration file to stdout
@@ -266,16 +227,6 @@ pub struct Setup {
     /// Dump the specified swap layout file to stdout
     #[clap(long, value_parser)]
     pub dump_swap_layout: Option<String>,
-
-    /// Dump the builtin plugins to DIR or "DATA DIR" if unspecified
-    #[clap(
-        long,
-        value_name = "DIR",
-        value_parser,
-        exclusive = true,
-        num_args(0..=1)
-    )]
-    pub dump_plugins: Option<Option<PathBuf>>,
 
     /// Generates completion for the specified shell
     #[clap(long, value_name = "SHELL", value_parser)]
@@ -405,27 +356,6 @@ impl Setup {
             std::process::exit(0);
         }
 
-        if let Some(maybe_path) = &self.dump_plugins {
-            if cfg!(feature = "disable_automatic_asset_installation") {
-                return Err(anyhow!(
-                    "This zellij was built without bundled plugins (feature \
-                     'disable_automatic_asset_installation'). Builtin plugins are provided by the \
-                     distributor of this build and must be placed in the plugin directory, \
-                     visible in the output of `zellij setup --check`."
-                ))
-                .context("failed to dump plugins");
-            }
-            let data_dir = &opts.data_dir.clone().unwrap_or_else(get_default_data_dir);
-            let dir = match maybe_path {
-                Some(path) => path,
-                None => data_dir,
-            };
-
-            println!("Dumping plugins to '{}'", dir.display());
-            dump_builtin_plugins(&dir)?;
-            std::process::exit(0);
-        }
-
         Ok(())
     }
 
@@ -496,30 +426,24 @@ impl Setup {
         writeln!(&mut message, "[CACHE DIR]: {}", ZELLIJ_CACHE_DIR.display()).unwrap();
         writeln!(&mut message, "[DATA DIR]: \"{}\"", data_dir.display()).unwrap();
         writeln!(&mut message, "[PLUGIN DIR]: \"{}\"", plugin_dir.display()).unwrap();
-        if !cfg!(feature = "disable_automatic_asset_installation") {
+        message.push_str(" Builtin plugins are loaded from disk, in this order:\n");
+        if let Some(builtin_plugins_dir) = &config_options.builtin_plugins_dir {
             writeln!(
                 &mut message,
-                " Builtin, default plugins will not be loaded from disk."
-            )
-            .unwrap();
-            writeln!(
-                &mut message,
-                " Create a custom layout if you require this behavior."
+                "  \"{}\" (from the 'builtin_plugins_dir' option)",
+                builtin_plugins_dir.display()
             )
             .unwrap();
         } else {
-            writeln!(
-                &mut message,
-                " This zellij was built without bundled plugins."
-            )
-            .unwrap();
-            writeln!(
-                &mut message,
-                " Builtin plugins are loaded from the 'PLUGIN DIR' above, or from '{}'.",
-                system_data_dir.join("plugins").display()
-            )
-            .unwrap();
+            message.push_str("  the 'builtin_plugins_dir' option (not set)\n");
         }
+        writeln!(&mut message, "  \"{}\"", plugin_dir.display()).unwrap();
+        writeln!(
+            &mut message,
+            "  \"{}\"",
+            system_data_dir.join("plugins").display()
+        )
+        .unwrap();
         if let Some(layout_dir) = layout_dir {
             writeln!(&mut message, "[LAYOUT DIR]: \"{}\"", layout_dir.display()).unwrap();
         } else {

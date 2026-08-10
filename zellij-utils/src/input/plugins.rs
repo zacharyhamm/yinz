@@ -9,7 +9,7 @@ use url::Url;
 
 use super::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
 #[cfg(not(target_family = "wasm"))]
-use crate::consts::ASSET_MAP;
+use crate::consts::BUILTIN_PLUGIN_DEV_DIRS;
 use crate::consts::BUILTIN_PLUGIN_NAMES;
 pub use crate::data::PluginTag;
 use crate::errors::prelude::*;
@@ -106,15 +106,17 @@ impl PluginConfig {
     }
     /// Resolve wasm plugin bytes for the plugin path and given plugin directory.
     ///
-    /// If `builtin_plugins_dir` is set, builtin plugins (starting with 'zellij:' in the layout
-    /// file) are loaded from that directory when present, before falling back to embedded assets.
-    /// Otherwise, if zellij was built without the 'disable_automatic_asset_installation' feature,
-    /// builtin plugins are loaded directly from the binary-internal asset map. Otherwise:
+    /// Nothing is embedded in the binary - plugin wasm always comes from disk.
     ///
-    /// Attempts to first resolve the plugin path as an absolute path, then adds a ".wasm"
-    /// extension to the path and resolves that, then the plugin directory joined with the path
-    /// with an appended ".wasm" extension, and finally the system data directory joined with
-    /// "plugins" and the same file name. So if our path is "tab-bar" and the given plugin dir is
+    /// If `builtin_plugins_dir` is set, builtin plugins (starting with 'zellij:' in the layout
+    /// file) are loaded from that directory when present. Otherwise we attempt to resolve the
+    /// plugin path as an absolute path, then with a ".wasm" extension appended, then the plugin
+    /// directory joined with the path plus ".wasm", then the system data directory joined with
+    /// "plugins" and the same file name. Builtin plugins finally fall back to
+    /// `BUILTIN_PLUGIN_DEV_DIRS`, the in-checkout locations baked in at compile time, so a dev
+    /// build or `cargo test` works with no configuration.
+    ///
+    /// So if our path is "tab-bar" and the given plugin dir is
     /// "/home/bob/.local/share/zellij/plugins" the lookup chain will be this:
     ///
     /// ```bash
@@ -122,6 +124,8 @@ impl PluginConfig {
     ///   tab-bar.wasm
     ///   /home/bob/.local/share/zellij/plugins/tab-bar.wasm
     ///   /usr/share/zellij/plugins/tab-bar.wasm
+    ///   <checkout>/target/wasm32-wasip1/debug/tab-bar.wasm  (debug builds only)
+    ///   <checkout>/zellij-utils/assets/plugins/tab-bar.wasm
     /// ```
     ///
     pub fn resolve_wasm_bytes(
@@ -171,6 +175,14 @@ impl PluginConfig {
                 .join(&self.path)
                 .with_extension("wasm"),
         );
+        #[cfg(not(target_family = "wasm"))]
+        if self.is_builtin() {
+            paths.extend(
+                BUILTIN_PLUGIN_DEV_DIRS
+                    .iter()
+                    .map(|dir| Path::new(dir).join(&self.path).with_extension("wasm")),
+            );
+        }
         // Throw out dupes, because it's confusing to read that zellij checked the same plugin
         // location multiple times. Do NOT sort the vector here, because it will break the lookup!
         paths.dedup();
@@ -182,26 +194,6 @@ impl PluginConfig {
         // spell it out right here.
         let mut last_err: Result<Vec<u8>> = Err(anyhow!("failed to load plugin from disk"));
         for path in paths {
-            // Check if the plugin path matches an entry in the asset map. If so, load it directly
-            // from memory, don't bother with the disk.
-            #[cfg(not(target_family = "wasm"))]
-            if !cfg!(feature = "disable_automatic_asset_installation") && self.is_builtin() {
-                let asset_path = PathBuf::from("plugins").join(&path);
-                if let Some(bytes) = ASSET_MAP.get(&asset_path) {
-                    log::debug!("Loaded plugin '{}' from internal assets", path.display());
-
-                    if plugin_dir.join(&path).with_extension("wasm").exists() {
-                        log::info!(
-                            "Plugin '{}' exists in the 'PLUGIN DIR' at '{}' but is being ignored",
-                            path.display(),
-                            plugin_dir.display()
-                        );
-                    }
-
-                    return Ok(bytes.to_vec());
-                }
-            }
-
             // Try to read from disk
             match fs::read(&path) {
                 Ok(val) => {
@@ -220,7 +212,7 @@ impl PluginConfig {
             // Layout requested a builtin plugin that wasn't found
             let plugin_path = self.path.with_extension("wasm");
 
-            if cfg!(feature = "disable_automatic_asset_installation") && self.is_builtin_name() {
+            if self.is_builtin_name() {
                 return Err(ZellijError::BuiltinPluginMissing {
                     plugin_path,
                     plugin_dir: plugin_dir.to_owned(),
@@ -294,15 +286,42 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "disable_automatic_asset_installation"))]
     #[test]
-    fn missing_configured_builtin_plugin_falls_back_to_embedded_asset() {
+    fn missing_configured_builtin_plugin_falls_back_to_repo_assets_dir() {
         let plugin_dir = tempdir().unwrap();
         let builtin_plugins_dir = tempdir().unwrap();
         let plugin = builtin_plugin("tab-bar");
 
         assert!(!plugin
             .resolve_wasm_bytes(plugin_dir.path(), Some(builtin_plugins_dir.path()))
+            .unwrap()
+            .is_empty());
+    }
+
+    // The plugin dir comes from `--data-dir`, which is how the e2e suite supplies builtin
+    // plugins. Unique content proves it wins over the in-checkout dev dirs rather than just
+    // happening to resolve.
+    #[test]
+    fn plugin_dir_takes_precedence_over_the_checkout() {
+        let plugin_dir = tempdir().unwrap();
+        fs::write(plugin_dir.path().join("tab-bar.wasm"), b"from-data-dir").unwrap();
+
+        let plugin = builtin_plugin("tab-bar");
+        assert_eq!(
+            plugin.resolve_wasm_bytes(plugin_dir.path(), None).unwrap(),
+            b"from-data-dir"
+        );
+    }
+
+    // This is the check that fails if the compile-time dev dirs stop resolving, which is what
+    // keeps a plain `cargo test`/`cargo run` in a checkout working with no configuration at all.
+    #[test]
+    fn builtin_plugin_resolves_from_checkout_with_no_configuration() {
+        let plugin_dir = tempdir().unwrap();
+        let plugin = builtin_plugin("tab-bar");
+
+        assert!(!plugin
+            .resolve_wasm_bytes(plugin_dir.path(), None)
             .unwrap()
             .is_empty());
     }

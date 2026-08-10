@@ -47,32 +47,40 @@ You can see a list of all commands (with supported arguments) with `cargo xtask
 
 To run `test`, you will need the package `pkg-config` and a version of `openssl`.
 
+### How builtin plugins are found
+
+Builtin plugins (`status-bar`, `tab-bar`, ...) are `.wasm` files loaded from disk on
+demand - nothing is embedded in the binary. At runtime they are looked up in this order:
+
+1. the `builtin_plugins_dir` config option, if set
+2. the configured plugin directory (`<data dir>/plugins`)
+3. `$PREFIX/share/zellij/plugins`
+4. `<repository>/target/wasm32-wasip1/debug` (debug builds only)
+5. `<repository>/zellij-utils/assets/plugins`
+
+`zellij setup --check` prints the first three. The last two are baked in at compile time
+from `CARGO_MANIFEST_DIR`, so a build run out of a checkout - `cargo run`, `cargo test`,
+`cargo x run` - finds the plugins with no configuration at all. They do not exist on an
+installed system and are simply skipped there.
+
 ### The cargo target directory
 
-Debug builds embed the plugins from `<repository>/target/wasm32-wasip1/debug`, which is
-resolved at compile time. `.cargo/config.toml` therefore pins `build.target-dir` to
-`target`, so that a `target-dir` configured globally in `~/.cargo/config.toml` does not
-move the plugins out of reach. Removing that pin breaks debug builds for everyone who
-configures a shared target directory.
-
-If you want to share compilation artifacts between projects anyway, symlink the folder
-instead of pointing cargo elsewhere:
+`.cargo/config.toml` pins `build.target-dir` to `target` so that lookup step 4 above
+resolves for debug builds. Pointing cargo elsewhere (a global `target-dir` in
+`~/.cargo/config.toml`, or the `CARGO_TARGET_DIR` environment variable) is no longer fatal
+- the lookup falls through to the committed assets in step 5 - but you will silently get
+the last plugins built by `cargo x build --release` instead of your debug ones. To share
+compilation artifacts between projects, symlink the folder instead:
 
 ```sh
 ln -s /path/to/shared/target /path/to/zellij/target
 ```
 
-Setting the `CARGO_TARGET_DIR` environment variable takes precedence over
-`.cargo/config.toml` and will break debug builds for the same reason. Release builds are
-unaffected, since they embed the plugins from `zellij-utils/assets/plugins`.
-
 ## Packaging Zellij for a distribution
 
-Builtin plugins (`status-bar`, `tab-bar`, ...) are `.wasm` files that are embedded into
-the Zellij binary at compile time. Pre-built copies live in `zellij-utils/assets/plugins`
-so that `cargo install zellij` works without further tooling. Distributions that forbid
-pre-built binaries in source packages can strip that folder and build the plugins from
-source instead:
+Pre-built plugin copies live in `zellij-utils/assets/plugins` so that `cargo install
+zellij` works without further tooling. Distributions that forbid pre-built binaries in
+source packages can strip that folder and build the plugins from source instead:
 
 ```sh
 # 1. build the plugins from source (repeat for every plugin, or use `cargo x build --release`)
@@ -84,15 +92,12 @@ cargo build --release --target wasm32-wasip1 \
 # 2. install the resulting artifacts from <target-dir>/wasm32-wasip1/release/*.wasm
 #    into $PREFIX/share/zellij/plugins/
 
-# 3. build zellij without bundled plugins
-PREFIX=/usr cargo build --release --bin zellij \
-  --no-default-features --features disable_automatic_asset_installation
+# 3. build zellij
+PREFIX=/usr cargo build --release --bin zellij
 ```
 
-With the `disable_automatic_asset_installation` feature no plugin is embedded into the
-binary and `zellij setup --dump-plugins` is unavailable. At runtime builtin plugins are
-looked up in the configured plugin directory and then in `$PREFIX/share/zellij/plugins`.
-`zellij setup --check` prints both locations.
+No feature flags are involved: the binary never carries plugins, so the plugins must be
+installed into one of the lookup locations above.
 
 `protoc` is required to regenerate the protobuf definitions in `zellij-utils/assets/prost*`
 via `cargo x proto`. The `web_server_capability` and `vendored_curl` features are optional

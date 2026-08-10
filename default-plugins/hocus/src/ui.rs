@@ -11,14 +11,14 @@ use zellij_tile::prelude::*;
 use crate::api::ConfigError;
 use crate::{Picker, PickerKind, Role, State, Status};
 
-/// Below this we can't lay out a title, a transcript row, an input row and a
-/// help line, so we say so instead of rendering nonsense.
+/// Below this we can't lay out a title, a transcript row and an input row,
+/// so we say so instead of rendering nonsense.
 const MIN_ROWS: usize = 6;
 const MIN_COLS: usize = 24;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
-/// Rows consumed by the chrome: title, blank separator, help line.
-const CHROME_ROWS: usize = 3;
+/// Rows consumed by the chrome: title, blank separator.
+const CHROME_ROWS: usize = 2;
 
 const PROMPT: &str = "> ";
 
@@ -878,7 +878,7 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     let all_input_lines = wrap_hard(&input_text, cols);
     // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
     // minimum-height pane a tall input would otherwise be laid out past the
-    // last row, pushing the help line off screen.
+    // last row.
     let room_for_input = rows.saturating_sub(CHROME_ROWS).max(1);
     let input_rows = all_input_lines
         .len()
@@ -892,7 +892,6 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
 
     let transcript_y = 1;
     let input_y = transcript_y + transcript_rows + 1;
-    let help_y = rows - 1;
 
     // Must precede any print_*: the host reads the cursor position out of the
     // render output stream in order.
@@ -909,14 +908,6 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     for (index, line) in input_lines.iter().enumerate() {
         print_text_with_coordinates(Text::new(line), 0, input_y + index, Some(cols), None);
     }
-
-    print_text_with_coordinates(
-        Text::new(help_line(state)).dim_range(..),
-        0,
-        help_y,
-        Some(cols),
-        None,
-    );
 }
 
 fn render_title(state: &State, cols: usize) {

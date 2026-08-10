@@ -111,10 +111,7 @@ lazy_static! {
         ZELLIJ_CACHE_DIR.join(VERSION).join("seen_release_notes");
 }
 
-pub const FEATURES: &[&str] = &[
-    #[cfg(feature = "disable_automatic_asset_installation")]
-    "disable_automatic_asset_installation",
-];
+pub const FEATURES: &[&str] = &[];
 
 pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "compact-bar",
@@ -133,111 +130,21 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus",
 ];
 
+/// Directories searched for builtin plugin wasm as a last resort, so that dev builds and
+/// `cargo test` find the plugins in a checkout without any configuration.
+///
+/// These are baked at compile time from this crate's manifest dir. On an installed system they
+/// simply do not exist and are skipped, which is why they can be probed unconditionally.
 #[cfg(not(target_family = "wasm"))]
-pub use not_wasm::*;
-
-#[cfg(not(target_family = "wasm"))]
-mod not_wasm {
-    use lazy_static::lazy_static;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    // Convenience macro to add plugins to the asset map (see `ASSET_MAP`)
-    //
-    // Plugins are taken from:
-    //
-    // - `zellij-utils/assets/plugins`: When building in release mode OR when the
-    //   `plugins_from_target` feature IS NOT set
-    // - `zellij-utils/../target/wasm32-wasip1/debug`: When building in debug mode AND the
-    //   `plugins_from_target` feature IS set
-    //
-    // When the `disable_automatic_asset_installation` feature is set, no plugins are embedded at
-    // all and `ASSET_MAP` is empty. Builtin plugins must then be provided in the plugin directory.
-    #[cfg(not(feature = "disable_automatic_asset_installation"))]
-    macro_rules! add_plugin {
-        ($assets:expr, $plugin:literal) => {
-            $assets.insert(
-                PathBuf::from("plugins").join($plugin),
-                #[cfg(any(not(feature = "plugins_from_target"), not(debug_assertions)))]
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/assets/plugins/",
-                    $plugin
-                ))
-                .to_vec(),
-                #[cfg(all(feature = "plugins_from_target", debug_assertions))]
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../target/wasm32-wasip1/debug/",
-                    $plugin
-                ))
-                .to_vec(),
-            );
-        };
-    }
-
-    lazy_static! {
-        // Zellij asset map
-        pub static ref ASSET_MAP: HashMap<PathBuf, Vec<u8>> = {
-            #[allow(unused_mut)]
-            let mut assets: HashMap<PathBuf, Vec<u8>> = std::collections::HashMap::new();
-            #[cfg(not(feature = "disable_automatic_asset_installation"))]
-            {
-                add_plugin!(assets, "compact-bar.wasm");
-                add_plugin!(assets, "status-bar.wasm");
-                add_plugin!(assets, "tab-bar.wasm");
-                add_plugin!(assets, "strider.wasm");
-                add_plugin!(assets, "session-manager.wasm");
-                add_plugin!(assets, "configuration.wasm");
-                add_plugin!(assets, "plugin-manager.wasm");
-                add_plugin!(assets, "about.wasm");
-                add_plugin!(assets, "share.wasm");
-                add_plugin!(assets, "multiple-select.wasm");
-                add_plugin!(assets, "layout-manager.wasm");
-                add_plugin!(assets, "link.wasm");
-                add_plugin!(assets, "hocus.wasm");
-                // shared-test is not part of the default build, so there is nothing for
-                // `plugins_from_target` to pick up - always embed the committed asset
-                assets.insert(
-                    PathBuf::from("plugins").join("shared-test.wasm"),
-                    include_bytes!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/assets/plugins/shared-test.wasm"
-                    ))
-                    .to_vec(),
-                );
-            }
-            assets
-        };
-    }
-
-    #[cfg(all(test, not(feature = "disable_automatic_asset_installation")))]
-    mod asset_map_test {
-        use super::ASSET_MAP;
-        use crate::consts::BUILTIN_PLUGIN_NAMES;
-        use std::path::PathBuf;
-
-        #[test]
-        fn asset_map_matches_builtin_plugin_names() {
-            let mut embedded: Vec<String> = ASSET_MAP
-                .keys()
-                .filter_map(|path| {
-                    path.file_stem()
-                        .map(|stem| stem.to_string_lossy().to_string())
-                })
-                .collect();
-            let mut expected: Vec<String> =
-                BUILTIN_PLUGIN_NAMES.iter().map(|s| s.to_string()).collect();
-            embedded.sort();
-            expected.sort();
-            assert_eq!(embedded, expected);
-            for name in BUILTIN_PLUGIN_NAMES {
-                assert!(ASSET_MAP
-                    .contains_key(&PathBuf::from("plugins").join(format!("{}.wasm", name))));
-            }
-        }
-    }
-}
+pub const BUILTIN_PLUGIN_DEV_DIRS: &[&str] = &[
+    // What `cargo x build`/`cargo x test` produce - prefer freshly built debug plugins when
+    // running a debug binary. Missing under a non-default CARGO_TARGET_DIR, which just falls
+    // through to the committed assets below.
+    #[cfg(debug_assertions)]
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../target/wasm32-wasip1/debug"),
+    // The committed assets, refreshed by `cargo x build --plugins-only --release`.
+    concat!(env!("CARGO_MANIFEST_DIR"), "/assets/plugins"),
+];
 
 #[cfg(unix)]
 pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {

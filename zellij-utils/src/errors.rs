@@ -675,8 +675,7 @@ pub enum ZellijError {
     FailedToStartPty,
 
     #[error(
-        "This version of zellij was built to load the core plugins from
-the globally configured plugin directory. However, a plugin wasn't found:
+        "Zellij loads the core plugins from disk, but this plugin wasn't found:
 
     Plugin name: '{plugin_path}'
     Plugin directory: '{plugin_dir}'
@@ -684,16 +683,11 @@ the globally configured plugin directory. However, a plugin wasn't found:
 If you're a user:
     Please report this error to the distributor of your current zellij version
 
-If you're a developer:
-    Either make sure to include the plugins with the application (See feature
-    'disable_automatic_asset_installation'), or make them available in the
-    plugin directory.
-
 Possible fix for your problem:
     Place the builtin plugin '.wasm' files in the plugin directory shown above,
-    or in the 'plugins' folder of the system data directory. Both are visible in
-    the output of `zellij setup --check`. This build carries no bundled plugins,
-    so `zellij setup --dump-plugins` cannot provide them.
+    or in the 'plugins' folder of the system data directory, or point the
+    'builtin_plugins_dir' config option at the directory holding them. All of
+    these are visible in the output of `zellij setup --check`.
 "
     )]
     BuiltinPluginMissing {
