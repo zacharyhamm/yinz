@@ -15,7 +15,7 @@ use crate::input::layout::{
 };
 use crate::input::mouse::{MouseEvent, MouseEventType};
 use crate::input::options::{
-    Clipboard, NestedSessionHandling, OnForceClose, Options, PaneFrameStyle,
+    Clipboard, NestedSessionHandling, NotificationPosition, OnForceClose, Options, PaneFrameStyle,
 };
 use crate::ipc::{
     ClientToServerMsg, ColorRegister, ExitReason, MobileActivePanePayload, MobilePanePayload,
@@ -506,6 +506,8 @@ fn test_client_messages() {
                 mouse_mode: Some(true),
                 pane_frames: Some(true),
                 pane_frame_style: Some(PaneFrameStyle::Full),
+                notification_position: Some(NotificationPosition::BottomLeft),
+                notification_timeout: Some(9),
                 mirror_session: Some(true),
                 on_force_close: Some(OnForceClose::Quit),
                 scroll_buffer_size: Some(100000),

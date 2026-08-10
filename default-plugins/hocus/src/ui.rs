@@ -63,7 +63,7 @@ fn sanitize(text: &str) -> String {
         match ch {
             '\t' => sanitized.push_str("    "),
             '\n' => sanitized.push('\n'),
-            ch if ch.is_control() => {}
+            ch if ch.is_control() => {},
             ch => sanitized.push(ch),
         }
     }
@@ -110,7 +110,7 @@ fn wrap_line(line: &str, width: usize, out: &mut Vec<String>) {
             Token::Spaces(spaces) => {
                 pending_spaces.push_str(spaces);
                 continue;
-            }
+            },
             Token::Word(word) => word,
         };
 
@@ -333,7 +333,7 @@ impl MarkdownRenderer {
                 let marker = format!("{next}. ");
                 *next += 1;
                 marker
-            }
+            },
             None => "• ".to_owned(),
         };
         let prefix = format!(
@@ -411,11 +411,11 @@ impl MarkdownRenderer {
             Event::Start(Tag::BlockQuote(_)) => {
                 self.finish_block();
                 self.quote_depth += 1;
-            }
+            },
             Event::End(TagEnd::BlockQuote(_)) => {
                 self.finish_block();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
-            }
+            },
             Event::Start(Tag::List(start)) => {
                 if self
                     .current
@@ -425,11 +425,11 @@ impl MarkdownRenderer {
                     self.finish_block();
                 }
                 self.lists.push(ListState { next: start });
-            }
+            },
             Event::End(TagEnd::List(_)) => {
                 self.finish_block();
                 self.lists.pop();
-            }
+            },
             Event::Start(Tag::Item) => self.start_item(),
             Event::End(TagEnd::Item) => self.finish_block(),
             Event::Start(Tag::CodeBlock(_)) => {
@@ -445,7 +445,7 @@ impl MarkdownRenderer {
                     },
                 );
                 self.current.as_mut().expect("just started").hard_wrap = true;
-            }
+            },
             Event::End(TagEnd::CodeBlock) => {
                 if self
                     .current
@@ -456,7 +456,7 @@ impl MarkdownRenderer {
                     self.current.as_mut().expect("checked above").chars.pop();
                 }
                 self.finish_block();
-            }
+            },
             Event::Start(Tag::HtmlBlock) => self.start_paragraph(),
             Event::End(TagEnd::HtmlBlock) => {
                 if self
@@ -468,7 +468,7 @@ impl MarkdownRenderer {
                     self.current.as_mut().expect("checked above").chars.pop();
                 }
                 self.finish_block();
-            }
+            },
             Event::Start(Tag::Emphasis) => self.push_style(|style| style.color = Some(1)),
             Event::End(TagEnd::Emphasis) => self.pop_style(),
             Event::Start(Tag::Strong) => self.push_style(|style| style.bold = true),
@@ -498,8 +498,8 @@ impl MarkdownRenderer {
                 );
                 self.current.as_mut().expect("just started").hard_wrap = true;
                 self.finish_block();
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
@@ -982,7 +982,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
             last.text.push_str(&loader);
             tail.push(last);
             replaced_last = true;
-        }
+        },
         Some(loader) => {
             tail.push(VLine::blank());
             tail.push(VLine {
@@ -990,7 +990,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
                 role: Role::Notice,
                 styles: Vec::new(),
             });
-        }
+        },
         // Text is arriving, so it is its own proof of life; the caret just marks
         // where the next token lands.
         None => {
@@ -1002,7 +1002,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
                     replaced_last = true;
                 }
             }
-        }
+        },
     }
 
     // Name the call awaiting a y/n. The assistant message above lists every call
@@ -1131,7 +1131,7 @@ fn help_line(state: &State) -> &'static str {
         Some(PickerKind::Chats(_)) => return "<↑↓> choose  <Enter> open  <Esc> back",
         Some(PickerKind::Models) => return "<↑↓> choose  <Enter> use  <Esc> back",
         Some(PickerKind::Agents(_)) => return "<↑↓> choose  <Enter> focus  <Esc> back",
-        None => {}
+        None => {},
     }
     // Tools before the stream, matching what Esc actually does when both are
     // outstanding.

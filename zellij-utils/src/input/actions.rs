@@ -528,6 +528,8 @@ pub enum Action {
     RenameSession {
         name: String,
     },
+    /// Show a self-dismissing notification in the configured screen corner
+    Notify(String),
     CliPipe {
         pipe_id: String,
         name: Option<String>,
@@ -1985,6 +1987,7 @@ impl Action {
                 }])
             },
             CliAction::RenameSession { name } => Ok(vec![Action::RenameSession { name }]),
+            CliAction::Notify { text } => Ok(vec![Action::Notify(text)]),
             CliAction::Pipe {
                 name,
                 payload,

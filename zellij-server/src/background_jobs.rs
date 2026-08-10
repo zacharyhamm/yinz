@@ -87,6 +87,7 @@ pub enum BackgroundJob {
     /// terminating chunk is always emitted from one place (see `finish_stream`)
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
+    DismissNotification(u64, u64), // notification id, timeout in seconds
     RenderToClients,
     QueryZellijWebServerStatus,
     ClearHelpText {
@@ -120,6 +121,7 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::HighlightPanesWithMessage(..) => {
                 BackgroundJobContext::HighlightPanesWithMessage
             },
+            BackgroundJob::DismissNotification(..) => BackgroundJobContext::DismissNotification,
             BackgroundJob::QueryZellijWebServerStatus => {
                 BackgroundJobContext::QueryZellijWebServerStatus
             },
@@ -567,6 +569,19 @@ pub(crate) fn background_jobs_main(
                         let _ = senders.send_to_screen(
                             ScreenInstruction::ClearPaneFrameColorOverride(pane_ids),
                         );
+                    }
+                });
+            },
+            // deliberately not gated on job_already_running: every notification has its own id and
+            // needs its own timer
+            BackgroundJob::DismissNotification(notification_id, timeout_secs) => {
+                runtime.spawn({
+                    let senders = bus.senders.clone();
+                    async move {
+                        tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+                        let _ = senders.send_to_screen(ScreenInstruction::DismissNotification(
+                            notification_id,
+                        ));
                     }
                 });
             },

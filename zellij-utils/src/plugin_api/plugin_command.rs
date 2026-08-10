@@ -1446,6 +1446,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for RenameSession"),
             },
+            Some(CommandName::Notify) => match protobuf_plugin_command.payload {
+                Some(Payload::NotifyPayload(text)) => Ok(PluginCommand::Notify(text)),
+                _ => Err("Mismatched payload for Notify"),
+            },
             Some(CommandName::UnblockCliPipeInput) => match protobuf_plugin_command.payload {
                 Some(Payload::UnblockCliPipeInputPayload(pipe_name)) => {
                     Ok(PluginCommand::UnblockCliPipeInput(pipe_name))
@@ -3406,6 +3410,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::RenameSession(new_session_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenameSession as i32,
                 payload: Some(Payload::RenameSessionPayload(new_session_name)),
+            }),
+            PluginCommand::Notify(text) => Ok(ProtobufPluginCommand {
+                name: CommandName::Notify as i32,
+                payload: Some(Payload::NotifyPayload(text)),
             }),
             PluginCommand::UnblockCliPipeInput(pipe_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::UnblockCliPipeInput as i32,

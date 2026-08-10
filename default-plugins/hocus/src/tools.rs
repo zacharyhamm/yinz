@@ -955,7 +955,7 @@ impl Args {
                 let mut words = vec![word.clone()];
                 words.extend(self.args.iter().cloned());
                 words
-            }
+            },
             Some(Value::Array(items)) => items
                 .iter()
                 .filter_map(|item| item.as_str().map(str::to_owned))
@@ -1061,10 +1061,10 @@ impl Args {
             (None, Some(id)) => Ok(TabTarget::Id(id)),
             (None, None) => {
                 Err("tab_index or tab_id is required; call list_session to get them".to_owned())
-            }
+            },
             (Some(_), Some(_)) => {
                 Err("give exactly one of tab_index or tab_id, not both".to_owned())
-            }
+            },
         }
     }
 
@@ -1077,7 +1077,7 @@ impl Args {
         Some(match self.tab_target() {
             Ok(_) if self.pane_id.is_some() || self.is_plugin.is_some() => {
                 Err("give exactly one of pane pair, tab_index, or tab_id".to_owned())
-            }
+            },
             target => target,
         })
     }
@@ -1191,7 +1191,7 @@ pub fn slack_argv(name: &str, args: &Args) -> Result<Vec<String>, String> {
             flag(&mut argv, "from", &args.from);
             flag(&mut argv, "to", &args.to);
             Ok(argv)
-        }
+        },
         "slack_post" => {
             required(&args.channel, "channel")?;
             required(&args.text, "text")?;
@@ -1201,7 +1201,7 @@ pub fn slack_argv(name: &str, args: &Args) -> Result<Vec<String>, String> {
             flag(&mut argv, "text", &args.text);
             flag(&mut argv, "thread", &args.thread);
             Ok(argv)
-        }
+        },
         other => Err(format!("no such tool: {other}")),
     }
 }
@@ -1243,7 +1243,7 @@ mod host {
                             write_to_pane_id(chunk, pane);
                         }
                         "input sent".to_owned()
-                    }
+                    },
                     Err(error) => error,
                 }
             })),
@@ -1269,15 +1269,15 @@ mod host {
                     Ok(geometry) => {
                         change_floating_panes_coordinates(vec![(pane, geometry)]);
                         "geometry set".to_owned()
-                    }
+                    },
                     Err(error) => error,
                 }))
-            }
+            },
             "rerun_pane" => Dispatch::Done(match args.terminal_pane_id() {
                 Ok(id) => {
                     rerun_command_pane(id);
                     "rerun".to_owned()
-                }
+                },
                 Err(error) => error,
             }),
             "scroll_pane" => Dispatch::Done(with_pane(&args, |pane| scroll_pane(pane, &args))),
@@ -1293,11 +1293,11 @@ mod host {
                 Ok(TabTarget::Index(index)) => {
                     close_tab_with_index(index);
                     "closed".to_owned()
-                }
+                },
                 Ok(TabTarget::Id(id)) => {
                     close_tab_with_id(id as u64);
                     "closed".to_owned()
-                }
+                },
                 Err(error) => error,
             }),
             "run_command" => run(call, &args),
@@ -1313,7 +1313,7 @@ mod host {
             (Some(id), Some(false)) => body(PaneId::Terminal(id)),
             _ => {
                 "pane_id and is_plugin are both required; call list_session to get them".to_owned()
-            }
+            },
         }
     }
 
@@ -1421,7 +1421,7 @@ mod host {
                 } else {
                     lines.join("\n")
                 }
-            }
+            },
             Err(error) => format!("could not read pane: {error}"),
         }
     }
@@ -1444,7 +1444,7 @@ mod host {
                 } else {
                     open_command_pane(command, BTreeMap::new())
                 }
-            }
+            },
             // No command: a plain shell. `open_terminal*` wants a cwd, and the
             // focused pane's is the one the user would expect to land in.
             None => {
@@ -1464,7 +1464,7 @@ mod host {
                 } else {
                     open_terminal(path)
                 }
-            }
+            },
         };
 
         match opened {
@@ -1474,7 +1474,7 @@ mod host {
                 }
                 let (id, is_plugin) = split_pane_id(pane);
                 json!({ "opened": true, "pane_id": id, "is_plugin": is_plugin }).to_string()
-            }
+            },
             None => "zellij did not open the pane".to_owned(),
         }
     }
@@ -1501,11 +1501,11 @@ mod host {
             Some(Ok(TabTarget::Index(index))) => {
                 go_to_tab(index as u32);
                 format!("focused tab {index}")
-            }
+            },
             Some(Ok(TabTarget::Id(id))) => {
                 go_to_tab_with_id(id as u64);
                 format!("focused tab {id}")
-            }
+            },
             Some(Err(error)) => error,
             None => with_pane(args, |pane| {
                 // Float and un-hide it if it isn't currently visible; focusing a
@@ -1528,11 +1528,11 @@ mod host {
                 // The stable tab_id path avoids this entirely.
                 rename_tab((index as u32).wrapping_add(1), name);
                 format!("renamed tab {index}")
-            }
+            },
             Some(Ok(TabTarget::Id(id))) => {
                 rename_tab_with_id(id as u64, name);
                 format!("renamed tab {id}")
-            }
+            },
             Some(Err(error)) => error,
             None => with_pane(args, |pane| {
                 rename_pane_with_id(pane, name);
@@ -1636,11 +1636,11 @@ mod host {
             Some("fullscreen") => {
                 toggle_pane_id_fullscreen(pane);
                 "toggled fullscreen".to_owned()
-            }
+            },
             Some("floating") => {
                 toggle_pane_embed_or_eject_for_pane_id(pane);
                 "toggled floating".to_owned()
-            }
+            },
             _ => "what must be \"fullscreen\" or \"floating\"".to_owned(),
         }
     }
@@ -1653,7 +1653,7 @@ mod host {
         let target = match args.move_destination() {
             Ok(MoveDestination::Existing(index)) => {
                 break_panes_to_tab_with_index(&panes, index, false)
-            }
+            },
             Ok(MoveDestination::ExistingId(id)) => break_panes_to_tab_with_id(&panes, id, false),
             Ok(MoveDestination::New(name)) => break_panes_to_new_tab(&panes, name, false),
             Err(error) => return error,
@@ -1666,7 +1666,7 @@ mod host {
             Ok(panes) => {
                 stack_panes(panes);
                 "stacked".to_owned()
-            }
+            },
             Err(error) => error,
         }
     }
@@ -1830,15 +1830,29 @@ mod tests {
         );
         // A channel name is passed through as written; dobbs resolves it.
         assert_eq!(
-            argv("slack_read", r##"{"channel": "#general", "from": "2026-08-01"}"##).unwrap(),
-            ["export-channel", "-channel", "#general", "-from", "2026-08-01"]
+            argv(
+                "slack_read",
+                r##"{"channel": "#general", "from": "2026-08-01"}"##
+            )
+            .unwrap(),
+            [
+                "export-channel",
+                "-channel",
+                "#general",
+                "-from",
+                "2026-08-01"
+            ]
         );
         assert_eq!(
             argv("slack_backfill", r#"{"channel": "C1", "to": "2026-08-08"}"#).unwrap(),
             ["backfill-channel", "-channel", "C1", "-to", "2026-08-08"]
         );
         assert_eq!(
-            argv("slack_post", r#"{"channel": "C1", "text": "hi", "thread": "1.2"}"#).unwrap(),
+            argv(
+                "slack_post",
+                r#"{"channel": "C1", "text": "hi", "thread": "1.2"}"#
+            )
+            .unwrap(),
             ["post", "-channel", "C1", "-text", "hi", "-thread", "1.2"]
         );
     }
@@ -1848,7 +1862,11 @@ mod tests {
     #[test]
     fn slack_argv_omits_absent_and_blank_options() {
         assert_eq!(
-            argv("slack_read", r#"{"channel": "eng", "workspace": "  ", "to": ""}"#).unwrap(),
+            argv(
+                "slack_read",
+                r#"{"channel": "eng", "workspace": "  ", "to": ""}"#
+            )
+            .unwrap(),
             ["export-channel", "-channel", "eng"]
         );
     }
@@ -1865,7 +1883,9 @@ mod tests {
             let error = argv(name, arguments).unwrap_err();
             assert!(error.starts_with(field), "{name}: {error}");
         }
-        assert!(argv("slack_nope", "{}").unwrap_err().contains("no such tool"));
+        assert!(argv("slack_nope", "{}")
+            .unwrap_err()
+            .contains("no such tool"));
     }
 
     /// The four Slack tools are intercepted in `run_head` by name, so the list

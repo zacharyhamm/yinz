@@ -89,6 +89,19 @@ pane_frames false
 // 
 // pane_frame_style "titles"
  
+// The corner notifications appear in - they stack downwards from a top corner
+// and upwards from a bottom one
+// Options:
+//   - top-left
+//   - top-right (default)
+//   - bottom-left
+//   - bottom-right
+// notification_position "top-right"
+ 
+// How long a notification stays on screen, in seconds
+// Default: 4
+// notification_timeout 4
+ 
 // When attaching to an existing session with other users,
 // should the session be mirrored (true)
 // or should each user have their own cursor (false)

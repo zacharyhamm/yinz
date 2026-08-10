@@ -1683,6 +1683,15 @@ pub fn rename_session(name: &str) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Show a notification that dismisses itself after a timeout. Its corner and timeout come from the
+/// `notification_position` and `notification_timeout` config options.
+pub fn notify(text: &str) {
+    let plugin_command = PluginCommand::Notify(text.to_owned());
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Unblock the input side of a pipe, requesting the next message be sent if there is one
 pub fn unblock_cli_pipe_input(pipe_name: &str) {
     let plugin_command = PluginCommand::UnblockCliPipeInput(pipe_name.to_owned());

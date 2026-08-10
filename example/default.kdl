@@ -286,6 +286,20 @@ load_plugins {
 //
 // pane_frames true
 
+// The corner notifications appear in - they stack downwards from a top corner
+// and upwards from a bottom one
+// Options:
+//   - top-left
+//   - top-right (default)
+//   - bottom-left
+//   - bottom-right
+//
+// notification_position "top-right"
+
+// How long a notification stays on screen, in seconds
+//
+// notification_timeout 4
+
 // Toggle between having Zellij lay out panes according to a predefined set of layouts whenever possible
 // Options:
 //   - true (default)

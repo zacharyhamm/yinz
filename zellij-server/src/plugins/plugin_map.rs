@@ -40,6 +40,27 @@ pub struct PluginMap {
     >,
 }
 
+/// Configuration match used when looking up running plugins to reload.
+///
+/// Deliberately looser than plain equality: `caller_cwd` is injected into an alias's
+/// configuration per-launch (`Pty::spawn_plugin`), so it is never part of a plugin's identity -
+/// `RunPluginOrAlias::is_equivalent_to_run` ignores it for the same reason. And an empty request
+/// (eg. `zellij action start-or-reload-plugin zellij:hocus`, which carries none of the alias'
+/// configuration) means "whatever is running at this location", otherwise reloading a
+/// configured plugin by its bare location would start a second copy of it instead.
+fn configuration_matches_for_reload(
+    running: &PluginUserConfiguration,
+    requested: &PluginUserConfiguration,
+) -> bool {
+    let without_caller_cwd = |configuration: &PluginUserConfiguration| {
+        let mut configuration = configuration.inner().clone();
+        configuration.remove("caller_cwd");
+        configuration
+    };
+    let requested = without_caller_cwd(requested);
+    requested.is_empty() || without_caller_cwd(running) == requested
+}
+
 impl PluginMap {
     pub fn remove_plugins(
         &mut self,
@@ -159,7 +180,10 @@ impl PluginMap {
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
                 running_plugin_location == plugin_location
-                    && running_plugin_configuration == plugin_configuration
+                    && configuration_matches_for_reload(
+                        running_plugin_configuration,
+                        plugin_configuration,
+                    )
             })
             .map(|((plugin_id, _client_id), _)| *plugin_id)
             .collect();
@@ -437,5 +461,50 @@ impl RunningPlugin {
     }
     pub fn intercepting_key_presses(&self) -> bool {
         self.store.data().intercepting_key_presses
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configuration_matches_for_reload;
+    use zellij_utils::input::layout::PluginUserConfiguration;
+
+    fn configuration(entries: &[(&str, &str)]) -> PluginUserConfiguration {
+        PluginUserConfiguration::new(
+            entries
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn reload_lookup_matches_a_configured_plugin() {
+        // eg. hocus launched from an alias, then reloaded by its bare location
+        let running = configuration(&[
+            ("dobbs_path", "/home/bob/dobbs"),
+            ("shared", "true"),
+            ("caller_cwd", "/home/bob"),
+        ]);
+
+        // no configuration at all: "reload whatever runs at this location"
+        assert!(configuration_matches_for_reload(
+            &running,
+            &configuration(&[])
+        ));
+        // only caller_cwd differs, which is per-launch and not part of the identity
+        assert!(configuration_matches_for_reload(
+            &running,
+            &configuration(&[
+                ("dobbs_path", "/home/bob/dobbs"),
+                ("shared", "true"),
+                ("caller_cwd", "/tmp"),
+            ])
+        ));
+        // an explicit, differing configuration is still a different plugin
+        assert!(!configuration_matches_for_reload(
+            &running,
+            &configuration(&[("dobbs_path", "/other/dobbs"), ("shared", "true")])
+        ));
     }
 }

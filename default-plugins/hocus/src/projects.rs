@@ -274,7 +274,10 @@ mod tests {
         let mut projects = Registry::new();
         let discovery = discover(&mut projects, &cwds(&["/a/hocus", "/b/hocus"]));
 
-        assert_eq!(discovery.added, vec!["hocus".to_owned(), "hocus-2".to_owned()]);
+        assert_eq!(
+            discovery.added,
+            vec!["hocus".to_owned(), "hocus-2".to_owned()]
+        );
         assert_eq!(projects["hocus"].root, "/a/hocus");
         assert_eq!(projects["hocus-2"].root, "/b/hocus");
     }
@@ -286,7 +289,10 @@ mod tests {
         let discovery = discover(&mut projects, &cwds(&["/work/hocus"]));
 
         assert_eq!(discovery.added, vec!["hocus".to_owned()]);
-        assert_eq!(discovery.replaced, vec![("src".to_owned(), "hocus".to_owned())]);
+        assert_eq!(
+            discovery.replaced,
+            vec![("src".to_owned(), "hocus".to_owned())]
+        );
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
     }
 

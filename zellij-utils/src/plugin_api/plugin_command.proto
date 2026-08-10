@@ -222,6 +222,7 @@ enum CommandName {
   SetGlobalPanePlacement = 230;
   ListRecordings = 231;
   SearchRecordings = 232;
+  Notify = 233;
 }
 
 message PluginCommand {
@@ -385,6 +386,7 @@ message PluginCommand {
     CancelWebRequestPayload cancel_web_request_payload = 172;
     SetGlobalPanePlacementPayload set_global_pane_placement_payload = 173;
     SearchRecordingsPayload search_recordings_payload = 174;
+    string notify_payload = 175;
   }
 }
 

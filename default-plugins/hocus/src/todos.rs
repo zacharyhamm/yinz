@@ -401,7 +401,7 @@ pub fn add(
             push_under(&mut list.items, parent_id, item);
             // The new item is open, so nothing above it can stay crossed off.
             open_parents(&mut list.items);
-        }
+        },
         None => list.items.push(item),
     }
     Ok(id)
@@ -680,7 +680,11 @@ mod tests {
         let saved = store(
             "/work/hocus",
             vec![
-                item(1, "ship the parser", vec![done(item(2, "write the test", vec![]))]),
+                item(
+                    1,
+                    "ship the parser",
+                    vec![done(item(2, "write the test", vec![]))],
+                ),
                 item(3, "answer the review", Vec::new()),
             ],
         );
@@ -721,7 +725,10 @@ mod tests {
         add(&mut saved, "/work/other", "elsewhere", None).unwrap();
         let error = add(&mut saved, "/work/hocus", "child", Some(1)).unwrap_err();
 
-        assert!(error.starts_with("no todo item 1 in this project"), "{error}");
+        assert!(
+            error.starts_with("no todo item 1 in this project"),
+            "{error}"
+        );
         assert!(!saved.contains_key("/work/hocus"), "no empty list was left");
     }
 
@@ -739,11 +746,19 @@ mod tests {
         let mut saved = Store::new();
         let mut parent = add(&mut saved, "/work/hocus", "level 1", None).unwrap();
         for level in 2..=MAX_DEPTH {
-            parent = add(&mut saved, "/work/hocus", &format!("level {level}"), Some(parent))
-                .unwrap();
+            parent = add(
+                &mut saved,
+                "/work/hocus",
+                &format!("level {level}"),
+                Some(parent),
+            )
+            .unwrap();
         }
         let error = add(&mut saved, "/work/hocus", "too deep", Some(parent)).unwrap_err();
-        assert_eq!(error, format!("todo items nest {MAX_DEPTH} levels deep at most"));
+        assert_eq!(
+            error,
+            format!("todo items nest {MAX_DEPTH} levels deep at most")
+        );
     }
 
     #[test]
@@ -775,7 +790,10 @@ mod tests {
                 done(item(2, "finished", Vec::new())),
             ],
         );
-        assert_eq!(texts(&list_json(&saved, "/work/hocus", false)), vec!["open"]);
+        assert_eq!(
+            texts(&list_json(&saved, "/work/hocus", false)),
+            vec!["open"]
+        );
         assert_eq!(
             texts(&list_json(&saved, "/work/hocus", true)),
             vec!["open", "finished"],
@@ -811,7 +829,10 @@ mod tests {
         assert_eq!(value["done"], 0);
         assert_eq!(value["items"][0]["id"], 1);
         assert_eq!(value["items"][0]["children"][0]["id"], 2);
-        assert!(value["items"][0].get("done").is_none(), "open is the default");
+        assert!(
+            value["items"][0].get("done").is_none(),
+            "open is the default"
+        );
     }
 
     #[test]
@@ -885,7 +906,10 @@ mod tests {
             .collect();
         let saved = store("/work/hocus", items);
 
-        assert_eq!(search(&saved, &roots(&["/work/hocus"]), "ship").len(), MAX_MATCHES);
+        assert_eq!(
+            search(&saved, &roots(&["/work/hocus"]), "ship").len(),
+            MAX_MATCHES
+        );
     }
 
     #[test]
@@ -917,7 +941,11 @@ mod tests {
     fn an_undo_opens_the_items_above_and_leaves_the_items_below_done() {
         let mut saved = store(
             "/work/hocus",
-            vec![item(1, "parent", vec![item(2, "child", vec![item(3, "leaf", vec![])])])],
+            vec![item(
+                1,
+                "parent",
+                vec![item(2, "child", vec![item(3, "leaf", vec![])])],
+            )],
         );
         set_done(&mut saved, "/work/hocus", 1, true).unwrap();
         let change = set_done(&mut saved, "/work/hocus", 3, false).unwrap();

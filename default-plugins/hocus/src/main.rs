@@ -554,10 +554,10 @@ impl State {
                 match self.owner_of(&context) {
                     Some(index) => {
                         self.with_parked(index, |state| state.on_response(status, &body, &context))
-                    }
+                    },
                     None => self.on_response(status, &body, &context),
                 }
-            }
+            },
             Event::WebRequestStreamChunk {
                 stream_id,
                 chunk,
@@ -576,14 +576,14 @@ impl State {
                     }),
                     None => self.on_command_result(exit_code, &stdout, &stderr, &context),
                 }
-            }
+            },
             // Host state, not conversation state: applied to the foreground
             // chat's config only, never routed to a parked chat.
             Event::PluginConfigurationChanged(kdl) => {
                 self.kdl = kdl;
                 self.reconfigure();
                 true
-            }
+            },
             // The payload is the real time the host slept, which is the only
             // clock a plugin gets — there is no wall clock on offer.
             Event::Timer(elapsed) => self.on_timer(elapsed),
@@ -614,7 +614,7 @@ impl State {
                     }
                 }
                 false
-            }
+            },
             _ => false,
         }
     }
@@ -636,28 +636,31 @@ impl ZellijWorker<'_> for IoWorker {
             return;
         };
         match message.as_str() {
-            "log" => log::write_line(v["chat_id"].as_u64(), v["line"].as_str().unwrap_or_default()),
+            "log" => log::write_line(
+                v["chat_id"].as_u64(),
+                v["line"].as_str().unwrap_or_default(),
+            ),
             "save" => {
                 if let (Some(id), Some(json)) = (v["id"].as_u64(), v["json"].as_str()) {
                     history::write(id, json.as_bytes());
                 }
-            }
+            },
             "prompt_history" => {
                 if let Some(json) = v["json"].as_str() {
                     history::write_prompt_history(json.as_bytes());
                 }
-            }
+            },
             "projects" => {
                 if let Some(json) = v["json"].as_str() {
                     projects::write(json.as_bytes());
                 }
-            }
+            },
             "todos" => {
                 if let Some(json) = v["json"].as_str() {
                     todos::write(json.as_bytes());
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
@@ -935,7 +938,7 @@ impl State {
                 self.arm_timer(AGENT_SECONDS);
                 self.env = get_session_environment_variables();
                 Config::resolve(&self.kdl, &self.env)
-            }
+            },
             PermissionStatus::Denied => Err(ConfigError {
                 message: "Permission denied.\n\nhocus needs web access (to reach the API) and \
                           read access to session environment variables (to find your API key). \
@@ -991,7 +994,7 @@ impl State {
             match key.bare_key {
                 BareKey::Char('y') | BareKey::Char('Y') => return self.confirm_tool(),
                 BareKey::Char('n') | BareKey::Char('N') => return self.decline_tool(),
-                _ => {}
+                _ => {},
             }
         }
         if key.bare_key == BareKey::Enter
@@ -1007,7 +1010,7 @@ impl State {
             match key.bare_key {
                 BareKey::PageUp => return self.scroll_up(page),
                 BareKey::PageDown => return self.scroll_down(page),
-                _ => {}
+                _ => {},
             }
         }
 
@@ -1026,7 +1029,7 @@ impl State {
                 // Ctrl-l starts a new archived conversation.
                 hide_self();
                 false
-            }
+            },
             InputAction::Continue => true,
             InputAction::Complete => self.complete_tool_name(),
             InputAction::NoAction => false,
@@ -1066,7 +1069,7 @@ impl State {
             _ => {
                 let notice = format!("/{}", matches.join("  /"));
                 self.list_completions(notice);
-            }
+            },
         }
         true
     }
@@ -1081,11 +1084,10 @@ impl State {
         let Some(prefix) = token.strip_prefix('@') else {
             return false;
         };
-        let matches: Vec<String> =
-            agents::mention_candidates(&self.panes, &self.manual_kinds)
-                .into_iter()
-                .filter(|candidate| candidate.starts_with(prefix))
-                .collect();
+        let matches: Vec<String> = agents::mention_candidates(&self.panes, &self.manual_kinds)
+            .into_iter()
+            .filter(|candidate| candidate.starts_with(prefix))
+            .collect();
         match matches.as_slice() {
             [] => false,
             [only] => {
@@ -1098,11 +1100,11 @@ impl State {
                 self.input.set_text(format!("{spliced}{tail}"));
                 self.input.set_cursor_position(cursor_chars);
                 true
-            }
+            },
             _ => {
                 self.list_completions(format!("@{}", matches.join("  @")));
                 true
-            }
+            },
         }
     }
 
@@ -1188,8 +1190,9 @@ impl State {
         // cap with nothing to show the user.
         let allow_tools = self.tool_rounds < MAX_TOOL_ROUNDS;
         if !allow_tools {
-            self.messages
-                .push(Message::notice("tool budget spent — answering without tools"));
+            self.messages.push(Message::notice(
+                "tool budget spent — answering without tools",
+            ));
         }
         // The placeholder streamed text appends into. request_body skips empty
         // assistant messages, so it never reaches the wire.
@@ -1314,7 +1317,7 @@ impl State {
             match item {
                 SseItem::Delta(text) => {
                     self.append_to_reply(&text);
-                }
+                },
                 SseItem::ApiError(message) => {
                     let m = message.clone();
                     self.pop_empty_placeholder();
@@ -1333,10 +1336,10 @@ impl State {
                         finishing: true,
                     });
                     break;
-                }
+                },
                 SseItem::ToolCallFragment { .. } => self.tool_calls.feed(&item),
                 // Informational: `done: true` below is the authoritative end.
-                SseItem::Done => {}
+                SseItem::Done => {},
             }
         }
 
@@ -1347,7 +1350,7 @@ impl State {
                 // waiting to swallow. Any half-accumulated calls go with it.
                 Some(stream) if stream.finishing => {
                     self.tool_calls.take();
-                }
+                },
                 _ => {
                     let calls = self.tool_calls.take();
                     if let Some(message) = error {
@@ -1448,7 +1451,7 @@ impl State {
                             }),
                         );
                     }
-                }
+                },
             }
             // The reply is settled, so nothing is appending any more — whatever
             // a typed tool pushes from here on is its own message.
@@ -1531,7 +1534,7 @@ impl State {
                     }
                 }
                 result
-            }
+            },
         };
 
         self.finish_head(result);
@@ -1622,7 +1625,7 @@ impl State {
             Dispatch::Done(result) => {
                 self.finish_head(result);
                 true
-            }
+            },
             // ponytail: no timeout — a command that never exits waits forever
             // and only Esc recovers. Add set_timeout + Event::Timer here if
             // hanging commands turn out to be common in practice.
@@ -1631,7 +1634,7 @@ impl State {
                 self.pin_to_bottom();
                 self.arm_timer(FRAME_SECONDS);
                 false
-            }
+            },
         }
     }
 
@@ -1696,7 +1699,7 @@ impl State {
                 self.messages.push(Message::error(error));
                 self.log("error", serde_json::json!({"error": log::truncate(&e)}));
                 return true;
-            }
+            },
         };
 
         let call = ToolCall {
@@ -1756,7 +1759,7 @@ impl State {
             Err(error) => {
                 self.finish_head(error);
                 return true;
-            }
+            },
         };
         let Some(query) = args.query.filter(|query| !query.trim().is_empty()) else {
             self.finish_head("query is required and must not be empty");
@@ -1795,14 +1798,14 @@ impl State {
             Err(error) => {
                 self.finish_head(error);
                 return true;
-            }
+            },
         };
         let argv = match tools::slack_argv(&call.name, &args) {
             Ok(argv) => argv,
             Err(error) => {
                 self.finish_head(error);
                 return true;
-            }
+            },
         };
         // Cloned so the command can be run without holding a borrow of self.
         let Ok((dobbs, env)) = self
@@ -1933,10 +1936,9 @@ impl State {
             post_projects(&self.projects);
             Ok(project)
         } else {
-            self.projects
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("unknown project {name}; root is required for a new project"))
+            self.projects.get(name).cloned().ok_or_else(|| {
+                format!("unknown project {name}; root is required for a new project")
+            })
         }
     }
 
@@ -1972,7 +1974,10 @@ impl State {
 
     fn project_assign(&mut self, args: &tools::Args) -> String {
         let tab_id = match args.tab_id.or_else(|| {
-            self.tabs.iter().find(|tab| tab.active).map(|tab| tab.tab_id)
+            self.tabs
+                .iter()
+                .find(|tab| tab.active)
+                .map(|tab| tab.tab_id)
         }) {
             Some(id) if self.tabs.iter().any(|tab| tab.tab_id == id) => id,
             Some(id) => return format!("tab {id} is not available"),
@@ -1986,7 +1991,11 @@ impl State {
         // The two maps stay disjoint, so `project_list` cannot report a tab as
         // both assigned and found.
         self.auto_tab_projects.remove(&tab_id);
-        if self.tabs.iter().any(|tab| tab.tab_id == tab_id && tab.active) {
+        if self
+            .tabs
+            .iter()
+            .any(|tab| tab.tab_id == tab_id && tab.active)
+        {
             self.active_project = Some(project.name.clone());
         }
         format!("assigned tab {tab_id} to project {}", project.name)
@@ -2067,7 +2076,10 @@ impl State {
             Err(error) => return error,
         };
         post_todos(&self.todos);
-        let open = self.todos.get(&root).map_or(0, |list| todos::counts(list).0);
+        let open = self
+            .todos
+            .get(&root)
+            .map_or(0, |list| todos::counts(list).0);
         serde_json::json!({
             "added": { "id": id, "text": text.trim(), "parent_id": args.parent_id },
             "project": name,
@@ -2096,7 +2108,12 @@ impl State {
     }
 
     fn todo_search(&self, args: &tools::Args) -> String {
-        let Some(query) = args.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) else {
+        let Some(query) = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        else {
             return "query is required".to_owned();
         };
         // Every list is searched by folder, so a list whose project went away is
@@ -2369,7 +2386,7 @@ impl State {
             (Some(kind), Some(pane_id)) => {
                 self.manual_kinds.insert(pane_id as u32, kind.to_owned());
                 format!("{result} (registered as {kind})")
-            }
+            },
             _ => result.to_owned(),
         }
     }
@@ -2455,7 +2472,7 @@ impl State {
             None => {
                 self.activity = activity;
                 false
-            }
+            },
         }
     }
 
@@ -2550,12 +2567,12 @@ impl State {
                 } else {
                     format!("cancelled job {id}")
                 }
-            }
+            },
             None => {
                 let count = self.jobs.len();
                 self.jobs.clear();
                 format!("cancelled {count} scheduled job(s)")
-            }
+            },
         };
         self.log(
             "job_cancel",
@@ -2667,7 +2684,9 @@ impl State {
     /// sit *after* the placeholder, so watching the last message would leave the
     /// arriving reply invisible to the cache, the archive and every other client.
     pub fn mutable_len(&self) -> usize {
-        let at = self.reply_at.unwrap_or(self.messages.len().saturating_sub(1));
+        let at = self
+            .reply_at
+            .unwrap_or(self.messages.len().saturating_sub(1));
         self.messages.get(at).map_or(0, |m| m.content.len())
     }
 
@@ -2845,7 +2864,7 @@ impl State {
         // empty model list is exactly the still-waiting state.
         match self.picker.as_ref() {
             Some(picker)
-                if matches!(picker.kind, PickerKind::Models) && picker.entries.is_empty() => {}
+                if matches!(picker.kind, PickerKind::Models) && picker.entries.is_empty() => {},
             _ => return false,
         }
 
@@ -2903,7 +2922,7 @@ impl State {
                         if let Some(id) = ids.get(picker.selected).copied() {
                             self.switch_to_chat(id);
                         }
-                    }
+                    },
                     // Held only for this session: config is re-resolved from the
                     // KDL block and the environment on every load.
                     PickerKind::Models => {
@@ -2914,14 +2933,14 @@ impl State {
                             cfg.model = m.clone();
                             self.log_global("model_switch", serde_json::json!({"model": m}));
                         }
-                    }
+                    },
                     PickerKind::Agents(ids) => {
                         if let Some(id) = ids.get(picker.selected).copied() {
                             self.focus_agent(id);
                         }
-                    }
+                    },
                 }
-            }
+            },
             BareKey::Up | BareKey::Down => {
                 let Some(picker) = self.picker.as_mut() else {
                     return false;
@@ -2931,7 +2950,7 @@ impl State {
                     BareKey::Up => picker.selected.saturating_sub(1),
                     _ => (picker.selected + 1).min(last),
                 };
-            }
+            },
             _ => return false,
         }
         true
@@ -2964,7 +2983,7 @@ impl State {
                     chat_id: Some(id),
                     ..Chat::default()
                 }
-            }
+            },
         };
 
         let outgoing = self.take_chat();
@@ -2981,7 +3000,6 @@ impl State {
             self.parked.push(outgoing);
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -3321,7 +3339,7 @@ impl State {
             None => {
                 self.reply_at = Some(self.messages.len());
                 self.messages.push(Message::assistant(text));
-            }
+            },
         }
     }
 
@@ -3773,7 +3791,9 @@ mod tests {
             &manifest(vec![pane_info(3, "codex", Some("codex"))]),
             &[tab_info(0, 9, "work")],
         ));
-        state.input.set_text("ask @codex to run the tests".to_owned());
+        state
+            .input
+            .set_text("ask @codex to run the tests".to_owned());
         state.submit();
 
         let user = state
@@ -4068,9 +4088,14 @@ mod tests {
     /// in flight.
     #[test]
     fn a_stream_response_is_not_mistaken_for_a_search_result() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         state.job_auto_confirm = true;
-        state.on_response(401, br#"{"error":{"message":"bad key"}}"#, &stream_context("hocus-1"));
+        state.on_response(
+            401,
+            br#"{"error":{"message":"bad key"}}"#,
+            &stream_context("hocus-1"),
+        );
 
         assert_eq!(state.messages[1].role, Role::Error);
         assert!(state.stream.as_ref().is_some_and(|s| s.finishing));
@@ -4178,7 +4203,10 @@ mod tests {
         state.timer_armed = true;
 
         assert!(!state.on_timer(FRAME_SECONDS), "no redraw");
-        assert!(state.timer_armed, "but the agent poll keeps the chain alive");
+        assert!(
+            state.timer_armed,
+            "but the agent poll keeps the chain alive"
+        );
         assert_eq!(state.tick, 0, "the spinner does not advance either");
     }
 
@@ -4208,7 +4236,10 @@ mod tests {
 
     #[test]
     fn a_partial_reply_survives_a_mid_stream_error() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("partial")], "hocus-1");
+        let mut state = state_streaming(
+            vec![Message::user("hi"), Message::assistant("partial")],
+            "hocus-1",
+        );
         state.on_chunk("hocus-1", b"", true, Some("connection reset".into()));
 
         assert_eq!(state.messages[1].content, "partial");
@@ -4247,7 +4278,8 @@ mod tests {
 
     #[test]
     fn an_empty_placeholder_is_replaced_by_the_error() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         state.on_chunk("hocus-1", b"", true, Some("connection reset".into()));
 
         assert_eq!(state.messages.len(), 2);
@@ -4256,7 +4288,8 @@ mod tests {
 
     #[test]
     fn a_silent_stream_reports_that_nothing_came_back() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         state.on_chunk("hocus-1", b"", true, None);
 
         assert_eq!(state.messages[1].role, Role::Error);
@@ -4279,7 +4312,8 @@ mod tests {
 
     #[test]
     fn chunks_from_a_superseded_stream_are_ignored() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-2");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-2");
         let rendered = state.on_chunk(
             "hocus-1",
             b"data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n",
@@ -4297,7 +4331,8 @@ mod tests {
     /// asks for a render now; the frame timer repaints what arrives in between.
     #[test]
     fn a_mid_stream_chunk_accumulates_text_without_asking_for_a_render() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         let rendered = state.on_chunk(
             "hocus-1",
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n",
@@ -4318,7 +4353,10 @@ mod tests {
     /// stops at the first token.
     #[test]
     fn the_frame_timer_outlives_the_spinner() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("some text")], "hocus-1");
+        let mut state = state_streaming(
+            vec![Message::user("hi"), Message::assistant("some text")],
+            "hocus-1",
+        );
 
         assert!(!state.is_loading(), "text is arriving, so no spinner");
         assert!(state.on_timer(FRAME_SECONDS), "but frames keep coming");
@@ -4335,7 +4373,8 @@ mod tests {
 
     #[test]
     fn streamed_deltas_accumulate_into_the_placeholder() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         state.on_chunk(
             "hocus-1",
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n",
@@ -4354,8 +4393,13 @@ mod tests {
 
     #[test]
     fn a_non_2xx_response_reports_the_api_error_and_expects_a_terminator() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
-        state.on_response(401, br#"{"error":{"message":"bad key"}}"#, &stream_context("hocus-1"));
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        state.on_response(
+            401,
+            br#"{"error":{"message":"bad key"}}"#,
+            &stream_context("hocus-1"),
+        );
 
         assert_eq!(state.messages.len(), 2);
         assert_eq!(state.messages[1].role, Role::Error);
@@ -4365,7 +4409,8 @@ mod tests {
 
     #[test]
     fn a_2xx_response_changes_nothing_because_the_body_arrives_as_chunks() {
-        let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+        let mut state =
+            state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
         let rendered = state.on_response(200, b"", &BTreeMap::new());
 
         assert!(!rendered);
@@ -4439,7 +4484,10 @@ mod tests {
             state.picker.as_ref().map(|picker| &picker.kind),
             Some(PickerKind::Chats(_))
         ));
-        assert!(state.is_receiving(), "with the reply still arriving behind it");
+        assert!(
+            state.is_receiving(),
+            "with the reply still arriving behind it"
+        );
     }
 
     /// The fingerprint is what tells the transcript cache, the archive and every
@@ -4450,7 +4498,10 @@ mod tests {
         let mut state = ready_state();
         state.input.set_text("/list_session".to_owned());
         state.submit();
-        assert!(!state.reply_is_last(), "the result is behind the placeholder");
+        assert!(
+            !state.reply_is_last(),
+            "the result is behind the placeholder"
+        );
 
         let before = state.fingerprint();
         state.on_chunk("hocus-1", &delta_frame("more"), false, None);
@@ -4488,7 +4539,10 @@ mod tests {
         state.on_chunk("hocus-1", b"", true, None);
 
         assert_eq!(state.pending.len(), 2, "queued, not swapped in");
-        assert_eq!(state.pending[0].id, "manual-0", "the running one is still head");
+        assert_eq!(
+            state.pending[0].id, "manual-0",
+            "the running one is still head"
+        );
         assert!(state.owes_reply, "and the model is owed its answer");
     }
 
@@ -4518,7 +4572,10 @@ mod tests {
         });
 
         assert_eq!(state.parked[0].messages[1].content, "background");
-        assert_eq!(state.messages[1].content, "", "the visible chat is untouched");
+        assert_eq!(
+            state.messages[1].content, "",
+            "the visible chat is untouched"
+        );
     }
 
     /// Once a background chat settles it is archived and let go: the file is the
@@ -4710,7 +4767,10 @@ mod tests {
         assert!(matches!(picker(&state).kind, PickerKind::Agents(ref ids) if ids == &vec![3]));
 
         state.picker_key(KeyWithModifier::new(BareKey::Tab));
-        assert!(matches!(picker(&state).kind, PickerKind::Agents(_)), "no cycle");
+        assert!(
+            matches!(picker(&state).kind, PickerKind::Agents(_)),
+            "no cycle"
+        );
 
         state.picker_key(KeyWithModifier::new(BareKey::Enter));
         assert!(state.picker.is_none());
@@ -4986,9 +5046,15 @@ mod tests {
         assert_eq!(state.jobs.len(), 1);
         assert_eq!(state.unschedule(Some(1)), "no job 1", "and it stays gone");
 
-        assert!(state.run_manual("/stop_jobs"), "the slash command clears the rest");
+        assert!(
+            state.run_manual("/stop_jobs"),
+            "the slash command clears the rest"
+        );
         assert!(state.jobs.is_empty());
-        assert!(!state.run_manual("/stop_jobs"), "and does nothing when there are none");
+        assert!(
+            !state.run_manual("/stop_jobs"),
+            "and does nothing when there are none"
+        );
 
         state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"c"}"#));
         state.new_chat();
@@ -5066,7 +5132,10 @@ mod tests {
             ..TabInfo::default()
         }]);
         assert!(state.active_project.is_none());
-        assert!(state.tab_projects.is_empty(), "closed tab assignment was removed");
+        assert!(
+            state.tab_projects.is_empty(),
+            "closed tab assignment was removed"
+        );
     }
 
     #[test]
@@ -5146,7 +5215,10 @@ mod tests {
         );
 
         assert_eq!(state.auto_tab_projects[&9], "hocus");
-        assert!(state.tab_projects.is_empty(), "nothing was assigned by hand");
+        assert!(
+            state.tab_projects.is_empty(),
+            "nothing was assigned by hand"
+        );
         assert_eq!(state.active_project.as_deref(), Some("hocus"));
     }
 
@@ -5155,7 +5227,10 @@ mod tests {
         let mut state = state_with_tab(9);
         poll(
             &mut state,
-            vec![agent_in(3, "/work/hocus", 9), agent_in(4, "/other/pocus", 9)],
+            vec![
+                agent_in(3, "/work/hocus", 9),
+                agent_in(4, "/other/pocus", 9),
+            ],
         );
 
         assert_eq!(state.projects.len(), 2);
@@ -5222,7 +5297,10 @@ mod tests {
 
         poll(
             &mut state,
-            vec![agent_in(3, "/work/hocus/src", 9), agent_in(4, "/work/hocus", 9)],
+            vec![
+                agent_in(3, "/work/hocus/src", 9),
+                agent_in(4, "/work/hocus", 9),
+            ],
         );
 
         assert_eq!(state.projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
@@ -5333,7 +5411,10 @@ mod tests {
 
         poll(
             &mut state,
-            vec![agent_in(3, "/work/hocus/src", 9), agent_in(4, "/work/hocus", 9)],
+            vec![
+                agent_in(3, "/work/hocus/src", 9),
+                agent_in(4, "/work/hocus", 9),
+            ],
         );
         assert_eq!(state.projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
 
@@ -5428,7 +5509,11 @@ mod tests {
         state.projects.clear();
         state.active_project = None;
 
-        let found = todo(&mut state, "todo_search", r#"{"query":"parser","all_projects":true}"#);
+        let found = todo(
+            &mut state,
+            "todo_search",
+            r#"{"query":"parser","all_projects":true}"#,
+        );
         assert_eq!(found["scope"], "all");
         assert_eq!(found["matches"][0]["root"], "/work/gone");
         assert_eq!(found["matches"][0]["project"], serde_json::Value::Null);
@@ -5459,16 +5544,16 @@ mod tests {
         );
         state.active_project = Some("hocus".to_owned());
         let args = tools::Args::parse(r#"{"command":"codex"}"#).unwrap();
-        assert_eq!(state.agent_cwd(&args).unwrap().as_deref(), Some("/work/hocus"));
+        assert_eq!(
+            state.agent_cwd(&args).unwrap().as_deref(),
+            Some("/work/hocus")
+        );
     }
 
     #[test]
     fn a_project_tab_uses_the_stable_id_from_zellij() {
         let mut state = idle_state();
-        let result = state.register_opened_project(
-            "hocus",
-            r#"{"opened":true,"tab_id":47}"#,
-        );
+        let result = state.register_opened_project("hocus", r#"{"opened":true,"tab_id":47}"#);
         assert_eq!(result, r#"{"opened":true,"tab_id":47}"#);
         assert_eq!(state.tab_projects[&47], "hocus");
         assert_eq!(state.active_project.as_deref(), Some("hocus"));
@@ -5549,7 +5634,11 @@ mod tests {
             panes.iter().map(|pane| pane.pane_id).collect::<Vec<_>>(),
             vec![3, 5],
         );
-        assert_eq!(panes[0].status, agents::AgentStatus::Held, "held beats exited");
+        assert_eq!(
+            panes[0].status,
+            agents::AgentStatus::Held,
+            "held beats exited"
+        );
         assert_eq!(panes[0].tab, Some((9, "work".to_owned())));
         assert_eq!(panes[1].tab, None, "a global pane is in no tab");
     }
@@ -5655,7 +5744,10 @@ mod tests {
     fn a_spawned_kind_is_registered_against_the_pane_new_pane_reported() {
         let mut state = idle_state();
         assert_eq!(
-            state.register_spawned(Some("reviewer"), r#"{"opened":true,"pane_id":7,"is_plugin":false}"#),
+            state.register_spawned(
+                Some("reviewer"),
+                r#"{"opened":true,"pane_id":7,"is_plugin":false}"#
+            ),
             r#"{"opened":true,"pane_id":7,"is_plugin":false} (registered as reviewer)"#,
         );
         assert_eq!(

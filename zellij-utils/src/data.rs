@@ -3501,6 +3501,7 @@ pub enum PluginCommand {
     ),
     CancelWebRequest(String),      // String -> stream_id
     RenameSession(String),         // String -> new session name
+    Notify(String),                // String -> the notification message to show
     UnblockCliPipeInput(String),   // String => pipe name
     BlockCliPipeInput(String),     // String => pipe name
     CliPipeOutput(String, String), // String => pipe name, String => output

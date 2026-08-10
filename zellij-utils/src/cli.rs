@@ -1434,6 +1434,12 @@ pub enum CliAction {
     RenameSession {
         name: String,
     },
+    /// Show a notification that dismisses itself after a timeout. Its corner and timeout come from
+    /// the `notification_position` and `notification_timeout` config options.
+    Notify {
+        /// The message to show
+        text: String,
+    },
     /// Send data to one or more plugins, launch them if they are not running.
     #[clap(override_usage(
 r#"

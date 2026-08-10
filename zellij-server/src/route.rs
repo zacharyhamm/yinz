@@ -1680,6 +1680,14 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::Notify(text) => {
+            senders
+                .send_to_screen(ScreenInstruction::Notify(
+                    text,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::CliPipe {
             pipe_id,
             mut name,

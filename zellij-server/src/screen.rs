@@ -66,6 +66,7 @@ use std::time::{Duration, Instant};
 
 use crate::route::NotificationEnd;
 
+use crate::ui::notification::{notification_chunks, notification_origins, notification_width};
 use log::{debug, warn};
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
@@ -80,7 +81,10 @@ use zellij_utils::input::command::{OpenFilePayload, RunCommand};
 use zellij_utils::input::config::Config;
 use zellij_utils::input::keybinds::{shortcut_for_action, Keybinds};
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
-use zellij_utils::input::options::{Clipboard, NestedSessionHandling, PaneFrameStyle};
+use zellij_utils::input::options::{
+    Clipboard, NestedSessionHandling, NotificationPosition, PaneFrameStyle,
+    DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+};
 use zellij_utils::ipc::{
     ExitReason, MobileActivePanePayload, MobilePanePayload, MobileSessionPayload,
     MobileSizePayload, MobileStatePayload, MobileTabPayload, ServerToClientMsg,
@@ -815,6 +819,8 @@ pub enum ScreenInstruction {
     ),
     SerializeLayoutForResurrection,
     RenameSession(String, ClientId, Option<NotificationEnd>), // String -> new name
+    Notify(String, Option<NotificationEnd>),                  // String -> the message to show
+    DismissNotification(u64),                                 // u64 -> the notification's id
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
@@ -1222,6 +1228,8 @@ impl From<&ScreenInstruction> for ScreenContext {
                 ScreenContext::SerializeLayoutForResurrection
             },
             ScreenInstruction::RenameSession(..) => ScreenContext::RenameSession,
+            ScreenInstruction::Notify(..) => ScreenContext::Notify,
+            ScreenInstruction::DismissNotification(..) => ScreenContext::DismissNotification,
             ScreenInstruction::ListClientsMetadata(..) => ScreenContext::ListClientsMetadata,
             ScreenInstruction::ListPanes { .. } => ScreenContext::ListPanes,
             ScreenInstruction::ListTabs { .. } => ScreenContext::ListTabs,
@@ -1568,6 +1576,11 @@ pub(crate) struct Screen {
     default_mode_info: ModeInfo, // TODO: restructure ModeInfo to prevent this duplication
     style: Style,
     pane_frame_style: PaneFrameStyle,
+    /// Live toast notifications, newest first (index 0 sits in the configured corner).
+    notifications: Vec<Notification>,
+    next_notification_id: u64,
+    notification_position: NotificationPosition,
+    notification_timeout_secs: u64,
     auto_layout: bool,
     session_serialization: bool,
     serialize_pane_viewport: bool,
@@ -1641,6 +1654,13 @@ pub(crate) struct Screen {
 
 /// A pending forward waiting to be dispatched once the current in-flight
 /// forward's barrier reply (or timeout) arrives.
+/// A live toast notification. See [`crate::ui::notification`] for how these are drawn.
+#[derive(Debug, Clone)]
+struct Notification {
+    id: u64,
+    text: String,
+}
+
 #[derive(Debug, Clone)]
 struct PendingForward {
     token: u32,
@@ -1722,6 +1742,8 @@ impl Screen {
         web_server_ip: IpAddr,
         web_server_port: u16,
         nested_session_handling: NestedSessionHandling,
+        notification_position: NotificationPosition,
+        notification_timeout_secs: u64,
     ) -> Self {
         let session_name = mode_info.session_name.clone().unwrap_or_default();
         let session_info = SessionInfo::new(session_name.clone());
@@ -1763,6 +1785,10 @@ impl Screen {
             mode_info: BTreeMap::new(),
             default_mode_info: mode_info,
             pane_frame_style,
+            notifications: vec![],
+            next_notification_id: 0,
+            notification_position,
+            notification_timeout_secs,
             auto_layout,
             session_is_mirrored,
             copy_options,
@@ -2453,6 +2479,52 @@ impl Screen {
         output
             .add_character_chunks_to_multiple_clients(chunks, stale.into_iter(), None)
             .context("failed to fill the strip rows no tab owns")
+    }
+
+    /// Paint the live notifications into the corner `notification_position` names, over whatever
+    /// already rendered there.
+    ///
+    /// Called once every frame while any notification is live, rather than diffed like
+    /// `fill_unowned_strip_rows` - a pane that repaints would overwrite the toast's cells, and
+    /// re-emitting after every pane is both correct and cheap. The floating pane stack is cleared
+    /// first so `Output` doesn't clip these chunks behind a floating pane sitting in that corner.
+    fn render_notifications(
+        &self,
+        output: &mut Output,
+        viewport: Viewport,
+        client_ids: &[ClientId],
+    ) -> Result<()> {
+        if self.notifications.is_empty() || client_ids.is_empty() {
+            return Ok(());
+        }
+        let width = self
+            .notifications
+            .iter()
+            .filter_map(|notification| notification_width(&notification.text, viewport.cols))
+            .max();
+        let Some(width) = width else {
+            return Ok(());
+        };
+        let origins = notification_origins(
+            viewport,
+            self.notification_position,
+            self.notifications.len(),
+            width,
+        );
+        let previous_stack = output.set_floating_panes_stack(None);
+        let result = (|| -> Result<()> {
+            for (notification, (x, y)) in self.notifications.iter().zip(origins) {
+                let chunks = notification_chunks(&notification.text, x, y, width, &self.style);
+                output.add_character_chunks_to_multiple_clients(
+                    chunks,
+                    client_ids.iter().copied(),
+                    None,
+                )?;
+            }
+            Ok(())
+        })();
+        output.set_floating_panes_stack(previous_stack);
+        result.context("failed to render notifications")
     }
 
     /// Move the global panes to where they sit for `client_id`'s tab, so anything reading their
@@ -4733,6 +4805,9 @@ impl Screen {
                     .or_default()
                     .push(client_id);
             }
+            // notifications paint over the panes, so they're emitted only once every group has
+            // rendered - collected here, drawn just below
+            let mut notification_targets: Vec<(Viewport, Vec<ClientId>)> = vec![];
             let multiple_users_exist_in_session = self.connected_clients.borrow().len() > 1;
             // ponytail: rendering a pane clears its dirty flag, so with more than one tab in view
             // every group after the first would draw nothing. Repaint each group instead of
@@ -4765,6 +4840,14 @@ impl Screen {
                     self.fill_unowned_strip_rows(&mut output, tab_id, &layout, &client_ids, force)
                         .context(err_context)?;
                 }
+                if !self.notifications.is_empty() {
+                    notification_targets.push((layout.center, client_ids));
+                }
+            }
+
+            for (viewport, client_ids) in notification_targets {
+                self.render_notifications(&mut output, viewport, &client_ids)
+                    .context(err_context)?;
             }
 
             // GlobalPanes::render clears each pane's should_render, but Output drops chunks for
@@ -9071,6 +9154,10 @@ pub(crate) fn screen_thread_main(
     let serialize_pane_viewport = config_options.serialize_pane_viewport.unwrap_or(false);
     let scrollback_lines_to_serialize = config_options.scrollback_lines_to_serialize;
     let session_is_mirrored = config_options.mirror_session.unwrap_or(false);
+    let notification_position = config_options.notification_position.unwrap_or_default();
+    let notification_timeout_secs = config_options
+        .notification_timeout
+        .unwrap_or(DEFAULT_NOTIFICATION_TIMEOUT_SECS);
     let layout_dir = config_options.layout_dir;
     #[cfg(test)]
     let default_shell = config_options
@@ -9171,6 +9258,8 @@ pub(crate) fn screen_thread_main(
         web_server_ip,
         web_server_port,
         nested_session_handling,
+        notification_position,
+        notification_timeout_secs,
     );
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
@@ -12831,6 +12920,36 @@ pub(crate) fn screen_thread_main(
                         completion_tx,
                     })
                     .with_context(err_context)?;
+            },
+            ScreenInstruction::Notify(
+                text,
+                _completion_tx, // the action ends here, dropping this will release anything
+                                // waiting for it
+            ) => {
+                let id = screen.next_notification_id;
+                screen.next_notification_id += 1;
+                screen.notifications.insert(0, Notification { id, text });
+                screen
+                    .bus
+                    .senders
+                    .send_to_background_jobs(BackgroundJob::DismissNotification(
+                        id,
+                        screen.notification_timeout_secs,
+                    ))?;
+                screen.render(None)?;
+            },
+            ScreenInstruction::DismissNotification(id) => {
+                let was_showing = screen.notifications.len();
+                screen.notifications.retain(|n| n.id != id);
+                if screen.notifications.len() != was_showing {
+                    // nothing under the toast is dirty, so without forcing a repaint its cells
+                    // would keep the glyphs it just gave up
+                    for tab in screen.tabs.values_mut() {
+                        tab.set_force_render();
+                    }
+                    screen.global_panes.set_force_render();
+                    screen.render(None)?;
+                }
             },
             ScreenInstruction::RenameSession(
                 name,

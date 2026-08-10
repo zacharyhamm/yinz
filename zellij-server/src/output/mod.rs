@@ -708,8 +708,13 @@ impl Output {
     }
     /// `add_clients` sets the stack of whichever tab is rendering, so a later pass over the tabs
     /// (eg. positioning the cursor) needs to point the output back at its own tab's stack.
-    pub fn set_floating_panes_stack(&mut self, floating_panes_stack: Option<FloatingPanesStack>) {
-        self.floating_panes_stack = floating_panes_stack;
+    /// Swap in a new occlusion stack, returning the one it replaced so callers that need to emit
+    /// unclipped chunks (eg. notifications) can put it back afterwards.
+    pub fn set_floating_panes_stack(
+        &mut self,
+        floating_panes_stack: Option<FloatingPanesStack>,
+    ) -> Option<FloatingPanesStack> {
+        std::mem::replace(&mut self.floating_panes_stack, floating_panes_stack)
     }
     pub fn add_character_chunks_to_client(
         &mut self,

@@ -1041,6 +1041,10 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(_) => Err("BreakPaneLeft should not have a payload"),
                 None => Ok(Action::BreakPaneLeft),
             },
+            Some(ProtobufActionName::Notify) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::NotifyPayload(text)) => Ok(Action::Notify(text)),
+                _ => Err("Wrong payload for Action::Notify"),
+            },
             Some(ProtobufActionName::RenameSession) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::RenameSessionPayload(name)) => {
                     Ok(Action::RenameSession { name })
@@ -2006,6 +2010,10 @@ impl TryFrom<Action> for ProtobufAction {
             Action::BreakPaneLeft => Ok(ProtobufAction {
                 name: ProtobufActionName::BreakPaneLeft as i32,
                 optional_payload: None,
+            }),
+            Action::Notify(text) => Ok(ProtobufAction {
+                name: ProtobufActionName::Notify as i32,
+                optional_payload: Some(OptionalPayload::NotifyPayload(text)),
             }),
             Action::RenameSession { name: session_name } => Ok(ProtobufAction {
                 name: ProtobufActionName::RenameSession as i32,

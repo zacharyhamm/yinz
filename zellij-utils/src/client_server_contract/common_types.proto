@@ -286,6 +286,7 @@ message Action {
     ToggleHostFullscreenAction toggle_host_fullscreen = 146;
     FocusGuestSessionAction focus_guest_session = 147;
     SetGlobalPanePlacementAction set_global_pane_placement = 148;
+    NotifyAction notify = 149;
   }
 }
 
@@ -705,6 +706,10 @@ message RenameTabByIdAction {
 
 message RenameSessionAction {
   string name = 1;
+}
+
+message NotifyAction {
+  string text = 1;
 }
 
 message CliPipeAction {
@@ -1248,6 +1253,8 @@ message Options {
   optional bool support_kitty_graphics_protocol = 55;
   optional bool session_recording = 56;
   optional bool session_recording_input = 57;
+  optional string notification_position = 59;
+  optional uint64 notification_timeout = 60;
 }
 
 enum OnForceClose {

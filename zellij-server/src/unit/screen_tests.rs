@@ -23,7 +23,10 @@ use zellij_utils::input::layout::{
     TiledPaneLayout,
 };
 use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::input::options::{NestedSessionHandling, Options, PaneFrameStyle};
+use zellij_utils::input::options::{
+    NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
+    DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+};
 use zellij_utils::ipc::IpcReceiverWithContext;
 use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::position::Position;
@@ -357,6 +360,8 @@ fn create_new_screen_with_kitty_graphics(
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        NotificationPosition::default(),
+        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     seed_first_client_size(screen, size)
 }
@@ -8999,6 +9004,8 @@ fn create_new_screen_with_message_capture(
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        NotificationPosition::default(),
+        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     (seed_first_client_size(screen, size), messages)
 }
@@ -12109,6 +12116,8 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        NotificationPosition::default(),
+        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     (
         seed_first_client_size(screen, size),
@@ -12790,6 +12799,8 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        NotificationPosition::default(),
+        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     (
         seed_first_client_size(screen, size),
@@ -13430,6 +13441,8 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
         NestedSessionHandling::default(),
+        NotificationPosition::default(),
+        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     seed_first_client_size(screen, size)
 }

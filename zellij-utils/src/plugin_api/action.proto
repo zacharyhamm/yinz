@@ -249,6 +249,7 @@ message Action {
     SetPaneFrameStylePayload set_pane_frame_style_payload = 61;
     NewStackedPanePayload new_stacked_pane_payload = 62;
     SetGlobalPanePlacementPayload set_global_pane_placement_payload = 63;
+    string notify_payload = 64;
   }
 }
 
@@ -524,6 +525,7 @@ enum ActionName {
     ToggleHostFullscreen = 108;
     FocusGuestSession = 109;
     SetGlobalPanePlacement = 110;
+    Notify = 111;
 }
 
 message Position {

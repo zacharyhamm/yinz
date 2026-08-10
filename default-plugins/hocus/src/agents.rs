@@ -97,9 +97,13 @@ fn program(word: &str) -> &str {
 fn kind_of(word: &str) -> Option<&'static str> {
     let name = program(word).to_lowercase();
     let stem = name.split('.').next().unwrap_or_default();
-    [name.as_str(), stem, stem.split('-').next().unwrap_or_default()]
-        .iter()
-        .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
+    [
+        name.as_str(),
+        stem,
+        stem.split('-').next().unwrap_or_default(),
+    ]
+    .iter()
+    .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
 }
 
 /// The agent kind a pane runs, from its command first and its title second.
@@ -182,7 +186,7 @@ pub fn transition_notices(
             None => Some(format!("agent {kind} (pane {pane_id}) closed")),
             Some((_, now)) if now != status => {
                 Some(format!("agent {kind} (pane {pane_id}) {}", now.as_str()))
-            }
+            },
             Some(_) => None,
         })
         .collect()
@@ -201,7 +205,7 @@ pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) {
         Some((last, polls)) if *last == hash => *polls += 1,
         _ => {
             activity.insert(pane_id, (hash, 0));
-        }
+        },
     }
 }
 
@@ -556,7 +560,10 @@ mod tests {
             detect_kind("shell", Some("node /opt/bin/gemini")),
             Some("gemini"),
         );
-        assert_eq!(detect_kind("shell", Some("python3 -m aider")), Some("aider"));
+        assert_eq!(
+            detect_kind("shell", Some("python3 -m aider")),
+            Some("aider")
+        );
         assert_eq!(
             detect_kind("shell", Some("node /opt/lib/claude.js")),
             Some("claude"),
@@ -702,8 +709,14 @@ mod tests {
             Some("[@3 is agent pane 3 (codex, idle 2m) on tab \"work\"]".to_owned()),
         );
         // Unresolved kinds, non-agent panes, embedded @ and bare @ say nothing.
-        assert_eq!(mention_context("@aider @7 a@b @", &panes, &kinds, &activity), None);
-        assert_eq!(mention_context("no mentions here", &panes, &kinds, &activity), None);
+        assert_eq!(
+            mention_context("@aider @7 a@b @", &panes, &kinds, &activity),
+            None
+        );
+        assert_eq!(
+            mention_context("no mentions here", &panes, &kinds, &activity),
+            None
+        );
     }
 
     #[test]
@@ -746,9 +759,13 @@ mod tests {
             tab: Some((9, "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
-        let json = list_json(&[tabbed], &manual(&[]), &Activity::new(), &owners(&[]), |_| {
-            String::new()
-        });
+        let json = list_json(
+            &[tabbed],
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[]),
+            |_| String::new(),
+        );
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value[0]["tab_id"], 9);
         assert_eq!(value[0]["tab"], "work");
@@ -851,7 +868,13 @@ mod tests {
             in_folder(7, "zsh", "/work/hocus", 3),
             global,
         ];
-        let owners = owners(&[(3, "hocus"), (5, "hocus"), (6, "pocus"), (7, "hocus"), (9, "hocus")]);
+        let owners = owners(&[
+            (3, "hocus"),
+            (5, "hocus"),
+            (6, "pocus"),
+            (7, "hocus"),
+            (9, "hocus"),
+        ]);
 
         assert_eq!(
             tab_projects(&panes, &manual(&[]), &owners),

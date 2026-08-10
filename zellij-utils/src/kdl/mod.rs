@@ -12,7 +12,10 @@ use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
     Layout, PercentOrFixed, PluginUserConfiguration, RunPlugin, RunPluginOrAlias, TabLayoutInfo,
 };
-use crate::input::options::{Clipboard, OnForceClose, Options, PaneFrameStyle};
+use crate::input::options::{
+    Clipboard, NotificationPosition, OnForceClose, Options, PaneFrameStyle,
+    DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+};
 use crate::input::permission::{GrantedPermission, PermissionCache};
 use crate::input::plugins::PluginAliases;
 use crate::input::theme::{FrameConfig, Theme, Themes, UiConfig};
@@ -742,6 +745,7 @@ impl Action {
                 })
             },
             "RenameSession" => Ok(Action::RenameSession { name: string }),
+            "Notify" => Ok(Action::Notify(string)),
             _ => Err(ConfigError::new_kdl_error(
                 format!("Unsupported action: {}", action_name),
                 action_node.span().offset(),
@@ -766,6 +770,11 @@ impl Action {
             Action::WriteChars { chars: string } => {
                 let mut node = KdlNode::new("WriteChars");
                 node.push(string.clone());
+                Some(node)
+            },
+            Action::Notify(text) => {
+                let mut node = KdlNode::new("Notify");
+                node.push(text.clone());
                 Some(node)
             },
             Action::SwitchToMode { input_mode } => {
@@ -2436,6 +2445,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 action_arguments,
                 kdl_action
             ),
+            "Notify" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
             "MessagePlugin" => {
                 let arguments = action_arguments.iter().copied();
                 let mut args = kdl_arguments_that_are_strings(arguments)?;
@@ -2971,6 +2985,23 @@ impl Options {
                 })?),
                 None => None,
             };
+        let notification_position = match kdl_property_first_arg_as_string_or_error!(
+            kdl_options,
+            "notification_position"
+        ) {
+            Some((string, entry)) => {
+                Some(NotificationPosition::from_str(string).map_err(|_| {
+                    kdl_parsing_error!(
+                        format!("Invalid value for notification_position: '{}'", string),
+                        entry
+                    )
+                })?)
+            },
+            None => None,
+        };
+        let notification_timeout =
+            kdl_property_first_arg_as_i64_or_error!(kdl_options, "notification_timeout")
+                .map(|(v, _)| v as u64);
         let auto_layout =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "auto_layout").map(|(v, _)| v);
         let theme = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme")
@@ -3171,6 +3202,8 @@ impl Options {
             mouse_mode,
             pane_frames,
             pane_frame_style,
+            notification_position,
+            notification_timeout,
             mirror_session,
             on_force_close,
             scroll_buffer_size,
@@ -3649,6 +3682,63 @@ impl Options {
             Some(node)
         } else if add_comments {
             let mut node = create_node("titles");
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn notification_position_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// The corner notifications appear in - they stack downwards from a top corner",
+            "// and upwards from a bottom one",
+            "// Options:",
+            "//   - top-left",
+            "//   - top-right (default)",
+            "//   - bottom-left",
+            "//   - bottom-right",
+        );
+
+        let create_node = |node_value: &str| -> KdlNode {
+            let mut node = KdlNode::new("notification_position");
+            node.push(node_value.to_owned());
+            node
+        };
+        if let Some(notification_position) = &self.notification_position {
+            let mut node = create_node(notification_position.as_str());
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(NotificationPosition::default().as_str());
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn notification_timeout_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}",
+            " ", "// How long a notification stays on screen, in seconds", "// Default: 4",
+        );
+
+        let create_node = |node_value: u64| -> KdlNode {
+            let mut node = KdlNode::new("notification_timeout");
+            node.push(node_value as i64);
+            node
+        };
+        if let Some(notification_timeout) = self.notification_timeout {
+            let mut node = create_node(notification_timeout);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(DEFAULT_NOTIFICATION_TIMEOUT_SECS);
             node.set_leading(format!("{}\n// ", comment_text));
             Some(node)
         } else {
@@ -4876,6 +4966,12 @@ impl Options {
         }
         if let Some(pane_frame_style) = self.pane_frame_style_to_kdl(add_comments) {
             nodes.push(pane_frame_style);
+        }
+        if let Some(notification_position) = self.notification_position_to_kdl(add_comments) {
+            nodes.push(notification_position);
+        }
+        if let Some(notification_timeout) = self.notification_timeout_to_kdl(add_comments) {
+            nodes.push(notification_timeout);
         }
         if let Some(mirror_session) = self.mirror_session_to_kdl(add_comments) {
             nodes.push(mirror_session);

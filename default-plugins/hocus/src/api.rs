@@ -274,7 +274,7 @@ pub fn request_body_with_project(
             Some(system) => {
                 system.push_str("\n\n");
                 system.push_str(&context);
-            }
+            },
             None => system = Some(context),
         }
     }
@@ -296,7 +296,7 @@ pub fn request_body_with_project(
             // nothing to say yet.
             Role::Assistant if !message.content.is_empty() => {
                 messages.push(json!({ "role": "assistant", "content": message.content }))
-            }
+            },
             // Every tool call must be answered or the next request is malformed,
             // so this arm has no content-based skip.
             Role::Tool => messages.push(json!({
@@ -327,8 +327,8 @@ fn tool_call_json(call: &ToolCall) -> serde_json::Value {
     // must be valid json" on anything that is not a JSON object. A no-argument
     // call commonly streams as `""`, which dispatch accepts (see
     // `tools::Args::parse`) but the next request would be rejected for.
-    let valid = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments)
-        .is_ok();
+    let valid =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments).is_ok();
     json!({
         "id": call.id,
         "type": "function",
@@ -420,7 +420,7 @@ fn percent_encode(value: &str) -> String {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 encoded.push(*byte as char)
-            }
+            },
             _ => encoded.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -584,7 +584,7 @@ impl ToolCallAccumulator {
             None => {
                 self.calls.push((*index, ToolCall::default()));
                 &mut self.calls.last_mut().expect("just pushed").1
-            }
+            },
         };
 
         // Assigned rather than appended: these arrive whole, on one fragment.

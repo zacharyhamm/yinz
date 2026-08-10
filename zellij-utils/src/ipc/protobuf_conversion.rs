@@ -957,6 +957,10 @@ impl From<crate::input::options::Options>
                 crate::input::options::PaneFrameStyle::Titles => "titles".to_owned(),
                 crate::input::options::PaneFrameStyle::None => "none".to_owned(),
             }),
+            notification_position: options
+                .notification_position
+                .map(|p| p.as_str().to_owned()),
+            notification_timeout: options.notification_timeout,
             nested_session_handling: options.nested_session_handling.map(|n| {
                 use crate::client_server_contract::client_server_contract::NestedSessionHandling as ProtoNestedSessionHandling;
                 use crate::input::options::NestedSessionHandling;
@@ -1008,6 +1012,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                 "none" => Some(crate::input::options::PaneFrameStyle::None),
                 _ => None,
             }),
+            notification_position: options
+                .notification_position
+                .as_deref()
+                .and_then(|p| p.parse().ok()),
+            notification_timeout: options.notification_timeout,
             mirror_session: options.mirror_session,
             on_force_close: options
                 .on_force_close
@@ -1179,6 +1188,7 @@ impl TryFrom<crate::input::actions::Action>
             NextSwapLayoutAction,
             NextSwapLayoutByTabIdAction,
             NoOpAction,
+            NotifyAction,
             OverrideLayoutAction,
             PageScrollDownAction,
             PageScrollDownByPaneIdAction,
@@ -1884,6 +1894,9 @@ impl TryFrom<crate::input::actions::Action>
             },
             crate::input::actions::Action::RenameSession { name } => {
                 ActionType::RenameSession(RenameSessionAction { name })
+            },
+            crate::input::actions::Action::Notify(text) => {
+                ActionType::Notify(NotifyAction { text })
             },
             crate::input::actions::Action::CliPipe {
                 pipe_id,
@@ -2844,6 +2857,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(crate::input::actions::Action::RenameSession {
                     name: rename_session_action.name,
                 })
+            },
+            ActionType::Notify(notify_action) => {
+                Ok(crate::input::actions::Action::Notify(notify_action.text))
             },
             ActionType::CliPipe(cli_pipe_action) => Ok(crate::input::actions::Action::CliPipe {
                 pipe_id: cli_pipe_action.pipe_id,

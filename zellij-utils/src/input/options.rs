@@ -100,6 +100,63 @@ impl FromStr for PaneFrameStyle {
     }
 }
 
+/// The corner notifications appear in. Stacks grow away from the edge they're anchored to: down
+/// from a top corner, up from a bottom one.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotificationPosition {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl NotificationPosition {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NotificationPosition::TopLeft => "top-left",
+            NotificationPosition::TopRight => "top-right",
+            NotificationPosition::BottomLeft => "bottom-left",
+            NotificationPosition::BottomRight => "bottom-right",
+        }
+    }
+
+    pub fn is_top(&self) -> bool {
+        matches!(
+            self,
+            NotificationPosition::TopLeft | NotificationPosition::TopRight
+        )
+    }
+
+    pub fn is_left(&self) -> bool {
+        matches!(
+            self,
+            NotificationPosition::TopLeft | NotificationPosition::BottomLeft
+        )
+    }
+}
+
+impl FromStr for NotificationPosition {
+    type Err = Box<dyn std::error::Error>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().replace('_', "-").as_str() {
+            "top-left" => Ok(NotificationPosition::TopLeft),
+            "top-right" => Ok(NotificationPosition::TopRight),
+            "bottom-left" => Ok(NotificationPosition::BottomLeft),
+            "bottom-right" => Ok(NotificationPosition::BottomRight),
+            e => Err(format!(
+                "Unknown notification position: '{}' (expected 'top-left', 'top-right', 'bottom-left' or 'bottom-right')",
+                e
+            )
+            .into()),
+        }
+    }
+}
+
+/// How long a notification stays on screen when `notification_timeout` is unset.
+pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 4;
+
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize, Args)]
 /// Options that can be set either through the config file,
 /// or cli flags - cli flags should take precedence over the config file
@@ -159,6 +216,15 @@ pub struct Options {
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]
     #[serde(default)]
     pub pane_frame_style: Option<PaneFrameStyle>,
+    /// The corner notifications appear in
+    /// (top-left, top-right, bottom-left or bottom-right)
+    #[clap(long, value_enum, hide_possible_values = true, value_parser)]
+    #[serde(default)]
+    pub notification_position: Option<NotificationPosition>,
+    /// How long a notification stays on screen, in seconds
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub notification_timeout: Option<u64>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Mirror session when multiple users are connected (true or false)
@@ -417,6 +483,8 @@ impl Options {
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);
         let pane_frames = other.pane_frames.or(self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
+        let notification_position = other.notification_position.or(self.notification_position);
+        let notification_timeout = other.notification_timeout.or(self.notification_timeout);
         let auto_layout = other.auto_layout.or(self.auto_layout);
         let mirror_session = other.mirror_session.or(self.mirror_session);
         let simplified_ui = other.simplified_ui.or(self.simplified_ui);
@@ -511,6 +579,8 @@ impl Options {
             mouse_mode,
             pane_frames,
             pane_frame_style,
+            notification_position,
+            notification_timeout,
             mirror_session,
             on_force_close,
             scroll_buffer_size,
@@ -574,6 +644,8 @@ impl Options {
         let mouse_mode = merge_bool(other.mouse_mode, self.mouse_mode);
         let pane_frames = merge_bool(other.pane_frames, self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
+        let notification_position = other.notification_position.or(self.notification_position);
+        let notification_timeout = other.notification_timeout.or(self.notification_timeout);
         let auto_layout = merge_bool(other.auto_layout, self.auto_layout);
         let mirror_session = merge_bool(other.mirror_session, self.mirror_session);
         let session_serialization =
@@ -667,6 +739,8 @@ impl Options {
             mouse_mode,
             pane_frames,
             pane_frame_style,
+            notification_position,
+            notification_timeout,
             mirror_session,
             on_force_close,
             scroll_buffer_size,
