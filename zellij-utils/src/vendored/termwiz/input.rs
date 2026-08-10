@@ -991,6 +991,7 @@ pub struct InputParser {
     key_map: KeyMap<InputEvent>,
     buf: ReadBuffer,
     state: InputState,
+    unreported_consumed: usize,
 }
 
 #[cfg(windows)]
@@ -1248,6 +1249,7 @@ impl InputParser {
             key_map: Self::build_basic_key_map(),
             buf: ReadBuffer::new(),
             state: InputState::Normal,
+            unreported_consumed: 0,
         }
     }
 
@@ -1921,14 +1923,18 @@ impl InputParser {
         // `process_bytes` reports the bytes still buffered after each event; the
         // drop between successive remainders is what that event consumed.
         let mut prev_remaining = self.buf.len();
+        let mut unreported_consumed = std::mem::take(&mut self.unreported_consumed);
         self.process_bytes(
             |event, remaining| {
-                let consumed = prev_remaining.saturating_sub(remaining);
+                let consumed = unreported_consumed + prev_remaining.saturating_sub(remaining);
+                unreported_consumed = 0;
                 prev_remaining = remaining;
                 callback(event, consumed);
             },
             maybe_more,
         );
+        self.unreported_consumed =
+            unreported_consumed + prev_remaining.saturating_sub(self.buf.len());
     }
 
     pub fn parse_as_vec(&mut self, bytes: &[u8], maybe_more: bool) -> Vec<InputEvent> {
