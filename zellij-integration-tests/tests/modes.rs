@@ -197,6 +197,7 @@ fn tmux_mode() {
 fn bracketed_paste() {
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
+    terminal.output(b"\x1b[?2004h");
 
     zellij.send_stdin(&keys::BRACKETED_PASTE_START);
     zellij.send_stdin(&keys::ctrl('t'));
@@ -213,6 +214,13 @@ fn bracketed_paste() {
             && !grid_snapshot.contains("Tab #2")
     });
     assert_snapshot!(normalized(&grid_snapshot));
+
+    zellij.send_stdin(&keys::ENTER);
+    terminal.wait_for_stdin("enter followed the pasted text", |stdin_bytes| {
+        stdin_bytes
+            .windows(7)
+            .any(|window| window == b"\x1b[201~\r")
+    });
     zellij.quit();
 }
 
