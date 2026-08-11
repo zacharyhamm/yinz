@@ -504,6 +504,8 @@ fn test_client_messages() {
                 builtin_plugins_dir: Some(PathBuf::from("builtin_plugins_dir")),
                 theme_dir: Some(PathBuf::from("theme_dir")),
                 mouse_mode: Some(true),
+                // Intentionally not carried over the wire; see the field's docs.
+                detachable_panes: None,
                 pane_frames: Some(true),
                 pane_frame_style: Some(PaneFrameStyle::Full),
                 notification_position: Some(NotificationPosition::BottomLeft),

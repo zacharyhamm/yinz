@@ -15,9 +15,31 @@ use zellij_utils::{
 };
 
 fn main() {
+    // A pty-host supervisor is spawned once per pane, so it branches before the
+    // logger, the cache-folder setup and the clap builder — none of which it
+    // needs, and all of which it would otherwise pay for on every pane. It must
+    // also close the descriptors it inherited from the server before anything
+    // opens a new one, so it sets up its own logging afterwards.
+    #[cfg(unix)]
+    if let Some(label) = zellij_server::pty_host::pty_host_invocation() {
+        zellij_server::pty_host::run_pty_host(label);
+    }
+
     configure_logger();
     create_config_and_cache_folders();
     let opts = CliArgs::parse();
+
+    // Talks only to supervisor sockets, so like `recordings` it runs without any
+    // client or server — the whole point is that it works when the session is
+    // already gone.
+    #[cfg(unix)]
+    if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
+        if let Err(e) = commands::pty_hosts(pty_hosts) {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
 
     // Handle offline recordings command before client/server startup
     if let Some(Command::Recordings(rec)) = opts.command.clone() {
@@ -278,6 +300,15 @@ fn main() {
         commands::delete_session(target_session, force);
     } else if let Some(path) = opts.server {
         commands::start_server(path, opts.debug);
+    } else if opts.pty_host.is_some() {
+        // Only reachable when `--pty-host` was not the first argument, so the
+        // fast path in `main()` did not catch it. There is no control channel on
+        // fd 3 in that case; say so rather than blocking on a read forever.
+        eprintln!(
+            "--pty-host is an internal flag: zellij spawns pane supervisors itself. \
+             There is nothing to run by hand."
+        );
+        std::process::exit(1);
     } else if opts.layout.is_some() || opts.layout_string.is_some() {
         if let Some(session_name) = opts
             .session

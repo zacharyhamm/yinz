@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/setup.rs
-assertion_line: 641
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -6066,6 +6065,7 @@ Config {
         builtin_plugins_dir: None,
         theme_dir: None,
         mouse_mode: None,
+        detachable_panes: None,
         pane_frames: None,
         pane_frame_style: None,
         notification_position: None,

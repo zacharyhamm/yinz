@@ -1026,6 +1026,17 @@ pub fn get_config_options_from_cli_args(opts: &CliArgs) -> Result<Options, Strin
         .map_err(|e| e.to_string())
 }
 
+#[cfg(unix)]
+pub(crate) fn pty_hosts(command: zellij_utils::cli::PtyHosts) -> anyhow::Result<()> {
+    use zellij_server::pty_host::cli;
+    use zellij_utils::cli::PtyHosts as PtyHostsCli;
+    match command {
+        PtyHostsCli::List { json } => cli::list(json),
+        PtyHostsCli::Kill { host_id } => cli::kill(&host_id),
+        PtyHostsCli::KillAll => cli::kill_all(),
+    }
+}
+
 pub(crate) fn recordings(
     command: zellij_utils::cli::Recordings,
     data_dir: PathBuf,

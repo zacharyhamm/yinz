@@ -72,6 +72,12 @@ pub struct CliArgs {
     #[clap(long, value_parser, hide = true, overrides_with = "server")]
     pub server: Option<PathBuf>,
 
+    /// Internal: run as a pane's pty supervisor, reading its control channel from
+    /// fd 3. Spawned by the server, never by a user. The value is a
+    /// `<session>/<pane>` label that only exists to make `ps` readable.
+    #[clap(long, value_parser, hide = true, overrides_with = "pty_host")]
+    pub pty_host: Option<String>,
+
     /// Specify name of a new session
     #[clap(long, short, overrides_with = "session", value_parser = validate_session)]
     pub session: Option<String>,
@@ -155,6 +161,27 @@ pub enum Recordings {
     },
 }
 
+/// Unix-only, because `zellij_server::pty_host` is: an ungated variant would
+/// still parse elsewhere, find no handler in `main`, fall past the whole
+/// dispatch chain and quietly start a normal session instead.
+#[cfg(unix)]
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum PtyHosts {
+    /// List the pane supervisors that are currently running.
+    List {
+        /// Print a JSON array instead of a table.
+        #[clap(long)]
+        json: bool,
+    },
+    /// Terminate one supervisor and the process it is running.
+    Kill {
+        /// Supervisor ID from `zellij pty-host list`. A unique prefix is enough.
+        host_id: String,
+    },
+    /// Terminate every supervisor, and every process they are running.
+    KillAll,
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Change the behaviour of zellij
@@ -187,6 +214,12 @@ pub enum Command {
     /// Read local terminal pane recordings.
     #[clap(subcommand)]
     Recordings(Recordings),
+
+    /// Inspect and clean up detached pane supervisors. Panes outlive a server
+    /// that was killed rather than shut down, and this is how you find them.
+    #[cfg(unix)]
+    #[clap(subcommand, name = "pty-host")]
+    PtyHosts(PtyHosts),
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]

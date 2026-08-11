@@ -211,6 +211,17 @@ pub struct Options {
     /// Set the handling of mouse events (true or false)
     /// Can be temporarily bypassed by the [SHIFT] key
     pub mouse_mode: Option<bool>,
+    /// Run each pane's process under a supervisor that outlives the session, so
+    /// that panes survive the server exiting (true or false).
+    ///
+    /// Config-file only, deliberately. It is read once when the session is
+    /// created and cannot change for a live session, so a per-invocation CLI flag
+    /// would be misleading on `zellij attach`. `ZELLIJ_DISABLE_PTY_HOST=1` /
+    /// `ZELLIJ_ENABLE_PTY_HOST=1` are the escape hatches, and unlike config they
+    /// work without a running session.
+    #[clap(skip)]
+    #[serde(default)]
+    pub detachable_panes: Option<bool>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Set display of the pane frames (true or false)
@@ -497,6 +508,7 @@ impl Options {
     // TODO: Maybe a good candidate for a macro?
     pub fn merge(&self, other: Options) -> Options {
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);
+        let detachable_panes = other.detachable_panes.or(self.detachable_panes);
         let pane_frames = other.pane_frames.or(self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
         let notification_position = other.notification_position.or(self.notification_position);
@@ -599,6 +611,7 @@ impl Options {
             builtin_plugins_dir,
             theme_dir,
             mouse_mode,
+            detachable_panes,
             pane_frames,
             pane_frame_style,
             notification_position,
@@ -666,6 +679,7 @@ impl Options {
 
         let simplified_ui = merge_bool(other.simplified_ui, self.simplified_ui);
         let mouse_mode = merge_bool(other.mouse_mode, self.mouse_mode);
+        let detachable_panes = merge_bool(other.detachable_panes, self.detachable_panes);
         let pane_frames = merge_bool(other.pane_frames, self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
         let notification_position = other.notification_position.or(self.notification_position);
@@ -767,6 +781,7 @@ impl Options {
             builtin_plugins_dir,
             theme_dir,
             mouse_mode,
+            detachable_panes,
             pane_frames,
             pane_frame_style,
             notification_position,

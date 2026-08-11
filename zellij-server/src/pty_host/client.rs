@@ -1,0 +1,451 @@
+//! Server side of the pty-host relationship: spawn a supervisor for a pane, take
+//! the pty master it hands back, and translate its lifecycle messages into the
+//! same `quit_cb` the in-process waiter thread used to invoke.
+
+use std::net::Shutdown;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
+use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunCommand};
+
+use crate::panes::PaneId;
+
+use super::fdpass::{clear_cloexec, recv_fd};
+use super::protocol::{
+    read_msg, write_msg, HostToServerMsg, ServerToHostMsg, SpawnFailureKind, WireTermios,
+    WireWinsize, CONTROL_FD, PROTOCOL_VERSION,
+};
+use super::PTY_HOST_FLAG;
+
+/// `spawn_terminal` runs synchronously on the pty thread, which also services
+/// pane close, tab close and layout dumps. A supervisor that wedges during its
+/// handshake must not take the session with it.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long to let a supervisor wind itself down after `Terminate` before we
+/// SIGKILL it. It gives its own child a 2s grace period first.
+const HOST_EXIT_GRACE: Duration = Duration::from_secs(4);
+
+pub struct SpawnParams<'a> {
+    pub host_bin: &'a Path,
+    pub terminal_id: u32,
+    pub session_name: Option<String>,
+    pub cmd: RunCommand,
+    pub failover_cmd: Option<RunCommand>,
+    pub termios: Option<WireTermios>,
+    pub initial_size: Option<WireWinsize>,
+}
+
+/// A supervisor that is up and has handed over its pty, but whose lifecycle
+/// messages nobody is listening to yet.
+///
+/// Split out from `SpawnedHost` so that every fallible step happens *before* the
+/// caller commits its `quit_cb`: if starting a supervisor fails, the caller still
+/// owns the callback and can fall back to opening the pty in-process. Dropping a
+/// `PendingHost` without calling `finish` kills the supervisor.
+pub struct PendingHost {
+    control: Option<UnixStream>,
+    reader_stream: Option<UnixStream>,
+    host_child: Option<Child>,
+    host_id: String,
+    host_pid: u32,
+    control_socket: Option<PathBuf>,
+    master: Option<OwnedFd>,
+    child_pid: u32,
+    terminal_id: u32,
+    cmd: RunCommand,
+}
+
+impl PendingHost {
+    pub fn finish(mut self, quit_cb: QuitCb) -> SpawnedHost {
+        let reported = Arc::new(AtomicBool::new(false));
+        spawn_reader_thread(
+            self.reader_stream
+                .take()
+                .expect("reader stream taken twice"),
+            self.host_child.take().expect("host child taken twice"),
+            self.host_id.clone(),
+            self.host_pid,
+            self.terminal_id,
+            self.cmd.clone(),
+            quit_cb,
+            reported.clone(),
+        );
+        SpawnedHost {
+            handle: PtyHostHandle {
+                host_id: std::mem::take(&mut self.host_id),
+                host_pid: self.host_pid,
+                control_socket: self.control_socket.take(),
+                control: self.control.take().expect("control taken twice"),
+                reported,
+            },
+            master: self.master.take().expect("master taken twice"),
+            child_pid: self.child_pid,
+        }
+    }
+}
+
+impl Drop for PendingHost {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.host_child.take() {
+            // Never consumed, so no reader thread will ever reap it.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+pub struct SpawnedHost {
+    pub handle: PtyHostHandle,
+    pub master: OwnedFd,
+    pub child_pid: u32,
+}
+
+/// The server's end of one supervisor. Dropping it does **not** kill the pane —
+/// that is the whole point. Only `terminate()` does.
+pub struct PtyHostHandle {
+    pub host_id: String,
+    pub host_pid: u32,
+    pub control_socket: Option<PathBuf>,
+    control: UnixStream,
+    /// Set once the pane's exit has been reported, so `ChildExited` and an
+    /// unexpected supervisor death cannot both fire `quit_cb`.
+    reported: Arc<AtomicBool>,
+}
+
+impl PtyHostHandle {
+    /// Kill the pane's process and shut the supervisor down.
+    ///
+    /// Deliberately synchronous and deliberately not a channel send: this runs on
+    /// paths that end with the server process exiting, and a queued message would
+    /// die with it. A blocking `write` lands the bytes in the kernel socket
+    /// buffer, and the supervisor reads them before it observes EOF — which is
+    /// what makes "the server asked me to stop" distinguishable from "the server
+    /// crashed" at all.
+    pub fn terminate(&mut self) {
+        // Suppress the synthesized close from the reader thread: this exit is
+        // expected and the pane is already being torn down.
+        self.reported.store(true, Ordering::SeqCst);
+        let _ = self.control.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
+        if let Err(e) = write_msg(&mut self.control, &ServerToHostMsg::Terminate) {
+            log::warn!(
+                "could not ask pty-host {} to terminate ({e:#}); killing it",
+                self.host_id
+            );
+            let _ = kill(Pid::from_raw(self.host_pid as i32), Some(Signal::SIGKILL));
+        }
+        // Unblocks the reader thread so it can reap the supervisor and exit.
+        let _ = self.control.shutdown(Shutdown::Both);
+    }
+}
+
+/// Spawn a supervisor for one pane and take the pty master back from it.
+///
+/// Any failure leaves nothing behind: the half-started supervisor is killed and
+/// the caller is free to fall back to opening the pty in-process.
+pub fn spawn(params: SpawnParams<'_>) -> Result<PendingHost> {
+    let err_context = || {
+        format!(
+            "failed to start a pty-host for '{}'",
+            params.cmd.command.to_string_lossy()
+        )
+    };
+
+    let (server_end, host_end) = UnixStream::pair().with_context(err_context)?;
+
+    let label = match params.session_name.as_deref() {
+        Some(session) => format!("{session}/{}", params.terminal_id),
+        None => format!("{}", params.terminal_id),
+    };
+
+    let host_raw = host_end.as_raw_fd();
+    let mut command = Command::new(params.host_bin);
+    command
+        .arg(PTY_HOST_FLAG)
+        .arg(&label)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(move || -> std::io::Result<()> {
+            place_control_fd(host_raw)?;
+            Ok(())
+        });
+    }
+    let host_child = command.spawn().with_context(err_context)?;
+    // The parent must not keep the supervisor's end open, or our own reads would
+    // never see EOF when it dies.
+    drop(host_end);
+
+    let mut guard = HostGuard {
+        child: Some(host_child),
+    };
+
+    let (child_pid, master, host_id, host_pid, control_socket) =
+        handshake_and_spawn(&server_end, &params).with_context(err_context)?;
+
+    // Back to blocking reads now the handshake is done; the reader thread should
+    // sit on this socket indefinitely.
+    let _ = server_end.set_read_timeout(None);
+    let _ = server_end.set_write_timeout(None);
+    let reader_stream = server_end.try_clone().with_context(err_context)?;
+
+    Ok(PendingHost {
+        control: Some(server_end),
+        reader_stream: Some(reader_stream),
+        host_child: Some(guard.take()),
+        host_id,
+        host_pid,
+        control_socket,
+        master: Some(master),
+        child_pid,
+        terminal_id: params.terminal_id,
+        cmd: params.cmd,
+    })
+}
+
+/// Kills a half-started supervisor if we bail out before handing it over to the
+/// reader thread.
+struct HostGuard {
+    child: Option<Child>,
+}
+
+impl HostGuard {
+    fn take(&mut self) -> Child {
+        self.child.take().expect("host child taken twice")
+    }
+}
+
+impl Drop for HostGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
+
+fn handshake_and_spawn(
+    control: &UnixStream,
+    params: &SpawnParams<'_>,
+) -> Result<(u32, OwnedFd, String, u32, Option<PathBuf>)> {
+    control
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("failed to bound the handshake")?;
+    control
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("failed to bound the handshake")?;
+
+    let mut stream = control;
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+        },
+    )
+    .context("failed to send Hello")?;
+
+    let ack: HostToServerMsg = read_msg(&mut stream)
+        .context("failed to read HelloAck")?
+        .ok_or_else(|| anyhow!("pty-host closed the control channel during the handshake"))?;
+    let HostToServerMsg::HelloAck {
+        protocol_version,
+        host_id,
+        host_pid,
+        control_socket,
+        ..
+    } = ack
+    else {
+        return Err(anyhow!("expected HelloAck, got {ack:?}"));
+    };
+    if protocol_version != PROTOCOL_VERSION {
+        // `current_exe()` re-execs whatever is on disk now, so a package upgrade
+        // mid-session lands here. Not an error worth failing a pane over: the
+        // caller falls back to opening the pty in-process.
+        return Err(anyhow!(
+            "pty-host speaks protocol v{protocol_version}, we speak v{PROTOCOL_VERSION}"
+        ));
+    }
+
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Spawn {
+            terminal_id: params.terminal_id,
+            session_name: params.session_name.clone(),
+            cmd: params.cmd.clone(),
+            failover_cmd: params.failover_cmd.clone(),
+            termios: params.termios.clone(),
+            initial_size: params.initial_size,
+        },
+    )
+    .context("failed to send Spawn")?;
+
+    let reply: HostToServerMsg = read_msg(&mut stream)
+        .context("failed to read the spawn result")?
+        .ok_or_else(|| anyhow!("pty-host closed the control channel during spawn"))?;
+    match reply {
+        HostToServerMsg::Spawned { child_pid } => {
+            let master = recv_fd(control).context("failed to take the pty master")?;
+            Ok((child_pid, master, host_id, host_pid, control_socket))
+        },
+        HostToServerMsg::SpawnFailed { kind, message } => match kind {
+            // Preserves the exact error eight call sites in pty.rs downcast for.
+            // The server checks this before spawning a supervisor at all, so
+            // reaching it means the command vanished in between.
+            SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
+                terminal_id: params.terminal_id,
+                command: params.cmd.command.to_string_lossy().to_string(),
+            }
+            .into()),
+            SpawnFailureKind::Other => Err(anyhow!("pty-host failed to spawn: {message}")),
+        },
+        other => Err(anyhow!("expected Spawned, got {other:?}")),
+    }
+}
+
+/// Put the control socket on fd 3 for the supervisor to find after exec.
+///
+/// Runs between fork and exec, so it must stay to raw syscalls.
+fn place_control_fd(host_raw: RawFd) -> std::io::Result<()> {
+    if host_raw == CONTROL_FD {
+        // `dup2(fd, fd)` is a no-op that does *not* clear FD_CLOEXEC, so the
+        // supervisor would exec with fd 3 already closed and then block forever
+        // on a read. Clear it explicitly instead.
+        clear_cloexec(host_raw).map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+        return Ok(());
+    }
+    if unsafe { libc::dup2(host_raw, CONTROL_FD) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_reader_thread(
+    mut stream: UnixStream,
+    host_child: Child,
+    host_id: String,
+    host_pid: u32,
+    terminal_id: u32,
+    cmd: RunCommand,
+    quit_cb: QuitCb,
+    reported: Arc<AtomicBool>,
+) {
+    std::thread::Builder::new()
+        .name(format!("pty-host-{host_id}"))
+        .spawn(move || {
+            loop {
+                match read_msg::<HostToServerMsg, _>(&mut stream) {
+                    Ok(Some(HostToServerMsg::ChildExited { status })) => {
+                        if !reported.swap(true, Ordering::SeqCst) {
+                            quit_cb(PaneId::Terminal(terminal_id), status, cmd.clone());
+                        }
+                        // Keep reading: the supervisor lingers until it is told to
+                        // go, and its EOF is what tells us the pane is finished.
+                    },
+                    Ok(Some(other)) => {
+                        log::debug!("pty-host {host_id} sent an unexpected {other:?}");
+                    },
+                    Ok(None) => break,
+                    Err(e) => {
+                        log::warn!("pty-host {host_id} control channel error: {e:#}");
+                        break;
+                    },
+                }
+            }
+            // The supervisor is gone. If it died without reporting an exit, the
+            // pane's child is now unsupervised and nobody will ever `waitpid` it,
+            // so the pane would hang open forever. Close it out with an unknown
+            // status rather than leaving a dead-looking live pane on screen.
+            if !reported.swap(true, Ordering::SeqCst) {
+                log::warn!("pty-host {host_id} died without reporting an exit status");
+                quit_cb(PaneId::Terminal(terminal_id), None, cmd.clone());
+            }
+            reap_host(host_child, host_pid, &host_id);
+        })
+        .map(|_| ())
+        .unwrap_or_else(|e| log::error!("could not start the pty-host reader thread: {e}"));
+}
+
+/// Reap the supervisor so it does not become a zombie. It is a direct child of
+/// ours, which is exactly what lets us do this — and why no double fork.
+fn reap_host(mut host_child: Child, host_pid: u32, host_id: &str) {
+    let deadline = Instant::now() + HOST_EXIT_GRACE;
+    loop {
+        match host_child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {},
+            Err(e) => {
+                log::warn!("could not wait on pty-host {host_id}: {e}");
+                return;
+            },
+        }
+        if Instant::now() >= deadline {
+            log::warn!("pty-host {host_id} did not exit in time; killing it");
+            let _ = kill(Pid::from_raw(host_pid as i32), Some(Signal::SIGKILL));
+            let _ = host_child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether a socket file is left over from a supervisor that is gone.
+///
+/// Only a refused (or absent) connect proves that: anything else — a timeout, a
+/// full backlog — can happen to a perfectly healthy supervisor, and treating that
+/// as death would unlink the socket of a live pane.
+pub fn socket_is_dead(socket: &Path) -> bool {
+    match UnixStream::connect(socket) {
+        Ok(_) => false,
+        Err(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+        ),
+    }
+}
+
+/// Ask a supervisor for its status over its named socket. Used by
+/// `zellij pty-host list`.
+pub fn query(socket: &Path) -> Result<super::protocol::HostStatus> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("failed to connect to {}", socket.display()))?;
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
+    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
+    write_msg(&mut stream, &ServerToHostMsg::Query).context("failed to send Query")?;
+    match read_msg::<HostToServerMsg, _>(&mut stream).context("failed to read Status")? {
+        Some(HostToServerMsg::Status(status)) => Ok(status),
+        Some(other) => Err(anyhow!("expected Status, got {other:?}")),
+        None => Err(anyhow!("pty-host closed the connection without replying")),
+    }
+}
+
+/// Ask a supervisor to shut down over its named socket. Used by
+/// `zellij pty-host kill`.
+pub fn terminate_via_socket(socket: &Path) -> Result<super::protocol::HostStatus> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("failed to connect to {}", socket.display()))?;
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
+    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
+    write_msg(&mut stream, &ServerToHostMsg::Terminate).context("failed to send Terminate")?;
+    match read_msg::<HostToServerMsg, _>(&mut stream).context("failed to read Status")? {
+        Some(HostToServerMsg::Status(status)) => Ok(status),
+        Some(other) => Err(anyhow!("expected Status, got {other:?}")),
+        None => Err(anyhow!("pty-host closed the connection without replying")),
+    }
+}
+
+#[cfg(test)]
+#[path = "../unit/pty_host_client_tests.rs"]
+mod pty_host_client_tests;

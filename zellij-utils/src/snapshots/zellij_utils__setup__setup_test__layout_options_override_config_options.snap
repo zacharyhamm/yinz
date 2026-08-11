@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/setup.rs
-assertion_line: 663
 expression: "format!(\"{:#?}\", options)"
 ---
 Options {
@@ -16,6 +15,7 @@ Options {
     builtin_plugins_dir: None,
     theme_dir: None,
     mouse_mode: None,
+    detachable_panes: None,
     pane_frames: Some(
         false,
     ),
