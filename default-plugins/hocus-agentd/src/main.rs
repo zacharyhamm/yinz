@@ -221,7 +221,7 @@ impl State {
                     "config",
                     "--null",
                     "--get-regexp",
-                    "^(remote\\..*\\.url|remote\\.pushDefault|branch\\..*\\.remote)$",
+                    "^(remote\\..*\\.url|remote\\.pushdefault|branch\\..*\\.remote)$",
                 ],
                 BTreeMap::new(),
                 cwd.clone().into(),
