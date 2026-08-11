@@ -35,6 +35,7 @@ use zellij_utils::data::{
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::MouseEvent;
+use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
 use zellij_utils::position::Position;
 use zellij_utils::position::{Column, Line};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
@@ -280,6 +281,8 @@ pub(crate) struct Tab {
     mouse_hover_effects: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
+    osc133_command_selection: bool,
+    word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     // the below are the configured values - the ones that will be set if and when the web server
@@ -751,6 +754,7 @@ pub trait Pane {
         None
     } // only relevant to terminal panes
     fn update_theme(&mut self, _theme: Styling) {}
+    fn set_selection_options(&mut self, _osc133_command_selection: bool, _word_separators: &str) {}
     fn update_arrow_fonts(&mut self, _should_support_arrow_fonts: bool) {}
     fn update_kitty_host_support(&mut self, _supported: KittyHostSupport) {}
     fn update_sixel_host_support(&mut self, _supported: bool) {}
@@ -1037,6 +1041,8 @@ impl Tab {
             mouse_hover_effects,
             focus_follows_mouse,
             mouse_click_through,
+            osc133_command_selection: true,
+            word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             connected_clients_in_app,
             web_server_ip,
             web_server_port,
@@ -3716,6 +3722,11 @@ impl Tab {
                 self.tiled_panes.get_pane(ap).map(Box::as_ref)
             }
         })
+    }
+    pub fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
+        self.get_active_pane(client_id)
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false)
     }
     /// Whether the client's active tiled pane sits flush against the given edge of the tab, ie.
     /// whether the border it would resize in that direction is the one it shares with a global pane
@@ -7498,6 +7509,13 @@ impl Tab {
         self.tiled_panes
             .add_pane_to_stack_of_pane_id(pane_id, pane, root_pane_id);
         self.set_should_clear_display_before_rendering();
+        // Groupify BEFORE the focus/frame re-application so the just-collapsed
+        // in-grid stack member is moved to `suppressed_panes` before
+        // `reapply_pane_frames` sends a `resize_pty!` at the 1-row collapsed
+        // size. Without this, the shell inside that pane sees two rapid
+        // WINCH events (1 row → visible-size rows) and redraws its prompt
+        // twice, blanking out the visible rows of previous output.
+        self.sync_stacked_pane_list_mode();
         if should_focus {
             self.tiled_panes.expand_pane_in_stack(pane_id);
         }
@@ -7517,6 +7535,10 @@ impl Tab {
         self.dissolve_stack_lists_for_classic_mutation();
         self.tiled_panes
             .add_pane_to_stack_of_active_pane(pane_id, pane, client_id);
+        // See comment in `add_stacked_pane_to_pane_id` — groupify before
+        // focusing so the collapsed member is suppressed before
+        // `reapply_pane_frames` fires its intermediate `resize_pty!`.
+        self.sync_stacked_pane_list_mode();
         if should_focus {
             self.tiled_panes.focus_pane(pane_id, client_id);
         }
@@ -7724,6 +7746,14 @@ impl Tab {
     }
     pub fn update_mouse_click_through(&mut self, mouse_click_through: bool) {
         self.mouse_click_through = mouse_click_through;
+    }
+    pub fn update_selection_options(
+        &mut self,
+        osc133_command_selection: bool,
+        word_separators: String,
+    ) {
+        self.osc133_command_selection = osc133_command_selection;
+        self.word_separators = word_separators;
     }
     pub fn clear_mouse_hover_state(&mut self) {
         self.mouse_hover_pane_id.clear();
