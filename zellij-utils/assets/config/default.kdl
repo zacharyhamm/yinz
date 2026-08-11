@@ -249,9 +249,8 @@ plugins {
     hocus location="zellij:hocus" {
         shared true
     }
-    // Shared for the same reason hocus is: without it the plugin is
-    // instantiated once per client, and each instance runs its own poll timer
-    // against the same session.
+    // Shared for the same reason hocus is: one instance owns the event-fed
+    // agent snapshot for the whole session.
     hocus-agentd location="zellij:hocus-agentd" {
         shared true
     }
@@ -270,8 +269,7 @@ load_plugins {
     // Watches for coding agents from session start, rather than only while a
     // hocus pane is open. Named by alias, not by "zellij:hocus-agentd", so the
     // `shared true` above applies — plugin identity is (location,
-    // configuration), and the bare url would load a second, unshared instance
-    // that polls in parallel with the first.
+    // configuration), and the bare url would load a second, unshared watcher.
     "hocus-agentd"
     "hocus-store"
     "zellij:link"

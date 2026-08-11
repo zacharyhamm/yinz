@@ -357,16 +357,6 @@ impl State {
             Ok(args) => args,
             Err(error) => return Some(error),
         };
-        // One refresh for all four agent tools, so no path can act on a snapshot the
-        // session has moved past — and none can act on no snapshot at all.
-        if call.name.starts_with("agent_") {
-            // Through `poll_agents` rather than `refresh_panes` so a transition
-            // is noticed in the transcript, not silently absorbed by the tool.
-            // The redraw it reports is redundant here — the tool result forces
-            // one anyway.
-            self.poll_agents();
-            self.agent_due_in = AGENT_SECONDS;
-        }
         Some(match call.name.as_str() {
             "schedule" => self.schedule(&args),
             "unschedule" => self.unschedule(args.job_id),
@@ -683,7 +673,7 @@ impl State {
     }
 
     /// The snapshot every agent tool works from. Split out so the host calls in
-    /// `gather_poll` are the only part that cannot run under `make test`.
+    /// Host-side pane reads are the only part that cannot run under `make test`.
     pub(crate) fn set_panes(&mut self, panes: Vec<agents::AgentPane>) {
         self.panes = panes;
         // A pane that closed is a registration that no longer names anything.
@@ -895,39 +885,7 @@ impl State {
         })
     }
 
-    /// Refresh the snapshot here and now and note transitions in the transcript.
-    /// Returns whether the screen moved: a poll that found nothing new must not
-    /// recomposite the session.
-    ///
-    /// This is the synchronous path — `show_agents` and the `agent_*` tools need
-    /// a fresh snapshot before they can answer, rather than whenever
-    /// `hocus-agentd` next gets round to pushing one.
-    pub(crate) fn poll_agents(&mut self) -> bool {
-        self.polls_unanswered = 0;
-        let mut activity = std::mem::take(&mut self.activity);
-        match gather_poll(&self.manual_kinds, &mut activity) {
-            Some(panes) => {
-                if let Ok(payload) = serde_json::to_string(&PollReply {
-                    panes: Some(panes.clone()),
-                    activity: activity.clone(),
-                    manual_kinds: self.manual_kinds.clone(),
-                }) {
-                    pipe_message_to_plugin(
-                        MessageToPlugin::new(wire::AGENT_SNAPSHOT).with_payload(payload),
-                    );
-                }
-                self.apply_poll(panes, activity)
-            },
-            // No session to look at; keep what we knew.
-            None => {
-                self.activity = activity;
-                false
-            },
-        }
-    }
-
-    /// Merge one poll's outcome — sync or worker, same code — and note
-    /// transitions in the transcript.
+    /// Merge an event-fed daemon snapshot and note agent transitions.
     pub(crate) fn apply_poll(
         &mut self,
         panes: Vec<agents::AgentPane>,

@@ -157,11 +157,8 @@ impl State {
         true
     }
 
-    /// The agent list, fresh: entering the picker re-polls, so the rows are the
-    /// session as it is now, not as of the last heartbeat.
+    /// The agent list from the latest event-fed daemon snapshot.
     pub(crate) fn show_agents(&mut self) {
-        self.poll_agents();
-        self.agent_due_in = AGENT_SECONDS;
         let (ids, entries) = agents::strip_rows(
             &self.panes,
             &self.manual_kinds,

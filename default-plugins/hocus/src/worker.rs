@@ -1,7 +1,5 @@
 use crate::*;
-use hocus_proto::panes::terminal_panes;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -97,50 +95,4 @@ pub(crate) fn read_pane_text(pane_id: u32) -> String {
         Dispatch::Done(text) => text,
         Dispatch::Deferred => "pane read cannot be deferred".to_owned(),
     }
-}
-
-/// The host work of one agent poll: fresh pane snapshot, the running command of
-/// each pane, and a scrollback hash per running agent for busy/idle. A free
-/// function so the poll worker and the synchronous in-plugin poll are the same
-/// code. O(panes) blocking host calls — the reason the worker exists.
-///
-/// Pulled, not pushed. `Event::PaneUpdate` goes only to plugins of the active tab
-/// and to background plugins, so a Hocus launched into a global pane — which is in
-/// no tab — receives it never, and every agent tool saw an empty session.
-///
-/// The manifest carries `terminal_command`, which is what a pane was *launched*
-/// with and so is `None` for every pane the user opened as a shell. Detection
-/// needs what is running now, which is a second call per pane.
-pub(crate) fn gather_poll(
-    manual_kinds: &BTreeMap<u32, String>,
-    activity: &mut agents::Activity,
-) -> Option<Vec<agents::AgentPane>> {
-    let session = tools::current_session()?;
-    let mut panes = terminal_panes(&session.panes, &session.tabs);
-    // ponytail: one blocking host round-trip per terminal pane, every refresh.
-    // Fine at a dozen panes; batch it if a session ever gets big enough to feel.
-    for pane in &mut panes {
-        if let Some(command) = tools::pane_running_command(pane.pane_id) {
-            pane.command = Some(command);
-        }
-        pane.cwd = tools::pane_cwd(pane.pane_id);
-    }
-    // A pane that closed took its observations with it.
-    activity.retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-    // ponytail: one read_pane per running agent per poll, to tell busy from
-    // idle. Scales with agents, not panes; batch with the refresh if it feels.
-    // An agent whose TUI repaints a spinner every frame never reads idle —
-    // false "busy" is the safe direction.
-    let running: Vec<u32> = panes
-        .iter()
-        .filter(|pane| {
-            pane.status == agents::AgentStatus::Running
-                && agents::classify(pane, manual_kinds).is_some()
-        })
-        .map(|pane| pane.pane_id)
-        .collect();
-    for pane_id in running {
-        agents::observe(activity, pane_id, &read_pane_text(pane_id));
-    }
-    Some(panes)
 }

@@ -1317,40 +1317,6 @@ mod host {
         }
     }
 
-    /// The current session, pulled on demand — panes and the tabs they sit in.
-    ///
-    /// The host builds this from the same call that emits `Event::PaneUpdate`, so it
-    /// holds the same panes — but a plugin in a global pane is in no tab, and the
-    /// host only pushes PaneUpdate to plugins of the active tab, so the event never
-    /// arrives here. Pulling is the only path that works whatever pane Hocus is in.
-    pub fn current_session() -> Option<SessionInfo> {
-        get_session_list()
-            .ok()?
-            .live_sessions
-            .into_iter()
-            .find(|session| session.is_current_session)
-    }
-
-    /// What a pane is running right now, as one command line.
-    ///
-    /// `PaneInfo.terminal_command` is only what a pane was *launched* with, so it is
-    /// `None` for every pane the user opened as a shell — whatever is running in it
-    /// now. The host resolves this one from the pane's foreground process instead,
-    /// which is the thing detection actually wants. Falls back to the shell itself,
-    /// so a pane at a prompt answers `zsh` rather than nothing.
-    pub fn pane_running_command(pane_id: u32) -> Option<String> {
-        get_pane_running_command(PaneId::Terminal(pane_id))
-            .ok()
-            .filter(|args| !args.is_empty())
-            .map(|args| args.join(" "))
-    }
-
-    pub fn pane_cwd(pane_id: u32) -> Option<String> {
-        get_pane_cwd(PaneId::Terminal(pane_id))
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned())
-    }
-
     /// The whole session as compact JSON. `SessionInfo` carries a great deal the
     /// model has no use for — viewport geometry, tab and pane history, plugin
     /// configuration — and every field of it would be paid for in tokens on
@@ -1735,29 +1701,12 @@ mod host {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use host::{current_session, dispatch, pane_cwd, pane_running_command};
+pub use host::dispatch;
 
 /// Native builds exist only to run the unit tests; nothing there dispatches.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch(_call: &ToolCall) -> Dispatch {
     Dispatch::Done("tools are unavailable outside zellij".to_owned())
-}
-
-/// Same: off wasm there is no host to ask, so the snapshot a test set stands.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn current_session() -> Option<zellij_tile::prelude::SessionInfo> {
-    None
-}
-
-/// Same again: a test's panes keep whatever command the test gave them.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn pane_running_command(_pane_id: u32) -> Option<String> {
-    None
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn pane_cwd(_pane_id: u32) -> Option<String> {
-    None
 }
 
 // ---------------------------------------------------------------------------
