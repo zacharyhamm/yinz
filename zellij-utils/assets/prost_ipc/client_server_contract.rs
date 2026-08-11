@@ -2099,6 +2099,10 @@ pub struct Options {
     pub notification_position: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag="60")]
     pub notification_timeout: ::core::option::Option<u64>,
+    #[prost(bool, optional, tag="61")]
+    pub osc133_command_selection: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="62")]
+    pub word_separators: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

@@ -10932,6 +10932,63 @@ fn test_left_release_after_selection_copies_to_clipboard() {
 }
 
 #[test]
+fn triple_click_without_motion_requests_render() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let position = Position::new(1, 5);
+
+    tab.handle_pty_bytes(1, Vec::from("Selectable text content here".as_bytes()))
+        .unwrap();
+
+    for _ in 0..2 {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+            .unwrap();
+    }
+
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+
+    assert!(effect.state_changed);
+}
+
+#[test]
+fn configured_word_separators_reach_the_pane_on_double_click() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let position = Position::new(1, 6);
+
+    tab.update_selection_options(true, ":".to_owned());
+    tab.handle_pty_bytes(1, Vec::from("foo:bar baz".as_bytes()))
+        .unwrap();
+
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+        .unwrap();
+
+    let selected_text = tab
+        .get_active_pane(client_id)
+        .unwrap()
+        .get_selected_text(client_id);
+    assert_eq!(selected_text, Some("bar".to_owned()));
+}
+
+#[test]
 fn test_ctrl_click_on_tiled_pane_edge_starts_resize() {
     let size = Size {
         cols: 121,
@@ -13075,6 +13132,96 @@ fn test_ctrl_scroll_up_merging_stacks_preserves_all_panes() {
         Palette::default(),
     );
     assert_snapshot!(snapshot);
+}
+
+// Regression: when stacked_pane_list mode is active, adding a stacked pane
+// used to send the pre-existing pane an intermediate `resize_pty!` at 1 row
+// (from the classic in-grid collapse) before groupify_all moved it into
+// suppressed_panes and resized it back to the visible size. Shells (nushell,
+// pwsh, bash) redraw their prompt on each WINCH, which blanks out
+// previously-visible rows of output — visible to the user as "truncated
+// scrollback" when they focus back to that pane.
+//
+// The fix syncs stacked_pane_list mode immediately after the classic in-grid
+// mutation (before focus/frame reapplication), so the collapsed pane is
+// promoted to a stack-list suppressed pane before any resize_pty at the
+// 1-row size can leak out to its shell. This test pins that end-state:
+// after adding a stacked pane, the pre-existing pane must have been moved
+// into suppressed_panes (indicating groupify_all ran), rather than left in
+// tiled_panes at rows=1 waiting for the next render.
+#[test]
+fn adding_stacked_pane_in_stack_list_mode_moves_existing_pane_to_suppressed_immediately() {
+    let size = Size {
+        cols: 121,
+        rows: 40,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
+
+    // Add a second tiled pane so we have a real stack candidate.
+    let existing_pane_id = PaneId::Terminal(2);
+    tab.new_pane(
+        existing_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    // Sanity: pane 2 is a tiled pane and no stack lists exist yet.
+    assert!(tab.tiled_panes.get_pane(existing_pane_id).is_some());
+    assert!(!tab.has_stack_lists());
+    assert!(!tab.suppressed_panes.contains_key(&existing_pane_id));
+
+    // Now add a stacked pane on top of the active pane (pane 2).
+    let stacked_pane_id = PaneId::Terminal(3);
+    tab.new_pane(
+        stacked_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Stacked {
+            pane_id_to_stack_under: None,
+            borderless: None,
+        },
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    // After the operation, stacked_pane_list mode should have picked up the
+    // new stack: pane 2 (the pre-existing member) must be in suppressed_panes,
+    // and the visible member (pane 3) must be in tiled_panes with a non-fixed
+    // row dimension (i.e., not the collapsed 1-row tab-strip form).
+    assert!(
+        tab.has_stack_lists(),
+        "stacked_pane_list mode should have groupified the new stack immediately"
+    );
+    assert!(
+        tab.suppressed_panes.contains_key(&existing_pane_id),
+        "pane 2 (pre-existing pane) should be in suppressed_panes after the \
+         stacked pane is added; if it is still in tiled_panes at rows=1 the \
+         next `reapply_pane_frames` will send a resize_pty to its shell at \
+         the collapsed size, blanking its viewport"
+    );
+    assert!(
+        tab.tiled_panes.get_pane(stacked_pane_id).is_some(),
+        "the newly-added stacked pane should be the visible tiled pane"
+    );
+    let visible_geom = tab
+        .tiled_panes
+        .get_pane(stacked_pane_id)
+        .unwrap()
+        .position_and_size();
+    assert!(
+        !visible_geom.rows.is_fixed(),
+        "the visible member of the stack must not be at fixed(1) rows"
+    );
 }
 
 #[test]
