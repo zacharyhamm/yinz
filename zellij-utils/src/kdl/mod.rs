@@ -3029,6 +3029,9 @@ impl Options {
             .map(|(string, _entry)| PathBuf::from(string));
         let mouse_mode =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_mode").map(|(v, _)| v);
+        let detachable_panes =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "detachable_panes")
+                .map(|(v, _)| v);
         let scroll_buffer_size =
             kdl_property_first_arg_as_i64_or_error!(kdl_options, "scroll_buffer_size")
                 .map(|(scroll_buffer_size, _entry)| scroll_buffer_size as usize);
@@ -3206,6 +3209,7 @@ impl Options {
             builtin_plugins_dir,
             theme_dir,
             mouse_mode,
+            detachable_panes,
             pane_frames,
             pane_frame_style,
             notification_position,
@@ -3590,6 +3594,38 @@ impl Options {
             Some(node)
         } else if add_comments {
             let mut node = create_node("/tmp");
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn detachable_panes_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// Run each pane's process under a small supervisor process, so that",
+            "// panes keep running when the session's server exits (for example if",
+            "// it is killed or crashes).",
+            "// Options:",
+            "//   - true (default)",
+            "//   - false",
+            "// ",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("detachable_panes");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(detachable_panes) = self.detachable_panes {
+            let mut node = create_node(detachable_panes);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(true);
             node.set_leading(format!("{}\n// ", comment_text));
             Some(node)
         } else {
@@ -5022,6 +5058,9 @@ impl Options {
         if let Some(theme_dir) = self.theme_dir_to_kdl(add_comments) {
             nodes.push(theme_dir);
         }
+        if let Some(detachable_panes) = self.detachable_panes_to_kdl(add_comments) {
+            nodes.push(detachable_panes);
+        }
         if let Some(mouse_mode) = self.mouse_mode_to_kdl(add_comments) {
             nodes.push(mouse_mode);
         }
@@ -5150,8 +5189,7 @@ impl Options {
         if let Some(mouse_click_through) = self.mouse_click_through_to_kdl(add_comments) {
             nodes.push(mouse_click_through);
         }
-        if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments)
-        {
+        if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments) {
             nodes.push(osc133_command_selection);
         }
         if let Some(word_separators) = self.word_separators_to_kdl(add_comments) {

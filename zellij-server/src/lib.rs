@@ -31,6 +31,8 @@ pub mod nested_guest;
 mod pane_groups;
 mod plugins;
 mod pty;
+#[cfg(unix)]
+pub mod pty_host;
 mod pty_writer;
 mod route;
 mod screen;
@@ -2020,8 +2022,14 @@ pub fn start_server_impl(
         }
     }
 
-    // Drop cached session data before exit.
+    // Drop cached session data before exit. This joins the pty thread, which
+    // drops `Pty` and closes every pane — which is what terminates each pane's
+    // supervisor, via `clear_terminal_id`.
     *session_data.write().unwrap() = None;
+
+    // Belt and braces. A supervisor that outlived the sweep above would be a
+    // leaked user process holding a live shell, invisible until `pty-host list`.
+    os_input.shutdown_pty_hosts();
 
     drop(std::fs::remove_file(&socket_path));
 }
@@ -2115,6 +2123,19 @@ fn init_session(
     let has_certificate =
         config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
     let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
+
+    // Config only exists once a client has connected, long after the pty backend
+    // was built, so this is the first point at which we can know. It is safe to
+    // be this late: the pty thread does not exist yet, so no pane can have been
+    // spawned. Session-scoped by construction — attaching later with different
+    // config will not change it.
+    #[cfg(unix)]
+    os_input.set_pty_host_enabled(
+        config
+            .options
+            .detachable_panes
+            .unwrap_or(pty_host::DEFAULT_DETACHABLE_PANES),
+    );
 
     let default_shell = config_options.default_shell.clone().map(|command| {
         TerminalAction::RunCommand(RunCommand {

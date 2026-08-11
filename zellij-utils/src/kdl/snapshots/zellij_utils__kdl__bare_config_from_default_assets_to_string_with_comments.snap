@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/kdl/mod.rs
-assertion_line: 8386
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -362,6 +361,15 @@ web_client {
 // (Requires restart)
 // 
 // theme_dir "/tmp"
+ 
+// Run each pane's process under a small supervisor process, so that
+// panes keep running when the session's server exits (for example if
+// it is killed or crashes).
+// Options:
+//   - true (default)
+//   - false
+// 
+// detachable_panes true
  
 // Toggle enabling the mouse mode.
 // On certain configurations, or terminals this could

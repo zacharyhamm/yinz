@@ -377,6 +377,12 @@ pub trait ServerOsApi: Send + Sync {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()>;
+    /// Whether new panes get a detachable pty-host supervisor. Config only
+    /// arrives with the first client, long after the backend is built, so this is
+    /// set once at session init. Defaulted so mock implementations are unaffected.
+    fn set_pty_host_enabled(&self, _enabled: bool) {}
+    /// Terminate every pty-host supervisor this server owns, on the way out.
+    fn shutdown_pty_hosts(&self) {}
     fn cache_resizes(&mut self) {}
     fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
         Vec::new()
@@ -680,6 +686,14 @@ impl ServerOsApi for ServerOsInputOutput {
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
         self.pty_backend.clear_terminal_id(terminal_id);
         Ok(())
+    }
+    #[cfg(not(windows))]
+    fn set_pty_host_enabled(&self, enabled: bool) {
+        self.pty_backend.set_pty_host_enabled(enabled);
+    }
+    #[cfg(not(windows))]
+    fn shutdown_pty_hosts(&self) {
+        self.pty_backend.shutdown_pty_hosts();
     }
     fn cache_resizes(&mut self) {
         if self.cached_resizes.lock().unwrap().is_none() {

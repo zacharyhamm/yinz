@@ -24,9 +24,10 @@ use std::{
         io::{AsRawFd, RawFd},
         process::CommandExt,
     },
+    path::PathBuf,
     process::{Child, Command},
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -34,6 +35,11 @@ use std::{
 };
 
 use zellij_utils::{errors::prelude::*, input::command::RunCommand};
+
+use crate::pty_host::{
+    client::{self as pty_host_client, PtyHostHandle, SpawnParams},
+    protocol::WireTermios,
+};
 
 pub use async_trait::async_trait;
 
@@ -281,6 +287,20 @@ pub(crate) struct UnixPtyBackend {
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
     terminal_id_to_raw_fd: Arc<Mutex<BTreeMap<u32, Option<RawFd>>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
+    /// Whether panes are spawned under a detachable pty-host supervisor. Set once
+    /// per session from config; see `ServerOsApi::set_pty_host_enabled`.
+    pty_host_enabled: Arc<AtomicBool>,
+    /// The binary to re-exec as a supervisor, resolved once here rather than per
+    /// pane: `current_exe()` starts failing after the binary is replaced on disk
+    /// (a package upgrade mid-session), and resolving it repeatedly would turn
+    /// that into "no new panes" instead of one stale path.
+    host_bin: Option<PathBuf>,
+    /// The user's terminal settings, in wire form. Sampled here because
+    /// `UnixPtyBackend::new()` runs before the server daemonizes and loses its
+    /// controlling terminal — a supervisor could never re-derive them. Converted
+    /// once rather than per spawn.
+    wire_termios: Option<WireTermios>,
+    terminal_id_to_host: Arc<Mutex<BTreeMap<u32, PtyHostHandle>>>,
 }
 
 /// Try to write as many bytes from `buf` as possible to `fd` without blocking.
@@ -309,10 +329,96 @@ impl UnixPtyBackend {
         if current_termios.is_none() {
             log::warn!("Starting a server without a controlling terminal, using the default termios configuration.");
         }
+        let wire_termios = current_termios.as_ref().map(WireTermios::from_termios);
+        let host_bin = match std::env::current_exe() {
+            Ok(path) => Some(path),
+            Err(e) => {
+                log::warn!("Could not resolve our own binary ({e}); panes will not be detachable.");
+                None
+            },
+        };
         Ok(Self {
             orig_termios: Arc::new(Mutex::new(current_termios)),
             terminal_id_to_raw_fd: Arc::new(Mutex::new(BTreeMap::new())),
             next_terminal_id_counter: Arc::new(AtomicU32::new(0)),
+            pty_host_enabled: Arc::new(AtomicBool::new(false)),
+            host_bin,
+            wire_termios,
+            terminal_id_to_host: Arc::new(Mutex::new(BTreeMap::new())),
+        })
+    }
+
+    /// Called once at session init, when config is finally available. Env
+    /// overrides win, because the config path needs a live session and is
+    /// therefore useless for bisecting a startup problem.
+    pub fn set_pty_host_enabled(&self, enabled: bool) {
+        let enabled = if std::env::var_os("ZELLIJ_DISABLE_PTY_HOST").is_some() {
+            false
+        } else if std::env::var_os("ZELLIJ_ENABLE_PTY_HOST").is_some() {
+            true
+        } else {
+            enabled
+        };
+        self.pty_host_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Shut down the supervisor for a pane, if it has one.
+    ///
+    /// The lock is released before `terminate()` runs: that does a blocking write
+    /// and we are usually on the pty thread, which must not stall behind another
+    /// pane's teardown.
+    fn terminate_host(&self, terminal_id: u32) {
+        let handle = self
+            .terminal_id_to_host
+            .lock()
+            .ok()
+            .and_then(|mut hosts| hosts.remove(&terminal_id));
+        if let Some(mut handle) = handle {
+            handle.terminate();
+        }
+    }
+
+    /// Terminate every supervisor this server owns. Belt and braces for session
+    /// shutdown: `clear_terminal_id` already covers each pane individually, but a
+    /// leaked supervisor is a leaked user process, so sweep before exiting.
+    pub fn shutdown_pty_hosts(&self) {
+        let handles: Vec<PtyHostHandle> = match self.terminal_id_to_host.lock() {
+            Ok(mut hosts) => std::mem::take(&mut *hosts).into_values().collect(),
+            Err(_) => return,
+        };
+        for mut handle in handles {
+            handle.terminate();
+        }
+    }
+
+    fn spawn_via_pty_host(
+        &self,
+        host_bin: &std::path::Path,
+        cmd: &RunCommand,
+        failover_cmd: &Option<RunCommand>,
+        terminal_id: u32,
+    ) -> Result<pty_host_client::PendingHost> {
+        // Kept here rather than left to the supervisor so that a mistyped command
+        // still produces a synchronous `ZellijError::CommandNotFound` — eight
+        // sites in pty.rs downcast for it — without paying for a process spawn.
+        if !command_exists(cmd) {
+            return Err(ZellijError::CommandNotFound {
+                terminal_id,
+                command: cmd.command.to_string_lossy().to_string(),
+            }
+            .into());
+        }
+        pty_host_client::spawn(SpawnParams {
+            host_bin,
+            terminal_id,
+            session_name: zellij_utils::envs::get_session_name().ok(),
+            cmd: cmd.clone(),
+            failover_cmd: failover_cmd.clone(),
+            termios: self.wire_termios.clone(),
+            // Left unset on purpose: today's `openpty(None, ..)` means a pane
+            // starts at 0x0 until the first TIOCSWINSZ, and matching that keeps
+            // this change pure plumbing.
+            initial_size: None,
         })
     }
 
@@ -323,6 +429,48 @@ impl UnixPtyBackend {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: u32,
     ) -> Result<(Box<dyn AsyncReader>, RawFd)> {
+        // A re-run reuses the terminal_id, so an earlier supervisor for it would
+        // otherwise be orphaned with nobody left holding its control channel.
+        self.terminate_host(terminal_id);
+
+        if self.pty_host_enabled.load(Ordering::Relaxed) {
+            if let Some(host_bin) = self.host_bin.as_ref() {
+                match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
+                    Ok(pending) => {
+                        let spawned = pending.finish(quit_cb);
+                        let master_fd = spawned.master.into_raw_fd();
+                        self.terminal_id_to_raw_fd
+                            .lock()
+                            .to_anyhow()?
+                            .insert(terminal_id, Some(master_fd));
+                        self.terminal_id_to_host
+                            .lock()
+                            .to_anyhow()?
+                            .insert(terminal_id, spawned.handle);
+                        let async_reader = Box::new(
+                            RawFdAsyncReader::new(master_fd)
+                                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
+                        ) as Box<dyn AsyncReader>;
+                        return Ok((async_reader, spawned.child_pid as RawFd));
+                    },
+                    Err(e) => {
+                        if e.downcast_ref::<ZellijError>().is_some() {
+                            // CommandNotFound and friends are real answers, not
+                            // supervisor trouble; do not paper over them.
+                            return Err(e);
+                        }
+                        // Anything else — an upgraded binary, a protocol mismatch,
+                        // a supervisor that would not start — should cost the user
+                        // detachability, not the pane.
+                        log::warn!(
+                            "could not start a pty-host for pane {terminal_id} ({e:#}); \
+                             falling back to an in-process pty"
+                        );
+                    },
+                }
+            }
+        }
+
         let orig_termios = self
             .orig_termios
             .lock()
@@ -449,6 +597,11 @@ impl UnixPtyBackend {
     }
 
     pub fn clear_terminal_id(&self, terminal_id: u32) {
+        // The single funnel for pane teardown: `Pty::close_pane` calls this, and
+        // every path that closes a pane — ClosePane, CloseTab, spawn failures,
+        // `Drop for Pty` at session shutdown — goes through it. Terminating here
+        // means no changes are needed in pty.rs or screen.rs.
+        self.terminate_host(terminal_id);
         self.terminal_id_to_raw_fd
             .lock()
             .unwrap()

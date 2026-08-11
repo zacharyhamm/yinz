@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/kdl/mod.rs
-assertion_line: 8293
 expression: fake_document.to_string()
 ---
  
@@ -66,6 +65,15 @@ builtin_plugins_dir "/tmp/builtin-plugins"
 // (Requires restart)
 // 
 theme_dir "/tmp/themes"
+ 
+// Run each pane's process under a small supervisor process, so that
+// panes keep running when the session's server exits (for example if
+// it is killed or crashes).
+// Options:
+//   - true (default)
+//   - false
+// 
+// detachable_panes true
  
 // Toggle enabling the mouse mode.
 // On certain configurations, or terminals this could
