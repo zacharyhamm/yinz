@@ -104,6 +104,7 @@ struct Chat {
     pub(crate) pending: VecDeque<ToolCall>,
     pub(crate) tool_rounds: usize,
     pub(crate) owes_reply: bool,
+    pub(crate) manual_head: bool,
     pub(crate) chat_id: Option<u64>,
     pub(crate) saved: (usize, usize),
     pub(crate) scroll: BTreeMap<ClientId, usize>,
@@ -165,6 +166,15 @@ pub struct State {
     /// typed one is still running. Whichever call happens to empty the queue,
     /// the model is owed its answer if it ever asked.
     owes_reply: bool,
+    /// Whether the head of `pending` is a call the user typed. Its result is
+    /// rendered whole rather than elided, and the head is where that has to be
+    /// remembered: a deferred tool answers through `on_command_result` long
+    /// after `run_manual` returned.
+    ///
+    /// A flag rather than a mark on the call itself, for the same reason as
+    /// `owes_reply`: `ToolCall` is archived and reserialized, and this is a
+    /// property of how we ran it, not of what was asked for.
+    manual_head: bool,
     stream_seq: u64,
     /// Wrapped transcript lines hidden *below* the viewport, per client. Zero —
     /// which is what a missing entry means — is pinned to the bottom, and is
@@ -282,6 +292,7 @@ impl Default for State {
             pending: VecDeque::new(),
             tool_rounds: 0,
             owes_reply: false,
+            manual_head: false,
             stream_seq: 0,
             scroll: BTreeMap::new(),
             // Overwritten by the host on the first event or render; nothing
@@ -1583,6 +1594,28 @@ mod tests {
 
         assert!(tool_results(&state).is_empty(), "nothing ran");
         assert_eq!(state.messages.last().map(|m| m.role), Some(Role::Notice));
+    }
+
+    /// A typed tool was run for its output; the model's was run for context.
+    /// That is the difference the renderer keys on.
+    #[test]
+    fn a_typed_tools_result_is_marked_for_full_rendering() {
+        let mut state = ready_state();
+        state.input.set_text("/list_session".to_owned());
+        state.submit();
+
+        let results = tool_results(&state);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].full_output);
+        assert!(!state.manual_head, "consumed with the head it belonged to");
+
+        let frame = tool_call_frame("call_1", "list_session", "{}");
+        state.on_chunk("hocus-1", &frame, false, None);
+        state.on_chunk("hocus-1", b"", true, None);
+
+        let results = tool_results(&state);
+        assert_eq!(results.len(), 2);
+        assert!(!results[1].full_output, "the model's is still elided");
     }
 
     /// The model's calls land when its stream ends, which can be while a typed

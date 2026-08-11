@@ -25,6 +25,7 @@ impl State {
             pending: std::mem::take(&mut self.pending),
             tool_rounds: std::mem::take(&mut self.tool_rounds),
             owes_reply: std::mem::take(&mut self.owes_reply),
+            manual_head: std::mem::take(&mut self.manual_head),
             chat_id: self.chat_id.take(),
             saved: std::mem::take(&mut self.saved),
             scroll: std::mem::take(&mut self.scroll),
@@ -45,6 +46,7 @@ impl State {
         self.pending = chat.pending;
         self.tool_rounds = chat.tool_rounds;
         self.owes_reply = chat.owes_reply;
+        self.manual_head = chat.manual_head;
         self.chat_id = chat.chat_id;
         self.saved = chat.saved;
         self.scroll = chat.scroll;
@@ -535,6 +537,7 @@ impl State {
         self.pending.clear();
         self.tool_rounds = 0;
         self.owes_reply = false;
+        self.manual_head = false;
         self.job_auto_confirm = false;
         self.pin_to_bottom();
         // A watcher armed for the conversation being thrown away has nothing

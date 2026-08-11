@@ -519,6 +519,9 @@ fn prefix_for(role: Role) -> &'static str {
 /// Displayed lines of a tool result before it is elided. A session listing is
 /// hundreds of lines of JSON that the model needs and the user does not — it
 /// would push the entire conversation off screen.
+///
+/// Not applied to a result carrying `Message::full_output`: a tool the user
+/// typed was run *for* its output, so eliding it would defeat the command.
 const TOOL_RESULT_ROWS: usize = 3;
 
 fn styled_width(chars: &[StyledChar]) -> usize {
@@ -752,7 +755,7 @@ pub fn transcript_lines(messages: &[crate::Message], cols: usize) -> Vec<VLine> 
 
         let mut wrapped = wrap(&message.content, body_width);
         // Truncation is display-only; `content` still goes to the model whole.
-        if message.role == Role::Tool && wrapped.len() > TOOL_RESULT_ROWS {
+        if message.role == Role::Tool && !message.full_output && wrapped.len() > TOOL_RESULT_ROWS {
             let hidden = wrapped.len() - TOOL_RESULT_ROWS;
             wrapped.truncate(TOOL_RESULT_ROWS);
             wrapped.push(format!("… {hidden} more lines"));
@@ -1384,6 +1387,42 @@ mod tests {
                 .map(|line| line.text.trim_start())
                 .collect::<Vec<_>>(),
             vec!["**user**", "**literal**", "fn:  **tool**", "err: **error**"]
+        );
+    }
+
+    #[test]
+    fn a_long_tool_result_is_elided_to_a_few_lines() {
+        let content = (1..=10)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = transcript_lines(&[Message::tool_result("call-1", content)], 80);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.trim())
+                .collect::<Vec<_>>(),
+            vec!["fn:  1", "2", "3", "… 7 more lines"]
+        );
+    }
+
+    /// The output of a tool the user typed is the reason they typed it, so none
+    /// of it is hidden.
+    #[test]
+    fn a_typed_tools_result_is_rendered_whole() {
+        let content = (1..=10)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = transcript_lines(&[Message::tool_result_full("manual-1", content)], 80);
+        let mut expected = vec!["fn:  1".to_owned()];
+        expected.extend((2..=10).map(|n| n.to_string()));
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.trim())
+                .collect::<Vec<_>>(),
+            expected
         );
     }
 
