@@ -1043,7 +1043,16 @@ mod tests {
     // against the un-shifted content extents.
     #[test]
     fn cursor_coordinates_are_shown_on_the_last_content_row_with_a_top_offset() {
-        let mut pane = test_plugin_pane(10, 10, Offset { top: 1, bottom: 0, left: 0, right: 0 });
+        let mut pane = test_plugin_pane(
+            10,
+            10,
+            Offset {
+                top: 1,
+                bottom: 0,
+                left: 0,
+                right: 0,
+            },
+        );
         let last_content_row = pane.get_content_rows() - 1;
         pane.show_cursor(1, Some((0, last_content_row)));
         assert_eq!(
@@ -1054,7 +1063,16 @@ mod tests {
 
     #[test]
     fn cursor_coordinates_are_shown_on_the_last_content_column_with_a_left_offset() {
-        let mut pane = test_plugin_pane(10, 10, Offset { top: 0, bottom: 0, left: 1, right: 0 });
+        let mut pane = test_plugin_pane(
+            10,
+            10,
+            Offset {
+                top: 0,
+                bottom: 0,
+                left: 1,
+                right: 0,
+            },
+        );
         let last_content_column = pane.get_content_columns() - 1;
         pane.show_cursor(1, Some((last_content_column, 0)));
         assert_eq!(
@@ -1065,7 +1083,16 @@ mod tests {
 
     #[test]
     fn cursor_coordinates_are_none_past_the_content_area() {
-        let mut pane = test_plugin_pane(10, 10, Offset { top: 1, bottom: 0, left: 0, right: 0 });
+        let mut pane = test_plugin_pane(
+            10,
+            10,
+            Offset {
+                top: 1,
+                bottom: 0,
+                left: 0,
+                right: 0,
+            },
+        );
         let content_rows = pane.get_content_rows();
         pane.show_cursor(1, Some((0, content_rows)));
         assert_eq!(pane.cursor_coordinates(Some(1)), None);
