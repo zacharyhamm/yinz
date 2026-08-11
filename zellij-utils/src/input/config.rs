@@ -5,7 +5,7 @@ use crate::data::{LayoutInfo, LayoutWithError};
 
 use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,12 @@ pub struct Config {
     pub plugins: PluginAliases,
     pub ui: UiConfig,
     pub env: EnvironmentVariables,
-    pub background_plugins: HashSet<RunPluginOrAlias>,
+    /// Ordered rather than hashed so that serializing the config — and the
+    /// snapshot tests that read it back — produce the same bytes every run.
+    pub background_plugins: BTreeSet<RunPluginOrAlias>,
+    /// Whether the config opted out of the built-in background plugins, so that
+    /// serializing and re-parsing doesn't silently restore them.
+    pub background_plugins_cleared: bool,
     pub web_client: WebClientConfig,
 }
 
@@ -1440,5 +1445,55 @@ mod config_test {
             EnvironmentVariables::from_data(expected_env_config),
             "Env variables defined in config"
         );
+    }
+
+    #[test]
+    fn load_plugins_adds_to_defaults_unless_cleared() {
+        let base = Config::from_kdl("load_plugins {\n \"zellij:link\"\n}", None).unwrap();
+        let names = |config: &Config| -> Vec<String> {
+            config
+                .background_plugins
+                .iter()
+                .map(|p| p.location_string())
+                .collect()
+        };
+
+        let merged =
+            Config::from_kdl("load_plugins {\n \"zellij:about\"\n}", Some(base.clone())).unwrap();
+        assert_eq!(names(&merged), vec!["zellij:about", "zellij:link"]);
+
+        let cleared = Config::from_kdl(
+            "load_plugins clear-defaults=true {\n \"zellij:about\"\n}",
+            Some(base),
+        )
+        .unwrap();
+        assert_eq!(names(&cleared), vec!["zellij:about"]);
+    }
+
+    #[test]
+    fn load_plugins_clear_defaults_survives_serialization() {
+        let base = Config::from_kdl("load_plugins {\n \"zellij:link\"\n}", None).unwrap();
+        let names = |config: &Config| -> Vec<String> {
+            config
+                .background_plugins
+                .iter()
+                .map(|p| p.location_string())
+                .collect()
+        };
+
+        let cleared = Config::from_kdl(
+            "load_plugins clear-defaults=true {\n \"zellij:about\"\n}",
+            Some(base.clone()),
+        )
+        .unwrap();
+        let round_tripped =
+            Config::from_kdl(&cleared.to_string(false), Some(base.clone())).unwrap();
+        assert_eq!(names(&round_tripped), vec!["zellij:about"]);
+
+        // the additive case must not grow a clear-defaults out of nowhere
+        let merged =
+            Config::from_kdl("load_plugins {\n \"zellij:about\"\n}", Some(base.clone())).unwrap();
+        let round_tripped = Config::from_kdl(&merged.to_string(false), Some(base)).unwrap();
+        assert_eq!(names(&round_tripped), vec!["zellij:about", "zellij:link"]);
     }
 }

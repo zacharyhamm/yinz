@@ -5590,8 +5590,18 @@ impl Config {
             config.plugins.merge(config_plugins);
         }
         if let Some(kdl_load_plugins) = kdl_config.get("load_plugins") {
-            let load_plugins = load_plugins_from_kdl(kdl_load_plugins)?;
-            config.background_plugins = load_plugins;
+            // Additive, like every other block here: a config written before a
+            // default background plugin existed must still get it, otherwise the
+            // plugin silently never starts.
+            // ponytail: no way to drop a single default, only all of them with
+            // clear-defaults - per-plugin removal if anyone ever asks
+            if kdl_arg_is_truthy!(kdl_load_plugins, "clear-defaults") {
+                config.background_plugins.clear();
+                config.background_plugins_cleared = true;
+            }
+            config
+                .background_plugins
+                .extend(load_plugins_from_kdl(kdl_load_plugins)?);
         }
         if let Some(kdl_ui_config) = kdl_config.get("ui") {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
@@ -5621,7 +5631,11 @@ impl Config {
         let plugins = self.plugins.to_kdl(add_comments);
         document.nodes_mut().push(plugins);
 
-        let load_plugins = load_plugins_to_kdl(&self.background_plugins, add_comments);
+        let load_plugins = load_plugins_to_kdl(
+            &self.background_plugins,
+            self.background_plugins_cleared,
+            add_comments,
+        );
         document.nodes_mut().push(load_plugins);
 
         if let Some(ui_config) = self.ui.to_kdl() {
@@ -5717,10 +5731,14 @@ impl PluginAliases {
 }
 
 pub fn load_plugins_to_kdl(
-    background_plugins: &HashSet<RunPluginOrAlias>,
+    background_plugins: &BTreeSet<RunPluginOrAlias>,
+    cleared: bool,
     add_comments: bool,
 ) -> KdlNode {
     let mut load_plugins = KdlNode::new("load_plugins");
+    if cleared {
+        load_plugins.insert("clear-defaults", true);
+    }
     let mut load_plugins_children = KdlDocument::new();
     for run_plugin_or_alias in background_plugins.iter() {
         let mut background_plugin_node = KdlNode::new(run_plugin_or_alias.location_string());
@@ -5785,8 +5803,8 @@ pub fn load_plugins_to_kdl(
 #[allow(clippy::result_large_err)]
 fn load_plugins_from_kdl(
     kdl_load_plugins: &KdlNode,
-) -> Result<HashSet<RunPluginOrAlias>, ConfigError> {
-    let mut load_plugins: HashSet<RunPluginOrAlias> = HashSet::new();
+) -> Result<BTreeSet<RunPluginOrAlias>, ConfigError> {
+    let mut load_plugins: BTreeSet<RunPluginOrAlias> = BTreeSet::new();
     if let Some(kdl_load_plugins) = kdl_children_nodes!(kdl_load_plugins) {
         for plugin_block in kdl_load_plugins {
             let url_node = plugin_block.name();

@@ -104,7 +104,7 @@ impl SplitSize {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RunPluginOrAlias {
     RunPlugin(RunPlugin),
     Alias(PluginAlias),
@@ -474,6 +474,19 @@ impl std::hash::Hash for PluginAlias {
     }
 }
 
+impl Ord for PluginAlias {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // NOTE: Keep this in sync with what the `PartialEq` and `Hash` impls do.
+        (&self.name, &self.configuration).cmp(&(&other.name, &other.configuration))
+    }
+}
+
+impl PartialOrd for PluginAlias {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl PluginAlias {
     pub fn new(
         name: &str,
@@ -522,7 +535,22 @@ impl PartialEq for RunPlugin {
 }
 impl Eq for RunPlugin {}
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+impl Ord for RunPlugin {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // NOTE: Keep this in sync with what the `PartialEq` and `Hash` impls do:
+        // ordering has to agree with equality, so it compares the same fields
+        // and deliberately ignores `initial_cwd` and `_allow_exec_host_cmd`.
+        (&self.location, &self.configuration).cmp(&(&other.location, &other.configuration))
+    }
+}
+
+impl PartialOrd for RunPlugin {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PluginUserConfiguration(BTreeMap<String, String>);
 
 impl PluginUserConfiguration {
@@ -573,7 +601,7 @@ impl FromStr for PluginUserConfiguration {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RunPluginLocation {
     File(PathBuf),
     Zellij(PluginTag),
