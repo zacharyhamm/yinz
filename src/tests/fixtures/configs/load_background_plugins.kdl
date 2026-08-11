@@ -210,7 +210,7 @@ plugins {
     }
 }
 
-load_plugins {
+load_plugins clear-defaults=true {
   "file:/usr/src/zellij/wasm32-wasip1/release/fixture-plugin-for-tests.wasm" {
       config_key "config_value"
       config_key2 "config_value2"

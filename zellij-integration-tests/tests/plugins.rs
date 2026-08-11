@@ -9,7 +9,7 @@ fn load_background_plugin_config() -> String {
         env!("CARGO_MANIFEST_DIR")
     );
     format!(
-        "plugins {{\n  permission-requester location=\"file:{}\"\n}}\nload_plugins {{\n  \"permission-requester\"\n}}\n",
+        "plugins {{\n  permission-requester location=\"file:{}\"\n}}\nload_plugins clear-defaults=true {{\n  \"permission-requester\"\n}}\n",
         plugin_path
     )
 }

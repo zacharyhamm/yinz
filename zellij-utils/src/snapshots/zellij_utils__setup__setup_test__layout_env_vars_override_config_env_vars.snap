@@ -6281,6 +6281,7 @@ Config {
             },
         ),
     },
+    background_plugins_cleared: false,
     web_client: WebClientConfig {
         font: "monospace",
         theme: None,
