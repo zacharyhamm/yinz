@@ -349,6 +349,10 @@ pub enum Sessions {
         #[clap(short, long)]
         short: bool,
 
+        /// Include exited sessions that can be resurrected
+        #[clap(long)]
+        exited: bool,
+
         /// List the sessions in reverse order (default is ascending order)
         #[clap(short, long)]
         reverse: bool,
@@ -1779,6 +1783,27 @@ mod tests {
                     size: None,
                     ..
                 })
+        ));
+    }
+
+    #[test]
+    fn list_sessions_exited_flag_is_opt_in() {
+        let default = try_parse_cli(["zellij", "list-sessions"]).unwrap();
+        assert!(matches!(
+            default.command,
+            Some(Command::Sessions(Sessions::ListSessions {
+                exited: false,
+                ..
+            }))
+        ));
+
+        let exited = try_parse_cli(["zellij", "list-sessions", "--exited"]).unwrap();
+        assert!(matches!(
+            exited.command,
+            Some(Command::Sessions(Sessions::ListSessions {
+                exited: true,
+                ..
+            }))
         ));
     }
 
