@@ -56,6 +56,9 @@ pub struct PollReply {
     /// registered agent looks like an ordinary shell to everyone downstream.
     #[serde(default)]
     pub manual_kinds: BTreeMap<u32, String>,
+    /// Resolved agent CWD to its repository or plain-folder definition.
+    #[serde(default)]
+    pub repositories: BTreeMap<String, projects::Repository>,
 }
 
 /// Everything the store owns, pushed whole on every change.

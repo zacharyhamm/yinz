@@ -111,6 +111,8 @@ pub fn query(
                     json!({
                         "name": project.name,
                         "root": project.root,
+                        "remote": project.remote,
+                        "worktree_status": project.worktree_status,
                         "discovered": project.discovered,
                     })
                 })
@@ -172,6 +174,9 @@ mod tests {
             projects::Project {
                 name: "work".to_owned(),
                 root: "/tmp/work".to_owned(),
+                remote: None,
+                worktree_status: None,
+                common_dir: None,
                 discovered: false,
             },
         );
@@ -331,6 +336,9 @@ mod tests {
             projects::Project {
                 name: "other".to_owned(),
                 root: "/tmp/other".to_owned(),
+                remote: None,
+                worktree_status: None,
+                common_dir: None,
                 discovered: true,
             },
         );

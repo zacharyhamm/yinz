@@ -220,6 +220,8 @@ pub struct State {
     /// Terminal panes from hocus-agentd's latest event-fed snapshot. This is the
     /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
+    /// Agent CWDs resolved by hocus-agentd to Git checkout identities.
+    repositories: BTreeMap<String, projects::Repository>,
     /// Kinds the user set by hand with `agent_register`, keyed by pane id. These win
     /// over detection, and are dropped when their pane leaves the snapshot.
     manual_kinds: BTreeMap<u32, String>,
@@ -308,6 +310,7 @@ impl Default for State {
             job_seq: 0,
             job_auto_confirm: false,
             panes: Vec::new(),
+            repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
             activity: BTreeMap::new(),
             pending_write: None,
@@ -451,6 +454,7 @@ impl ZellijPlugin for State {
             return false;
         };
         self.agent_seq = seq;
+        self.repositories = reply.repositories;
         match reply.panes {
             Some(panes) => self.apply_poll(panes, reply.activity),
             // No current session. A quiet reply, not a dead daemon.
@@ -2254,6 +2258,31 @@ mod tests {
         assert_eq!(list[0]["pane_id"], 3);
     }
 
+    #[test]
+    fn project_agent_lists_include_matching_remote_worktrees() {
+        let mut state = state_with_panes();
+        let mut project = projects::validate("hocus", "/work/hocus").unwrap();
+        project.remote = Some("git@example.com:hocus.git".to_owned());
+        project.worktree_status = Some(projects::WorktreeStatus::Primary);
+        project.common_dir = Some("/work/hocus/.git".to_owned());
+        state.projects.insert("hocus".to_owned(), project);
+        state.panes[0].cwd = Some("/worktrees/topic/src".to_owned());
+        state.repositories.insert(
+            "/worktrees/topic/src".to_owned(),
+            projects::Repository {
+                root: "/worktrees/topic".to_owned(),
+                remote: Some("git@example.com:hocus.git".to_owned()),
+                worktree_status: Some(projects::WorktreeStatus::Linked),
+                common_dir: Some("/work/hocus/.git".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            state.pane_projects().get(&3).map(String::as_str),
+            Some("hocus")
+        );
+    }
+
     /// An agent pane in a folder, in a tab, as a poll would report it.
     fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
         agents::AgentPane {
@@ -2283,13 +2312,17 @@ mod tests {
     /// `apply_poll` would be testing half a circuit.
     fn poll(state: &mut State, panes: Vec<agents::AgentPane>) {
         state.apply_poll(panes.clone(), agents::Activity::new());
-        let cwds: Vec<String> = panes
+        let repositories: Vec<projects::Repository> = panes
             .iter()
             .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.clone())
+            .filter_map(|pane| pane.cwd.as_deref().map(projects::Repository::folder))
+            .collect();
+        state.repositories = repositories
+            .iter()
+            .map(|repository| (repository.root.clone(), repository.clone()))
             .collect();
         let mut registry = state.projects.clone();
-        if projects::discover(&mut registry, &cwds).changed() {
+        if projects::discover(&mut registry, &repositories).changed() {
             give_store(state, registry, state.todos.clone());
         }
     }
@@ -3100,11 +3133,21 @@ mod tests {
             }]),
             activity,
             manual_kinds: BTreeMap::new(),
+            repositories: BTreeMap::from([(
+                "/tmp/work".to_owned(),
+                projects::Repository {
+                    root: "/tmp/work".to_owned(),
+                    remote: Some("git@example.com:work.git".to_owned()),
+                    worktree_status: Some(projects::WorktreeStatus::Linked),
+                    common_dir: Some("/tmp/main/.git".to_owned()),
+                },
+            )]),
         };
         let json = serde_json::to_string(&reply).expect("serialize");
         let back: PollReply = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.panes, reply.panes);
         assert_eq!(back.activity, reply.activity);
+        assert_eq!(back.repositories, reply.repositories);
     }
 
     /// An empty snapshot carrying `seq`, as hocus-agentd sends it.
@@ -3117,6 +3160,7 @@ mod tests {
                     panes: Some(Vec::new()),
                     activity: agents::Activity::new(),
                     manual_kinds: BTreeMap::new(),
+                    repositories: BTreeMap::new(),
                 })
                 .expect("serialize"),
             ),

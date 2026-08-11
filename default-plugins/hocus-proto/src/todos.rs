@@ -75,6 +75,23 @@ pub fn write(json: &[u8]) {
     let _ = fs::write(FILE, json);
 }
 
+/// Move a project's list when its preferred checkout changes.
+pub fn move_root(store: &mut Store, old: &str, new: &str) {
+    let (Ok(old), Ok(new)) = (normalize_root(old), normalize_root(new)) else {
+        return;
+    };
+    if old == new {
+        return;
+    }
+    let Some(mut moved) = store.remove(&old) else {
+        return;
+    };
+    let destination = store.entry(new).or_default();
+    destination.next_id = destination.next_id.max(moved.next_id);
+    destination.items.append(&mut moved.items);
+    *destination = repair(std::mem::take(destination));
+}
+
 /// An absolute path with no `.` or `..`, as the store keys it.
 ///
 /// The same rule `projects::validate` puts on a project root, so a root that
@@ -573,6 +590,19 @@ mod tests {
 
     fn roots(roots: &[&str]) -> Vec<String> {
         roots.iter().map(|root| (*root).to_owned()).collect()
+    }
+
+    #[test]
+    fn moving_a_root_keeps_both_lists_and_repairs_duplicate_ids() {
+        let mut store = Store::new();
+        add(&mut store, "/linked", "linked", None).unwrap();
+        add(&mut store, "/primary", "primary", None).unwrap();
+
+        move_root(&mut store, "/linked", "/primary");
+
+        assert!(!store.contains_key("/linked"));
+        assert_eq!(store["/primary"].items.len(), 2);
+        assert_ne!(store["/primary"].items[0].id, store["/primary"].items[1].id);
     }
 
     fn texts(value: &serde_json::Value) -> Vec<String> {
