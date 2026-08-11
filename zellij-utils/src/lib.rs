@@ -5,10 +5,10 @@ pub mod data;
 pub mod envs;
 pub mod errors;
 pub mod home;
-#[cfg(not(windows))]
 mod home_unix;
-#[cfg(windows)]
-mod home_windows;
+
+#[cfg(target_os = "windows")]
+compile_error!("Zellij does not support Windows");
 pub mod input;
 pub mod kdl;
 pub mod nested_session_contract;

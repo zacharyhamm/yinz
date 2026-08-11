@@ -3,18 +3,8 @@ use crate::data::GlobalPaneEdge;
 use crate::input::config::ConfigError;
 use insta::assert_snapshot;
 
-#[cfg(not(windows))]
 fn normalize_layout_debug(s: String) -> String {
     s.replace("    global_panes: [],\n", "")
-}
-
-#[cfg(windows)]
-fn normalize_layout_debug(s: String) -> String {
-    // On Windows, PathBuf's Debug output uses `\\` (escaped backslash).
-    // Replace `\\\\` (two escaped backslashes in Debug repr) with `/`
-    // so that snapshots match Unix-recorded baselines.
-    s.replace("\\\\", "/")
-        .replace("    global_panes: [],\n", "")
 }
 
 #[test]
@@ -2201,9 +2191,6 @@ fn run_plugin_location_parsing() {
                 plugin location="file:///absolute/with space/plugin.wasm"
             }
             pane {
-                plugin location="file:c:/absolute/windows/plugin.wasm"
-            }
-            pane {
                 plugin location="filepicker"
             }
             pane {
@@ -2261,17 +2248,6 @@ fn run_plugin_location_parsing() {
                             _allow_exec_host_cmd: false,
                             location: RunPluginLocation::File(PathBuf::from(
                                 "/absolute/with space/plugin.wasm",
-                            )),
-                            configuration: Default::default(),
-                            ..Default::default()
-                        }))),
-                        ..Default::default()
-                    },
-                    TiledPaneLayout {
-                        run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location: RunPluginLocation::File(PathBuf::from(
-                                "c:/absolute/windows/plugin.wasm",
                             )),
                             configuration: Default::default(),
                             ..Default::default()

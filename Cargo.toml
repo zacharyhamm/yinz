@@ -1,6 +1,5 @@
 [package]
 name = "zellij"
-build = "src/build.rs"
 authors = ["Aram Drevekenin <aram@poor.dev>"]
 description = "A terminal workspace with batteries included"
 homepage = "https://zellij.dev"
@@ -30,9 +29,6 @@ serde_json = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
 isahc = { workspace = true }
-
-[target.'cfg(windows)'.build-dependencies]
-embed-resource = "3"
 
 [dev-dependencies]
 insta = "1.48"
@@ -85,7 +81,7 @@ anyhow = { version = "1.0.70", default-features = false, features = ["backtrace"
 async-trait = { version = "0.1", default-features = false }
 chrono = { version = "0.4.19", default-features = false, features = ["std", "clock"] }
 clap = { version = "4.6", default-features = false, features = ["std", "color", "help", "usage", "error-context", "suggestions", "wrap_help", "derive", "env"] }
-crossterm = { version = "0.29", default-features = false, features = ["windows"] }
+crossterm = { version = "0.29", default-features = false }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }
 futures-lite = { version = "1.13", default-features = false, features = ["std"] }
@@ -121,7 +117,6 @@ unicode-width = { version = "0.2.2", default-features = false }
 url = { version = "2.2.2", default-features = false, features = ["serde"] }
 uuid = { version = "1.4.1", default-features = false, features = ["serde", "v4", "std"] }
 vte = { version = "0.15", default-features = false, features = ["std"] }
-windows-sys = { version = "0.59", default-features = false }
 names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
 sha2 = { version = "0.11", default-features = false }

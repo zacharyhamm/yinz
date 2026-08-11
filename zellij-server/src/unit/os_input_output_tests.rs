@@ -5,10 +5,7 @@ fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }
 
-// --- Cross-platform command helpers ---
-
 #[allow(dead_code)]
-#[cfg(not(windows))]
 fn long_running_cmd() -> Command {
     let mut cmd = Command::new("sleep");
     cmd.arg("60");
@@ -16,17 +13,6 @@ fn long_running_cmd() -> Command {
 }
 
 #[allow(dead_code)]
-#[cfg(windows)]
-fn long_running_cmd() -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new("timeout");
-    cmd.args(&["/T", "60"]);
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    cmd
-}
-
-#[allow(dead_code)]
-#[cfg(not(windows))]
 fn echo_cmd(msg: &str) -> Command {
     let mut cmd = Command::new("echo");
     cmd.arg(msg);
@@ -34,31 +20,9 @@ fn echo_cmd(msg: &str) -> Command {
 }
 
 #[allow(dead_code)]
-#[cfg(windows)]
-fn echo_cmd(msg: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new("cmd");
-    cmd.args(&["/C", "echo", msg]);
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    cmd
-}
-
-#[allow(dead_code)]
-#[cfg(not(windows))]
 fn stdin_reader_cmd() -> Command {
     let mut cmd = Command::new("cat");
     cmd.stdin(std::process::Stdio::piped());
-    cmd
-}
-
-#[allow(dead_code)]
-#[cfg(windows)]
-fn stdin_reader_cmd() -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new("findstr");
-    cmd.arg("/R").arg(".*");
-    cmd.stdin(std::process::Stdio::piped());
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     cmd
 }
 
@@ -76,7 +40,6 @@ fn get_cwd() {
 
 // --- Signal delivery tests ---
 
-#[cfg(not(windows))]
 #[test]
 fn kill_sends_sighup_to_process() {
     let child = long_running_cmd()
@@ -92,7 +55,6 @@ fn kill_sends_sighup_to_process() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
-#[cfg(not(windows))]
 #[test]
 fn force_kill_sends_sigkill_to_process() {
     let child = long_running_cmd()
@@ -107,7 +69,6 @@ fn force_kill_sends_sigkill_to_process() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
-#[cfg(not(windows))]
 #[test]
 fn send_sigint_to_process() {
     let child = stdin_reader_cmd()
@@ -130,23 +91,11 @@ fn spawn_and_read_output() {
     let server = make_server();
     let test_message = "hello_zellij_test";
 
-    #[cfg(not(windows))]
     let cmd = RunCommand {
         command: PathBuf::from("echo"),
         args: vec![test_message.to_string()],
         ..Default::default()
     };
-    #[cfg(windows)]
-    let cmd = RunCommand {
-        command: PathBuf::from("cmd"),
-        args: vec![
-            "/K".to_string(),
-            "echo".to_string(),
-            test_message.to_string(),
-        ],
-        ..Default::default()
-    };
-
     let action = TerminalAction::RunCommand(cmd);
     let quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send> =
         Box::new(|_pane_id, _exit_status, _run_command| {});

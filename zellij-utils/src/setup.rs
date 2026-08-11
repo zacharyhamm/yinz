@@ -494,8 +494,11 @@ impl Setup {
         Ok(())
     }
     fn generate_completion(shell: &str) {
-        let shell: Shell = match shell.to_lowercase().parse() {
-            Ok(shell) => shell,
+        let shell = match shell.to_lowercase().as_str() {
+            "bash" => Shell::Bash,
+            "elvish" => Shell::Elvish,
+            "fish" => Shell::Fish,
+            "zsh" => Shell::Zsh,
             _ => {
                 eprintln!("Unsupported shell: {}", shell);
                 std::process::exit(1);
@@ -512,7 +515,6 @@ impl Setup {
             Shell::Fish => {
                 let _ = out.write_all(FISH_EXTRA_COMPLETION);
             },
-            Shell::PowerShell => {},
             Shell::Zsh => {
                 let _ = out.write_all(ZSH_EXTRA_COMPLETION);
             },

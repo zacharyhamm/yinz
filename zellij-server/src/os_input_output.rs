@@ -4,10 +4,7 @@ use crate::{panes::PaneId, ClientId};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
-#[cfg(not(windows))]
 use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
-#[cfg(windows)]
-use crate::os_input_output_windows::WindowsPtyBackend as PtyBackendImpl;
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -37,35 +34,7 @@ use std::{
 
 pub use async_trait::async_trait;
 
-/// Check whether a candidate path refers to an executable file, considering
-/// PATHEXT extensions on Windows (e.g. `.exe`, `.cmd`).
-///
-/// On Windows, when the candidate has no extension we try each PATHEXT
-/// variant BEFORE the bare match, mirroring cmd.exe's resolution. Tools like
-/// Composer install both `composer` (a Unix launcher) and `composer.bat`
-/// (the Windows launcher) side by side; returning the bare file would send
-/// a non-PE binary to CreateProcessW and fail with ERROR_BAD_EXE_FORMAT.
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if candidate.extension().is_none() {
-            if let Some(pathext) = env::var_os("PATHEXT") {
-                let pathext = pathext.to_string_lossy();
-                for ext in pathext.split(';') {
-                    let ext = ext.trim();
-                    if ext.is_empty() {
-                        continue;
-                    }
-                    let mut with_ext = candidate.as_os_str().to_os_string();
-                    with_ext.push(ext);
-                    let with_ext_path = PathBuf::from(with_ext);
-                    if with_ext_path.exists() && with_ext_path.is_file() {
-                        return Some(with_ext_path);
-                    }
-                }
-            }
-        }
-    }
     if candidate.exists() && candidate.is_file() {
         return Some(candidate.to_path_buf());
     }
@@ -73,7 +42,7 @@ fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// Resolve a command to its absolute path, searching the working directory,
-/// then PATH (and PATHEXT on Windows).
+/// then PATH.
 pub(crate) fn resolve_command(cmd: &RunCommand) -> Option<PathBuf> {
     let command = &cmd.command;
     match cmd.cwd.as_ref() {
@@ -98,7 +67,6 @@ pub(crate) fn resolve_command(cmd: &RunCommand) -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(windows))]
 pub(crate) fn command_exists(cmd: &RunCommand) -> bool {
     resolve_command(cmd).is_some()
 }
@@ -339,13 +307,6 @@ pub trait ServerOsApi: Send + Sync {
         client_id: ClientId,
         stream: LocalSocketStream,
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>>;
-    /// Create a new client with a separate reply stream (Windows dual-pipe IPC).
-    fn new_client_with_reply(
-        &mut self,
-        client_id: ClientId,
-        stream: LocalSocketStream,
-        reply_stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>>;
     fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid
@@ -480,22 +441,6 @@ impl ServerOsApi for ServerOsInputOutput {
         Ok(receiver)
     }
 
-    fn new_client_with_reply(
-        &mut self,
-        client_id: ClientId,
-        stream: LocalSocketStream,
-        reply_stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        let receiver = IpcReceiverWithContext::new(stream);
-        let sender = ClientSender::new(client_id, IpcSenderWithContext::new(reply_stream));
-        self.client_senders
-            .lock()
-            .to_anyhow()
-            .with_context(|| format!("failed to create new client {client_id}"))?
-            .insert(client_id, sender);
-        Ok(receiver)
-    }
-
     fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let mut client_senders = self
             .client_senders
@@ -566,30 +511,6 @@ impl ServerOsApi for ServerOsInputOutput {
 
         (cwds, cmds)
     }
-    #[cfg(not(unix))]
-    fn get_all_cmds_by_ppid(&self, post_hook: &Option<String>) -> HashMap<String, Vec<String>> {
-        let mut system_info = System::new();
-        let refresh_kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
-        system_info.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
-        let mut cmds = HashMap::new();
-        for (_pid, process) in system_info.processes() {
-            if let Some(parent_pid) = process.parent() {
-                let ppid_str = format!("{}", parent_pid);
-                let command: Vec<String> = process
-                    .cmd()
-                    .iter()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .collect();
-                if command.is_empty() {
-                    continue;
-                }
-                cmds.insert(ppid_str, apply_post_command_hook(command, post_hook));
-            }
-        }
-        cmds
-    }
-
-    #[cfg(unix)]
     fn get_foreground_cmds(
         &self,
         panes: &[(u32, u32)],
@@ -634,24 +555,6 @@ impl ServerOsApi for ServerOsInputOutput {
             }
             let command = apply_post_command_hook(command, post_hook);
             cmds.insert(terminal_id, command);
-        }
-        cmds
-    }
-
-    #[cfg(not(unix))]
-    fn get_foreground_cmds(
-        &self,
-        panes: &[(u32, u32)],
-        post_hook: &Option<String>,
-    ) -> HashMap<u32, Vec<String>> {
-        // Use ppid-based discovery on Windows, because it has no controlling-terminal
-        // foreground group.
-        let ppids_to_cmds = self.get_all_cmds_by_ppid(post_hook);
-        let mut cmds = HashMap::new();
-        for &(terminal_id, shell_pid) in panes {
-            if let Some(cmd) = ppids_to_cmds.get(&shell_pid.to_string()) {
-                cmds.insert(terminal_id, cmd.clone());
-            }
         }
         cmds
     }
@@ -771,7 +674,6 @@ fn apply_post_command_hook(command: Vec<String>, post_hook: &Option<String>) -> 
         .collect()
 }
 
-#[cfg(not(windows))]
 fn run_command_hook(
     original_command: &str,
     hook_script: &str,
@@ -782,22 +684,6 @@ fn run_command_hook(
         .env("RESURRECT_COMMAND", original_command)
         .output()?;
 
-    if !output.status.success() {
-        return Err(format!("Hook failed: {}", String::from_utf8_lossy(&output.stderr)).into());
-    }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
-}
-
-#[cfg(windows)]
-fn run_command_hook(
-    original_command: &str,
-    hook_script: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("cmd")
-        .arg("/C")
-        .arg(hook_script)
-        .env("RESURRECT_COMMAND", original_command)
-        .output()?;
     if !output.status.success() {
         return Err(format!("Hook failed: {}", String::from_utf8_lossy(&output.stderr)).into());
     }

@@ -235,14 +235,6 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
         unimplemented!()
     }
-    fn new_client_with_reply(
-        &mut self,
-        _client_id: ClientId,
-        _stream: LocalSocketStream,
-        _reply_stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
     fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
         unimplemented!()
     }
@@ -7374,8 +7366,6 @@ pub fn send_cli_new_tab_action_with_name_and_layout() {
         .unwrap()
         .clone();
     let output = format!("{:#?}", new_tab_instruction);
-    // Normalize Windows path separators for cross-platform snapshot consistency
-    let output = output.replace("\\\\", "/");
     assert_snapshot!(output);
 }
 
@@ -11445,8 +11435,6 @@ pub fn send_cli_new_tab_action_with_layout_string() {
         .unwrap()
         .clone();
     let output = format!("{:#?}", new_tab_instruction);
-    // Normalize Windows path separators for cross-platform snapshot consistency
-    let output = output.replace("\\\\", "/");
     assert_snapshot!(output);
 }
 
@@ -11500,8 +11488,6 @@ pub fn send_cli_new_tab_action_with_layout_string_and_name() {
         .unwrap()
         .clone();
     let output = format!("{:#?}", new_tab_instruction);
-    // Normalize Windows path separators for cross-platform snapshot consistency
-    let output = output.replace("\\\\", "/");
     assert_snapshot!(output);
 }
 

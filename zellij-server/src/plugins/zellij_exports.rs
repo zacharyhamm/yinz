@@ -471,7 +471,6 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         scan_host_folder(env, folder_to_scan)
                     },
                     PluginCommand::WatchFilesystem => watch_filesystem(env),
-                    PluginCommand::ListWindowsVolumes => list_windows_volumes(env),
                     PluginCommand::GetSessionList => get_session_list(env),
                     PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
                     PluginCommand::DumpSessionLayout { tab_index } => {
@@ -3461,24 +3460,8 @@ fn kill_sessions(session_names: Vec<String>) {
         let path = &*ZELLIJ_SOCK_DIR.join(&session_name);
         match ipc_connect(path) {
             Ok(stream) => {
-                #[cfg(windows)]
-                {
-                    use zellij_utils::consts::ipc_connect_reply;
-                    use zellij_utils::ipc::{IpcReceiverWithContext, ServerToClientMsg};
-                    let reply = ipc_connect_reply(path);
-                    let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                        .send_client_msg(ClientToServerMsg::KillSession);
-                    if let Ok(reply_stream) = reply {
-                        let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
-                            IpcReceiverWithContext::new(reply_stream);
-                        let _ = receiver.recv_server_msg();
-                    }
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                        .send_client_msg(ClientToServerMsg::KillSession);
-                }
+                let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
+                    .send_client_msg(ClientToServerMsg::KillSession);
             },
             Err(e) => {
                 log::error!("Failed to kill session {}: {:?}", session_name, e);
@@ -4108,11 +4091,6 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
     }
 }
 
-#[cfg(not(windows))]
-fn list_windows_volumes(_env: &PluginEnv) {
-    log::error!("ListWindowsVolumes is only supported on Windows");
-}
-
 fn set_soft_keyboard(env: &PluginEnv, on: bool) {
     env.senders
         .send_to_screen(ScreenInstruction::SetSoftKeyboard {
@@ -4126,83 +4104,6 @@ fn set_soft_keyboard(env: &PluginEnv, on: bool) {
             )
         })
         .non_fatal();
-}
-
-#[cfg(windows)]
-fn list_windows_volumes(env: &PluginEnv) {
-    let send_plugin_instructions = env.senders.to_plugin.clone();
-    let update_target = Some(env.plugin_id);
-    let client_id = env.client_id;
-    thread::spawn(move || {
-        let mut entries = enumerate_drives();
-        entries.extend(enumerate_wsl_distributions());
-        let _ = send_plugin_instructions
-            .ok_or(anyhow!("found no sender to send plugin instruction to"))
-            .map(|sender| {
-                let _ = sender.send(PluginInstruction::Update(vec![(
-                    update_target,
-                    Some(client_id),
-                    Event::FileSystemUpdate(entries),
-                )]));
-            })
-            .non_fatal();
-    });
-}
-
-#[cfg(windows)]
-fn enumerate_drives() -> Vec<(PathBuf, Option<zellij_utils::data::FileMetadata>)> {
-    use windows_sys::Win32::Storage::FileSystem::GetLogicalDriveStringsW;
-    let mut buf = [0u16; 256];
-    let len = unsafe { GetLogicalDriveStringsW(buf.len() as u32, buf.as_mut_ptr()) };
-    if len == 0 {
-        return vec![];
-    }
-    let drive_strings = &buf[..len as usize];
-    let mut entries = vec![];
-    for chunk in drive_strings.split(|&c| c == 0) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let drive = String::from_utf16_lossy(chunk);
-        let normalized = drive.replace('\\', "/");
-        let drive_path = PathBuf::from(&normalized);
-        let metadata = drive_path.metadata().ok().map(|m| m.into());
-        entries.push((drive_path, metadata));
-    }
-    entries
-}
-
-#[cfg(windows)]
-fn enumerate_wsl_distributions() -> Vec<(PathBuf, Option<zellij_utils::data::FileMetadata>)> {
-    // read_dir on \\wsl.localhost\ or \\wsl$\ can fail with OS error 64/67
-    // even when WSL is running, so enumerate distros via `wsl -l -q` instead.
-    let output = match std::process::Command::new("wsl")
-        .args(["-l", "-q"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
-    };
-    // wsl -l -q outputs UTF-16LE on Windows
-    let stdout: Vec<u16> = output
-        .stdout
-        .chunks(2)
-        .map(|c| u16::from_le_bytes([c[0], *c.get(1).unwrap_or(&0)]))
-        .collect();
-    let text = String::from_utf16_lossy(&stdout);
-    let mut entries = vec![];
-    for line in text.lines() {
-        let name = line.trim().trim_matches('\0');
-        if name.is_empty() {
-            continue;
-        }
-        // Verify the distro is reachable before listing it
-        let unc = format!("\\\\wsl.localhost\\{}", name);
-        let metadata = std::fs::metadata(&unc).ok().map(|m| m.into());
-        let wsl_path = PathBuf::from(format!("//wsl.localhost/{}/", name));
-        entries.push((wsl_path, metadata));
-    }
-    entries
 }
 
 fn resize_pane_with_id(env: &PluginEnv, resize: ResizeStrategy, pane_id: PaneId) {
@@ -5692,9 +5593,7 @@ fn check_command_permission(
         PluginCommand::RebindKeys { .. } | PluginCommand::Reconfigure(..) => {
             PermissionType::Reconfigure
         },
-        PluginCommand::ChangeHostFolder(..) | PluginCommand::ListWindowsVolumes => {
-            PermissionType::FullHdAccess
-        },
+        PluginCommand::ChangeHostFolder(..) => PermissionType::FullHdAccess,
         PluginCommand::ShareCurrentSession
         | PluginCommand::StopSharingCurrentSession
         | PluginCommand::StopWebServer
