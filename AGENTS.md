@@ -23,7 +23,7 @@ target dir breaks debug builds. Symlink `target/` instead. See CONTRIBUTING.md.
 
 CI runs: `cargo x build`, `cargo x test`, `cargo x test --no-web`,
 `cargo x integration-test`, `cargo x assets --check`, `cargo x format --check`,
-`cargo test -p xtask` — on Linux, macOS, and Windows.
+`cargo test -p xtask` — on Linux and macOS.
 
 ## Layout
 

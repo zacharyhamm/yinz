@@ -92,14 +92,6 @@ impl ServerOsApi for MockOsApi {
     ) -> anyhow::Result<IpcReceiverWithContext<ClientToServerMsg>> {
         unimplemented!()
     }
-    fn new_client_with_reply(
-        &mut self,
-        _: ClientId,
-        _: LocalSocketStream,
-        _: LocalSocketStream,
-    ) -> anyhow::Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
     fn remove_client(&mut self, _: ClientId) -> anyhow::Result<()> {
         Ok(())
     }

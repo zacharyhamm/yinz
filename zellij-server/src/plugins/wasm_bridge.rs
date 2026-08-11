@@ -55,14 +55,6 @@ use zellij_utils::{
     pane_size::Size,
 };
 
-/// On Windows, colons in URL strings (e.g. `zellij:tab-bar`, `file:///...`)
-/// are illegal in path components. Replace them with underscores.
-#[cfg(windows)]
-fn make_plugin_url_path_safe(url: String) -> String {
-    url.replace(':', "_")
-}
-
-#[cfg(not(windows))]
 fn make_plugin_url_path_safe(url: String) -> String {
     url
 }

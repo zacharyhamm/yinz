@@ -2,6 +2,9 @@ mod commands;
 #[cfg(test)]
 mod tests;
 
+#[cfg(target_os = "windows")]
+compile_error!("Zellij does not support Windows");
+
 use clap::Parser;
 use zellij_utils::{
     cli::{CliAction, CliArgs, Command, Sessions},
@@ -352,7 +355,6 @@ fn main() {
                 web_opts.port,
                 web_opts.cert.clone(),
                 web_opts.key.clone(),
-                web_opts.server_startup_timeout,
             );
         } else if web_opts.stop {
             match commands::stop_web_server() {

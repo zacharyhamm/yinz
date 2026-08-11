@@ -90,21 +90,12 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     }
 
     let _pd = sh.push_dir(project_root);
-    // On Windows, build natively (MSVC).
     // On macOS: use cargo-zigbuild which handles musl cross-compilation for any arch without
     //   needing a separate linker toolchain. The target arch matches the host so the Docker
     //   container runs natively without emulation (arm64 on Apple Silicon, amd64 on Intel).
     //   Install with: cargo install cargo-zigbuild && brew install zig
     // On Linux: cross-compile for musl.
-    if cfg!(windows) {
-        crate::cargo()
-            .and_then(|cargo| {
-                cmd!(sh, "{cargo} build --release")
-                    .run()
-                    .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         let target = if cfg!(target_arch = "aarch64") {
             "aarch64-unknown-linux-musl"
         } else {

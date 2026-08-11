@@ -1,11 +1,10 @@
 pub mod os_input_output;
 
-#[cfg(not(windows))]
 #[path = "os_input_output_unix.rs"]
 mod os_input_output_unix;
-#[cfg(windows)]
-#[path = "os_input_output_windows.rs"]
-mod os_input_output_windows;
+
+#[cfg(target_os = "windows")]
+compile_error!("Zellij does not support Windows");
 
 pub mod cli_client;
 mod command_is_executing;
@@ -16,8 +15,6 @@ mod nested_reannounce;
 pub mod remote_attach;
 mod stdin_ansi_parser;
 mod stdin_handler;
-#[cfg(windows)]
-mod stdin_handler_windows;
 #[cfg(feature = "web_server_capability")]
 pub mod web_client;
 
@@ -255,7 +252,7 @@ impl ErrorInstruction for ClientInstruction {
     }
 }
 
-#[cfg(all(feature = "web_server_capability", not(windows)))]
+#[cfg(feature = "web_server_capability")]
 fn spawn_web_server(cli_args: &CliArgs) -> Result<String, String> {
     let mut cmd = Command::new(current_exe().map_err(|e| e.to_string())?);
     if let Some(config_file_path) = Config::config_file_path(cli_args) {
@@ -280,48 +277,6 @@ fn spawn_web_server(cli_args: &CliArgs) -> Result<String, String> {
                 Ok(String::from_utf8_lossy(&output.stdout).to_string())
             } else {
                 Err(String::from_utf8_lossy(&output.stderr).to_string())
-            }
-        },
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// On Windows, cmd.output() creates pipe handles for stdout/stderr. The child
-/// (zellij web -d) spawns a grandchild (the web server) which inherits these
-/// pipe handles. cmd.output() waits for EOF on the pipes, but the long-lived
-/// grandchild keeps them open — hanging forever.
-///
-/// Redirecting the grandchild's stdio to null is not sufficient: on Windows,
-/// CreateProcess with bInheritHandles=TRUE inherits ALL inheritable handles,
-/// not just the stdio handles specified in STARTUPINFO. The pipe handles leak
-/// through regardless of the grandchild's stdio configuration.
-///
-/// Use cmd.status() instead: no pipes are created, so nothing to hang on.
-#[cfg(all(feature = "web_server_capability", windows))]
-fn spawn_web_server(cli_args: &CliArgs) -> Result<String, String> {
-    let mut cmd = Command::new(current_exe().map_err(|e| e.to_string())?);
-    if let Some(config_file_path) = Config::config_file_path(cli_args) {
-        let config_file_path_exists = Path::new(&config_file_path).exists();
-        if !config_file_path_exists {
-            return Err(format!(
-                "Config file: {} does not exist",
-                config_file_path.display()
-            ));
-        }
-        cmd.arg("--config");
-        cmd.arg(format!("{}", config_file_path.display()));
-    }
-    cmd.arg("web");
-    cmd.arg("-d");
-    match cmd.status() {
-        Ok(status) => {
-            if status.success() {
-                Ok(String::new())
-            } else {
-                Err(format!(
-                    "Web server process exited with code: {}",
-                    status.code().unwrap_or(-1)
-                ))
             }
         },
         Err(e) => Err(e.to_string()),
@@ -441,7 +396,6 @@ fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
 ///
 /// On Unix the server daemonizes (double-fork) inside start_server(), so
 /// the intermediate child exits immediately and `cmd.status()` returns.
-#[cfg(not(windows))]
 pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
     let mut cmd = Command::new(current_exe()?);
     cmd.arg("--server").arg(socket_path);
@@ -459,28 +413,6 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
         };
         Err(io::Error::other(err_msg))
     }
-}
-
-/// Spawn the Zellij server process.
-///
-/// On Windows there is no daemonize — we launch the server as a background
-/// process with a hidden console.  We use CREATE_NO_WINDOW (not
-/// DETACHED_PROCESS) so the server gets valid standard handles;
-/// DETACHED_PROCESS leaves stdin/stdout/stderr as NULL, which breaks PTY
-/// creation, WASM plugin loading, and logging.
-#[cfg(windows)]
-pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new(current_exe()?);
-    cmd.arg("--server").arg(socket_path);
-    if debug {
-        cmd.arg("--debug");
-    }
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-    cmd.spawn()?;
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -518,8 +450,6 @@ impl ClientInfo {
 pub(crate) enum InputInstruction {
     KeyEvent(InputEvent, Vec<u8>),
     KeyWithModifierEvent(KeyWithModifier, Vec<u8>, bool), // bool = is_kitty_keyboard_protocol
-    #[allow(dead_code)] // constructed in stdin_handler_windows.rs (Windows-only)
-    MouseEvent(zellij_utils::input::mouse::MouseEvent),
     AnsiStdinInstructions(Vec<AnsiStdinInstruction>),
     DesktopNotificationResponse(Vec<u8>),
     /// The continuous host-reply parser closed a forwarding window (barrier
@@ -851,7 +781,6 @@ pub fn start_remote_client(
         let os_input = os_input.clone();
         Box::new(move |info| {
             os_input.disable_mouse().non_fatal();
-            os_input.restore_console_mode();
             if let Ok(()) = os_input.unset_raw_mode() {
                 handle_panic::<ClientInstruction>(info, None);
             }
@@ -861,7 +790,6 @@ pub fn start_remote_client(
     let reset_controlling_terminal_state = |e: String, exit_status: i32| {
         os_input.disable_mouse().non_fatal();
         os_input.unset_raw_mode().unwrap();
-        os_input.restore_console_mode();
         let error = terminal_teardown_message(&e, full_screen_ws.rows, true);
         let mut stdout = os_input.get_stdout_writer();
         stdout.write_all(error.as_bytes()).unwrap();
@@ -942,8 +870,7 @@ pub fn start_client(
 
     if !is_a_reconnect {
         // we don't do this for a reconnect because our controlling terminal already has the
-        // attributes we want from it, and some terminals don't treat these atomically (looking at
-        // you Windows Terminal...)
+        // attributes we want from it, and some terminals don't treat these atomically.
         let mut stdout = os_input.get_stdout_writer();
         stdout.write_all(ENTER_ALTERNATE_SCREEN.as_bytes()).unwrap();
         stdout
@@ -1187,7 +1114,6 @@ pub fn start_client(
             let os_input = os_input.clone();
             Box::new(move |info| {
                 os_input.disable_mouse().non_fatal();
-                os_input.restore_console_mode();
                 if let Ok(()) = os_input.unset_raw_mode() {
                     handle_panic(info, Some(&send_client_instructions));
                 }
@@ -1270,7 +1196,6 @@ pub fn start_client(
                             os_api.send_to_server(ClientToServerMsg::TerminalResize {
                                 new_size: os_api.get_terminal_size(),
                             });
-                            #[cfg(not(windows))]
                             let _ = os_api
                                 .get_stdout_writer()
                                 .write(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes());
@@ -1335,7 +1260,6 @@ pub fn start_client(
     let handle_error = |backtrace: String| {
         os_input.disable_mouse().non_fatal();
         os_input.unset_raw_mode().unwrap();
-        os_input.restore_console_mode();
         let error = terminal_teardown_message(
             &backtrace,
             full_screen_ws.rows,
@@ -1532,7 +1456,6 @@ pub fn start_client(
         os_input.disable_mouse().non_fatal();
         info!("{}", exit_msg);
         os_input.unset_raw_mode().unwrap();
-        os_input.restore_console_mode();
         let mut stdout = os_input.get_stdout_writer();
         stdout.write_all(goodbye_message.as_bytes()).unwrap();
         stdout.flush().unwrap();

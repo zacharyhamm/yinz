@@ -154,14 +154,6 @@ impl ServerOsApi for MockServerOsApi {
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
         unimplemented!()
     }
-    fn new_client_with_reply(
-        &mut self,
-        _client_id: ClientId,
-        _stream: LocalSocketStream,
-        _reply_stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
     fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
         Ok(())
     }
@@ -562,16 +554,6 @@ fn pty_writer_records_successful_resize() {
             &mut self,
             _id: crate::ClientId,
             _s: interprocess::local_socket::Stream,
-        ) -> anyhow::Result<
-            zellij_utils::ipc::IpcReceiverWithContext<zellij_utils::ipc::ClientToServerMsg>,
-        > {
-            unimplemented!()
-        }
-        fn new_client_with_reply(
-            &mut self,
-            _id: crate::ClientId,
-            _s: interprocess::local_socket::Stream,
-            _r: interprocess::local_socket::Stream,
         ) -> anyhow::Result<
             zellij_utils::ipc::IpcReceiverWithContext<zellij_utils::ipc::ClientToServerMsg>,
         > {

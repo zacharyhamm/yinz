@@ -15,10 +15,7 @@ pub const DEFAULT_SCROLL_BUFFER_SIZE: usize = 10_000;
 pub static SCROLL_BUFFER_SIZE: OnceLock<usize> = OnceLock::new();
 pub static DEBUG_MODE: OnceLock<bool> = OnceLock::new();
 
-#[cfg(not(windows))]
 pub const SYSTEM_DEFAULT_CONFIG_DIR: &str = "/etc/zellij";
-#[cfg(windows)]
-pub const SYSTEM_DEFAULT_CONFIG_DIR: &str = "C:\\ProgramData\\Zellij";
 pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 
 pub static ZELLIJ_DEFAULT_THEMES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/themes");
@@ -79,8 +76,6 @@ fn prune_empty_session_info_folders() {
 const fn system_default_data_dir() -> &'static str {
     if let Some(data_dir) = std::option_env!("PREFIX") {
         data_dir
-    } else if cfg!(windows) {
-        "C:\\ProgramData\\Zellij"
     } else {
         "/usr"
     }
@@ -89,13 +84,8 @@ const fn system_default_data_dir() -> &'static str {
 lazy_static! {
     pub static ref CLIENT_SERVER_CONTRACT_DIR: String =
         format!("contract_version_{}", CLIENT_SERVER_CONTRACT_VERSION);
-    pub static ref ZELLIJ_PROJ_DIR: ProjectDirs = {
-        if cfg!(windows) {
-            ProjectDirs::from("", "", "Zellij").unwrap()
-        } else {
-            ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap()
-        }
-    };
+    pub static ref ZELLIJ_PROJ_DIR: ProjectDirs =
+        ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap();
     pub static ref ZELLIJ_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR.cache_dir().to_path_buf();
     pub static ref ZELLIJ_SESSION_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR
         .cache_dir()
@@ -166,29 +156,11 @@ pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::loca
     LocalSocketStream::connect(fs_name)
 }
 
-#[cfg(windows)]
-pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Stream> {
-    use interprocess::local_socket::{prelude::*, GenericNamespaced, Stream as LocalSocketStream};
-    let name = path.to_string_lossy().to_string();
-    let ns_name = name.to_ns_name::<GenericNamespaced>()?;
-    LocalSocketStream::connect(ns_name)
-}
-
 #[cfg(unix)]
 pub fn ipc_bind(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Listener> {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     let fs_name = path.to_fs_name::<GenericFilePath>()?;
     ListenerOptions::new().name(fs_name).create_sync()
-}
-
-#[cfg(windows)]
-pub fn ipc_bind(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Listener> {
-    use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
-    let name = path.to_string_lossy().to_string();
-    let ns_name = name.to_ns_name::<GenericNamespaced>()?;
-    let listener = ListenerOptions::new().name(ns_name).create_sync()?;
-    std::fs::write(path, std::process::id().to_string())?;
-    Ok(listener)
 }
 
 #[cfg(unix)]
@@ -198,38 +170,6 @@ pub fn ipc_bind_async(
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     let fs_name = path.to_fs_name::<GenericFilePath>()?;
     ListenerOptions::new().name(fs_name).create_tokio()
-}
-
-#[cfg(windows)]
-pub fn ipc_bind_async(
-    path: &std::path::Path,
-) -> std::io::Result<interprocess::local_socket::tokio::Listener> {
-    use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
-    let name = path.to_string_lossy().to_string();
-    let ns_name = name.to_ns_name::<GenericNamespaced>()?;
-    let listener = ListenerOptions::new().name(ns_name).create_tokio()?;
-    std::fs::write(path, std::process::id().to_string())?;
-    Ok(listener)
-}
-
-#[cfg(windows)]
-pub fn ipc_connect_reply(
-    path: &std::path::Path,
-) -> std::io::Result<interprocess::local_socket::Stream> {
-    use interprocess::local_socket::{prelude::*, GenericNamespaced, Stream as LocalSocketStream};
-    let name = format!("{}-reply", path.to_string_lossy());
-    let ns_name = name.to_ns_name::<GenericNamespaced>()?;
-    LocalSocketStream::connect(ns_name)
-}
-
-#[cfg(windows)]
-pub fn ipc_bind_reply(
-    path: &std::path::Path,
-) -> std::io::Result<interprocess::local_socket::Listener> {
-    use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
-    let name = format!("{}-reply", path.to_string_lossy());
-    let ns_name = name.to_ns_name::<GenericNamespaced>()?;
-    ListenerOptions::new().name(ns_name).create_sync()
 }
 
 #[cfg(unix)]
@@ -279,17 +219,9 @@ mod not_unix {
     use super::*;
     use crate::envs;
     pub use crate::shared::set_permissions;
-    #[cfg(windows)]
-    use dunce;
     use lazy_static::lazy_static;
     use std::env::temp_dir;
 
-    #[cfg(windows)]
-    fn canonicalize_path(path: PathBuf) -> PathBuf {
-        dunce::canonicalize(&path).unwrap_or(path)
-    }
-
-    #[cfg(not(windows))]
     fn canonicalize_path(path: PathBuf) -> PathBuf {
         path
     }

@@ -2483,22 +2483,10 @@ fn send_command_not_found_to_screen(
     Ok(())
 }
 
-#[cfg(not(windows))]
 pub fn get_default_shell() -> PathBuf {
     PathBuf::from(std::env::var("SHELL").unwrap_or_else(|_| {
         log::warn!("Cannot read SHELL env, falling back to use /bin/sh");
         "/bin/sh".to_string()
-    }))
-}
-
-#[cfg(windows)]
-pub fn get_default_shell() -> PathBuf {
-    if let Ok(shell) = std::env::var("SHELL") {
-        return PathBuf::from(shell);
-    }
-    PathBuf::from(std::env::var("COMSPEC").unwrap_or_else(|_| {
-        log::warn!("Cannot read SHELL or COMSPEC env, falling back to use cmd.exe");
-        "cmd.exe".to_string()
     }))
 }
 

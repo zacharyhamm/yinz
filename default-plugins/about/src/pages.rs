@@ -27,15 +27,6 @@ impl Page {
             .with_title(main_screen_title(zellij_version.clone(), is_release_notes))
             .with_bulletin_list(BulletinList::new(whats_new_title()).with_items(vec![
                     ActiveComponent::new(TextOrCustomRender::Text(main_menu_item(
-                        "Windows Support",
-                    )))
-                    .with_hover(TextOrCustomRender::Text(
-                        main_menu_item("Windows Support").selected(),
-                    ))
-                    .with_left_click_action(ClickAction::new_change_page({
-                        move || Page::new_windows_support()
-                    })),
-                    ActiveComponent::new(TextOrCustomRender::Text(main_menu_item(
                         "Remote Sessions",
                     )))
                     .with_hover(TextOrCustomRender::Text(
@@ -131,24 +122,6 @@ impl Page {
                     main_screen_help_text(hovering_over_link, menu_item_is_selected)
                 })
             })
-    }
-    fn new_windows_support() -> Page {
-        Page::new()
-            .with_title(Text::new("Windows Support").color_range(0, ..))
-            .with_paragraph(vec![
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Zellij now runs natively on Windows."),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Windows users can now enjoy the same workspace management, plugin ecosystem"),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("and multiplayer capabilities that have been available on Linux and macOS."),
-                ))]),
-            ])
-            .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-                esc_to_go_back_help()
-            }))
     }
     pub fn new_remote_sessions(link_executable: Rc<RefCell<String>>) -> Page {
         Page::new()

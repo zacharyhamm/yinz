@@ -59,16 +59,6 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "poll", "process", "signal", "socket", "term", "uio"] }
 signal-hook = { workspace = true }
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Console",
-    "Win32_System_Pipes",
-    "Win32_System_Threading",
-] }
-
 [dev-dependencies]
 hegeltest = "0.29.3"
 insta = "1.48"
