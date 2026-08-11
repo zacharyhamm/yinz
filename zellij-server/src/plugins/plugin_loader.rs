@@ -29,20 +29,8 @@ use zellij_utils::{
     input::keybinds::Keybinds, input::plugins::PluginConfig, pane_size::Size,
 };
 
-/// Open a directory as a `File` handle for WASI pre-opening.
-/// On Windows, `FILE_FLAG_BACKUP_SEMANTICS` is required to open directories.
-#[cfg(not(windows))]
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
-}
-
-#[cfg(windows)]
-fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS
-        .open(path)
 }
 
 fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir: &PathBuf) {

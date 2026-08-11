@@ -3676,7 +3676,6 @@ pub enum PluginCommand {
         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
         context: BTreeMap<String, String>,
     },
-    ListWindowsVolumes,
     GetSessionList,
     KillSessionsAndReply(Vec<String>), // one or more session names; sends a response back
     DeleteDeadSessionAndReply(String), // session name; sends a response back

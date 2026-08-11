@@ -1,10 +1,6 @@
 use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
 use crate::os_input_output::ClientOsApi;
-#[cfg(windows)]
-use crate::os_input_output_windows::use_vt_path;
 use crate::stdin_ansi_parser::{HostReply, PendingPartial, StdinAnsiParser};
-#[cfg(windows)]
-use crate::stdin_handler_windows::enable_vt_input;
 use crate::InputInstruction;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,66 +20,30 @@ pub(crate) fn stdin_loop(
     support_kitty_graphics_protocol: bool,
     resize_sender: Option<std::sync::mpsc::Sender<()>>,
 ) {
-    // On Windows we choose between the VT byte path (termwiz/kitty parsing)
-    // and the native-console path (crossterm INPUT_RECORDs) early, before the
-    // startup ANSI query below. See `use_vt_path()` for the trigger conditions.
-    #[cfg(windows)]
-    let use_vt_reader = use_vt_path() && enable_vt_input();
-
     // Send the startup host query string so the host terminal replies
     // with its live pixel dimensions, fg/bg, sync-output support, and
     // palette registers. These replies will be classified by the
     // continuous parser as they arrive and routed via `InputInstruction::
     // AnsiStdinInstructions` — no deadline, no cache, no loading gate.
     {
-        // On Windows native console, the crossterm event::read() loop
-        // reads INPUT_RECORDs via ReadConsoleInput — not raw bytes — so
-        // ANSI query responses can never be read on that path.
-        #[cfg(windows)]
-        let can_query_terminal = use_vt_reader;
-        #[cfg(not(windows))]
-        let can_query_terminal = true;
-
-        if can_query_terminal {
-            let query_string = build_startup_query_string(support_kitty_graphics_protocol);
-            let _ = os_input
-                .get_stdout_writer()
-                .write(query_string.as_bytes())
-                .unwrap();
-            if support_kitty_graphics_protocol {
-                stdin_ansi_parser.lock().unwrap().expect_kitty_probe_reply();
-            } else {
-                let _ =
-                    send_input_instructions.send(InputInstruction::AnsiStdinInstructions(vec![
-                        HostReply::KittyGraphicsSupport(false),
-                    ]));
-            }
+        let query_string = build_startup_query_string(support_kitty_graphics_protocol);
+        let _ = os_input
+            .get_stdout_writer()
+            .write(query_string.as_bytes())
+            .unwrap();
+        if support_kitty_graphics_protocol {
+            stdin_ansi_parser.lock().unwrap().expect_kitty_probe_reply();
         } else {
             let _ = send_input_instructions.send(InputInstruction::AnsiStdinInstructions(vec![
                 HostReply::KittyGraphicsSupport(false),
-                HostReply::SixelSupport(false),
             ]));
         }
     }
 
-    #[cfg(windows)]
-    if !use_vt_reader {
-        crate::stdin_handler_windows::native_console_stdin_loop(
-            send_input_instructions,
-            resize_sender,
-        );
-        return;
-    }
-
-    // Drop the resize sender so the signal handler thread falls back to
-    // polling. Only the Windows native console path (above) keeps it alive;
-    // the VT reader path and Unix don't produce crossterm resize events.
+    // Signal handling does not use the crossterm resize channel.
     drop(resize_sender);
 
     // Byte reader + termwiz/kitty parser path.
-    // Used on Unix always, and on Windows inside terminal emulators (Alacritty,
-    // etc.) with ENABLE_VIRTUAL_TERMINAL_INPUT enabled so stdin delivers raw VT
-    // byte sequences.
     let mut input_parser = InputParser::new();
     // Kitty keyboard parser is long-lived so a Kitty CSI sequence split
     // across stdin reads still resolves on a follow-up chunk instead of

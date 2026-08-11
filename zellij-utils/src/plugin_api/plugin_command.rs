@@ -1532,10 +1532,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(_) => Err("WatchFilesystem should have no payload, found a payload"),
                 None => Ok(PluginCommand::WatchFilesystem),
             },
-            Some(CommandName::ListWindowsVolumes) => match protobuf_plugin_command.payload {
-                Some(_) => Err("ListWindowsVolumes should have no payload"),
-                None => Ok(PluginCommand::ListWindowsVolumes),
-            },
             Some(CommandName::GetSessionList) => match protobuf_plugin_command.payload {
                 Some(Payload::GetSessionListPayload(_)) => Ok(PluginCommand::GetSessionList),
                 None => Ok(PluginCommand::GetSessionList),
@@ -3486,10 +3482,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::WatchFilesystem => Ok(ProtobufPluginCommand {
                 name: CommandName::WatchFilesystem as i32,
-                payload: None,
-            }),
-            PluginCommand::ListWindowsVolumes => Ok(ProtobufPluginCommand {
-                name: CommandName::ListWindowsVolumes as i32,
                 payload: None,
             }),
             PluginCommand::GetSessionList => Ok(ProtobufPluginCommand {

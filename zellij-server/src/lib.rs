@@ -9,12 +9,11 @@
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::needless_borrows_for_generic_args)]
-#[cfg(not(windows))]
 #[path = "os_input_output_unix.rs"]
 mod os_input_output_unix;
-#[cfg(windows)]
-#[path = "os_input_output_windows.rs"]
-mod os_input_output_windows;
+
+#[cfg(target_os = "windows")]
+compile_error!("Zellij does not support Windows");
 
 pub mod host_query;
 pub mod os_input_output;
@@ -859,32 +858,15 @@ mod session_state_tests {
 pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
     info!("Starting Zellij server!");
 
-    #[cfg(unix)]
-    {
-        use nix::sys::stat::{umask, Mode};
-        // preserve the current umask: read current value by setting to another mode, and then restoring it
-        let current_umask = umask(Mode::all());
-        umask(current_umask);
-        daemonize::Daemonize::new()
-            .working_directory(std::env::current_dir().unwrap())
-            .umask(current_umask.bits() as u32)
-            .start()
-            .expect("could not daemonize the server process");
-    }
-
-    #[cfg(windows)]
-    {
-        // The server is spawned with CREATE_NEW_PROCESS_GROUP, which disables
-        // Ctrl+C handling for the process.  Child processes inherit this
-        // disabled state, so ConPTY children (shells, commands) would silently
-        // ignore CTRL_C_EVENT signals.  Re-enable Ctrl+C here so that
-        // descendants get the normal default handler (terminate on Ctrl+C).
-        //
-        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
-        unsafe {
-            SetConsoleCtrlHandler(None, 0);
-        }
-    }
+    use nix::sys::stat::{umask, Mode};
+    // preserve the current umask: read current value by setting to another mode, and then restoring it
+    let current_umask = umask(Mode::all());
+    umask(current_umask);
+    daemonize::Daemonize::new()
+        .working_directory(std::env::current_dir().unwrap())
+        .umask(current_umask.bits() as u32)
+        .start()
+        .expect("could not daemonize the server process");
 
     start_server_impl(os_input, socket_path, true);
 }
@@ -916,7 +898,6 @@ pub fn start_server_impl(
         .spawn({
             use interprocess::local_socket::prelude::*;
             use zellij_utils::consts::ipc_bind;
-            #[cfg(unix)]
             use zellij_utils::shared::set_permissions;
 
             let os_input = os_input.clone();
@@ -931,13 +912,7 @@ pub fn start_server_impl(
                 // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html states that for XDG_RUNTIME_DIR:
                 // "To ensure that your files are not removed, they should have their access time timestamp modified at least once every 6 hours of monotonic time or the 'sticky' bit should be set on the file. "
                 // It is not guaranteed that all platforms allow setting the sticky bit on sockets!
-                #[cfg(unix)]
                 drop(set_permissions(&socket_path, 0o1700));
-
-                // On Windows, named pipes are half-duplex, so we need a separate
-                // reply pipe for server→client messages.
-                #[cfg(windows)]
-                let reply_listener = zellij_utils::consts::ipc_bind_reply(&socket_path).unwrap();
 
                 for stream in listener.incoming() {
                     match stream {
@@ -945,16 +920,6 @@ pub fn start_server_impl(
                             let mut os_input = os_input.clone();
                             let client_id = session_state.write().unwrap().new_client();
 
-                            #[cfg(windows)]
-                            let reply_stream = reply_listener
-                                .accept()
-                                .expect("failed to accept reply connection");
-
-                            #[cfg(windows)]
-                            let receiver = os_input
-                                .new_client_with_reply(client_id, stream, reply_stream)
-                                .unwrap();
-                            #[cfg(not(windows))]
                             let receiver = os_input.new_client(client_id, stream).unwrap();
 
                             let session_data = session_data.clone();

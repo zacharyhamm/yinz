@@ -1,13 +1,9 @@
 mod file_list_view;
-mod platform;
 mod search_view;
 mod shared;
 mod state;
 
-use platform::Platform;
-use shared::{
-    render_current_path, render_instruction_line, render_search_term, render_virtual_root_header,
-};
+use shared::{render_current_path, render_instruction_line, render_search_term};
 use state::{refresh_directory, State};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,12 +14,7 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let plugin_ids = get_plugin_ids();
-        let initial_cwd_str = plugin_ids.initial_cwd.to_string_lossy().to_string();
-        let platform = Platform::detect(&initial_cwd_str);
-        self.platform = platform;
-        self.initial_cwd = Platform::normalize(&plugin_ids.initial_cwd);
-        self.file_list_view.platform = platform;
-        self.search_view.platform = platform;
+        self.initial_cwd = plugin_ids.initial_cwd;
         let show_hidden_files = configuration
             .get("show_hidden_files")
             .map(|v| v == "true")
@@ -44,10 +35,7 @@ impl ZellijPlugin for State {
         ]);
         self.file_list_view.clear_selected();
 
-        match configuration
-            .get("caller_cwd")
-            .map(|c| Platform::normalize(&PathBuf::from(c)))
-        {
+        match configuration.get("caller_cwd").map(|c| PathBuf::from(c)) {
             Some(caller_cwd) => {
                 self.file_list_view.path = caller_cwd;
             },
@@ -83,9 +71,7 @@ impl ZellijPlugin for State {
                     should_render = true;
                 },
                 BareKey::Esc if key.has_no_modifiers() => {
-                    if self.is_in_virtual_root {
-                        self.exit_virtual_root();
-                    } else if self.is_searching {
+                    if self.is_searching {
                         self.clear_search_term();
                     } else {
                         self.file_list_view.clear_selected();
@@ -112,9 +98,7 @@ impl ZellijPlugin for State {
                     should_render = true;
                 },
                 BareKey::Left if key.has_no_modifiers() => {
-                    if !self.is_in_virtual_root {
-                        self.descend_to_previous_path();
-                    }
+                    self.descend_to_previous_path();
                     should_render = true;
                 },
                 BareKey::Char('e') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
@@ -183,24 +167,17 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         self.current_rows = Some(rows);
         let rows_for_list = rows.saturating_sub(6);
-        if self.is_in_virtual_root {
-            render_search_term("");
-            render_virtual_root_header(cols);
-            self.render_virtual_root(rows_for_list, cols);
+        render_search_term(&self.search_term);
+        render_current_path(
+            &self.file_list_view.path,
+            self.file_list_view.path_is_dir,
+            self.handling_filepick_request_from.is_some(),
+            cols,
+        );
+        if self.is_searching {
+            self.search_view.render(rows_for_list, cols);
         } else {
-            render_search_term(&self.search_term);
-            render_current_path(
-                &self.file_list_view.path,
-                self.file_list_view.path_is_dir,
-                self.handling_filepick_request_from.is_some(),
-                cols,
-                self.platform,
-            );
-            if self.is_searching {
-                self.search_view.render(rows_for_list, cols);
-            } else {
-                self.file_list_view.render(rows_for_list, cols);
-            }
+            self.file_list_view.render(rows_for_list, cols);
         }
         render_instruction_line(rows, cols);
     }

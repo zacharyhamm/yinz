@@ -5150,8 +5150,7 @@ impl Options {
         if let Some(mouse_click_through) = self.mouse_click_through_to_kdl(add_comments) {
             nodes.push(mouse_click_through);
         }
-        if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments)
-        {
+        if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments) {
             nodes.push(osc133_command_selection);
         }
         if let Some(word_separators) = self.word_separators_to_kdl(add_comments) {

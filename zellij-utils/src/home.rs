@@ -6,10 +6,7 @@ use crate::consts::{SYSTEM_DEFAULT_CONFIG_DIR, ZELLIJ_PROJ_DIR};
 
 use std::{path::Path, path::PathBuf};
 
-#[cfg(not(windows))]
 use crate::home_unix as platform;
-#[cfg(windows)]
-use crate::home_windows as platform;
 
 #[cfg(not(test))]
 /// Goes through a predefined list and checks for an already
