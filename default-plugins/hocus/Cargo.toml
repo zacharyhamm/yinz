@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
+hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }

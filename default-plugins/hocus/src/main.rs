@@ -1,16 +1,26 @@
 //! hocus — chat with an OpenAI-compatible endpoint from a Zellij popup.
 
-mod agents;
 mod api;
+mod archive;
+mod events;
 mod history;
 mod log;
-mod projects;
+mod message;
 mod text_input;
-mod todos;
+mod tool_loop;
 mod tools;
+mod transitions;
 mod ui;
+mod worker;
 
-use serde::{Deserialize, Serialize};
+pub use message::{Job, Message, Picker, PickerKind, Role, Status, StreamState};
+use worker::{gather_poll, post_log, post_prompt_history, post_save};
+
+/// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
+/// Re-exported under the names the code already used when these were modules.
+use hocus_proto::wire::{self, PollReply, PollRequest};
+use hocus_proto::{agents, projects, todos};
+
 use std::collections::{BTreeMap, VecDeque};
 use zellij_tile::prelude::*;
 
@@ -55,6 +65,11 @@ const MIN_JOB_SECONDS: f64 = 5.0;
 /// wake-ups ever cost more than the notices are worth.
 const AGENT_SECONDS: f64 = 5.0;
 
+/// How long a tool call waits for hocus-store before giving up. Generous for a
+/// pipe round trip on the same machine, short enough that a missing store is a
+/// visible error rather than an apparently hung model.
+const STORE_TIMEOUT_SECONDS: f64 = 5.0;
+
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
 const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
@@ -81,161 +96,6 @@ Esc           back";
 /// so the response can be matched to the chat that asked.
 const STREAM_CONTEXT: &str = "stream";
 
-// ---------------------------------------------------------------------------
-// Transcript
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum Role {
-    User,
-    Assistant,
-    /// The result of a tool call, fed back to the model. Rendered dim and
-    /// truncated, since a session listing would otherwise fill the pane.
-    Tool,
-    /// Something went wrong. Rendered in the theme's error colour.
-    Error,
-    /// Our own aside, e.g. "cancelled". Rendered dim.
-    ///
-    /// Default only so `Message` can derive it; every constructor sets a role.
-    #[default]
-    Notice,
-}
-
-/// Serialized as-is into the archive (see `history`). The two optional fields
-/// carry `serde(default)` so a future field can't make an existing file
-/// unreadable, and are skipped when empty so an archived chat stays greppable.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct Message {
-    pub role: Role,
-    pub content: String,
-    /// Assistant only: the tool calls this message requested. When non-empty,
-    /// `content` is our own human-readable summary for the transcript and is
-    /// *not* what gets sent - see `api::request_body`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<ToolCall>,
-    /// `Role::Tool` only: which call this message answers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-}
-
-impl Message {
-    fn new<S: Into<String>>(role: Role, content: S) -> Self {
-        Message {
-            role,
-            content: content.into(),
-            ..Message::default()
-        }
-    }
-    pub fn user<S: Into<String>>(content: S) -> Self {
-        Message::new(Role::User, content)
-    }
-    pub fn assistant<S: Into<String>>(content: S) -> Self {
-        Message::new(Role::Assistant, content)
-    }
-    pub fn error<S: Into<String>>(content: S) -> Self {
-        Message::new(Role::Error, content)
-    }
-    pub fn notice<S: Into<String>>(content: S) -> Self {
-        Message::new(Role::Notice, content)
-    }
-
-    /// The assistant turn that asked for tools. Its transcript text is a summary
-    /// of the calls; the calls themselves are the payload.
-    pub fn tool_calls(calls: Vec<ToolCall>) -> Self {
-        let summary = calls
-            .iter()
-            .map(tools::summarize)
-            .collect::<Vec<_>>()
-            .join("\n");
-        Message {
-            role: Role::Assistant,
-            content: summary,
-            tool_calls: calls,
-            tool_call_id: None,
-        }
-    }
-
-    pub fn tool_result<S: Into<String>>(id: &str, content: S) -> Self {
-        Message {
-            role: Role::Tool,
-            content: content.into(),
-            tool_calls: Vec::new(),
-            tool_call_id: Some(id.to_owned()),
-        }
-    }
-}
-
-/// The reply arriving from the endpoint. Independent of `Status`: a tool the
-/// user typed runs alongside the reply rather than instead of it.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub struct StreamState {
-    /// The host's handle for this request, and what `on_chunk` routes on.
-    pub id: String,
-    /// The outcome is already recorded — the user cancelled, or a non-2xx body
-    /// was already shown — but the host still owes us exactly one `done: true`
-    /// chunk. This flag exists to swallow it without recording a second
-    /// outcome.
-    pub finishing: bool,
-}
-
-/// Lifecycle of the tool queue. What the *model* asked for and what the user
-/// typed share one queue, so this is one state for both.
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
-pub enum Status {
-    #[default]
-    Idle,
-    /// The head of `pending` is destructive and is waiting on `y`/`n`.
-    ConfirmingTool,
-    /// The head of `pending` is a `run_command` waiting on `RunCommandResult`.
-    AwaitingCommand,
-    /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
-    AwaitingSearch,
-}
-
-/// A prompt the plugin re-asks itself on an interval. Firing one is exactly
-/// what `submit()` does — push a user message and start a request — so a
-/// scheduled run streams, calls tools and gets archived like any other turn.
-///
-/// Not persisted: a reload drops jobs, the same way it drops the in-flight
-/// stream.
-pub struct Job {
-    pub id: u64,
-    /// Seconds between runs.
-    pub every: f64,
-    /// Counts down; reset to `every` when the job fires.
-    pub due_in: f64,
-    pub prompt: String,
-    /// Whether firing should pop the pane open. The model sets this for jobs
-    /// the user asked to be told about.
-    pub show: bool,
-    /// Whether this job can run confirmation-gated tools without asking.
-    pub auto_confirm: bool,
-}
-
-/// The chat archive or the model list, open over the transcript. Modal: while it
-/// is open it owns every key, because a keystroke leaking into the input box
-/// behind it would be invisible.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub struct Picker {
-    /// What is shown, one row per entry.
-    pub entries: Vec<String>,
-    pub selected: usize,
-    pub kind: PickerKind,
-}
-
-/// Which list the picker is showing. `Tab` cycles between them.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub enum PickerKind {
-    /// `entries` are chat titles; the ids are parallel to them.
-    Chats(Vec<u64>),
-    /// `entries` are model ids. Empty means the fetch is still in flight — every
-    /// response either fills the list or closes the picker.
-    Models,
-    /// `entries` are agent rows; the pane ids are parallel to them.
-    /// `Enter` focuses the pane.
-    Agents(Vec<u32>),
-}
-
 /// One conversation's worth of `State`, lifted out so a chat can be set aside
 /// while another is on screen and still receive its reply.
 ///
@@ -245,25 +105,25 @@ pub enum PickerKind {
 /// parked, and the shape the swap moves.
 #[derive(Default)]
 struct Chat {
-    messages: Vec<Message>,
-    status: Status,
-    stream: Option<StreamState>,
-    reply_at: Option<usize>,
-    sse: SseParser,
-    tool_calls: ToolCallAccumulator,
-    pending: VecDeque<ToolCall>,
-    tool_rounds: usize,
-    owes_reply: bool,
-    chat_id: Option<u64>,
-    saved: (usize, usize),
-    scroll: BTreeMap<ClientId, usize>,
-    job_auto_confirm: bool,
+    pub(crate) messages: Vec<Message>,
+    pub(crate) status: Status,
+    pub(crate) stream: Option<StreamState>,
+    pub(crate) reply_at: Option<usize>,
+    pub(crate) sse: SseParser,
+    pub(crate) tool_calls: ToolCallAccumulator,
+    pub(crate) pending: VecDeque<ToolCall>,
+    pub(crate) tool_rounds: usize,
+    pub(crate) owes_reply: bool,
+    pub(crate) chat_id: Option<u64>,
+    pub(crate) saved: (usize, usize),
+    pub(crate) scroll: BTreeMap<ClientId, usize>,
+    pub(crate) job_auto_confirm: bool,
 }
 
 impl Chat {
     /// Whether this chat is still owed something — the only reason to hold it
     /// rather than let the archive have it back.
-    fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         self.stream.is_some() || !matches!(self.status, Status::Idle)
     }
 }
@@ -371,7 +231,14 @@ pub struct State {
     agent_due_in: f64,
     /// A poke is out to the poll worker and its reply has not come back. A sync
     /// poll clears it, which is also what makes the stale reply drop.
-    poll_pending: bool,
+    /// The tool call waiting on hocus-store, and how long it has left. At most
+    /// one: the tool queue runs a single call at a time.
+    pending_write: Option<(String, f64)>,
+    /// Highest `seq` merged from hocus-store, same watermark rule as `agent_seq`.
+    store_seq: u64,
+    /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
+    /// counter, which `poll_agents` resets this to match.
+    agent_seq: u64,
     /// Due polls that found the last poke still unanswered, toward the strike-out.
     polls_unanswered: u8,
     /// The worker never answered: unpatched zellij or a wedged instance. Poll
@@ -453,7 +320,9 @@ impl Default for State {
             manual_kinds: BTreeMap::new(),
             activity: BTreeMap::new(),
             agent_due_in: 0.0,
-            poll_pending: false,
+            pending_write: None,
+            store_seq: 0,
+            agent_seq: 0,
             polls_unanswered: 0,
             poll_dead: false,
             mono_ms: 0,
@@ -475,8 +344,8 @@ impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
         self.input.set_history(history::load_prompt_history());
-        self.projects = projects::load();
-        self.todos = todos::load();
+        // projects and todos belong to hocus-store now; ours is a read-only
+        // copy, filled by the first snapshot it pushes after we subscribe.
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
@@ -495,7 +364,6 @@ impl ZellijPlugin for State {
             // so without this a config fix needs a whole Zellij restart.
             EventType::PluginConfigurationChanged,
             // Worker replies. Not subscribing means they are silently dropped.
-            EventType::CustomMessage,
             EventType::TabUpdate,
         ]);
         set_selectable(true);
@@ -516,6 +384,18 @@ impl ZellijPlugin for State {
             PermissionType::RunCommands,
             PermissionType::ReadPaneContents,
             PermissionType::WriteToStdin,
+            // Deliberately *not* MessageAndLaunchOtherPlugins, though talking to
+            // hocus-agentd would nominally need it. A builtin is granted every
+            // gated call regardless (see `check_command_permission`), so adding
+            // it buys nothing — while `check_permissions` demands an exact match
+            // against the cached grant, so a longer list re-prompts every
+            // existing user for a permission that was never enforced. A hocus
+            // loaded from a `file:` path is not a builtin and so loses every
+            // pipe: agents fall back to polling inline, but the store has no
+            // fallback, so projects and todos never arrive and writes time out.
+            // Not worth re-prompting everyone over — hot-reloading a builtin
+            // keeps the `zellij:` location and resolves to the freshly built
+            // wasm anyway (see `BUILTIN_PLUGIN_DEV_DIRS`).
         ]);
     }
 
@@ -538,10 +418,58 @@ impl ZellijPlugin for State {
         self.client = get_plugin_ids().client_id;
         ui::render(self, rows, cols);
     }
+
+    /// Snapshots pushed by `hocus-agentd`.
+    ///
+    /// The daemon and the poll worker both end up in `apply_poll`, which is
+    /// idempotent — applying the same snapshot twice changes nothing, and a
+    /// transition is only reported against the map we last held. That is what
+    /// lets both paths run at once while the daemon proves itself.
+    fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        match pipe_message.name.as_str() {
+            wire::STORE_SNAPSHOT => return self.on_store_snapshot(&pipe_message),
+            wire::STORE_RESULT => return self.on_store_result(&pipe_message),
+            // A store that just (re)started has forgotten us. Nothing to
+            // render — the snapshot it pushes back is what does that.
+            wire::STORE_HELLO => {
+                self.subscribe_to_store();
+                return false;
+            },
+            wire::AGENT_SNAPSHOT => {},
+            _ => return false,
+        }
+        // The daemon's snapshots are unsolicited — it pushes on its own
+        // heartbeat — so this cannot gate on having asked. What it can do is
+        // refuse to go backwards: `seq` counts up within one daemon, so a
+        // snapshot no newer than the last one applied is a reordered delivery
+        // and merging it would resurrect panes we already saw close.
+        let seq = pipe_message
+            .args
+            .get("seq")
+            .and_then(|seq| seq.parse::<u64>().ok())
+            .unwrap_or(0);
+        if seq <= self.agent_seq {
+            return false;
+        }
+        let Some(reply) = pipe_message
+            .payload
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<PollReply>(json).ok())
+        else {
+            return false;
+        };
+        self.agent_seq = seq;
+        self.polls_unanswered = 0;
+        match reply.panes {
+            Some(panes) => self.apply_poll(panes, reply.activity),
+            // No current session. A quiet reply, not a dead daemon.
+            None => false,
+        }
+    }
 }
 
 impl State {
-    fn handle(&mut self, event: Event) -> bool {
+    pub(crate) fn handle(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(status) => self.on_permissions(status),
             Event::Key(key) => self.on_key(key),
@@ -587,19 +515,15 @@ impl State {
             // The payload is the real time the host slept, which is the only
             // clock a plugin gets — there is no wall clock on offer.
             Event::Timer(elapsed) => self.on_timer(elapsed),
-            Event::CustomMessage(message, payload) => self.on_custom_message(&message, &payload),
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::BeforeClose => {
                 self.cancel_in_flight();
                 if let Some(json) = history::prompt_history_json(self.input.history()) {
                     history::write_prompt_history(json.as_bytes());
                 }
-                if let Some(json) = projects::json(&self.projects) {
-                    projects::write(json.as_bytes());
-                }
-                if let Some(json) = todos::json(&self.todos) {
-                    todos::write(json.as_bytes());
-                }
+                // No projects or todos here any more: hocus-store owns those
+                // files and writes them as each change lands, so there is
+                // nothing of ours left unsaved to flush.
                 // The worker gets no flush on exit; write the transcript here
                 // or lose the last exchange. Background chats have the same one
                 // chance, and their partial replies are worth no less.
@@ -621,2846 +545,11 @@ impl State {
 }
 
 // ---------------------------------------------------------------------------
-// Workers — separate wasm instances of this same binary, driven only by
-// post_message_to. They share the /cache preopen but no memory with the plugin.
-// ---------------------------------------------------------------------------
-
-/// Fire-and-forget file writes, off the plugin's `update()` path. One worker
-/// with a FIFO mailbox, so log lines and saves land in post order. No replies.
-#[derive(Default, Serialize, Deserialize)]
-struct IoWorker;
-
-impl ZellijWorker<'_> for IoWorker {
-    fn on_message(&mut self, message: String, payload: String) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
-            return;
-        };
-        match message.as_str() {
-            "log" => log::write_line(
-                v["chat_id"].as_u64(),
-                v["line"].as_str().unwrap_or_default(),
-            ),
-            "save" => {
-                if let (Some(id), Some(json)) = (v["id"].as_u64(), v["json"].as_str()) {
-                    history::write(id, json.as_bytes());
-                }
-            },
-            "prompt_history" => {
-                if let Some(json) = v["json"].as_str() {
-                    history::write_prompt_history(json.as_bytes());
-                }
-            },
-            "projects" => {
-                if let Some(json) = v["json"].as_str() {
-                    projects::write(json.as_bytes());
-                }
-            },
-            "todos" => {
-                if let Some(json) = v["json"].as_str() {
-                    todos::write(json.as_bytes());
-                }
-            },
-            _ => {},
-        }
-    }
-}
-
-register_worker!(IoWorker, io_worker, IO_WORKER);
-
-/// Queue a transcript write on the io worker (addressed as "io" — the host owns
-/// the `_worker` suffix).
-fn post_save(id: u64, json: String) {
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "save",
-        &serde_json::json!({ "id": id, "json": json }).to_string(),
-    ));
-}
-
-fn post_prompt_history(entries: &[String]) {
-    let Some(json) = history::prompt_history_json(entries) else {
-        return;
-    };
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "prompt_history",
-        &serde_json::json!({ "json": json }).to_string(),
-    ));
-}
-
-fn post_projects(projects: &projects::Registry) {
-    let Some(json) = projects::json(projects) else {
-        return;
-    };
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "projects",
-        &serde_json::json!({ "json": json }).to_string(),
-    ));
-}
-
-fn post_todos(todos: &todos::Store) {
-    let Some(json) = todos::json(todos) else {
-        return;
-    };
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "todos",
-        &serde_json::json!({ "json": json }).to_string(),
-    ));
-}
-
-/// Queue a JSONL append on the io worker.
-fn post_log(chat_id: Option<u64>, mono_ms: u64, seq: u64, kind: &str, payload: serde_json::Value) {
-    if let Some(line) = log::line(chat_id, mono_ms, seq, kind, payload) {
-        post_message_to(PluginMessage::new_to_worker(
-            "io",
-            "log",
-            &serde_json::json!({ "chat_id": chat_id, "line": line }).to_string(),
-        ));
-    }
-}
-
-/// The terminal panes of a manifest, as the agent module wants them.
-///
-/// Plugin panes are dropped here rather than checked later: an agent is a program at a
-/// prompt, and Hocus itself is a plugin pane. Suppressed panes are dropped for the same
-/// reason `list_session` drops them — the user cannot see them. Global panes are in no
-/// tab, so they are in their own field and would be missed by the tab walk alone.
-fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::AgentPane> {
-    // The manifest is keyed by tab *position*, not tab id — same join as
-    // tools::list_session.
-    let by_position: BTreeMap<usize, (usize, &str)> = tabs
-        .iter()
-        .map(|tab| (tab.position, (tab.tab_id, tab.name.as_str())))
-        .collect();
-    let mut panes: Vec<agents::AgentPane> = manifest
-        .panes
-        .iter()
-        .flat_map(|(position, panes)| panes.iter().map(move |pane| (Some(*position), pane)))
-        .chain(manifest.global_panes.iter().map(|pane| (None, pane)))
-        .filter(|(_, pane)| !pane.is_plugin && !pane.is_suppressed)
-        .map(|(position, pane)| agents::AgentPane {
-            pane_id: pane.id,
-            title: pane.title.clone(),
-            command: pane.terminal_command.clone(),
-            cwd: None,
-            // Order matters: a held pane has also exited, and "waiting to be re-run"
-            // is the more useful of the two things to say.
-            status: if pane.is_held {
-                agents::AgentStatus::Held
-            } else if pane.exited {
-                agents::AgentStatus::Exited
-            } else {
-                agents::AgentStatus::Running
-            },
-            tab: position
-                .and_then(|position| by_position.get(&position))
-                .map(|(id, name)| (*id, (*name).to_owned())),
-        })
-        .collect();
-    // The manifest is a HashMap keyed by tab position, so its order is not stable.
-    // agent_list is read by a model on every turn; give it the same order every time.
-    panes.sort_by_key(|pane| pane.pane_id);
-    panes
-}
-
-/// What a terminal pane is showing, routed through the existing `read_pane` rather
-/// than a second host call, so there is only one implementation of "read a pane" to
-/// get wrong. Used by `agent_list` previews and the busy/idle poll.
-fn read_pane_text(pane_id: u32) -> String {
-    let call = ToolCall {
-        id: String::new(),
-        name: "read_pane".to_owned(),
-        arguments: serde_json::json!({
-            "pane_id": pane_id,
-            "is_plugin": false,
-            "full_scrollback": false,
-        })
-        .to_string(),
-    };
-    match tools::dispatch(&call) {
-        Dispatch::Done(text) => text,
-        Dispatch::Deferred => "pane read cannot be deferred".to_owned(),
-    }
-}
-
-/// One agent poll, host side: what goes to the worker and what comes back. The
-/// activity map rides along both ways so the plugin's copy stays the only truth —
-/// the worker keeps no state of its own.
-#[derive(Serialize, Deserialize)]
-struct PollRequest {
-    manual_kinds: BTreeMap<u32, String>,
-    activity: agents::Activity,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PollReply {
-    /// `None` means no current session — a quiet reply, not a dead worker.
-    panes: Option<Vec<agents::AgentPane>>,
-    activity: agents::Activity,
-}
-
-/// The host work of one agent poll: fresh pane snapshot, the running command of
-/// each pane, and a scrollback hash per running agent for busy/idle. A free
-/// function so the poll worker and the synchronous in-plugin poll are the same
-/// code. O(panes) blocking host calls — the reason the worker exists.
-///
-/// Pulled, not pushed. `Event::PaneUpdate` goes only to plugins of the active tab
-/// and to background plugins, so a Hocus launched into a global pane — which is in
-/// no tab — receives it never, and every agent tool saw an empty session.
-///
-/// The manifest carries `terminal_command`, which is what a pane was *launched*
-/// with and so is `None` for every pane the user opened as a shell. Detection
-/// needs what is running now, which is a second call per pane.
-fn gather_poll(
-    manual_kinds: &BTreeMap<u32, String>,
-    activity: &mut agents::Activity,
-) -> Option<Vec<agents::AgentPane>> {
-    let session = tools::current_session()?;
-    let mut panes = terminal_panes(&session.panes, &session.tabs);
-    // ponytail: one blocking host round-trip per terminal pane, every refresh.
-    // Fine at a dozen panes; batch it if a session ever gets big enough to feel.
-    for pane in &mut panes {
-        if let Some(command) = tools::pane_running_command(pane.pane_id) {
-            pane.command = Some(command);
-        }
-        pane.cwd = tools::pane_cwd(pane.pane_id);
-    }
-    // A pane that closed took its observations with it.
-    activity.retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-    // ponytail: one read_pane per running agent per poll, to tell busy from
-    // idle. Scales with agents, not panes; batch with the refresh if it feels.
-    // An agent whose TUI repaints a spinner every frame never reads idle —
-    // false "busy" is the safe direction.
-    let running: Vec<u32> = panes
-        .iter()
-        .filter(|pane| {
-            pane.status == agents::AgentStatus::Running
-                && agents::classify(pane, manual_kinds).is_some()
-        })
-        .map(|pane| pane.pane_id)
-        .collect();
-    for pane_id in running {
-        agents::observe(activity, pane_id, &read_pane_text(pane_id));
-    }
-    Some(panes)
-}
-
-/// The agent poll, off the plugin's `update()` path. Stateless: everything it
-/// needs arrives in the request and everything it learned goes back in the reply.
-#[derive(Default, Serialize, Deserialize)]
-struct PollWorker;
-
-impl ZellijWorker<'_> for PollWorker {
-    fn on_message(&mut self, _message: String, payload: String) {
-        let Ok(mut request) = serde_json::from_str::<PollRequest>(&payload) else {
-            return;
-        };
-        let panes = gather_poll(&request.manual_kinds, &mut request.activity);
-        // Always reply — a poke with no answer is how the plugin decides the
-        // worker is dead.
-        let reply = PollReply {
-            panes,
-            activity: request.activity,
-        };
-        if let Ok(json) = serde_json::to_string(&reply) {
-            post_message_to_plugin(PluginMessage::new_to_plugin("poll_result", &json));
-        }
-    }
-}
-
-register_worker!(PollWorker, poll_worker, POLL_WORKER);
-
-// ---------------------------------------------------------------------------
-// Event handling
-// ---------------------------------------------------------------------------
-
-impl State {
-    fn is_toggle_key(key: &KeyWithModifier) -> bool {
-        key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
-    }
-
-    /// Re-resolve the config after Zellij reports the KDL block changed.
-    ///
-    /// Gated on `self.granted` — before the grant `self.env` is empty, and
-    /// resolving against it would replace a "waiting for permission" state with
-    /// a spurious "no API key" banner.
-    fn reconfigure(&mut self) {
-        if !self.granted {
-            return;
-        }
-        self.cfg = Config::resolve(&self.kdl, &self.env);
-    }
-
-    /// Hocus is written for a *shared* plugin: one instance serving every
-    /// attached client. Zellij only does that when the KDL block asks for it,
-    /// and silently gives each client its own instance otherwise — which looks
-    /// fine alone and splits into unrelated conversations the moment someone
-    /// else attaches. Say so rather than let that be discovered.
-    ///
-    /// `Config::resolve` ignores the key, so this is the only thing reading it.
-    fn warn_if_not_shared(&mut self) {
-        if self.kdl.get("shared").map(|v| v.trim()) == Some("true") {
-            return;
-        }
-        self.messages.push(Message::notice(
-            "hocus is missing `shared true` in its plugin configuration. Without it Zellij \
-             gives every attached client its own copy of the plugin, and they will not share \
-             a conversation."
-                .to_owned(),
-        ));
-    }
-
-    /// This client's scroll position: wrapped transcript lines hidden below the
-    /// viewport, zero being pinned to the bottom.
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.get(&self.client).copied().unwrap_or(0)
-    }
-
-    /// Pin *every* client back to the tail. The conversation changing is not
-    /// one client's business, so nobody is left reading a stale middle of it.
-    fn pin_to_bottom(&mut self) {
-        self.scroll.clear();
-    }
-
-    fn on_permissions(&mut self, status: PermissionStatus) -> bool {
-        // Either way we stop saying "waiting": this is the only answer we get.
-        self.perms = true;
-        self.cfg = match status {
-            // Safe now — gated calls will actually be answered.
-            PermissionStatus::Granted => {
-                self.granted = true;
-                self.warn_if_not_shared();
-                // The agent poll needs `ReadApplicationState`, so this grant is the
-                // earliest it can start — and it has to be started from somewhere,
-                // or no notice lands until the first keystroke.
-                self.arm_timer(AGENT_SECONDS);
-                self.env = get_session_environment_variables();
-                Config::resolve(&self.kdl, &self.env)
-            },
-            PermissionStatus::Denied => Err(ConfigError {
-                message: "Permission denied.\n\nhocus needs web access (to reach the API) and \
-                          read access to session environment variables (to find your API key). \
-                          Grants are cached by the plugin's absolute .wasm path — delete this \
-                          plugin's entry from permissions.kdl in Zellij's cache directory and \
-                          reload to be asked again."
-                    .to_owned(),
-                base_url: api::DEFAULT_BASE_URL.to_owned(),
-                model: api::DEFAULT_MODEL.to_owned(),
-                api_key_env: api::DEFAULT_API_KEY_ENV.to_owned(),
-            }),
-        };
-        true
-    }
-
-    fn on_tabs(&mut self, tabs: Vec<TabInfo>) -> bool {
-        self.tab_projects
-            .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
-        self.auto_tab_projects
-            .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
-        self.active_project = tabs
-            .iter()
-            .find(|tab| tab.active)
-            .and_then(|tab| self.tab_project(tab.tab_id))
-            .map(str::to_owned);
-        self.tabs = tabs;
-        false
-    }
-
-    fn on_key(&mut self, key: KeyWithModifier) -> bool {
-        if Self::is_toggle_key(&key) {
-            hide_self();
-            return false;
-        }
-
-        // The archive is modal, so it takes every key before anything else can.
-        if self.picker.is_some() {
-            return self.picker_key(key);
-        }
-
-        // These must be caught before TextInput sees them. Its bare-key arm
-        // doesn't check for modifiers, so it would take Ctrl-l as a literal 'l'
-        // and Alt-Enter as a submit.
-        if key.bare_key == BareKey::Char('l') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            return self.new_chat();
-        }
-        if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            return self.open_agent_picker();
-        }
-        // The confirmation prompt owns y/n outright, for the same reason: they
-        // would otherwise be typed into the input box.
-        if matches!(self.status, Status::ConfirmingTool) && key.has_no_modifiers() {
-            match key.bare_key {
-                BareKey::Char('y') | BareKey::Char('Y') => return self.confirm_tool(),
-                BareKey::Char('n') | BareKey::Char('N') => return self.decline_tool(),
-                _ => {},
-            }
-        }
-        if key.bare_key == BareKey::Enter
-            && (key.has_modifiers(&[KeyModifier::Alt]) || key.has_modifiers(&[KeyModifier::Shift]))
-        {
-            self.input.insert_char('\n');
-            return true;
-        }
-
-        // History owns bare Up/Down. Page keys and the mouse still scroll.
-        if key.has_no_modifiers() {
-            let page = self.transcript_rows.saturating_sub(1).max(1);
-            match key.bare_key {
-                BareKey::PageUp => return self.scroll_up(page),
-                BareKey::PageDown => return self.scroll_down(page),
-                _ => {},
-            }
-        }
-
-        match self.input.handle_key(key) {
-            InputAction::Submit => self.submit(),
-            // Tools first, because they are the nearer thing: a stream and a
-            // tool run can now both be outstanding, and the tool is the one the
-            // prompt is asking about.
-            InputAction::Cancel if self.tools_busy() => self.abort_tools(),
-            // One instance holds every stream, so whoever presses Esc can
-            // cancel whatever is arriving, no matter who started it.
-            InputAction::Cancel if self.is_streaming() => self.cancel_stream(),
-            InputAction::Cancel => {
-                // Hide the session-global sidebar without unloading the plugin.
-                // The launch binding restores the same plugin from any tab.
-                // Ctrl-l starts a new archived conversation.
-                hide_self();
-                false
-            },
-            InputAction::Continue => true,
-            InputAction::Complete => self.complete_tool_name(),
-            InputAction::NoAction => false,
-        }
-    }
-
-    /// A bracketed paste, delivered whole rather than key by key. Newlines in
-    /// it stay newlines, exactly as Alt-Enter produces them; a paste never
-    /// submits, however it ends.
-    fn on_paste(&mut self, text: String) -> bool {
-        // The states that already take every key before the input box sees it
-        // refuse a paste for the same reason.
-        if self.picker.is_some() || matches!(self.status, Status::ConfirmingTool) {
-            return false;
-        }
-        self.input.insert_text(&text);
-        true
-    }
-
-    /// Tab on a half-typed `/name` or `@agent`. One match completes it, several
-    /// are listed, and anything else is left alone — Tab is not a key the input
-    /// box has any other use for.
-    fn complete_tool_name(&mut self) -> bool {
-        let text = self.input.get_text().trim().to_owned();
-        let Some(prefix) = text.strip_prefix('/').filter(|rest| !rest.contains(' ')) else {
-            return self.complete_mention();
-        };
-        let matches: Vec<String> = LOCAL_COMMANDS
-            .iter()
-            .map(|name| (*name).to_owned())
-            .chain(tools::names())
-            .filter(|name| name.starts_with(prefix))
-            .collect();
-        match matches.as_slice() {
-            [name] => self.input.set_text(format!("/{name} ")),
-            [] => return false,
-            _ => {
-                let notice = format!("/{}", matches.join("  /"));
-                self.list_completions(notice);
-            },
-        }
-        true
-    }
-
-    /// Tab with the cursor at the end of an `@token`, anywhere in the message.
-    /// Candidates are the agents on screen right now; a bare `@` lists them all.
-    fn complete_mention(&mut self) -> bool {
-        let text = self.input.get_text().to_owned();
-        let cursor = self.input.get_cursor_position();
-        let head: String = text.chars().take(cursor).collect();
-        let token = head.rsplit(char::is_whitespace).next().unwrap_or("");
-        let Some(prefix) = token.strip_prefix('@') else {
-            return false;
-        };
-        let matches: Vec<String> = agents::mention_candidates(&self.panes, &self.manual_kinds)
-            .into_iter()
-            .filter(|candidate| candidate.starts_with(prefix))
-            .collect();
-        match matches.as_slice() {
-            [] => false,
-            [only] => {
-                // `token` is a suffix slice of `head`, so byte arithmetic is safe;
-                // the cursor wants chars.
-                let stem = &head[..head.len() - token.len()];
-                let spliced = format!("{stem}@{only} ");
-                let cursor_chars = spliced.chars().count();
-                let tail: String = text.chars().skip(cursor).collect();
-                self.input.set_text(format!("{spliced}{tail}"));
-                self.input.set_cursor_position(cursor_chars);
-                true
-            },
-            _ => {
-                self.list_completions(format!("@{}", matches.join("  @")));
-                true
-            },
-        }
-    }
-
-    /// The several-matches answer to Tab: the candidates as a notice line.
-    fn list_completions(&mut self, notice: String) {
-        self.messages.push(Message::notice(notice.clone()));
-        self.log(
-            "notice",
-            serde_json::json!({"content": log::truncate(&notice)}),
-        );
-        self.pin_to_bottom();
-    }
-
-    fn on_mouse(&mut self, mouse: Mouse) -> bool {
-        match mouse {
-            Mouse::ScrollUp(lines) => self.scroll_up(lines.max(1)),
-            Mouse::ScrollDown(lines) => self.scroll_down(lines.max(1)),
-            _ => false,
-        }
-    }
-
-    fn submit(&mut self) -> bool {
-        // Ahead of every guard, including the config: a slash command drives the
-        // plugin rather than the conversation, so neither an API key nor a
-        // settled reply is any of its business. `run_manual` turns away the one
-        // kind that does conflict — another tool already running.
-        if self.input.get_text().trim_start().starts_with('/') {
-            let line = self.drain_input();
-            return self.run_manual(&line);
-        }
-        // One reply per chat: a second question would have nowhere to stream.
-        // /history opens another chat to ask it in.
-        if self.is_in_flight() {
-            return false;
-        }
-        // Cloned rather than borrowed so the transcript can be mutated below.
-        let Ok(cfg) = self.cfg.clone() else {
-            return false;
-        };
-
-        let mut text = self.drain_input();
-        if text.trim().is_empty() {
-            // Whitespace-only: the input was still drained, so redraw.
-            return true;
-        }
-        // An @-mention earns the model a context line naming the agent pane, so
-        // "ask @codex to run the tests" needs no agent_list round first.
-        if let Some(context) =
-            agents::mention_context(&text, &self.panes, &self.manual_kinds, &self.activity)
-        {
-            text.push_str("\n\n");
-            text.push_str(&context);
-        }
-
-        let content = text.clone();
-        self.job_auto_confirm = false;
-        self.messages.push(Message::user(text));
-        self.log(
-            "user_input",
-            serde_json::json!({"content": log::truncate(&content)}),
-        );
-        // A new question starts a fresh tool budget.
-        self.tool_rounds = 0;
-        self.start_request(&cfg);
-        true
-    }
-
-    fn drain_input(&mut self) -> String {
-        let old_len = self.input.history().len();
-        let text = self.input.drain_text();
-        if self.input.history().len() != old_len {
-            post_prompt_history(self.input.history());
-        }
-        text
-    }
-
-    /// Send the transcript as it currently stands. Used both for a new user
-    /// message and for the follow-up after tool results, which differ only in
-    /// what was appended before the call.
-    fn start_request(&mut self, cfg: &Config) {
-        // The last round of the budget goes out without tools, so the model has
-        // to answer from what it already collected instead of dead-ending on the
-        // cap with nothing to show the user.
-        let allow_tools = self.tool_rounds < MAX_TOOL_ROUNDS;
-        if !allow_tools {
-            self.messages.push(Message::notice(
-                "tool budget spent — answering without tools",
-            ));
-        }
-        // The placeholder streamed text appends into. request_body skips empty
-        // assistant messages, so it never reaches the wire.
-        self.reply_at = Some(self.messages.len());
-        self.messages.push(Message::assistant(""));
-
-        self.stream_seq += 1;
-        let stream_id = format!("hocus-{}", self.stream_seq);
-        self.sse = SseParser::default();
-        self.tool_calls = ToolCallAccumulator::default();
-
-        let project = self
-            .active_project
-            .as_deref()
-            .and_then(|name| self.projects.get(name))
-            .map(|project| (project.name.as_str(), project.root.as_str()));
-        let body = api::request_body_with_project(cfg, &self.messages, allow_tools, project);
-        let body_len = body.len();
-        self.log(
-            "api_request",
-            serde_json::json!({
-                "model": cfg.model,
-                "base_url": cfg.base_url,
-                "stream_id": stream_id,
-                "message_count": self.messages.len(),
-                "body_bytes": body_len,
-                "allow_tools": allow_tools,
-            }),
-        );
-
-        web_request_stream(
-            &stream_id,
-            &cfg.url,
-            HttpVerb::Post,
-            api::request_headers(cfg),
-            body,
-            // Round-trips through the host, like the `models` tag. The head of a
-            // stream is a `WebRequestResult` carrying no stream id of its own,
-            // so without this there is no telling which chat a non-2xx belongs
-            // to once more than one is in flight.
-            BTreeMap::from([(STREAM_CONTEXT.to_owned(), stream_id.clone())]),
-        );
-
-        self.stream = Some(StreamState {
-            id: stream_id,
-            finishing: false,
-        });
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-    }
-
-    /// The single `WebRequestResult` that leads every stream — and, when the
-    /// context says so, the whole answer to a `web_search` or a model list.
-    fn on_response(
-        &mut self,
-        status: u16,
-        body: &[u8],
-        context: &BTreeMap<String, String>,
-    ) -> bool {
-        if self.finish_search(status, body, context) {
-            return true;
-        }
-        if self.finish_models(status, body, context) {
-            return true;
-        }
-        // Someone else's stream, or one we already cancelled and forgot.
-        let Some(stream_id) = context.get(STREAM_CONTEXT).cloned() else {
-            return false;
-        };
-        if self.active_stream_id() != Some(stream_id.clone()) {
-            return false;
-        }
-        if (200..300).contains(&status) {
-            // A 2xx carries only status and headers; the body arrives as chunks.
-            return false;
-        }
-
-        // Non-2xx: the entire error body is here and no chunks will follow.
-        self.pop_empty_placeholder();
-        let err = api::api_error_message(status, body);
-        self.messages.push(Message::error(err.clone()));
-        self.log(
-            "api_error",
-            serde_json::json!({
-                "stream_id": stream_id.clone(),
-                "status": status,
-                "error": log::truncate(&err),
-            }),
-        );
-        self.job_auto_confirm = false;
-        self.stream = Some(StreamState {
-            id: stream_id,
-            finishing: true,
-        });
-        self.pin_to_bottom();
-        true
-    }
-
-    fn on_chunk(
-        &mut self,
-        stream_id: &str,
-        chunk: &[u8],
-        done: bool,
-        error: Option<String>,
-    ) -> bool {
-        // A stream we superseded, cancelled and forgot, or never started.
-        if self.active_stream_id().as_deref() != Some(stream_id) {
-            return false;
-        }
-        if !self.is_receiving() {
-            if done {
-                self.stream = None;
-                self.reply_at = None;
-                self.tool_calls.take();
-                self.job_auto_confirm = false;
-            }
-            return done;
-        }
-
-        let items = self.sse.feed(chunk);
-        for item in items {
-            match item {
-                SseItem::Delta(text) => {
-                    self.append_to_reply(&text);
-                },
-                SseItem::ApiError(message) => {
-                    let m = message.clone();
-                    self.pop_empty_placeholder();
-                    self.messages.push(Message::error(message));
-                    self.log(
-                        "api_error",
-                        serde_json::json!({
-                            "stream_id": stream_id,
-                            "error": log::truncate(&m),
-                        }),
-                    );
-                    self.tool_calls.take();
-                    self.job_auto_confirm = false;
-                    self.stream = Some(StreamState {
-                        id: stream_id.to_owned(),
-                        finishing: true,
-                    });
-                    break;
-                },
-                SseItem::ToolCallFragment { .. } => self.tool_calls.feed(&item),
-                // Informational: `done: true` below is the authoritative end.
-                SseItem::Done => {},
-            }
-        }
-
-        if done {
-            let settled = self.stream.take();
-            match settled {
-                // Outcome already recorded; this is the terminator we were
-                // waiting to swallow. Any half-accumulated calls go with it.
-                Some(stream) if stream.finishing => {
-                    self.tool_calls.take();
-                },
-                _ => {
-                    let calls = self.tool_calls.take();
-                    if let Some(message) = error {
-                        let m = message.clone();
-                        self.pop_empty_placeholder();
-                        self.messages.push(Message::error(message));
-                        self.log(
-                            "api_error",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "error": log::truncate(&m),
-                            }),
-                        );
-                    } else if !calls.is_empty() {
-                        // The model asked for tools rather than answering; the
-                        // reply placeholder is not the turn's outcome.
-                        // Capture any streamed text before we replace the
-                        // placeholder with the tool_calls summary.
-                        let prior_text = self
-                            .reply()
-                            .map(|message| message.content.clone())
-                            .unwrap_or_default();
-                        self.pop_empty_placeholder();
-                        self.messages.push(Message::tool_calls(calls.clone()));
-                        let tool_payload: Vec<serde_json::Value> = calls
-                            .iter()
-                            .map(|c| {
-                                serde_json::json!({
-                                    "id": c.id,
-                                    "name": c.name,
-                                    "arguments": log::truncate(&c.arguments),
-                                })
-                            })
-                            .collect();
-                        self.log(
-                            "tool_call",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "tool_calls": tool_payload,
-                            }),
-                        );
-                        if !prior_text.is_empty() {
-                            self.log(
-                                "assistant_message",
-                                serde_json::json!({
-                                    "stream_id": stream_id,
-                                    "content": log::truncate(&prior_text),
-                                }),
-                            );
-                        }
-                        // Extended, not replaced: a tool the user typed
-                        // mid-stream may still be running, and its result is
-                        // owed to the transcript before these go out. Pumping is
-                        // then that call's job — starting a second one here
-                        // would run two tools at once.
-                        //
-                        // ponytail: messages land in arrival order, so a typed
-                        // call still running when these arrive has its result
-                        // recorded *after* this summary — each result still
-                        // follows the call that asked for it, but the two pairs
-                        // interleave. Endpoints that want a result immediately
-                        // after its call would need the transcript reordered on
-                        // the way out in `api::request_body`.
-                        self.pending.extend(calls);
-                        self.owes_reply = true;
-                        if !self.tools_busy() {
-                            self.pump_tools();
-                        }
-                    } else if self.reply_is_empty() {
-                        self.pop_empty_placeholder();
-                        self.messages
-                            .push(Message::error("empty response from endpoint"));
-                        self.log(
-                            "api_error",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "error": "empty response from endpoint",
-                            }),
-                        );
-                    } else {
-                        // Successful assistant reply.
-                        let reply = self
-                            .reply()
-                            .map(|message| message.content.clone())
-                            .unwrap_or_default();
-                        self.log(
-                            "assistant_message",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "content": log::truncate(&reply),
-                            }),
-                        );
-                        self.log(
-                            "api_response",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "status": "done",
-                            }),
-                        );
-                    }
-                },
-            }
-            // The reply is settled, so nothing is appending any more — whatever
-            // a typed tool pushes from here on is its own message.
-            self.reply_at = None;
-            if !self.is_in_flight() {
-                self.job_auto_confirm = false;
-            }
-        }
-        // Only the terminal chunk renders. Mid-stream chunks arrive once per
-        // socket read (~50/s), and every plugin render costs the host a full
-        // screen composite on the same thread that services every other Zellij
-        // action — rendering per chunk freezes the whole session for the length
-        // of the reply. The spinner timer repaints the arriving text instead.
-        done
-    }
-
-    /// The message for a Slack tool whose `dobbs` could not be executed, or
-    /// `None` when this is any other kind of result.
-    ///
-    /// Matched on the stderr string rather than the code alone: Zellij uses
-    /// exit code 2 both for a failure to spawn and, unavoidably, for a command
-    /// that ran and exited 2 by itself.
-    fn slack_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
-        let head = self.pending.front()?;
-        if !tools::SLACK_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
-            return None;
-        }
-        let stderr = String::from_utf8_lossy(stderr);
-        if !stderr.contains("os error 2") {
-            return None;
-        }
-        let dobbs = self.cfg.as_ref().ok().map(|cfg| cfg.dobbs.as_str())?;
-        Some(format!(
-            "dobbs could not be run: \"{dobbs}\" does not exist or is not executable.\n\n\
-             Set dobbs_path in the hocus plugin block of ~/.config/zellij/config.kdl to the \
-             binary's absolute path — a leading ~/ is expanded, but nothing else is. Tell the \
-             user this; do not try other commands to find dobbs yourself."
-        ))
-    }
-
-    /// The deferred half of `run_command`. The context map round-tripped through
-    /// the host, so it names the call this answers.
-    ///
-    /// Each stream is capped at `MAX_TOOL_OUTPUT`: a tool result stays in the
-    /// transcript, so it is re-sent and re-billed on every later turn of the
-    /// conversation. One `slack_read` of a busy channel would otherwise make
-    /// every subsequent message cost a full transcript.
-    fn on_command_result(
-        &mut self,
-        exit_code: Option<i32>,
-        stdout: &[u8],
-        stderr: &[u8],
-        context: &BTreeMap<String, String>,
-    ) -> bool {
-        if !matches!(self.status, Status::AwaitingCommand) {
-            return false;
-        }
-        // A result from a run we already aborted, or from someone else's call.
-        let Some(head) = self.pending.front() else {
-            return false;
-        };
-        if context.get("tool_call_id") != Some(&head.id) {
-            return false;
-        }
-
-        // Zellij reports a command it could not even start as exit code 2 with
-        // the raw io::Error as the whole of stderr — "No such file or directory
-        // (os error 2)", naming nothing. For a Slack tool the model never sees
-        // the argv, so that message is undiagnosable from inside the
-        // conversation: say which binary, and which setting names it.
-        let result = match self.slack_exec_hint(exit_code, stderr) {
-            Some(hint) => hint,
-            None => {
-                let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
-                for (label, bytes) in [("stdout", stdout), ("stderr", stderr)] {
-                    let text = String::from_utf8_lossy(bytes);
-                    if !text.trim().is_empty() {
-                        let text = log::truncate_str(text.trim_end(), MAX_TOOL_OUTPUT);
-                        result.push_str(&format!("\n\n{label}:\n{text}"));
-                    }
-                }
-                result
-            },
-        };
-
-        self.finish_head(result);
-        self.pump_tools();
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The tool loop
-// ---------------------------------------------------------------------------
-
-impl State {
-    /// Work through `pending` until something has to wait — a confirmation, a
-    /// command result — or the queue empties and the results go back to the
-    /// model.
-    fn pump_tools(&mut self) {
-        while let Some(call) = self.pending.front().cloned() {
-            let grants_job_authority = call.name == "schedule"
-                && tools::Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm);
-            if (grants_job_authority || tools::needs_confirmation(&call.name))
-                && !self.job_auto_confirm
-            {
-                self.status = Status::ConfirmingTool;
-                self.pin_to_bottom();
-                return;
-            }
-            if tools::needs_confirmation(&call.name) {
-                self.log(
-                    "tool_confirm",
-                    serde_json::json!({
-                        "tool_call_id": call.id,
-                        "tool_name": call.name,
-                        "decision": "automatic",
-                    }),
-                );
-            }
-            if !self.run_head(&call) {
-                return;
-            }
-        }
-
-        // Only the user's own calls were in the queue: nothing to send.
-        self.status = Status::Idle;
-        if !std::mem::take(&mut self.owes_reply) {
-            return;
-        }
-
-        // Every call answered: hand the results back so the model can use them.
-        // The request at exactly MAX_TOOL_ROUNDS goes out without tools (see
-        // `start_request`), so getting past it means the model called a tool it
-        // was never offered. Nothing left to try.
-        self.tool_rounds += 1;
-        if self.tool_rounds > MAX_TOOL_ROUNDS {
-            self.job_auto_confirm = false;
-            let err =
-                format!("stopped after {MAX_TOOL_ROUNDS} rounds of tool calls without a reply");
-            self.messages.push(Message::error(err.clone()));
-            self.log("error", serde_json::json!({"error": log::truncate(&err)}));
-            return;
-        }
-        let Ok(cfg) = self.cfg.clone() else {
-            self.job_auto_confirm = false;
-            return;
-        };
-        self.start_request(&cfg);
-    }
-
-    /// Dispatch the head. Returns whether the queue advanced — `false` means the
-    /// result is deferred and `pump_tools` must stop and wait.
-    fn run_head(&mut self, call: &ToolCall) -> bool {
-        // Needs the resolved config and defers on a web request, neither of
-        // which tools::dispatch can reach.
-        if call.name == "web_search" {
-            return self.start_search(call);
-        }
-        // Same reason: the dobbs binary comes from the config.
-        if tools::SLACK_TOOLS.contains(&call.name.as_str()) {
-            return self.start_slack(call);
-        }
-        // The scheduling tools live here rather than in tools::dispatch, which
-        // is a free function with no access to the state they mutate.
-        if let Some(result) = self.run_local(call) {
-            self.finish_head(result);
-            return true;
-        }
-        match tools::dispatch(call) {
-            Dispatch::Done(result) => {
-                self.finish_head(result);
-                true
-            },
-            // ponytail: no timeout — a command that never exits waits forever
-            // and only Esc recovers. Add set_timeout + Event::Timer here if
-            // hanging commands turn out to be common in practice.
-            Dispatch::Deferred => {
-                self.status = Status::AwaitingCommand;
-                self.pin_to_bottom();
-                self.arm_timer(FRAME_SECONDS);
-                false
-            },
-        }
-    }
-
-    /// Run a tool the user typed as `/name key=value …`.
-    ///
-    /// Recorded as a real call-and-result pair rather than a notice, so the model
-    /// sees what was done on the next message — and so the transcript stays valid
-    /// for `api::request_body`, which sends every tool result and would otherwise
-    /// be left with an orphan.
-    ///
-    /// No confirmation prompt: typing the command *is* the confirmation, which is
-    /// why this calls `run_head` rather than going through `pump_tools`.
-    fn run_manual(&mut self, line: &str) -> bool {
-        self.pin_to_bottom();
-        let line = line.trim();
-        if line == "/" || line == "/help" {
-            let help = format!(
-                "/{}  /{}",
-                LOCAL_COMMANDS.join("  /"),
-                tools::names().join("  /")
-            );
-            self.messages.push(Message::notice(help.clone()));
-            self.log(
-                "notice",
-                serde_json::json!({"content": log::truncate(&help)}),
-            );
-            return true;
-        }
-        // The plugin's own lists, not tools: the model is never offered these.
-        if line == "/history" {
-            self.show_chats();
-            return true;
-        }
-        if line == "/models" {
-            self.show_models();
-            return true;
-        }
-        if line == "/stop_jobs" {
-            return self.stop_jobs();
-        }
-        if line == "/keys" {
-            self.messages.push(Message::notice(KEYS_HELP));
-            self.log(
-                "notice",
-                serde_json::json!({"content": log::truncate(KEYS_HELP)}),
-            );
-            return true;
-        }
-        // A reply arriving is no reason to wait, but another *tool* is: the
-        // queue runs one call at a time, and its head owns the deferred result
-        // the host is about to deliver.
-        if self.tools_busy() {
-            let notice = "a tool is already running — <Esc> aborts it";
-            self.messages.push(Message::notice(notice));
-            self.log("notice", serde_json::json!({"content": notice}));
-            return true;
-        }
-        let (name, arguments) = match tools::parse_command(line) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                let e = error.clone();
-                self.messages.push(Message::error(error));
-                self.log("error", serde_json::json!({"error": log::truncate(&e)}));
-                return true;
-            },
-        };
-
-        let call = ToolCall {
-            // Unique within the transcript: every manual call appends at least
-            // the summary message below before the next one can be typed.
-            id: format!("manual-{}", self.messages.len()),
-            name: name.clone(),
-            arguments: arguments.clone(),
-        };
-        self.messages.push(Message::tool_calls(vec![call.clone()]));
-        self.log(
-            "tool_call",
-            serde_json::json!({
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-                "arguments": log::truncate(&call.arguments),
-                "manual": true,
-            }),
-        );
-        self.pending.push_back(call.clone());
-        // Straight to `run_head` rather than through `pump_tools`: typing the
-        // command is itself the confirmation, so a destructive one runs without
-        // the y/n prompt the model's calls get.
-        self.run_head(&call);
-        true
-    }
-
-    /// Record a result for the head call and drop it from the queue.
-    fn finish_head<S: Into<String>>(&mut self, result: S) {
-        if let Some(call) = self.pending.pop_front() {
-            let result_str = result.into();
-            self.messages
-                .push(Message::tool_result(&call.id, result_str.clone()));
-            self.log(
-                "tool_result",
-                serde_json::json!({
-                    "tool_call_id": call.id,
-                    "tool_name": call.name,
-                    "result": log::truncate(&result_str),
-                }),
-            );
-            self.pin_to_bottom();
-        }
-    }
-
-    /// Ask the configured SearxNG. Deferred like `run_command`: the answer
-    /// arrives as the `WebRequestResult` carrying this call's id.
-    ///
-    /// ponytail: a plain `web_request` has no stream id, so there is nothing to
-    /// cancel — `Esc` stops waiting and the late reply is dropped because the
-    /// head no longer matches, exactly as for an aborted `run_command`. Move to
-    /// `web_request_stream` + `cancel_web_request` if hung searches turn out to
-    /// matter.
-    fn start_search(&mut self, call: &ToolCall) -> bool {
-        let args = match tools::Args::parse(&call.arguments) {
-            Ok(args) => args,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
-            },
-        };
-        let Some(query) = args.query.filter(|query| !query.trim().is_empty()) else {
-            self.finish_head("query is required and must not be empty");
-            return true;
-        };
-        // Cloned so the request can be issued without holding a borrow of self.
-        let Ok(search_url) = self.cfg.as_ref().map(|cfg| cfg.search_url.clone()) else {
-            self.finish_head("hocus is not configured");
-            return true;
-        };
-
-        web_request(
-            api::search_query_url(&search_url, &query),
-            HttpVerb::Get,
-            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
-            Vec::new(),
-            // Round-trips through the host, which is how the result is matched
-            // back to the call that made it.
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-        );
-        self.status = Status::AwaitingSearch;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-        false
-    }
-
-    /// Run one of the Slack tools by shelling out to dobbs. Deferred exactly
-    /// like `run_command` — the result comes back as `RunCommandResult` carrying
-    /// this call's id, so `on_command_result` needs no Slack-specific path.
-    ///
-    /// dobbs owns the Slack credentials and reaches its daemon over TCP, which a
-    /// wasm plugin cannot do; the CLI is the whole integration.
-    fn start_slack(&mut self, call: &ToolCall) -> bool {
-        let args = match tools::Args::parse(&call.arguments) {
-            Ok(args) => args,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
-            },
-        };
-        let argv = match tools::slack_argv(&call.name, &args) {
-            Ok(argv) => argv,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
-            },
-        };
-        // Cloned so the command can be run without holding a borrow of self.
-        let Ok((dobbs, env)) = self
-            .cfg
-            .as_ref()
-            .map(|cfg| (cfg.dobbs.clone(), cfg.dobbs_env()))
-        else {
-            self.finish_head("hocus is not configured");
-            return true;
-        };
-
-        let mut command = vec![dobbs];
-        command.extend(argv);
-        let borrowed: Vec<&str> = command.iter().map(String::as_str).collect();
-        run_command_with_env_variables_and_cwd(
-            &borrowed,
-            env,
-            // dobbs is cwd-independent: it finds its archive and daemon under
-            // ~/.dobbs, so there is nothing to inherit from the focused pane.
-            std::path::PathBuf::from("."),
-            // Round-trips through the host, which is how the result is matched
-            // back to the call that made it.
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-        );
-        self.status = Status::AwaitingCommand;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-        false
-    }
-
-    /// The deferred half of `web_search`. Returns whether this response was one:
-    /// a `WebRequestResult` with no `tool_call_id` is the head of an API stream.
-    fn finish_search(
-        &mut self,
-        status: u16,
-        body: &[u8],
-        context: &BTreeMap<String, String>,
-    ) -> bool {
-        if !matches!(self.status, Status::AwaitingSearch) {
-            return false;
-        }
-        // A search we already aborted, or someone else's request.
-        let Some(head) = self.pending.front() else {
-            return false;
-        };
-        if context.get("tool_call_id") != Some(&head.id) {
-            return false;
-        }
-
-        let result = if (200..300).contains(&status) {
-            api::search_results(body, api::SEARCH_RESULTS)
-        } else {
-            api::api_error_message(status, body)
-        };
-
-        self.status = Status::Idle;
-        self.finish_head(result);
-        self.pump_tools();
-        true
-    }
-
-    /// The tools that mutate our own state rather than the session. `None`
-    /// means the call belongs to `tools::dispatch`.
-    fn run_local(&mut self, call: &ToolCall) -> Option<String> {
-        if !matches!(
-            call.name.as_str(),
-            "schedule"
-                | "unschedule"
-                | "project_list"
-                | "project_assign"
-                | "project_open"
-                | "todo_add"
-                | "todo_list"
-                | "todo_search"
-                | "todo_done"
-                | "agent_register"
-                | "agent_list"
-                | "agent_send"
-                | "agent_control"
-                | "agent_spawn"
-        ) {
-            return None;
-        }
-        let args = match tools::Args::parse(&call.arguments) {
-            Ok(args) => args,
-            Err(error) => return Some(error),
-        };
-        // One refresh for all four agent tools, so no path can act on a snapshot the
-        // session has moved past — and none can act on no snapshot at all.
-        if call.name.starts_with("agent_") {
-            // Through `poll_agents` rather than `refresh_panes` so a transition
-            // is noticed in the transcript, not silently absorbed by the tool.
-            // The redraw it reports is redundant here — the tool result forces
-            // one anyway.
-            self.poll_agents();
-            self.agent_due_in = AGENT_SECONDS;
-        }
-        Some(match call.name.as_str() {
-            "schedule" => self.schedule(&args),
-            "unschedule" => self.unschedule(args.job_id),
-            "project_list" => self.project_list(),
-            "project_assign" => self.project_assign(&args),
-            "project_open" => self.project_open(&args),
-            "todo_add" => self.todo_add(&args),
-            "todo_list" => self.todo_list(&args),
-            "todo_search" => self.todo_search(&args),
-            "todo_done" => self.todo_done(&args),
-            "agent_register" => self.agent_register(&args),
-            "agent_list" => self.agent_list(&args),
-            "agent_spawn" => self.agent_spawn(&args),
-            _ => self.agent_act(call, &args),
-        })
-    }
-
-    fn remember_project(&mut self, args: &tools::Args) -> Result<projects::Project, String> {
-        let name = args
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "name is required".to_owned())?;
-        if let Some(root) = args.root.as_deref() {
-            let project = projects::validate(name, root)?;
-            // The user just gave this folder a better name than a poll could.
-            if let Some(gone) = projects::adopt(&mut self.projects, project.clone()) {
-                self.rename_project(&gone, &project.name);
-            }
-            post_projects(&self.projects);
-            Ok(project)
-        } else {
-            self.projects.get(name).cloned().ok_or_else(|| {
-                format!("unknown project {name}; root is required for a new project")
-            })
-        }
-    }
-
-    fn project_list(&self) -> String {
-        let items: Vec<serde_json::Value> = self
-            .projects
-            .values()
-            .map(|project| {
-                let ids = |assigned: &BTreeMap<usize, String>| {
-                    let mut ids: Vec<usize> = assigned
-                        .iter()
-                        .filter_map(|(id, name)| (name == &project.name).then_some(*id))
-                        .collect();
-                    ids.sort_unstable();
-                    ids
-                };
-                let auto_tab_ids = ids(&self.auto_tab_projects);
-                let mut tab_ids = ids(&self.tab_projects);
-                tab_ids.extend(auto_tab_ids.iter().copied());
-                tab_ids.sort_unstable();
-                tab_ids.dedup();
-                serde_json::json!({
-                    "name": project.name,
-                    "root": project.root,
-                    "discovered": project.discovered,
-                    "tab_ids": tab_ids,
-                    "auto_tab_ids": auto_tab_ids,
-                })
-            })
-            .collect();
-        serde_json::json!({ "active": self.active_project, "projects": items }).to_string()
-    }
-
-    fn project_assign(&mut self, args: &tools::Args) -> String {
-        let tab_id = match args.tab_id.or_else(|| {
-            self.tabs
-                .iter()
-                .find(|tab| tab.active)
-                .map(|tab| tab.tab_id)
-        }) {
-            Some(id) if self.tabs.iter().any(|tab| tab.tab_id == id) => id,
-            Some(id) => return format!("tab {id} is not available"),
-            None => return "no active tab is available".to_owned(),
-        };
-        let project = match self.remember_project(args) {
-            Ok(project) => project,
-            Err(error) => return error,
-        };
-        self.tab_projects.insert(tab_id, project.name.clone());
-        // The two maps stay disjoint, so `project_list` cannot report a tab as
-        // both assigned and found.
-        self.auto_tab_projects.remove(&tab_id);
-        if self
-            .tabs
-            .iter()
-            .any(|tab| tab.tab_id == tab_id && tab.active)
-        {
-            self.active_project = Some(project.name.clone());
-        }
-        format!("assigned tab {tab_id} to project {}", project.name)
-    }
-
-    fn project_open(&mut self, args: &tools::Args) -> String {
-        let project = match self.remember_project(args) {
-            Ok(project) => project,
-            Err(error) => return error,
-        };
-        let call = ToolCall {
-            id: String::new(),
-            name: "new_tab".to_owned(),
-            arguments: serde_json::json!({
-                "name": args.tab_name.as_deref().unwrap_or(&project.name),
-                "cwd": project.root,
-            })
-            .to_string(),
-        };
-        let result = match tools::dispatch(&call) {
-            Dispatch::Done(result) => result,
-            Dispatch::Deferred => return "project opening cannot be deferred".to_owned(),
-        };
-        self.register_opened_project(&project.name, &result)
-    }
-
-    fn register_opened_project(&mut self, name: &str, result: &str) -> String {
-        let tab_id = serde_json::from_str::<serde_json::Value>(&result)
-            .ok()
-            .and_then(|value| value["tab_id"].as_u64());
-        let Some(tab_id) = tab_id else {
-            return result.to_owned();
-        };
-        self.tab_projects.insert(tab_id as usize, name.to_owned());
-        self.auto_tab_projects.remove(&(tab_id as usize));
-        self.active_project = Some(name.to_owned());
-        result.to_owned()
-    }
-
-    /// The project a todo tool acts on, as `(root, name)`.
-    ///
-    /// A list is keyed on the root folder, so a rename of the project keeps the
-    /// list. `project` takes an exact name, or an absolute root for a list whose
-    /// project is gone. The name comes back only to put in the answer.
-    fn todo_target(&self, args: &tools::Args) -> Result<(String, Option<String>), String> {
-        let selected = args.project.as_deref().or(self.active_project.as_deref());
-        let Some(selected) = selected else {
-            return Err("no active project; give project, or call project_list".to_owned());
-        };
-        if selected.starts_with('/') {
-            let root = todos::normalize_root(selected)?;
-            let name = self
-                .projects
-                .values()
-                .find(|project| todos::normalize_root(&project.root) == Ok(root.clone()))
-                .map(|project| project.name.clone());
-            return Ok((root, name));
-        }
-        match self.projects.get(selected) {
-            Some(project) => Ok((
-                todos::normalize_root(&project.root)?,
-                Some(project.name.clone()),
-            )),
-            None => Err(format!("unknown project {selected}; call project_list")),
-        }
-    }
-
-    fn todo_add(&mut self, args: &tools::Args) -> String {
-        let Some(text) = args.text.as_deref() else {
-            return "text is required".to_owned();
-        };
-        let (root, name) = match self.todo_target(args) {
-            Ok(target) => target,
-            Err(error) => return error,
-        };
-        let id = match todos::add(&mut self.todos, &root, text, args.parent_id) {
-            Ok(id) => id,
-            Err(error) => return error,
-        };
-        post_todos(&self.todos);
-        let open = self
-            .todos
-            .get(&root)
-            .map_or(0, |list| todos::counts(list).0);
-        serde_json::json!({
-            "added": { "id": id, "text": text.trim(), "parent_id": args.parent_id },
-            "project": name,
-            "root": root,
-            "open": open,
-        })
-        .to_string()
-    }
-
-    fn todo_list(&self, args: &tools::Args) -> String {
-        let (root, name) = match self.todo_target(args) {
-            Ok(target) => target,
-            Err(error) => return error,
-        };
-        let mut value = todos::list_json(&self.todos, &root, args.include_done);
-        value["project"] = serde_json::json!(name);
-        value.to_string()
-    }
-
-    /// The name of the project that owns a folder, for a search result.
-    fn project_named(&self, root: &str) -> Option<String> {
-        self.projects
-            .values()
-            .find(|project| project.root == root)
-            .map(|project| project.name.clone())
-    }
-
-    fn todo_search(&self, args: &tools::Args) -> String {
-        let Some(query) = args
-            .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|q| !q.is_empty())
-        else {
-            return "query is required".to_owned();
-        };
-        // Every list is searched by folder, so a list whose project went away is
-        // still found. The registry is worked out again on every poll; the file
-        // is the lasting record.
-        let (roots, scope) = if args.all_projects {
-            (self.todos.keys().cloned().collect(), "all".to_owned())
-        } else {
-            match self.todo_target(args) {
-                Ok((root, name)) => (vec![root.clone()], name.unwrap_or(root)),
-                Err(error) => return error,
-            }
-        };
-        let found = todos::search(&self.todos, &roots, query);
-        let items: Vec<serde_json::Value> = found
-            .iter()
-            .map(|found| {
-                serde_json::json!({
-                    "id": found.id,
-                    "text": found.text,
-                    "done": found.done,
-                    "project": self.project_named(&found.root),
-                    "root": found.root,
-                    "trail": found.trail,
-                })
-            })
-            .collect();
-        serde_json::json!({
-            "query": query,
-            "scope": scope,
-            "matches": items,
-            "truncated": found.len() >= todos::MAX_MATCHES,
-        })
-        .to_string()
-    }
-
-    fn todo_done(&mut self, args: &tools::Args) -> String {
-        let Some(id) = args.id else {
-            return "id is required".to_owned();
-        };
-        let (root, name) = match self.todo_target(args) {
-            Ok(target) => target,
-            Err(error) => return error,
-        };
-        let change = match todos::set_done(&mut self.todos, &root, id, !args.undo) {
-            Ok(change) => change,
-            Err(error) => return error,
-        };
-        post_todos(&self.todos);
-        serde_json::json!({
-            "id": change.id,
-            "text": change.text,
-            "done": change.done,
-            "also_done": change.cascaded,
-            "reopened": change.reopened,
-            "project": name,
-        })
-        .to_string()
-    }
-
-    /// The project of a tab: what the user assigned, then what the poll found.
-    fn tab_project(&self, tab_id: usize) -> Option<&str> {
-        self.tab_projects
-            .get(&tab_id)
-            .or_else(|| self.auto_tab_projects.get(&tab_id))
-            .map(String::as_str)
-    }
-
-    /// Pane id to project name, for each agent whose folder a project owns.
-    fn pane_projects(&self) -> BTreeMap<u32, String> {
-        self.panes
-            .iter()
-            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
-            .filter_map(|pane| {
-                let owner = projects::for_cwd(&self.projects, pane.cwd.as_deref()?)?;
-                Some((pane.pane_id, owner.name.clone()))
-            })
-            .collect()
-    }
-
-    /// Make a project for the folder of each agent that no project owns yet.
-    ///
-    /// Only an agent counts. A shell at a prompt is not a reason to remember a
-    /// folder for good.
-    fn discover_projects(&mut self) {
-        let cwds: Vec<String> = self
-            .panes
-            .iter()
-            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.clone())
-            .collect();
-        let discovery = projects::discover(&mut self.projects, &cwds);
-        if !discovery.changed() {
-            return;
-        }
-        // A shallower folder can take the folders of a project a poll found
-        // before it. Anything that holds that name must move with it.
-        for (gone, kept) in &discovery.replaced {
-            self.rename_project(gone, kept);
-        }
-        post_projects(&self.projects);
-    }
-
-    /// Point everything that names a project that went away at the project that
-    /// took its folders. Without this, the active project can name nothing and
-    /// `agent_list` answers "unknown project".
-    fn rename_project(&mut self, gone: &str, kept: &str) {
-        for assigned in self
-            .tab_projects
-            .values_mut()
-            .chain(self.auto_tab_projects.values_mut())
-            .chain(self.active_project.iter_mut())
-        {
-            if assigned == gone {
-                kept.clone_into(assigned);
-            }
-        }
-    }
-
-    /// Work out the project of each tab again, and of the active tab with it.
-    fn refresh_tab_projects(&mut self) {
-        let owners = self.pane_projects();
-        self.auto_tab_projects = agents::tab_projects(&self.panes, &self.manual_kinds, &owners);
-        // A tab the user assigned is left alone, so the two maps stay disjoint.
-        self.auto_tab_projects
-            .retain(|tab_id, _| !self.tab_projects.contains_key(tab_id));
-        self.active_project = self
-            .tabs
-            .iter()
-            .find(|tab| tab.active)
-            .and_then(|tab| self.tab_project(tab.tab_id))
-            .map(str::to_owned);
-    }
-
-    /// The snapshot every agent tool works from. Split out so the host calls in
-    /// `gather_poll` are the only part that cannot run under `make test`.
-    fn set_panes(&mut self, panes: Vec<agents::AgentPane>) {
-        self.panes = panes;
-        // A pane that closed is a registration that no longer names anything.
-        self.manual_kinds
-            .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
-        self.activity
-            .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
-    }
-
-    /// Name a pane as an agent by hand, for what detection cannot know.
-    fn agent_register(&mut self, args: &tools::Args) -> String {
-        let Some(pane_id) = args.pane_id else {
-            return "pane_id is required".to_owned();
-        };
-        let Some(kind) = args.kind.as_deref() else {
-            return "kind is required".to_owned();
-        };
-        if !agents::valid_kind(kind) {
-            return "kind must be 1 to 32 characters of a-z, 0-9, _ or -".to_owned();
-        }
-        // `panes` holds terminal panes only, so this one check also answers a plugin
-        // pane and a pane id the model invented.
-        if !self.panes.iter().any(|pane| pane.pane_id == pane_id) {
-            return format!("pane {pane_id} is not available");
-        }
-        self.manual_kinds.insert(pane_id, kind.to_owned());
-        format!("registered pane {pane_id} as {kind}")
-    }
-
-    /// Every agent, with the tail of what each one is showing.
-    fn agent_list(&self, args: &tools::Args) -> String {
-        let selected = args.project.as_deref().or(self.active_project.as_deref());
-        let project = match selected {
-            Some(name) => match self.projects.get(name) {
-                Some(project) => Some(project),
-                None => return format!("unknown project {name}; call project_list"),
-            },
-            None => None,
-        };
-        let panes: Vec<agents::AgentPane> = self
-            .panes
-            .iter()
-            .filter(|pane| {
-                project.is_none_or(|project| {
-                    pane.cwd
-                        .as_deref()
-                        .and_then(|cwd| projects::for_cwd(&self.projects, cwd))
-                        .is_some_and(|owner| owner.name == project.name)
-                })
-            })
-            .cloned()
-            .collect();
-        agents::list_json(
-            &panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.pane_projects(),
-            |pane_id| read_pane_text(pane_id),
-        )
-    }
-
-    /// `agent_send` and `agent_control`, which do their own work through the tool
-    /// that already does it. Nothing here talks to the host directly.
-    fn agent_act(&mut self, call: &ToolCall, args: &tools::Args) -> String {
-        match self.agent_host_call(call, args) {
-            Ok(host) => match tools::dispatch(&host) {
-                Dispatch::Done(result) => result,
-                Dispatch::Deferred => "agent action cannot be deferred".to_owned(),
-            },
-            Err(error) => error,
-        }
-    }
-
-    /// Open an agent pane through the tool that already opens panes, then register
-    /// the kind the caller gave against the pane id `new_pane` reports.
-    fn agent_spawn(&mut self, args: &tools::Args) -> String {
-        if args.command_words().is_empty() {
-            return "command is required".to_owned();
-        }
-        if let Some(kind) = args.kind.as_deref() {
-            if !agents::valid_kind(kind) {
-                return "kind must be 1 to 32 characters of a-z, 0-9, _ or -".to_owned();
-            }
-        }
-        let cwd = match self.agent_cwd(args) {
-            Ok(cwd) => cwd,
-            Err(error) => return error,
-        };
-        let host = ToolCall {
-            id: String::new(),
-            name: "new_pane".to_owned(),
-            arguments: serde_json::json!({
-                "command": args.command,
-                "args": args.args,
-                "cwd": cwd,
-            })
-            .to_string(),
-        };
-        match tools::dispatch(&host) {
-            Dispatch::Done(result) => self.register_spawned(args.kind.as_deref(), &result),
-            Dispatch::Deferred => "agent action cannot be deferred".to_owned(),
-        }
-    }
-
-    fn agent_cwd(&self, args: &tools::Args) -> Result<Option<String>, String> {
-        let selected = args.project.as_deref().or(self.active_project.as_deref());
-        let project = match selected {
-            Some(name) => match self.projects.get(name) {
-                Some(project) => Some(project),
-                None => return Err(format!("unknown project {name}; call project_list")),
-            },
-            None => None,
-        };
-        if let (Some(project), Some(cwd)) = (project, args.cwd.as_deref()) {
-            if !projects::contains(project, cwd) {
-                return Err(format!("cwd must be inside project {}", project.name));
-            }
-        }
-        Ok(args
-            .cwd
-            .clone()
-            .or_else(|| project.map(|project| project.root.clone())))
-    }
-
-    /// Fold a spawn's kind into `manual_kinds`, keyed by the pane id `new_pane`
-    /// reported. The pane is not in the snapshot yet — the next poll, at most one
-    /// heartbeat away, brings it in; the id is already allocated, so the kind
-    /// survives that poll's prune. No kind means detection covers it.
-    fn register_spawned(&mut self, kind: Option<&str>, result: &str) -> String {
-        let pane_id = serde_json::from_str::<serde_json::Value>(result)
-            .ok()
-            .and_then(|value| value["pane_id"].as_u64());
-        match (kind, pane_id) {
-            (Some(kind), Some(pane_id)) => {
-                self.manual_kinds.insert(pane_id as u32, kind.to_owned());
-                format!("{result} (registered as {kind})")
-            },
-            _ => result.to_owned(),
-        }
-    }
-
-    /// The existing tool call an agent call means, or why it means none.
-    ///
-    /// Pure, so every mapping is testable on the host triple — which matters, because
-    /// this is what keeps `agent_control close` from reaching a pane the user never
-    /// called an agent.
-    fn agent_host_call(&self, call: &ToolCall, args: &tools::Args) -> Result<ToolCall, String> {
-        let Some(pane_id) = args.pane_id else {
-            return Err("pane_id is required".to_owned());
-        };
-        if !self.is_agent(pane_id) {
-            return Err(format!(
-                "pane {pane_id} is not an agent; call agent_list, or agent_register it first"
-            ));
-        }
-        // An agent is always a terminal pane, so is_plugin is settled here rather
-        // than asked of the model.
-        let (name, arguments) = match call.name.as_str() {
-            // Empty input is left to send_input, which already refuses it.
-            "agent_send" => (
-                "send_input",
-                serde_json::json!({
-                    "pane_id": pane_id,
-                    "is_plugin": false,
-                    "text": args.text,
-                    "keys": args.keys,
-                }),
-            ),
-            _ => match args.action.as_deref() {
-                Some("interrupt") => (
-                    "send_input",
-                    serde_json::json!({
-                        "pane_id": pane_id,
-                        "is_plugin": false,
-                        "keys": ["ctrl_c"],
-                    }),
-                ),
-                Some("restart") => (
-                    "rerun_pane",
-                    serde_json::json!({ "pane_id": pane_id, "is_plugin": false }),
-                ),
-                Some("close") => (
-                    "close_pane",
-                    serde_json::json!({ "pane_id": pane_id, "is_plugin": false }),
-                ),
-                Some(other) => return Err(format!("unknown agent action: {other}")),
-                None => return Err("action is required".to_owned()),
-            },
-        };
-        Ok(ToolCall {
-            id: call.id.clone(),
-            name: name.to_owned(),
-            arguments: arguments.to_string(),
-        })
-    }
-
-    /// Whether this pane is an agent right now: in the last snapshot, and either
-    /// registered by hand or detected.
-    fn is_agent(&self, pane_id: u32) -> bool {
-        self.panes.iter().any(|pane| {
-            pane.pane_id == pane_id && agents::classify(pane, &self.manual_kinds).is_some()
-        })
-    }
-
-    /// Refresh the snapshot here and now and note transitions in the transcript.
-    /// Returns whether the screen moved: a poll that found nothing new must not
-    /// recomposite the session.
-    ///
-    /// This is the synchronous path — `show_agents` and the `agent_*` tools need
-    /// a fresh snapshot before they can answer. The timer path goes through the
-    /// poll worker instead; running here supersedes any poke in flight, and the
-    /// cleared `poll_pending` makes its late reply drop.
-    fn poll_agents(&mut self) -> bool {
-        self.poll_pending = false;
-        self.polls_unanswered = 0;
-        let mut activity = std::mem::take(&mut self.activity);
-        match gather_poll(&self.manual_kinds, &mut activity) {
-            Some(panes) => self.apply_poll(panes, activity),
-            // No session to look at; keep what we knew.
-            None => {
-                self.activity = activity;
-                false
-            },
-        }
-    }
-
-    /// Merge one poll's outcome — sync or worker, same code — and note
-    /// transitions in the transcript.
-    fn apply_poll(&mut self, panes: Vec<agents::AgentPane>, activity: agents::Activity) -> bool {
-        // Taken before `set_panes` prunes `manual_kinds`, so a manual agent that
-        // closed still has its kind in the notice.
-        let before = agents::agent_map(&self.panes, &self.manual_kinds);
-        self.activity = activity;
-        self.set_panes(panes);
-        // Project detection runs with agent detection, off the same snapshot.
-        self.discover_projects();
-        self.refresh_tab_projects();
-        let notices = agents::transition_notices(
-            &before,
-            &agents::agent_map(&self.panes, &self.manual_kinds),
-        );
-        for notice in &notices {
-            self.messages.push(Message::notice(notice.clone()));
-            self.log(
-                "notice",
-                serde_json::json!({"content": log::truncate(notice)}),
-            );
-        }
-        !notices.is_empty()
-    }
-
-    /// A worker reply. Only the poll worker sends any.
-    fn on_custom_message(&mut self, message: &str, payload: &str) -> bool {
-        if message != "poll_result" || !self.poll_pending {
-            // Unknown, or superseded: a sync poll ran while this one was in
-            // flight and what it would merge is older than what we have.
-            return false;
-        }
-        self.poll_pending = false;
-        self.polls_unanswered = 0;
-        let Ok(reply) = serde_json::from_str::<PollReply>(payload) else {
-            return false;
-        };
-        match reply.panes {
-            Some(panes) => self.apply_poll(panes, reply.activity),
-            None => false,
-        }
-    }
-
-    fn schedule(&mut self, args: &tools::Args) -> String {
-        let Some(prompt) = args
-            .prompt
-            .clone()
-            .filter(|prompt| !prompt.trim().is_empty())
-        else {
-            return "schedule needs a prompt".to_owned();
-        };
-        // NaN and anything under the floor both land on the floor: f64::max
-        // returns the other operand for NaN.
-        let every = args.seconds.unwrap_or(0.0).max(MIN_JOB_SECONDS);
-
-        self.job_seq += 1;
-        let id = self.job_seq;
-        let prompt_clone = prompt.clone();
-        let show = args.show;
-        self.jobs.push(Job {
-            id,
-            every,
-            due_in: every,
-            prompt,
-            show,
-            auto_confirm: args.auto_confirm,
-        });
-        self.arm_timer(JOB_SECONDS);
-        self.log(
-            "job_schedule",
-            serde_json::json!({
-                "job_id": id,
-                "every": every,
-                "prompt": log::truncate(&prompt_clone),
-                "show": show,
-                "auto_confirm": args.auto_confirm,
-            }),
-        );
-        format!("scheduled job {id} — runs every {every:.0}s until unscheduled")
-    }
-
-    fn unschedule(&mut self, id: Option<u64>) -> String {
-        let result = match id {
-            Some(id) => {
-                let before = self.jobs.len();
-                self.jobs.retain(|job| job.id != id);
-                if self.jobs.len() == before {
-                    format!("no job {id}")
-                } else {
-                    format!("cancelled job {id}")
-                }
-            },
-            None => {
-                let count = self.jobs.len();
-                self.jobs.clear();
-                format!("cancelled {count} scheduled job(s)")
-            },
-        };
-        self.log(
-            "job_cancel",
-            serde_json::json!({
-                "job_id": id,
-                "result": log::truncate(&result),
-            }),
-        );
-        result
-    }
-
-    /// The kill switch that doesn't need the model to cooperate.
-    fn stop_jobs(&mut self) -> bool {
-        if self.jobs.is_empty() {
-            return false;
-        }
-        let notice = self.unschedule(None);
-        self.messages.push(Message::notice(notice.clone()));
-        self.log(
-            "notice",
-            serde_json::json!({"content": log::truncate(&notice)}),
-        );
-        self.pin_to_bottom();
-        true
-    }
-
-    fn confirm_tool(&mut self) -> bool {
-        let Some(call) = self.pending.front().cloned() else {
-            return false;
-        };
-        self.log(
-            "tool_confirm",
-            serde_json::json!({
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-                "decision": "confirm",
-            }),
-        );
-        self.status = Status::Idle;
-        if self.run_head(&call) {
-            self.pump_tools();
-        }
-        true
-    }
-
-    fn decline_tool(&mut self) -> bool {
-        if self.pending.is_empty() {
-            return false;
-        }
-        if let Some(head) = self.pending.front() {
-            self.log(
-                "tool_confirm",
-                serde_json::json!({
-                    "tool_call_id": head.id,
-                    "tool_name": head.name,
-                    "decision": "decline",
-                }),
-            );
-        }
-        self.status = Status::Idle;
-        // Recorded as the tool's result, not as a notice: the model must see a
-        // reply for every call it made or the next request is malformed.
-        self.finish_head("declined by the user");
-        self.pump_tools();
-        true
-    }
-
-    /// Give up on the whole run. Every outstanding call still gets an answer, so
-    /// the transcript stays valid if the conversation continues.
-    ///
-    /// This is also the escape hatch for a `run_command` that never returns,
-    /// which is why there is no timer.
-    fn abort_tools(&mut self) -> bool {
-        self.status = Status::Idle;
-        // The model asked, but it is not getting an answer — the results are
-        // recorded for the transcript's sake, not to be sent back.
-        self.owes_reply = false;
-        self.job_auto_confirm = false;
-        while !self.pending.is_empty() {
-            self.finish_head("aborted by the user");
-        }
-        self.messages.push(Message::notice("tools aborted"));
-        self.log("notice", serde_json::json!({"content": "tools aborted"}));
-        self.log("abort", serde_json::json!({"reason": "user"}));
-        self.pin_to_bottom();
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The archive
-// ---------------------------------------------------------------------------
-
-impl State {
-    /// What autosave watches. The same trick `ui::TranscriptKey` relies on: only
-    /// the last message is ever mutated in place, so a count and that message's
-    /// length between them catch every change to the transcript.
-    fn fingerprint(&self) -> (usize, usize) {
-        (self.messages.len(), self.mutable_len())
-    }
-
-    /// The length of the one message that can change without the count changing:
-    /// the streaming placeholder, which `append_to_reply` grows in place. The
-    /// last message is the fallback — it is the placeholder whenever there is
-    /// one and nothing has been pushed behind it, and when there is no stream
-    /// nothing is mutated in place at all.
-    ///
-    /// A typed tool mid-reply is what makes the two differ: its call and result
-    /// sit *after* the placeholder, so watching the last message would leave the
-    /// arriving reply invisible to the cache, the archive and every other client.
-    pub fn mutable_len(&self) -> usize {
-        let at = self
-            .reply_at
-            .unwrap_or(self.messages.len().saturating_sub(1));
-        self.messages.get(at).map_or(0, |m| m.content.len())
-    }
-
-    /// Write the transcript out once it has settled.
-    ///
-    /// In-flight is skipped so a stream saves once at the end rather than on
-    /// every socket read, and an empty transcript is skipped so a pane you only
-    /// opened leaves nothing behind.
-    fn autosave(&mut self) {
-        if self.is_in_flight() || self.messages.is_empty() {
-            return;
-        }
-        let key = self.fingerprint();
-        if self.saved == key {
-            return;
-        }
-        self.saved = key;
-        if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-            post_save(id, json);
-        }
-    }
-
-    /// Autosave, but write here and now instead of on the worker, and without
-    /// waiting for the reply to settle. For the two places a queued write is not
-    /// good enough: `show_chats` reads the archive right back, and `BeforeClose`
-    /// has no later.
-    ///
-    /// Unlike `autosave` this writes mid-stream. It is called once per switch or
-    /// once per close, not once per socket read, so the reason for that guard
-    /// doesn't apply — and a partial reply on disk beats losing it.
-    fn flush_save(&mut self) {
-        if self.messages.is_empty() {
-            return;
-        }
-        self.saved = self.fingerprint();
-        if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-            history::write(id, json.as_bytes());
-        }
-    }
-
-    /// The archive list, newest first, behind `/history`. Opens mid-reply: the
-    /// chat you leave keeps streaming in the background, so switching costs it
-    /// nothing.
-    fn show_chats(&mut self) {
-        // So the chat you are in is in the list, and current. Synchronous —
-        // list() below would race a write queued on the worker. Every parked
-        // chat is written too, or one that has never been saved would have no
-        // id and no row to switch back to.
-        self.flush_save();
-        for chat in &mut self.parked {
-            if let Some((id, json)) = history::save(&mut chat.chat_id, &chat.messages) {
-                history::write(id, json.as_bytes());
-            }
-        }
-        let live: Vec<u64> = self.live_chat_ids();
-        let (ids, titles) = history::list()
-            .into_iter()
-            .map(|entry| {
-                // A dot marks the ones still working, so a background reply is
-                // visible from the list rather than only on arrival.
-                let title = match live.contains(&entry.id) {
-                    true => format!("● {}", entry.title),
-                    false => entry.title,
-                };
-                (entry.id, title)
-            })
-            .unzip();
-        self.picker = Some(Picker {
-            entries: titles,
-            selected: 0,
-            kind: PickerKind::Chats(ids),
-        });
-    }
-
-    /// How many other conversations are working off-screen.
-    pub fn parked_count(&self) -> usize {
-        self.parked.len()
-    }
-
-    /// Chats with something still outstanding, foreground and parked alike.
-    fn live_chat_ids(&self) -> Vec<u64> {
-        self.parked
-            .iter()
-            .filter(|chat| chat.is_live())
-            .filter_map(|chat| chat.chat_id)
-            .chain(self.chat_id.filter(|_| self.is_in_flight()))
-            .collect()
-    }
-
-    /// Ask the endpoint what it serves, and show the list as it arrives. Behind
-    /// `/models`.
-    ///
-    /// No `Status` variant and no spinner: the picker is modal, so this is the
-    /// only thing *it* is waiting on and the empty list is itself the "fetching"
-    /// state. A reply may well be arriving behind it; the `models` context on the
-    /// request is what keeps the two responses apart.
-    ///
-    /// ponytail: like `web_search`, a plain `web_request` has no stream id and so
-    /// nothing to cancel — `Esc` stops waiting and the late reply is dropped
-    /// because the picker it was for is gone.
-    fn show_models(&mut self) {
-        // Nothing to ask, and the banner behind the picker already says why.
-        let Ok(cfg) = &self.cfg else {
-            return;
-        };
-        web_request(
-            api::models_url(&cfg.base_url),
-            HttpVerb::Get,
-            api::models_headers(cfg),
-            Vec::new(),
-            // Round-trips through the host: this is what tells the response
-            // apart from the one that leads a chat stream.
-            BTreeMap::from([("models".to_owned(), "1".to_owned())]),
-        );
-        self.picker = Some(Picker {
-            entries: Vec::new(),
-            selected: 0,
-            kind: PickerKind::Models,
-        });
-    }
-
-    /// Ctrl-r's answer: the agent picker. Opens over a streaming reply for the
-    /// same reason `/history` does — it drives the session, not the conversation.
-    fn open_agent_picker(&mut self) -> bool {
-        self.autosave();
-        self.show_agents();
-        true
-    }
-
-    /// The agent list, fresh: entering the picker re-polls, so the rows are the
-    /// session as it is now, not as of the last heartbeat.
-    fn show_agents(&mut self) {
-        self.poll_agents();
-        self.agent_due_in = AGENT_SECONDS;
-        let (ids, entries) = agents::strip_rows(
-            &self.panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.pane_projects(),
-        )
-        .into_iter()
-        .unzip();
-        self.picker = Some(Picker {
-            entries,
-            selected: 0,
-            kind: PickerKind::Agents(ids),
-        });
-    }
-
-    /// Bring an agent's pane into view, through the tool that already does it —
-    /// `focus` finds the pane's tab itself, so this works across tabs.
-    fn focus_agent(&self, pane_id: u32) {
-        tools::dispatch(&ToolCall {
-            id: String::new(),
-            name: "focus".to_owned(),
-            arguments: serde_json::json!({"pane_id": pane_id, "is_plugin": false}).to_string(),
-        });
-    }
-
-    /// The deferred half of `show_models`. Returns whether this response was one:
-    /// a `WebRequestResult` with no `models` context is the head of a stream.
-    ///
-    /// Anything other than a list to show closes the picker and says why in the
-    /// transcript, rather than leaving "fetching models…" on screen forever.
-    fn finish_models(
-        &mut self,
-        status: u16,
-        body: &[u8],
-        context: &BTreeMap<String, String>,
-    ) -> bool {
-        if !context.contains_key("models") {
-            return false;
-        }
-        // A fetch we already abandoned with Esc, or one already answered: an
-        // empty model list is exactly the still-waiting state.
-        match self.picker.as_ref() {
-            Some(picker)
-                if matches!(picker.kind, PickerKind::Models) && picker.entries.is_empty() => {},
-            _ => return false,
-        }
-
-        if !(200..300).contains(&status) {
-            self.picker = None;
-            let err = api::api_error_message(status, body);
-            self.messages.push(Message::error(err.clone()));
-            self.log(
-                "error",
-                serde_json::json!({"error": log::truncate(&err), "status": status}),
-            );
-            self.pin_to_bottom();
-            return true;
-        }
-
-        let models = api::model_ids(body);
-        if models.is_empty() {
-            self.picker = None;
-            self.messages
-                .push(Message::notice("the endpoint listed no models"));
-            self.log(
-                "notice",
-                serde_json::json!({"content": "the endpoint listed no models"}),
-            );
-            self.pin_to_bottom();
-            return true;
-        }
-
-        // Open on the model in use, so the list says where you are as well as
-        // where you can go.
-        let current = self
-            .cfg
-            .as_ref()
-            .map(|cfg| cfg.model.clone())
-            .unwrap_or_default();
-        self.picker = Some(Picker {
-            selected: models.iter().position(|id| *id == current).unwrap_or(0),
-            entries: models,
-            kind: PickerKind::Models,
-        });
-        true
-    }
-
-    /// Every key while the picker is open. Unhandled keys are swallowed rather
-    /// than falling through to the input box hidden behind it.
-    fn picker_key(&mut self, key: KeyWithModifier) -> bool {
-        match key.bare_key {
-            BareKey::Esc => self.picker = None,
-            BareKey::Enter => {
-                let Some(picker) = self.picker.take() else {
-                    return false;
-                };
-                match &picker.kind {
-                    PickerKind::Chats(ids) => {
-                        if let Some(id) = ids.get(picker.selected).copied() {
-                            self.switch_to_chat(id);
-                        }
-                    },
-                    // Held only for this session: config is re-resolved from the
-                    // KDL block and the environment on every load.
-                    PickerKind::Models => {
-                        if let (Some(model), Ok(cfg)) =
-                            (picker.entries.get(picker.selected), &mut self.cfg)
-                        {
-                            let m = model.clone();
-                            cfg.model = m.clone();
-                            self.log_global("model_switch", serde_json::json!({"model": m}));
-                        }
-                    },
-                    PickerKind::Agents(ids) => {
-                        if let Some(id) = ids.get(picker.selected).copied() {
-                            self.focus_agent(id);
-                        }
-                    },
-                }
-            },
-            BareKey::Up | BareKey::Down => {
-                let Some(picker) = self.picker.as_mut() else {
-                    return false;
-                };
-                let last = picker.entries.len().saturating_sub(1);
-                picker.selected = match key.bare_key {
-                    BareKey::Up => picker.selected.saturating_sub(1),
-                    _ => (picker.selected + 1).min(last),
-                };
-            },
-            _ => return false,
-        }
-        true
-    }
-
-    /// Put another chat on screen, and set this one aside rather than throwing
-    /// it away. Three cases, in order of how little there is to do:
-    ///
-    /// 1. it is already the one you are looking at — nothing;
-    /// 2. it is parked and still live — swap the two, and the reply that has
-    ///    been arriving off-screen is there waiting;
-    /// 3. otherwise load it from the archive.
-    ///
-    /// The chat being left is parked only if something is still owed to it. A
-    /// settled one is already in the archive and is dropped, which is what keeps
-    /// `parked` to the handful of conversations actually working.
-    fn switch_to_chat(&mut self, id: u64) {
-        if self.chat_id == Some(id) {
-            return;
-        }
-        let parked = self.parked.iter().position(|chat| chat.chat_id == Some(id));
-        let incoming = match parked {
-            Some(index) => self.parked.remove(index),
-            None => {
-                let Some(messages) = history::load(id) else {
-                    return;
-                };
-                Chat {
-                    messages,
-                    chat_id: Some(id),
-                    ..Chat::default()
-                }
-            },
-        };
-
-        let outgoing = self.take_chat();
-        self.put_chat(incoming);
-        if parked.is_none() {
-            // Loaded, not resumed: nothing has changed yet, so this must not
-            // immediately rewrite the file it came from. A parked chat brings
-            // its own `saved`, which may well be behind its transcript.
-            self.saved = self.fingerprint();
-        }
-        self.pin_to_bottom();
-        self.log_global("open_chat", serde_json::json!({"chat_id": id}));
-        if outgoing.is_live() {
-            self.parked.push(outgoing);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Transitions
-// ---------------------------------------------------------------------------
-
-impl State {
-    fn active_stream_id(&self) -> Option<String> {
-        self.stream.as_ref().map(|stream| stream.id.clone())
-    }
-
-    /// Lift the foreground conversation out, leaving an empty one behind.
-    fn take_chat(&mut self) -> Chat {
-        self.transcript_cache = None;
-        Chat {
-            messages: std::mem::take(&mut self.messages),
-            status: std::mem::take(&mut self.status),
-            stream: self.stream.take(),
-            reply_at: self.reply_at.take(),
-            sse: std::mem::take(&mut self.sse),
-            tool_calls: std::mem::take(&mut self.tool_calls),
-            pending: std::mem::take(&mut self.pending),
-            tool_rounds: std::mem::take(&mut self.tool_rounds),
-            owes_reply: std::mem::take(&mut self.owes_reply),
-            chat_id: self.chat_id.take(),
-            saved: std::mem::take(&mut self.saved),
-            scroll: std::mem::take(&mut self.scroll),
-            job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
-        }
-    }
-
-    /// Put one in the foreground. Whatever was there is overwritten, so this is
-    /// always paired with a `take_chat`.
-    fn put_chat(&mut self, chat: Chat) {
-        self.transcript_cache = None;
-        self.messages = chat.messages;
-        self.status = chat.status;
-        self.stream = chat.stream;
-        self.reply_at = chat.reply_at;
-        self.sse = chat.sse;
-        self.tool_calls = chat.tool_calls;
-        self.pending = chat.pending;
-        self.tool_rounds = chat.tool_rounds;
-        self.owes_reply = chat.owes_reply;
-        self.chat_id = chat.chat_id;
-        self.saved = chat.saved;
-        self.scroll = chat.scroll;
-        self.job_auto_confirm = chat.job_auto_confirm;
-    }
-
-    /// Run `f` against a parked chat by swapping it into the foreground for the
-    /// duration and swapping the real one back afterwards.
-    ///
-    /// Doing it this way is what keeps `on_chunk`, `pump_tools` and the rest
-    /// single-conversation code: they only ever see the chat they are for, in
-    /// the one place they know to look for it. A chat that settles while it is
-    /// in here is archived and dropped rather than re-parked — `/history` reads
-    /// it back from the file.
-    fn with_parked<R>(&mut self, index: usize, f: impl FnOnce(&mut Self) -> R) -> R {
-        let foreground = self.take_chat();
-        let parked = self.parked.remove(index);
-        self.put_chat(parked);
-
-        let out = f(self);
-        self.autosave();
-
-        let background = self.take_chat();
-        self.put_chat(foreground);
-        if background.is_live() {
-            self.parked.insert(index, background);
-        }
-        out
-    }
-
-    /// Which parked chat a response belongs to, by whichever id its context
-    /// carries. `None` means the foreground's — including when it is nobody's,
-    /// which the handlers already turn away on their own.
-    fn owner_of(&self, context: &BTreeMap<String, String>) -> Option<usize> {
-        if let Some(stream_id) = context.get(STREAM_CONTEXT) {
-            return self.parked_with_stream(stream_id);
-        }
-        self.parked_with_call(context.get("tool_call_id")?)
-    }
-
-    /// Which parked chat started this stream, if any.
-    fn parked_with_stream(&self, stream_id: &str) -> Option<usize> {
-        self.parked
-            .iter()
-            .position(|chat| chat.stream.as_ref().is_some_and(|s| s.id == stream_id))
-    }
-
-    /// Which parked chat is waiting on this tool call. Only the head can be:
-    /// the queue runs one at a time.
-    fn parked_with_call(&self, call_id: &str) -> Option<usize> {
-        self.parked
-            .iter()
-            .position(|chat| chat.pending.front().is_some_and(|call| call.id == call_id))
-    }
-
-    /// A reply is arriving, or its trailing chunk is still owed.
-    fn is_streaming(&self) -> bool {
-        self.stream.is_some()
-    }
-
-    /// A reply is arriving *and* is still ours to record — `finishing` means the
-    /// outcome is already in the transcript and the rest is being swallowed.
-    fn is_receiving(&self) -> bool {
-        matches!(&self.stream, Some(stream) if !stream.finishing)
-    }
-
-    /// The tool queue is doing something. Independent of the stream: both can be
-    /// true at once, which is the point of the split.
-    fn tools_busy(&self) -> bool {
-        !matches!(self.status, Status::Idle)
-    }
-
-    /// Anything at all outstanding. The archive and the `Ctrl-l` teardown care
-    /// about this rather than about which half it is.
-    fn is_in_flight(&self) -> bool {
-        self.is_streaming() || self.tools_busy()
-    }
-
-    /// The call awaiting `y`/`n`, if any. Rendered so the prompt names the one
-    /// call it is about rather than leaving the user to infer it.
-    pub fn confirmation_prompt(&self) -> Option<String> {
-        match self.status {
-            Status::ConfirmingTool => self.pending.front().map(tools::summarize),
-            _ => None,
-        }
-    }
-
-    /// Whether we are waiting on something *and* nothing is arriving — the one
-    /// predicate the whole waiting indicator keys off.
-    fn is_loading(&self) -> bool {
-        match self.status {
-            Status::AwaitingCommand | Status::AwaitingSearch => true,
-            // A confirmation prompt is waiting on the user rather than on us,
-            // so the only thing left to be waiting on is the reply. Once its
-            // first token lands the arriving text is its own proof of life; a
-            // spinner beside streaming words is just noise. `finishing` has
-            // already recorded its outcome and is waiting on nothing.
-            Status::Idle => self.is_receiving() && self.reply_is_empty(),
-            Status::ConfirmingTool => false,
-        }
-    }
-
-    /// Whether the timer chain should keep running. Wider than `is_loading`:
-    /// a stream that is already producing text still needs frames, because
-    /// `on_chunk` no longer asks for a render of its own and this is what
-    /// repaints the arriving reply.
-    fn wants_frames(&self) -> bool {
-        self.is_loading() || self.is_receiving()
-    }
-
-    /// The spinner and its phrase, or `None` when nothing is being waited on.
-    pub fn loader(&self) -> Option<String> {
-        if !self.is_loading() {
-            return None;
-        }
-        let spinner = ui::spinner(self.tick);
-
-        // A running command names itself: "running: cargo build" beats a joke
-        // when what you actually want to know is what you are waiting on.
-        let head = self
-            .pending
-            .front()
-            .and_then(|call| tools::Args::parse(&call.arguments).ok());
-        if matches!(self.status, Status::AwaitingCommand) {
-            let words = head.map(|args| args.command_words()).unwrap_or_default();
-            if !words.is_empty() {
-                return Some(format!("{spinner} running: {}", words.join(" ")));
-            }
-        } else if matches!(self.status, Status::AwaitingSearch) {
-            if let Some(query) = head.and_then(|args| args.query) {
-                return Some(format!("{spinner} searching: {query}"));
-            }
-        }
-
-        Some(format!(
-            "{spinner} {}",
-            ui::phrase(self.tick, self.stream_seq)
-        ))
-    }
-
-    /// Schedule the next tick. `set_timeout` is one-shot, so the spinner
-    /// animation, the streaming repaint and the job countdown are all this
-    /// being re-armed from `on_timer` for as long as there is something to do.
-    ///
-    /// ponytail: one chain, so a request that starts while a slow job tick is
-    /// outstanding can show its spinner up to `JOB_SECONDS` late — Zellij has
-    /// no cancel_timeout, and a second chain would defeat `timer_armed`.
-    fn arm_timer(&mut self, interval: f64) {
-        if !self.timer_armed {
-            set_timeout(interval);
-            self.timer_armed = true;
-        }
-    }
-
-    fn on_timer(&mut self, elapsed: f64) -> bool {
-        self.timer_armed = false;
-        self.mono_ms = self.mono_ms.saturating_add((elapsed * 1000.0) as u64);
-        let fired = self.tick_jobs(elapsed);
-        let moved = self.tick_agents(elapsed);
-        let frames = self.wants_frames();
-        if frames {
-            self.tick += 1;
-        }
-        // The chain no longer dies: the agent poll has to keep looking. It still
-        // slows right down to `AGENT_SECONDS` once nothing else wants the clock.
-        self.arm_timer(if frames {
-            FRAME_SECONDS
-        } else if self.jobs.is_empty() {
-            AGENT_SECONDS
-        } else {
-            JOB_SECONDS
-        });
-        // A quiet tick changed nothing on screen; asking for a render would
-        // recomposite the whole session for nothing.
-        frames || fired || moved
-    }
-
-    /// Count the agent poll down and poke the poll worker when it comes due.
-    /// Returns whether a notice landed in the transcript — from the worker path
-    /// never, its reply lands later as a `CustomMessage`.
-    fn tick_agents(&mut self, elapsed: f64) -> bool {
-        self.agent_due_in -= elapsed;
-        if self.agent_due_in > 0.0 {
-            return false;
-        }
-        self.agent_due_in = AGENT_SECONDS;
-        if self.poll_dead {
-            return self.poll_agents();
-        }
-        if self.poll_pending {
-            // ponytail: three silent pokes (~15s) writes the worker off for the
-            // session and the poll runs inline as before it existed. Covers a
-            // wedged worker and a zellij without the worker-permissions patch
-            // alike; three strikes absorbs one legitimately slow poll.
-            self.polls_unanswered += 1;
-            if self.polls_unanswered >= 3 {
-                self.poll_dead = true;
-                self.log_global(
-                    "notice",
-                    serde_json::json!({"content": "poll worker unresponsive; polling inline"}),
-                );
-                return self.poll_agents();
-            }
-            return false;
-        }
-        if let Ok(request) = serde_json::to_string(&PollRequest {
-            manual_kinds: self.manual_kinds.clone(),
-            activity: self.activity.clone(),
-        }) {
-            self.poll_pending = true;
-            post_message_to(PluginMessage::new_to_worker("poll", "poll", &request));
-        }
-        false
-    }
-
-    /// Count the jobs down and start at most one due run. Returns whether the
-    /// transcript changed.
-    ///
-    /// Only fires when `Idle`: there is exactly one stream slot, and a job that
-    /// comes due mid-reply waits for a later tick rather than stacking runs.
-    ///
-    /// ponytail: a scheduled run that calls a destructive tool parks on its y/n
-    /// prompt and holds every other job with it. Auto-declining confirmations
-    /// on scheduled runs is the fix if that ever bites.
-    fn tick_jobs(&mut self, elapsed: f64) -> bool {
-        for job in &mut self.jobs {
-            job.due_in -= elapsed;
-        }
-        if self.is_in_flight() || self.picker.is_some() {
-            return false;
-        }
-        let Ok(cfg) = self.cfg.clone() else {
-            return false;
-        };
-        let Some(job) = self.jobs.iter_mut().find(|job| job.due_in <= 0.0) else {
-            return false;
-        };
-
-        job.due_in = job.every;
-        let prompt = job.prompt.clone();
-        let job_id = job.id;
-        self.job_auto_confirm = job.auto_confirm;
-        // Popping the pane open is also what makes a confirmation prompt
-        // reachable, so the show flag covers both meanings of "tell me".
-        if job.show {
-            show_self(true);
-        }
-        // Mentions resolve at fire time, so "check @codex every minute" reads the
-        // agent as it is now, not as it was when the job was armed.
-        let mut fired = format!("[scheduled] {prompt}");
-        if let Some(context) =
-            agents::mention_context(&fired, &self.panes, &self.manual_kinds, &self.activity)
-        {
-            fired.push_str("\n\n");
-            fired.push_str(&context);
-        }
-        self.messages.push(Message::user(fired));
-        self.log(
-            "job_fire",
-            serde_json::json!({
-                "job_id": job_id,
-                "prompt": log::truncate(&prompt),
-            }),
-        );
-        self.log(
-            "user_input",
-            serde_json::json!({
-                "content": log::truncate(&format!("[scheduled] {prompt}")),
-                "scheduled": true,
-                "job_id": job_id,
-            }),
-        );
-        // A fresh tool budget, same as a typed question.
-        self.tool_rounds = 0;
-        self.start_request(&cfg);
-        true
-    }
-
-    /// The message the arriving reply is being appended to, by index. `None`
-    /// once the stream has settled, or if the placeholder was dropped.
-    fn reply(&mut self) -> Option<&mut Message> {
-        let at = self.reply_at?;
-        self.messages
-            .get_mut(at)
-            .filter(|message| message.role == Role::Assistant)
-    }
-
-    fn append_to_reply(&mut self, text: &str) {
-        match self.reply() {
-            Some(message) => message.content.push_str(text),
-            // An error line replaced the placeholder; start a fresh reply rather
-            // than appending model output onto the error text.
-            None => {
-                self.reply_at = Some(self.messages.len());
-                self.messages.push(Message::assistant(text));
-            },
-        }
-    }
-
-    /// Whether the arriving reply is the last thing in the transcript. False
-    /// once a tool typed mid-reply has pushed anything behind the placeholder.
-    pub fn reply_is_last(&self) -> bool {
-        self.reply_at == Some(self.messages.len().saturating_sub(1))
-    }
-
-    fn reply_is_empty(&self) -> bool {
-        matches!(
-            self.reply_at.and_then(|at| self.messages.get(at)),
-            Some(message) if message.role == Role::Assistant && message.content.is_empty()
-        )
-    }
-
-    /// Drop the streaming placeholder if nothing ever arrived in it. Partial
-    /// text is deliberately kept — a reply cut short is still worth reading.
-    ///
-    /// Removing it shifts everything a typed tool appended after it, so this is
-    /// the one place indices move; `reply_at` is cleared either way, since after
-    /// this there is no placeholder left to append to.
-    fn pop_empty_placeholder(&mut self) {
-        if let (true, Some(at)) = (self.reply_is_empty(), self.reply_at) {
-            self.messages.remove(at);
-        }
-        self.reply_at = None;
-    }
-
-    fn cancel_stream(&mut self) -> bool {
-        let Some(stream_id) = self.active_stream_id() else {
-            return false;
-        };
-        cancel_web_request(&stream_id);
-        self.pop_empty_placeholder();
-        self.messages.push(Message::notice("cancelled"));
-        self.log("notice", serde_json::json!({"content": "cancelled"}));
-        self.log(
-            "cancel",
-            serde_json::json!({"stream_id": stream_id.clone()}),
-        );
-        self.job_auto_confirm = false;
-        // Not dropped: the host still owes exactly one `done: true` chunk, and
-        // `finishing` is what keeps it from being recorded as a second outcome.
-        self.stream = Some(StreamState {
-            id: stream_id,
-            finishing: true,
-        });
-        true
-    }
-
-    /// Unloading a plugin does not cancel its in-flight streams host-side, so
-    /// the shutdown path has to.
-    fn cancel_in_flight(&mut self) {
-        if let Some(stream_id) = self.active_stream_id() {
-            cancel_web_request(stream_id);
-        }
-    }
-
-    /// Start over. The chat being left is *kept* in the archive — detaching from
-    /// its file is all this does, so the next save opens a new one.
-    fn new_chat(&mut self) -> bool {
-        let old_id = self.chat_id;
-        self.log_global("new_chat", serde_json::json!({"old_chat_id": old_id}));
-        self.cancel_in_flight();
-        self.status = Status::Idle;
-        self.stream = None;
-        self.reply_at = None;
-        self.messages.clear();
-        self.chat_id = None;
-        self.saved = self.fingerprint();
-        self.picker = None;
-        self.input.clear();
-        self.sse = SseParser::default();
-        self.tool_calls = ToolCallAccumulator::default();
-        self.pending.clear();
-        self.tool_rounds = 0;
-        self.owes_reply = false;
-        self.job_auto_confirm = false;
-        self.pin_to_bottom();
-        // A watcher armed for the conversation being thrown away has nothing
-        // left to compare against, and would otherwise keep billing.
-        self.jobs.clear();
-        true
-    }
-
-    /// Scroll toward older messages, for the client that asked. Clamped at
-    /// render against the real line count, which the key handler doesn't know.
-    fn scroll_up(&mut self, lines: usize) -> bool {
-        *self.scroll.entry(self.client).or_default() += lines;
-        true
-    }
-
-    fn scroll_down(&mut self, lines: usize) -> bool {
-        let offset = self.scroll.entry(self.client).or_default();
-        *offset = offset.saturating_sub(lines);
-        true
-    }
-
-    fn log(&mut self, kind: &str, payload: serde_json::Value) {
-        if self.chat_id.is_none() && !self.messages.is_empty() {
-            if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-                self.saved = self.fingerprint();
-                post_save(id, json);
-            }
-        }
-        self.log_seq = self.log_seq.wrapping_add(1);
-        post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);
-    }
-
-    fn log_global(&mut self, kind: &str, payload: serde_json::Value) {
-        self.log_seq = self.log_seq.wrapping_add(1);
-        post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);
-    }
-}
-
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hocus_proto::panes::terminal_panes;
 
     fn state_with(messages: Vec<Message>, status: Status) -> State {
         State {
@@ -5180,8 +2269,38 @@ mod tests {
         state
     }
 
+    /// One turn of the whole loop: the daemon's snapshot reaches hocus *and*
+    /// hocus-store, the store discovers projects from it and pushes the registry
+    /// back. Discovery lives in the store now, so a test that only called
+    /// `apply_poll` would be testing half a circuit.
     fn poll(state: &mut State, panes: Vec<agents::AgentPane>) {
-        state.apply_poll(panes, agents::Activity::new());
+        state.apply_poll(panes.clone(), agents::Activity::new());
+        let cwds: Vec<String> = panes
+            .iter()
+            .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
+            .filter_map(|pane| pane.cwd.clone())
+            .collect();
+        let mut registry = state.projects.clone();
+        if projects::discover(&mut registry, &cwds).changed() {
+            give_store(state, registry, state.todos.clone());
+        }
+    }
+
+    /// Deliver a store snapshot, as hocus-store would.
+    fn give_store(state: &mut State, projects: projects::Registry, todos: todos::Store) {
+        let payload = serde_json::to_string(&wire::StoreSnapshot {
+            projects,
+            todos,
+            seq: state.store_seq + 1,
+        })
+        .expect("serialize");
+        state.pipe(PipeMessage {
+            source: PipeSource::Plugin(2),
+            name: wire::STORE_SNAPSHOT.to_owned(),
+            payload: Some(payload),
+            args: BTreeMap::new(),
+            is_private: true,
+        });
     }
 
     #[test]
@@ -5332,17 +2451,70 @@ mod tests {
         state
     }
 
+    /// Run a todo tool the way the whole system does.
+    ///
+    /// Reads are answered from hocus's cached copy. Writes go out to the store
+    /// and come back, which is modelled here by applying the change to the same
+    /// pure functions hocus-store uses and pushing the result back as a
+    /// snapshot — so these tests still cover hocus's half of every call.
     fn todo(state: &mut State, name: &str, arguments: &str) -> serde_json::Value {
-        let result = state.run_local(&agent_call(name, arguments)).unwrap();
+        let result = todo_result(state, name, arguments)
+            .unwrap_or_else(|| panic!("{name} answered nothing"));
         serde_json::from_str(&result)
             .unwrap_or_else(|_| panic!("{name} answered with an error: {result}"))
+    }
+
+    /// The raw answer of a todo tool, or `None` if it is not one.
+    fn todo_result(state: &mut State, name: &str, arguments: &str) -> Option<String> {
+        let call = agent_call(name, arguments);
+        if !matches!(name, "todo_add" | "todo_done") {
+            return state.run_local(&call);
+        }
+        let args = tools::Args::parse(arguments).expect("arguments");
+        // Whatever hocus rejects on its own it rejects before the store hears
+        // about it, and that answer is the tool's answer.
+        let (root, project) = match state.todo_target(&args) {
+            Ok(target) => target,
+            Err(error) => return Some(error),
+        };
+        let mut todos_store = state.todos.clone();
+        let answer = if name == "todo_add" {
+            let Some(text) = args.text.as_deref() else {
+                return Some("text is required".to_owned());
+            };
+            todos::add(&mut todos_store, &root, text, args.parent_id).map(|id| {
+                serde_json::json!({ "project": project, "id": id, "text": text }).to_string()
+            })
+        } else {
+            let Some(id) = args.id else {
+                return Some("id is required".to_owned());
+            };
+            todos::set_done(&mut todos_store, &root, id, !args.undo).map(|change| {
+                serde_json::json!({
+                    "project": project,
+                    "id": change.id,
+                    "text": change.text,
+                    "done": change.done,
+                    "also_done": change.cascaded,
+                    "reopened": change.reopened,
+                })
+                .to_string()
+            })
+        };
+        match answer {
+            Ok(message) => {
+                give_store(state, state.projects.clone(), todos_store);
+                Some(message)
+            },
+            Err(error) => Some(error),
+        }
     }
 
     #[test]
     fn a_todo_tool_says_when_there_is_no_active_project() {
         let mut state = idle_state();
         assert_eq!(
-            state.run_local(&agent_call("todo_add", r#"{"text":"ship it"}"#)),
+            todo_result(&mut state, "todo_add", r#"{"text":"ship it"}"#),
             Some("no active project; give project, or call project_list".to_owned()),
         );
     }
@@ -5352,9 +2524,10 @@ mod tests {
         let mut state = state_with_project();
         let added = todo(&mut state, "todo_add", r#"{"text":"ship the parser"}"#);
 
-        assert_eq!(added["added"]["id"], 1);
+        assert_eq!(added["id"], 1);
         assert_eq!(added["project"], "hocus");
-        assert_eq!(added["root"], "/work/hocus");
+        assert_eq!(added["text"], "ship the parser");
+        // And it came back to us through a store snapshot, not a local write.
         assert_eq!(state.todos["/work/hocus"].items[0].text, "ship the parser");
     }
 
@@ -5362,10 +2535,11 @@ mod tests {
     fn a_todo_tool_rejects_a_project_name_it_does_not_know() {
         let mut state = state_with_project();
         assert_eq!(
-            state.run_local(&agent_call(
+            todo_result(
+                &mut state,
                 "todo_add",
-                r#"{"text":"ship it","project":"nowhere"}"#,
-            )),
+                r#"{"text":"ship it","project":"nowhere"}"#
+            ),
             Some("unknown project nowhere; call project_list".to_owned()),
         );
     }
@@ -5374,7 +2548,7 @@ mod tests {
     fn a_todo_tool_needs_its_key_argument() {
         let mut state = state_with_project();
         assert_eq!(
-            state.run_local(&agent_call("todo_add", "{}")),
+            todo_result(&mut state, "todo_add", "{}"),
             Some("text is required".to_owned()),
         );
         assert_eq!(
@@ -5382,7 +2556,7 @@ mod tests {
             Some("query is required".to_owned()),
         );
         assert_eq!(
-            state.run_local(&agent_call("todo_done", "{}")),
+            todo_result(&mut state, "todo_done", "{}"),
             Some("id is required".to_owned()),
         );
     }
@@ -5519,6 +2693,28 @@ mod tests {
         assert_eq!(found["matches"][0]["project"], serde_json::Value::Null);
     }
 
+    /// The store is asked by name where there is one, and by root where the
+    /// project is gone — a `null` project there is a change the store rejects,
+    /// for a list `todo_list` and `todo_search` still answer for.
+    #[test]
+    fn a_write_to_a_list_whose_project_is_gone_is_sent_by_root() {
+        let mut state = state_with_project();
+        let by_name = state
+            .todo_write_payload(&agent_call("todo_add", r#"{"text":"ship it"}"#))
+            .expect("payload");
+        assert_eq!(by_name["project"], "hocus");
+
+        state.projects.clear();
+        state.active_project = None;
+        let by_root = state
+            .todo_write_payload(&agent_call(
+                "todo_done",
+                r#"{"id":1,"project":"/work/gone"}"#,
+            ))
+            .expect("payload");
+        assert_eq!(by_root["project"], "/work/gone");
+    }
+
     #[test]
     fn project_agent_spawn_rejects_a_folder_outside_the_root() {
         let mut state = idle_state();
@@ -5597,6 +2793,18 @@ mod tests {
             &[],
         ));
         state
+    }
+
+    /// The same panes `state_with_panes` starts from, to refill after a
+    /// snapshot has emptied them.
+    fn panes_with_agent() -> Vec<agents::AgentPane> {
+        terminal_panes(
+            &manifest(vec![
+                pane_info(3, "codex", Some("codex --resume")),
+                pane_info(4, "zsh", Some("zsh")),
+            ]),
+            &[],
+        )
     }
 
     fn agent_call(name: &str, arguments: &str) -> ToolCall {
@@ -5883,6 +3091,7 @@ mod tests {
                 cwd: Some("/tmp/work".to_owned()),
             }]),
             activity,
+            manual_kinds: BTreeMap::new(),
         };
         let json = serde_json::to_string(&reply).expect("serialize");
         let back: PollReply = serde_json::from_str(&json).expect("deserialize");
@@ -5890,24 +3099,182 @@ mod tests {
         assert_eq!(back.activity, reply.activity);
     }
 
-    /// A sync poll supersedes a poke in flight: the worker's late reply must not
-    /// resurrect panes the sync poll already saw close.
+    /// An empty snapshot carrying `seq`, as hocus-agentd sends it.
+    fn agent_snapshot(seq: u64) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Plugin(1),
+            name: wire::AGENT_SNAPSHOT.to_owned(),
+            payload: Some(
+                serde_json::to_string(&PollReply {
+                    panes: Some(Vec::new()),
+                    activity: agents::Activity::new(),
+                    manual_kinds: BTreeMap::new(),
+                })
+                .expect("serialize"),
+            ),
+            args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
+            is_private: true,
+        }
+    }
+
+    /// Snapshots are unsolicited, so ordering is all hocus has: one that is no
+    /// newer than the last merged arrived late and would resurrect panes the
+    /// newer one already saw close.
     #[test]
-    fn a_superseded_poll_reply_is_dropped() {
+    fn an_out_of_order_agent_snapshot_is_dropped() {
         let mut state = state_with_panes();
-        let reply = serde_json::to_string(&PollReply {
-            panes: Some(Vec::new()),
-            activity: agents::Activity::new(),
+
+        assert!(state.pipe(agent_snapshot(4)), "a newer snapshot merges");
+        assert!(state.panes.is_empty());
+        assert_eq!(state.agent_seq, 4);
+
+        state.set_panes(panes_with_agent());
+        assert!(!state.pipe(agent_snapshot(3)), "an older one is dropped");
+        assert!(!state.panes.is_empty(), "stale snapshot must not merge");
+        assert!(
+            !state.pipe(agent_snapshot(4)),
+            "nor is a repeat of the last"
+        );
+        assert!(!state.panes.is_empty());
+        assert_eq!(state.agent_seq, 4);
+    }
+
+    /// A reloaded daemon restarts its counter, so the watermark has to be
+    /// dropped whenever we re-subscribe or its snapshots would never be taken
+    /// again.
+    #[test]
+    fn re_subscribing_forgets_the_sequence_watermark() {
+        let mut state = state_with_panes();
+        state.pipe(agent_snapshot(9));
+        assert_eq!(state.agent_seq, 9);
+
+        state.subscribe_to_agentd();
+        assert_eq!(state.agent_seq, 0, "a restarted daemon starts at one again");
+        state.set_panes(panes_with_agent());
+        assert!(state.pipe(agent_snapshot(1)), "and is heard from once more");
+        assert!(state.panes.is_empty());
+    }
+
+    /// The failure the store introduces: a change goes out and nothing comes
+    /// back. The tool call must fail rather than park the queue forever.
+    #[test]
+    fn a_store_write_that_is_never_answered_gives_up() {
+        let mut state = state_with_project();
+        let call = agent_call("todo_add", r#"{"text":"ship it"}"#);
+        state.pending.push_back(call.clone());
+
+        assert!(
+            !state.start_todo_write(&call),
+            "the call waits on the store"
+        );
+        assert!(matches!(state.status, Status::AwaitingStore));
+        assert!(state.pending_write.is_some());
+
+        // Not yet — a slow answer is still an answer.
+        assert!(!state.tick_store(STORE_TIMEOUT_SECONDS / 2.0));
+        assert!(state.pending_write.is_some());
+
+        assert!(state.tick_store(STORE_TIMEOUT_SECONDS));
+        assert!(state.pending_write.is_none());
+        assert!(matches!(state.status, Status::Idle));
+        assert!(state.pending.is_empty(), "the queue moved on");
+        let answer = tool_results(&state)
+            .last()
+            .expect("answered")
+            .content
+            .clone();
+        assert!(answer.contains("did not answer"), "got {answer}");
+    }
+
+    /// A reply to a write that already gave up must not answer whatever call is
+    /// at the head by then.
+    #[test]
+    fn a_late_store_reply_answers_nothing() {
+        let mut state = state_with_project();
+        let result = serde_json::to_string(&wire::StoreResult {
+            request_id: "stale".to_owned(),
+            ok: true,
+            message: "{}".to_owned(),
         })
         .expect("serialize");
 
-        state.poll_pending = false;
-        assert!(!state.on_custom_message("poll_result", &reply));
-        assert!(!state.panes.is_empty(), "stale reply must not merge");
+        assert!(!state.pipe(PipeMessage {
+            source: PipeSource::Plugin(2),
+            name: wire::STORE_RESULT.to_owned(),
+            payload: Some(result),
+            args: BTreeMap::new(),
+            is_private: true,
+        }));
+        assert!(state.pending_write.is_none());
+    }
 
-        state.poll_pending = true;
-        state.on_custom_message("poll_result", &reply);
-        assert!(state.panes.is_empty(), "live reply must merge");
-        assert!(!state.poll_pending);
+    /// The snapshot is the only way projects arrive now, so a project that goes
+    /// away in one has to stop being the active project.
+    #[test]
+    fn a_snapshot_that_drops_a_project_clears_what_named_it() {
+        let mut state = state_with_project();
+        assert_eq!(state.active_project.as_deref(), Some("hocus"));
+
+        give_store(&mut state, projects::Registry::new(), todos::Store::new());
+        assert_eq!(state.active_project, None);
+        assert!(state.tab_projects.is_empty());
+    }
+
+    /// A reloaded store restarts its counter at one, so re-subscribing has to
+    /// drop the watermark or nothing it sends is ever taken again.
+    #[test]
+    fn re_subscribing_to_the_store_forgets_the_watermark() {
+        let mut state = state_with_project();
+        let projects = state.projects.clone();
+        give_store(&mut state, projects, todos::Store::new());
+        assert!(state.store_seq > 0, "a snapshot has been merged");
+
+        state.subscribe_to_store();
+        assert_eq!(state.store_seq, 0, "a restarted store starts at one again");
+
+        // `give_store` sends `store_seq + 1`, so this is the seq-1 snapshot a
+        // fresh store would push back at us.
+        give_store(&mut state, projects::Registry::new(), todos::Store::new());
+        assert_eq!(state.store_seq, 1);
+        assert_eq!(state.active_project, None, "and is heard from once more");
+    }
+
+    /// The store announces itself on load because it cannot rebuild its own
+    /// subscriber list. Hearing it is the only thing that keeps the read cache
+    /// live across a store reload.
+    #[test]
+    fn a_store_hello_re_subscribes() {
+        let mut state = state_with_project();
+        let projects = state.projects.clone();
+        give_store(&mut state, projects, todos::Store::new());
+        assert!(state.store_seq > 0);
+
+        assert!(
+            !state.pipe(PipeMessage {
+                source: PipeSource::Plugin(2),
+                name: wire::STORE_HELLO.to_owned(),
+                payload: None,
+                args: BTreeMap::new(),
+                is_private: false,
+            }),
+            "nothing to render until the snapshot lands"
+        );
+        assert_eq!(state.store_seq, 0);
+    }
+
+    /// Anything that is not a snapshot is somebody else's message — and every
+    /// plugin sees them, because the subscribe goes out as a broadcast.
+    #[test]
+    fn an_unknown_pipe_message_is_ignored() {
+        let mut state = state_with_panes();
+        assert!(!state.pipe(PipeMessage {
+            source: PipeSource::Cli("1".to_owned()),
+            name: "something_else".to_owned(),
+            payload: Some("{}".to_owned()),
+            args: BTreeMap::new(),
+            is_private: false,
+        }));
+        assert!(!state.panes.is_empty());
+        assert_eq!(state.agent_seq, 0, "an unrelated message merges nothing");
     }
 }

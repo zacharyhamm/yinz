@@ -97,6 +97,30 @@ pub fn normalize_root(root: &str) -> Result<String, String> {
         .into_owned())
 }
 
+/// The list a `project` selector means, as `(root, name)`.
+///
+/// A list is keyed on the root folder, so a rename of the project keeps the
+/// list. The selector takes an exact name, or an absolute root for a list whose
+/// project is gone — in which case the name comes back as `None`, and is only
+/// there to put in the answer.
+pub fn resolve(
+    projects: &crate::projects::Registry,
+    selector: &str,
+) -> Result<(String, Option<String>), String> {
+    if selector.starts_with('/') {
+        let root = normalize_root(selector)?;
+        let name = projects
+            .values()
+            .find(|project| normalize_root(&project.root) == Ok(root.clone()))
+            .map(|project| project.name.clone());
+        return Ok((root, name));
+    }
+    match projects.get(selector) {
+        Some(project) => Ok((normalize_root(&project.root)?, Some(project.name.clone()))),
+        None => Err(format!("unknown project {selector}; call project_list")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------

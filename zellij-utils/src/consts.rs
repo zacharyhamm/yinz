@@ -128,6 +128,8 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "link",
     "shared-test",
     "hocus",
+    "hocus-agentd",
+    "hocus-store",
 ];
 
 /// Directories searched for builtin plugin wasm as a last resort, so that dev builds and
