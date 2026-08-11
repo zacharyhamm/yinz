@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 pub enum Role {
     User,
     Assistant,
-    /// The result of a tool call, fed back to the model. Rendered dim and
-    /// truncated, since a session listing would otherwise fill the pane.
+    /// The result of a tool call, fed back to the model. Rendered dim, and
+    /// truncated unless `Message::full_output` says otherwise, since a session
+    /// listing would otherwise fill the pane.
     Tool,
     /// Something went wrong. Rendered in the theme's error colour.
     Error,
@@ -21,7 +22,7 @@ pub enum Role {
     Notice,
 }
 
-/// Serialized as-is into the archive (see `history`). The two optional fields
+/// Serialized as-is into the archive (see `history`). The optional fields
 /// carry `serde(default)` so a future field can't make an existing file
 /// unreadable, and are skipped when empty so an archived chat stays greppable.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -36,6 +37,11 @@ pub struct Message {
     /// `Role::Tool` only: which call this message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// `Role::Tool` only: render every line rather than eliding to the first
+    /// few. Set for a tool the user typed — its output is the thing they asked
+    /// for, not context for the model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_output: bool,
 }
 
 impl Message {
@@ -72,6 +78,7 @@ impl Message {
             content: summary,
             tool_calls: calls,
             tool_call_id: None,
+            full_output: false,
         }
     }
 
@@ -81,6 +88,15 @@ impl Message {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: Some(id.to_owned()),
+            full_output: false,
+        }
+    }
+
+    /// The result of a tool the user typed: same message, rendered whole.
+    pub fn tool_result_full<S: Into<String>>(id: &str, content: S) -> Self {
+        Message {
+            full_output: true,
+            ..Message::tool_result(id, content)
         }
     }
 }

@@ -185,6 +185,9 @@ impl State {
                 "manual": true,
             }),
         );
+        // The result is for the person who typed the command, so it is rendered
+        // whole; `finish_head` takes this back when the head is answered.
+        self.manual_head = true;
         self.pending.push_back(call.clone());
         // Straight to `run_head` rather than through `pump_tools`: typing the
         // command is itself the confirmation, so a destructive one runs without
@@ -197,8 +200,14 @@ impl State {
     pub(crate) fn finish_head<S: Into<String>>(&mut self, result: S) {
         if let Some(call) = self.pending.pop_front() {
             let result_str = result.into();
-            self.messages
-                .push(Message::tool_result(&call.id, result_str.clone()));
+            // Cleared with the head it belongs to: whatever is behind it in the
+            // queue came from the model and is elided as usual.
+            let message = if std::mem::take(&mut self.manual_head) {
+                Message::tool_result_full(&call.id, result_str.clone())
+            } else {
+                Message::tool_result(&call.id, result_str.clone())
+            };
+            self.messages.push(message);
             self.log(
                 "tool_result",
                 serde_json::json!({
