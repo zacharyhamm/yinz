@@ -1,4 +1,4 @@
-//! Persistent project names and their root folders.
+//! Persistent projects and the repositories or folders that identify them.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,6 +11,13 @@ const FILE: &str = "/cache/projects.json";
 pub struct Project {
     pub name: String,
     pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_status: Option<WorktreeStatus>,
+    /// Used only to join worktrees of repositories that have no remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_dir: Option<String>,
     /// True when a poll made this project from an agent folder, not the user.
     ///
     /// A saved project from before this field existed has no key, so it loads
@@ -18,6 +25,36 @@ pub struct Project {
     /// a user project.
     #[serde(default)]
     pub discovered: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeStatus {
+    Primary,
+    Linked,
+}
+
+/// What Git says about one checkout. Missing Git fields mean an ordinary folder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repository {
+    pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_status: Option<WorktreeStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_dir: Option<String>,
+}
+
+impl Repository {
+    pub fn folder(root: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            remote: None,
+            worktree_status: None,
+            common_dir: None,
+        }
+    }
 }
 
 pub type Registry = BTreeMap<String, Project>;
@@ -33,6 +70,9 @@ fn parse(json: &[u8]) -> Registry {
         .filter_map(|saved| {
             let mut project = validate(&saved.name, &saved.root).ok()?;
             project.discovered = saved.discovered;
+            project.remote = saved.remote;
+            project.worktree_status = saved.worktree_status;
+            project.common_dir = saved.common_dir;
             Some(project)
         })
         .map(|project| (project.name.clone(), project))
@@ -63,6 +103,9 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
     Ok(Project {
         name: name.to_owned(),
         root: root.to_string_lossy().into_owned(),
+        remote: None,
+        worktree_status: None,
+        common_dir: None,
         discovered: false,
     })
 }
@@ -78,6 +121,23 @@ pub fn for_cwd<'a>(projects: &'a Registry, cwd: &str) -> Option<&'a Project> {
         .max_by_key(|project| Path::new(&project.root).components().count())
 }
 
+fn same_repository(project: &Project, repository: &Repository) -> bool {
+    match (&project.remote, &repository.remote) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => project.common_dir.is_some() && project.common_dir == repository.common_dir,
+        _ => false,
+    }
+}
+
+/// The project for a checkout, unless explicit same-remote projects make it ambiguous.
+pub fn for_repository<'a>(projects: &'a Registry, repository: &Repository) -> Option<&'a Project> {
+    let mut matches = projects
+        .values()
+        .filter(|project| same_repository(project, repository));
+    let project = matches.next()?;
+    matches.next().is_none().then_some(project)
+}
+
 /// What one discovery pass changed.
 ///
 /// The caller holds project names in other places — the tab assignments and the
@@ -90,11 +150,18 @@ pub struct Discovery {
     /// One pair for each discovered project a shallower root replaced: the name
     /// that went away, then the name that took its folders.
     pub replaced: Vec<(String, String)>,
+    /// Canonical roots moved from a linked checkout to its primary checkout.
+    pub root_moves: Vec<(String, String)>,
+    /// Existing projects whose repository metadata was filled in.
+    pub updated: Vec<String>,
 }
 
 impl Discovery {
     pub fn changed(&self) -> bool {
-        !self.added.is_empty() || !self.replaced.is_empty()
+        !self.added.is_empty()
+            || !self.replaced.is_empty()
+            || !self.root_moves.is_empty()
+            || !self.updated.is_empty()
     }
 }
 
@@ -123,22 +190,73 @@ fn unique_name(projects: &Registry, base: &str) -> String {
 /// The folders are sorted with the shortest first, so the result does not
 /// change with the order the panes came in. A folder that an existing project
 /// owns makes nothing.
-pub fn discover(projects: &mut Registry, cwds: &[String]) -> Discovery {
-    let mut roots: Vec<&String> = cwds.iter().filter(|cwd| !cwd.trim().is_empty()).collect();
-    roots.sort_by_key(|cwd| (Path::new(cwd).components().count(), cwd.as_str()));
-    roots.dedup();
+pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discovery {
+    let mut roots: Vec<&Repository> = repositories
+        .iter()
+        .filter(|repository| !repository.root.trim().is_empty())
+        .collect();
+    roots.sort_by_key(|repository| {
+        (
+            Path::new(&repository.root).components().count(),
+            repository.root.as_str(),
+        )
+    });
+    roots.dedup_by_key(|repository| repository.root.as_str());
 
     let mut discovery = Discovery::default();
-    for root in roots {
-        if for_cwd(projects, root).is_some() {
+    for repository in roots {
+        if let Some(name) = for_cwd(projects, &repository.root)
+            .and_then(|project| (project.root == repository.root).then(|| project.name.clone()))
+        {
+            let Some(project) = projects.get_mut(&name) else {
+                continue;
+            };
+            if project.remote.is_none() && project.common_dir.is_none() {
+                project.remote.clone_from(&repository.remote);
+                project.worktree_status = repository.worktree_status;
+                project.common_dir.clone_from(&repository.common_dir);
+                if repository.worktree_status.is_some() {
+                    discovery.updated.push(name);
+                }
+            }
             continue;
         }
-        let Some(leaf) = leaf_name(root) else {
+        if for_cwd(projects, &repository.root).is_some() {
+            continue;
+        }
+        let identity_matches: Vec<String> = projects
+            .values()
+            .filter(|project| same_repository(project, repository))
+            .map(|project| project.name.clone())
+            .collect();
+        if identity_matches.len() > 1 {
+            continue;
+        }
+        if let Some(name) = identity_matches.first() {
+            let Some(project) = projects.get_mut(name) else {
+                continue;
+            };
+            if project.discovered
+                && project.worktree_status == Some(WorktreeStatus::Linked)
+                && repository.worktree_status == Some(WorktreeStatus::Primary)
+            {
+                let old = std::mem::replace(&mut project.root, repository.root.clone());
+                project.remote.clone_from(&repository.remote);
+                project.worktree_status = repository.worktree_status;
+                project.common_dir.clone_from(&repository.common_dir);
+                discovery.root_moves.push((old, project.root.clone()));
+            }
+            continue;
+        }
+        let Some(leaf) = leaf_name(&repository.root) else {
             continue;
         };
-        let Ok(project) = validate(&leaf, root) else {
+        let Ok(mut project) = validate(&leaf, &repository.root) else {
             continue;
         };
+        project.remote.clone_from(&repository.remote);
+        project.worktree_status = repository.worktree_status;
+        project.common_dir.clone_from(&repository.common_dir);
         let name = unique_name(projects, &project.name);
 
         // A shallower folder takes the folders of the projects that polls found
@@ -176,11 +294,16 @@ pub fn discover(projects: &mut Registry, cwds: &[String]) -> Discovery {
 /// A discovered project on the same folder goes away, because the user just
 /// gave that folder a better name. The name that went away comes back, so the
 /// caller can move the tabs that point at it.
-pub fn adopt(projects: &mut Registry, project: Project) -> Option<String> {
+pub fn adopt(projects: &mut Registry, mut project: Project) -> Option<String> {
     let stale = projects
         .values()
         .find(|other| other.discovered && other.root == project.root && other.name != project.name)
-        .map(|other| other.name.clone());
+        .map(|other| {
+            project.remote.clone_from(&other.remote);
+            project.worktree_status = other.worktree_status;
+            project.common_dir.clone_from(&other.common_dir);
+            other.name.clone()
+        });
     if let Some(name) = &stale {
         projects.remove(name);
     }
@@ -228,8 +351,8 @@ mod tests {
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["good"]);
     }
 
-    fn cwds(cwds: &[&str]) -> Vec<String> {
-        cwds.iter().map(|cwd| (*cwd).to_owned()).collect()
+    fn folders(cwds: &[&str]) -> Vec<Repository> {
+        cwds.iter().map(|cwd| Repository::folder(*cwd)).collect()
     }
 
     fn registry(projects: &[Project]) -> Registry {
@@ -242,7 +365,7 @@ mod tests {
     #[test]
     fn discovery_makes_a_project_from_an_unclaimed_folder() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &cwds(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &folders(&["/work/hocus/src"]));
 
         assert_eq!(discovery.added, vec!["src".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -253,7 +376,7 @@ mod tests {
     #[test]
     fn an_agent_inside_a_known_project_starts_no_new_project() {
         let mut projects = registry(&[validate("hocus", "/work/hocus").unwrap()]);
-        let discovery = discover(&mut projects, &cwds(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &folders(&["/work/hocus/src"]));
 
         assert!(!discovery.changed());
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
@@ -262,8 +385,8 @@ mod tests {
     #[test]
     fn discovery_keeps_a_name_stable_across_polls() {
         let mut projects = Registry::new();
-        discover(&mut projects, &cwds(&["/work/hocus"]));
-        let again = discover(&mut projects, &cwds(&["/work/hocus"]));
+        discover(&mut projects, &folders(&["/work/hocus"]));
+        let again = discover(&mut projects, &folders(&["/work/hocus"]));
 
         assert!(!again.changed());
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
@@ -272,7 +395,7 @@ mod tests {
     #[test]
     fn discovery_dedupes_a_name_that_is_taken() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &cwds(&["/a/hocus", "/b/hocus"]));
+        let discovery = discover(&mut projects, &folders(&["/a/hocus", "/b/hocus"]));
 
         assert_eq!(
             discovery.added,
@@ -285,8 +408,8 @@ mod tests {
     #[test]
     fn a_shallower_root_absorbs_its_discovered_children() {
         let mut projects = Registry::new();
-        discover(&mut projects, &cwds(&["/work/hocus/src"]));
-        let discovery = discover(&mut projects, &cwds(&["/work/hocus"]));
+        discover(&mut projects, &folders(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &folders(&["/work/hocus"]));
 
         assert_eq!(discovery.added, vec!["hocus".to_owned()]);
         assert_eq!(
@@ -299,7 +422,7 @@ mod tests {
     #[test]
     fn one_pass_puts_the_shallowest_folder_first() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &cwds(&["/work/hocus/src", "/work/hocus"]));
+        let discovery = discover(&mut projects, &folders(&["/work/hocus/src", "/work/hocus"]));
 
         assert_eq!(discovery.added, vec!["hocus".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -309,7 +432,7 @@ mod tests {
     #[test]
     fn discovery_never_absorbs_a_user_project() {
         let mut projects = registry(&[validate("hocus", "/work/hocus").unwrap()]);
-        let discovery = discover(&mut projects, &cwds(&["/work"]));
+        let discovery = discover(&mut projects, &folders(&["/work"]));
 
         assert_eq!(discovery.added, vec!["work".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -320,18 +443,29 @@ mod tests {
     #[test]
     fn a_user_project_replaces_a_discovered_one_on_the_same_root() {
         let mut projects = Registry::new();
-        discover(&mut projects, &cwds(&["/work/hocus"]));
+        discover(
+            &mut projects,
+            &[git(
+                "/work/hocus",
+                Some("git@example.com:hocus.git"),
+                WorktreeStatus::Primary,
+            )],
+        );
         let stale = adopt(&mut projects, validate("pocus", "/work/hocus").unwrap());
 
         assert_eq!(stale, Some("hocus".to_owned()));
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["pocus"]);
         assert!(!projects["pocus"].discovered);
+        assert_eq!(
+            projects["pocus"].remote.as_deref(),
+            Some("git@example.com:hocus.git")
+        );
     }
 
     #[test]
     fn discovery_skips_the_filesystem_root() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &cwds(&["/", ""]));
+        let discovery = discover(&mut projects, &folders(&["/", ""]));
 
         assert!(!discovery.changed());
         assert!(projects.is_empty());
@@ -346,10 +480,71 @@ mod tests {
     #[test]
     fn the_discovered_flag_survives_a_save_and_a_load() {
         let mut projects = Registry::new();
-        discover(&mut projects, &cwds(&["/work/hocus"]));
+        discover(&mut projects, &folders(&["/work/hocus"]));
         let saved = parse(json(&projects).unwrap().as_bytes());
 
         assert_eq!(saved, projects);
         assert!(saved["hocus"].discovered);
+    }
+
+    fn git(root: &str, remote: Option<&str>, status: WorktreeStatus) -> Repository {
+        Repository {
+            root: root.to_owned(),
+            remote: remote.map(str::to_owned),
+            worktree_status: Some(status),
+            common_dir: Some("/repos/hocus/.git".to_owned()),
+        }
+    }
+
+    #[test]
+    fn worktrees_with_the_same_remote_are_one_project() {
+        let mut projects = Registry::new();
+        discover(
+            &mut projects,
+            &[git(
+                "/worktrees/feature",
+                Some("git@example.com:hocus.git"),
+                WorktreeStatus::Linked,
+            )],
+        );
+        let discovery = discover(
+            &mut projects,
+            &[git(
+                "/work/hocus",
+                Some("git@example.com:hocus.git"),
+                WorktreeStatus::Primary,
+            )],
+        );
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects["feature"].root, "/work/hocus");
+        assert_eq!(
+            projects["feature"].worktree_status,
+            Some(WorktreeStatus::Primary)
+        );
+        assert_eq!(
+            discovery.root_moves,
+            vec![("/worktrees/feature".to_owned(), "/work/hocus".to_owned())]
+        );
+    }
+
+    #[test]
+    fn remote_less_worktrees_share_the_common_git_directory() {
+        let mut projects = Registry::new();
+        discover(
+            &mut projects,
+            &[
+                git("/a/hocus", None, WorktreeStatus::Primary),
+                git("/b/feature", None, WorktreeStatus::Linked),
+            ],
+        );
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            for_repository(&projects, &git("/b/feature", None, WorktreeStatus::Linked))
+                .unwrap()
+                .name,
+            "hocus"
+        );
     }
 }

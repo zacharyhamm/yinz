@@ -7,6 +7,8 @@
 
 use hocus_proto::agents;
 use hocus_proto::panes::terminal_panes;
+use hocus_proto::projects::{Repository, WorktreeStatus};
+use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 fn current_session() -> Option<SessionInfo> {
@@ -51,4 +53,71 @@ pub fn gather() -> Option<Vec<agents::AgentPane>> {
         pane.cwd = pane_cwd(pane.pane_id);
     }
     Some(panes)
+}
+
+/// Turn the two Git command results into the checkout identity discovery needs.
+pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
+    let lines: Vec<&str> = std::str::from_utf8(metadata)
+        .unwrap_or_default()
+        .lines()
+        .collect();
+    let [root, git_dir, common_dir, branch] = lines.as_slice() else {
+        return Repository::folder(cwd);
+    };
+    let entries: BTreeMap<&str, &str> = config
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok()?.split_once('\n'))
+        .collect();
+    let urls: BTreeMap<&str, &str> = entries
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("remote.")
+                .and_then(|key| key.strip_suffix(".url"))
+                .map(|name| (name, value.trim()))
+        })
+        .collect();
+    let url = |name: &&str| (*name != ".").then(|| urls.get(*name).copied()).flatten();
+    let preferred = entries
+        .get("remote.pushDefault")
+        .and_then(url)
+        .or_else(|| {
+            entries
+                .get(format!("branch.{branch}.remote").as_str())
+                .and_then(url)
+        })
+        .or_else(|| urls.get("origin").copied())
+        .or_else(|| {
+            (urls.len() == 1)
+                .then(|| urls.values().next().copied())
+                .flatten()
+        });
+
+    Repository {
+        root: (*root).to_owned(),
+        remote: preferred.filter(|url| !url.is_empty()).map(str::to_owned),
+        worktree_status: Some(if git_dir == common_dir {
+            WorktreeStatus::Primary
+        } else {
+            WorktreeStatus::Linked
+        }),
+        common_dir: Some((*common_dir).to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_prefers_push_default_and_detects_a_linked_worktree() {
+        let repository = repository(
+            "/worktrees/topic/src",
+            b"/worktrees/topic\n/repos/hocus/.git/worktrees/topic\n/repos/hocus/.git\ntopic\n",
+            b"remote.origin.url\nhttps://example/origin\0remote.fork.url\nhttps://example/fork\0remote.pushDefault\nfork\0branch.topic.remote\norigin\0",
+        );
+
+        assert_eq!(repository.root, "/worktrees/topic");
+        assert_eq!(repository.remote.as_deref(), Some("https://example/fork"));
+        assert_eq!(repository.worktree_status, Some(WorktreeStatus::Linked));
+    }
 }

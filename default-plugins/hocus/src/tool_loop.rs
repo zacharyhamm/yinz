@@ -435,6 +435,8 @@ impl State {
                 serde_json::json!({
                     "name": project.name,
                     "root": project.root,
+                    "remote": project.remote,
+                    "worktree_status": project.worktree_status,
                     "discovered": project.discovered,
                     "tab_ids": tab_ids,
                     "auto_tab_ids": auto_tab_ids,
@@ -644,10 +646,18 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| {
-                let owner = projects::for_cwd(&self.projects, pane.cwd.as_deref()?)?;
+                let owner = self.project_for_cwd(pane.cwd.as_deref()?)?;
                 Some((pane.pane_id, owner.name.clone()))
             })
             .collect()
+    }
+
+    fn project_for_cwd(&self, cwd: &str) -> Option<&projects::Project> {
+        projects::for_cwd(&self.projects, cwd).or_else(|| {
+            self.repositories
+                .get(cwd)
+                .and_then(|repository| projects::for_repository(&self.projects, repository))
+        })
     }
 
     /// Point everything that names a project that went away at the project that
@@ -732,7 +742,7 @@ impl State {
                 project.is_none_or(|project| {
                     pane.cwd
                         .as_deref()
-                        .and_then(|cwd| projects::for_cwd(&self.projects, cwd))
+                        .and_then(|cwd| self.project_for_cwd(cwd))
                         .is_some_and(|owner| owner.name == project.name)
                 })
             })

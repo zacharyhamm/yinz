@@ -485,7 +485,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "project_list",
-            "List remembered projects, their roots, assigned tabs, and the active project. Includes the projects hocus found by itself from the folders agents run in: discovered marks these, and auto_tab_ids gives the tabs it worked out rather than the user. Prefer a name the user gave over one hocus made up.",
+            "List remembered projects, their roots, Git remotes and worktree status, assigned tabs, and the active project. Includes the projects hocus found by itself from the folders agents run in: discovered marks these, and auto_tab_ids gives the tabs it worked out rather than the user. Prefer a name the user gave over one hocus made up.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(

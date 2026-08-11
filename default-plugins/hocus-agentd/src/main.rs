@@ -8,9 +8,9 @@
 
 mod poll;
 
-use hocus_proto::agents;
 use hocus_proto::panes::terminal_panes;
 use hocus_proto::wire::{self, PollReply, PollRequest};
+use hocus_proto::{agents, projects};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -26,12 +26,20 @@ struct State {
     tabs: Vec<TabInfo>,
     commands: BTreeMap<u32, String>,
     cwds: BTreeMap<u32, String>,
+    repositories: BTreeMap<String, projects::Repository>,
+    git_probes: BTreeMap<String, GitProbe>,
     /// Who to push snapshots to — hocus, and hocus-store for its project
     /// discovery. A list rather than a single slot because both want the same
     /// snapshot, and broadcasting it instead would hand every plugin in the
     /// session the title and working folder of every pane.
     subscribers: Vec<u32>,
     seq: u64,
+}
+
+#[derive(Default)]
+struct GitProbe {
+    metadata: Option<Vec<u8>>,
+    config: Option<Vec<u8>>,
 }
 
 register_plugin!(State);
@@ -43,6 +51,7 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::CommandChanged,
             EventType::CwdChanged,
+            EventType::RunCommandResult,
         ]);
         // No `request_permission` here, deliberately. A builtin plugin — one
         // loaded from a `zellij:` location — is granted every gated call
@@ -80,13 +89,18 @@ impl ZellijPlugin for State {
                     self.commands.remove(&id);
                 }
                 self.update_pane(id, |pane| pane.command = command);
+                self.resolve_repositories();
                 self.publish();
             },
             Event::CwdChanged(PaneId::Terminal(id), cwd, _) => {
                 let cwd = cwd.to_string_lossy().into_owned();
                 self.cwds.insert(id, cwd.clone());
                 self.update_pane(id, |pane| pane.cwd = Some(cwd));
+                self.resolve_repositories();
                 self.publish();
+            },
+            Event::RunCommandResult(exit_code, stdout, _, context) => {
+                self.finish_git_probe(exit_code, stdout, context);
             },
             _ => {},
         }
@@ -112,6 +126,7 @@ impl ZellijPlugin for State {
                 .and_then(|json| serde_json::from_str::<PollRequest>(json).ok())
             {
                 self.manual_kinds = request.manual_kinds;
+                self.resolve_repositories();
             }
             // Answer immediately: a hocus that just opened wants the snapshot now.
             self.publish();
@@ -136,6 +151,7 @@ impl State {
             }
         }
         self.panes = Some(panes);
+        self.resolve_repositories();
     }
 
     fn rebuild_panes(&mut self) {
@@ -151,6 +167,7 @@ impl State {
         self.cwds
             .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
         self.panes = Some(panes);
+        self.resolve_repositories();
     }
 
     fn update_pane(&mut self, id: u32, update: impl FnOnce(&mut agents::AgentPane)) {
@@ -163,12 +180,102 @@ impl State {
         }
     }
 
+    fn resolve_repositories(&mut self) {
+        let Some(panes) = &self.panes else {
+            return;
+        };
+        let unresolved: Vec<String> = panes
+            .iter()
+            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .filter_map(|pane| pane.cwd.clone())
+            .filter(|cwd| {
+                !self.repositories.contains_key(cwd) && !self.git_probes.contains_key(cwd)
+            })
+            .collect();
+        for cwd in unresolved {
+            self.git_probes.insert(cwd.clone(), GitProbe::default());
+            let context = |kind: &str| {
+                BTreeMap::from([
+                    ("git_probe".to_owned(), kind.to_owned()),
+                    ("cwd".to_owned(), cwd.clone()),
+                ])
+            };
+            run_command_with_env_variables_and_cwd(
+                &[
+                    "git",
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--show-toplevel",
+                    "--git-dir",
+                    "--git-common-dir",
+                    "--abbrev-ref",
+                    "HEAD",
+                ],
+                BTreeMap::new(),
+                cwd.clone().into(),
+                context("metadata"),
+            );
+            run_command_with_env_variables_and_cwd(
+                &[
+                    "git",
+                    "config",
+                    "--null",
+                    "--get-regexp",
+                    "^(remote\\..*\\.url|remote\\.pushDefault|branch\\..*\\.remote)$",
+                ],
+                BTreeMap::new(),
+                cwd.clone().into(),
+                context("config"),
+            );
+        }
+    }
+
+    fn finish_git_probe(
+        &mut self,
+        exit_code: Option<i32>,
+        stdout: Vec<u8>,
+        context: BTreeMap<String, String>,
+    ) {
+        let (Some(cwd), Some(kind)) = (context.get("cwd"), context.get("git_probe")) else {
+            return;
+        };
+        let Some(probe) = self.git_probes.get_mut(cwd) else {
+            return;
+        };
+        let output = if exit_code == Some(0) {
+            stdout
+        } else {
+            Vec::new()
+        };
+        match kind.as_str() {
+            "metadata" => probe.metadata = Some(output),
+            "config" => probe.config = Some(output),
+            _ => return,
+        }
+        if probe.metadata.is_none() || probe.config.is_none() {
+            return;
+        }
+        let Some(probe) = self.git_probes.remove(cwd) else {
+            return;
+        };
+        self.repositories.insert(
+            cwd.clone(),
+            poll::repository(
+                cwd,
+                probe.metadata.as_deref().unwrap_or_default(),
+                probe.config.as_deref().unwrap_or_default(),
+            ),
+        );
+        self.publish();
+    }
+
     fn publish(&mut self) {
         self.seq += 1;
         let reply = PollReply {
             panes: self.panes.clone(),
             activity: agents::Activity::new(),
             manual_kinds: self.manual_kinds.clone(),
+            repositories: self.repositories.clone(),
         };
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;

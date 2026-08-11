@@ -114,15 +114,20 @@ impl State {
         // Only an agent counts. A shell sitting at a prompt is not a reason to
         // remember a folder for good, and every pane would otherwise become a
         // project the first time someone cd'd somewhere.
-        let cwds: Vec<String> = panes
+        let repositories: Vec<projects::Repository> = panes
             .iter()
             .filter(|pane| agents::classify(pane, &reply.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.clone())
+            .filter_map(|pane| reply.repositories.get(pane.cwd.as_deref()?).cloned())
             .collect();
-        if !projects::discover(&mut self.projects, &cwds).changed() {
+        let discovery = projects::discover(&mut self.projects, &repositories);
+        if !discovery.changed() {
             return;
         }
+        for (old, new) in discovery.root_moves {
+            todos::move_root(&mut self.todos, &old, &new);
+        }
         self.persist_projects();
+        self.persist_todos();
         self.publish();
     }
 
