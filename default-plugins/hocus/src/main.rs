@@ -14,7 +14,7 @@ mod ui;
 mod worker;
 
 pub use message::{Job, Message, Picker, PickerKind, Role, Status, StreamState};
-use worker::{gather_poll, post_log, post_prompt_history, post_save};
+use worker::{post_log, post_prompt_history, post_save};
 
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
@@ -54,16 +54,6 @@ const JOB_SECONDS: f64 = 1.0;
 /// The shortest interval `schedule` will accept. A model that asks for one
 /// second bills the user sixty times a minute for a pane that hasn't changed.
 const MIN_JOB_SECONDS: f64 = 5.0;
-
-/// How often the agent snapshot is refreshed.
-///
-/// ponytail: this is a heartbeat the plugin now holds forever — before agent
-/// polling it went silent whenever nothing was in flight and no job was scheduled.
-/// Each poll is one `get_session_list` plus one `get_pane_running_command` per
-/// terminal pane, and it asks for a redraw only when a transition notice landed in
-/// the transcript. Tie it to pane focus or drop it back to on-demand if the
-/// wake-ups ever cost more than the notices are worth.
-const AGENT_SECONDS: f64 = 5.0;
 
 /// How long a tool call waits for hocus-store before giving up. Generous for a
 /// pipe round trip on the same machine, short enough that a missing store is a
@@ -217,33 +207,23 @@ pub struct State {
     job_seq: u64,
     /// Authority for the scheduled run that currently owns the conversation.
     job_auto_confirm: bool,
-    /// Terminal panes as of the last `refresh_panes`, which every agent tool runs
-    /// first. The only pane snapshot the agent tools trust, which is what stops them
-    /// acting on a pane that has closed.
+    /// Terminal panes from hocus-agentd's latest event-fed snapshot. This is the
+    /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
     /// Kinds the user set by hand with `agent_register`, keyed by pane id. These win
     /// over detection, and are dropped when their pane leaves the snapshot.
     manual_kinds: BTreeMap<u32, String>,
-    /// What each running agent's pane showed last poll, for telling busy from idle.
-    /// Derived from the pane snapshot like `panes`, never archived.
+    /// Activity retained for wire compatibility. Event-driven snapshots currently
+    /// leave it empty rather than polling scrollback to infer idle time.
     activity: agents::Activity,
-    /// Seconds until the next agent poll, counted down by `on_timer`.
-    agent_due_in: f64,
-    /// A poke is out to the poll worker and its reply has not come back. A sync
-    /// poll clears it, which is also what makes the stale reply drop.
     /// The tool call waiting on hocus-store, and how long it has left. At most
     /// one: the tool queue runs a single call at a time.
     pending_write: Option<(String, f64)>,
     /// Highest `seq` merged from hocus-store, same watermark rule as `agent_seq`.
     store_seq: u64,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
-    /// counter, which `poll_agents` resets this to match.
+    /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
-    /// Due polls that found the last poke still unanswered, toward the strike-out.
-    polls_unanswered: u8,
-    /// The worker never answered: unpatched zellij or a wedged instance. Poll
-    /// inline for the rest of the session.
-    poll_dead: bool,
     /// Milliseconds since plugin start, advanced by `on_timer`.
     mono_ms: u64,
     /// Monotonic log sequence for ordering events.
@@ -319,12 +299,9 @@ impl Default for State {
             panes: Vec::new(),
             manual_kinds: BTreeMap::new(),
             activity: BTreeMap::new(),
-            agent_due_in: 0.0,
             pending_write: None,
             store_seq: 0,
             agent_seq: 0,
-            polls_unanswered: 0,
-            poll_dead: false,
             mono_ms: 0,
             log_seq: 0,
             granted: false,
@@ -435,11 +412,15 @@ impl ZellijPlugin for State {
                 self.subscribe_to_store();
                 return false;
             },
+            wire::AGENT_HELLO => {
+                self.subscribe_to_agentd();
+                return false;
+            },
             wire::AGENT_SNAPSHOT => {},
             _ => return false,
         }
-        // The daemon's snapshots are unsolicited — it pushes on its own
-        // heartbeat — so this cannot gate on having asked. What it can do is
+        // The daemon pushes snapshots after relevant host events, so this cannot
+        // gate on having asked. What it can do is
         // refuse to go backwards: `seq` counts up within one daemon, so a
         // snapshot no newer than the last one applied is a reordered delivery
         // and merging it would resurrect panes we already saw close.
@@ -459,7 +440,6 @@ impl ZellijPlugin for State {
             return false;
         };
         self.agent_seq = seq;
-        self.polls_unanswered = 0;
         match reply.panes {
             Some(panes) => self.apply_poll(panes, reply.activity),
             // No current session. A quiet reply, not a dead daemon.
@@ -1282,20 +1262,15 @@ mod tests {
         assert!(!loader.contains("running:"), "{loader}");
     }
 
-    /// The runaway guard. The chain no longer stops — the agent poll has to keep
-    /// looking — so what it must not do is repaint. A quiet poll that asked for a
-    /// render would recomposite the whole session every `AGENT_SECONDS` forever.
+    /// With no job, store write, or animation, there is no timer to keep alive.
     #[test]
-    fn an_idle_timer_tick_polls_without_repainting() {
+    fn an_idle_timer_tick_stops_without_repainting() {
         let mut state = ready_state();
         settle(&mut state);
         state.timer_armed = true;
 
         assert!(!state.on_timer(FRAME_SECONDS), "no redraw");
-        assert!(
-            state.timer_armed,
-            "but the agent poll keeps the chain alive"
-        );
+        assert!(!state.timer_armed, "no agent poll keeps the chain alive");
         assert_eq!(state.tick, 0, "the spinner does not advance either");
     }
 

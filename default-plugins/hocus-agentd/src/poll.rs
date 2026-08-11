@@ -7,7 +7,6 @@
 
 use hocus_proto::agents;
 use hocus_proto::panes::terminal_panes;
-use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 fn current_session() -> Option<SessionInfo> {
@@ -36,65 +35,20 @@ fn pane_cwd(pane_id: u32) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// What a pane is showing. Only ever hashed, never shown — but the trailing-blank
-/// trim must match hocus's `read_pane` exactly, or the two poll paths would produce
-/// different hashes for an unchanged pane and every handover would read as activity.
-fn read_pane_text(pane_id: u32) -> String {
-    match get_pane_scrollback(PaneId::Terminal(pane_id), false) {
-        Ok(contents) => {
-            let mut lines = contents.lines_above_viewport;
-            lines.extend(contents.viewport);
-            lines.extend(contents.lines_below_viewport);
-            // Trailing blanks are the unused rows of the pane, not content.
-            while lines.last().is_some_and(|line| line.trim().is_empty()) {
-                lines.pop();
-            }
-            if lines.is_empty() {
-                "(pane is empty)".to_owned()
-            } else {
-                lines.join("\n")
-            }
-        },
-        Err(error) => format!("could not read pane: {error}"),
-    }
-}
-
-/// Fresh pane snapshot, the running command of each pane, and a scrollback hash
-/// per running agent for busy/idle.
+/// One startup snapshot for panes that existed before this plugin loaded.
 ///
-/// Pulled, not pushed. `Event::PaneUpdate` goes only to plugins of the active tab
-/// and to background plugins — and while this daemon *is* a background plugin, it
-/// polls anyway so that its snapshot is identical to the one hocus computes inline
-/// when the daemon is not there.
-pub fn gather(
-    manual_kinds: &BTreeMap<u32, String>,
-    activity: &mut agents::Activity,
-) -> Option<Vec<agents::AgentPane>> {
+/// Later changes come from `PaneUpdate`, `CommandChanged`, and `CwdChanged`; this
+/// is deliberately not a repeating poll.
+pub fn gather() -> Option<Vec<agents::AgentPane>> {
     let session = current_session()?;
     let mut panes = terminal_panes(&session.panes, &session.tabs);
-    // ponytail: one blocking host round-trip per terminal pane, every refresh.
-    // Fine at a dozen panes; batch it if a session ever gets big enough to feel.
+    // ponytail: one blocking host round-trip per terminal pane at plugin startup.
+    // Events keep this fresh afterwards; batch only if startup ever feels slow.
     for pane in &mut panes {
         if let Some(command) = pane_running_command(pane.pane_id) {
             pane.command = Some(command);
         }
         pane.cwd = pane_cwd(pane.pane_id);
-    }
-    // A pane that closed took its observations with it.
-    activity.retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-    // ponytail: one read_pane per running agent per poll, to tell busy from idle.
-    // Scales with agents, not panes. An agent whose TUI repaints a spinner every
-    // frame never reads idle — false "busy" is the safe direction.
-    let running: Vec<u32> = panes
-        .iter()
-        .filter(|pane| {
-            pane.status == agents::AgentStatus::Running
-                && agents::classify(pane, manual_kinds).is_some()
-        })
-        .map(|pane| pane.pane_id)
-        .collect();
-    for pane_id in running {
-        agents::observe(activity, pane_id, &read_pane_text(pane_id));
     }
     Some(panes)
 }

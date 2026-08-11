@@ -65,10 +65,8 @@ impl State {
             PermissionStatus::Granted => {
                 self.granted = true;
                 self.warn_if_not_shared();
-                // The agent poll needs `ReadApplicationState`, so this grant is the
-                // earliest it can start — and it has to be started from somewhere,
-                // or no notice lands until the first keystroke.
-                self.arm_timer(AGENT_SECONDS);
+                // The agent daemon needs this grant only for the initial snapshot;
+                // afterwards it follows Zellij's pane events.
                 self.subscribe_to_agentd();
                 self.env = get_session_environment_variables();
                 Config::resolve(&self.kdl, &self.env)

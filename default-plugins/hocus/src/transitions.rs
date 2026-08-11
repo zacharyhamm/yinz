@@ -208,8 +208,7 @@ impl State {
     /// into the target's configuration, plugin identity is (location,
     /// configuration), and so a piped url never matches the instance that
     /// `load_plugins` started. A broadcast goes to already-running plugins only
-    /// and launches nothing, which is also why a session with no daemon simply
-    /// falls through to polling inline.
+    /// and launches nothing.
     ///
     /// Cheap and idempotent, so it is re-sent whenever `manual_kinds` changes
     /// rather than tracked; the daemon just records us as its subscriber again.
@@ -363,62 +362,18 @@ impl State {
         self.timer_armed = false;
         self.mono_ms = self.mono_ms.saturating_add((elapsed * 1000.0) as u64);
         let fired = self.tick_jobs(elapsed);
-        let moved = self.tick_agents(elapsed);
         let gave_up = self.tick_store(elapsed);
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
         }
         let fired = fired || gave_up;
-        // The chain no longer dies: the agent poll has to keep looking. It still
-        // slows right down to `AGENT_SECONDS` once nothing else wants the clock.
-        self.arm_timer(if frames {
-            FRAME_SECONDS
-        } else if self.jobs.is_empty() {
-            AGENT_SECONDS
-        } else {
-            JOB_SECONDS
-        });
+        if frames || !self.jobs.is_empty() || self.pending_write.is_some() {
+            self.arm_timer(if frames { FRAME_SECONDS } else { JOB_SECONDS });
+        }
         // A quiet tick changed nothing on screen; asking for a render would
         // recomposite the whole session for nothing.
-        frames || fired || moved
-    }
-
-    /// Count the agent poll down and poke the poll worker when it comes due.
-    /// Check that `hocus-agentd` is still feeding us, and take the poll back if
-    /// it is not.
-    ///
-    /// Returns whether a notice landed in the transcript — from the daemon path
-    /// never, since its snapshots arrive later in `pipe`.
-    pub(crate) fn tick_agents(&mut self, elapsed: f64) -> bool {
-        self.agent_due_in -= elapsed;
-        if self.agent_due_in > 0.0 {
-            return false;
-        }
-        self.agent_due_in = AGENT_SECONDS;
-        if self.poll_dead {
-            return self.poll_agents();
-        }
-        // ponytail: three silent ticks (~15s) writes the daemon off for the
-        // session and the poll runs inline, as it did before the daemon
-        // existed. Covers a wedged daemon and a Zellij whose config has no
-        // `hocus-agentd` alias alike; three strikes absorbs one slow poll.
-        self.polls_unanswered += 1;
-        if self.polls_unanswered >= 3 {
-            self.poll_dead = true;
-            self.log_global(
-                "notice",
-                serde_json::json!({"content": "agent daemon unresponsive; polling inline"}),
-            );
-            return self.poll_agents();
-        }
-        // Only once it has actually gone quiet. Subscribing makes the daemon
-        // poll immediately as well as on its own heartbeat, so doing it every
-        // tick would double the poll rate for nothing while it is behaving.
-        if self.polls_unanswered >= 2 {
-            self.subscribe_to_agentd();
-        }
-        false
+        frames || fired
     }
 
     /// Count the jobs down and start at most one due run. Returns whether the
