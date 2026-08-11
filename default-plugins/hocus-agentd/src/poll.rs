@@ -78,7 +78,7 @@ pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
         .collect();
     let url = |name: &&str| (*name != ".").then(|| urls.get(*name).copied()).flatten();
     let preferred = entries
-        .get("remote.pushDefault")
+        .get("remote.pushdefault")
         .and_then(url)
         .or_else(|| {
             entries
@@ -113,7 +113,7 @@ mod tests {
         let repository = repository(
             "/worktrees/topic/src",
             b"/worktrees/topic\n/repos/hocus/.git/worktrees/topic\n/repos/hocus/.git\ntopic\n",
-            b"remote.origin.url\nhttps://example/origin\0remote.fork.url\nhttps://example/fork\0remote.pushDefault\nfork\0branch.topic.remote\norigin\0",
+            b"remote.origin.url\nhttps://example/origin\0remote.fork.url\nhttps://example/fork\0remote.pushdefault\nfork\0branch.topic.remote\norigin\0",
         );
 
         assert_eq!(repository.root, "/worktrees/topic");
