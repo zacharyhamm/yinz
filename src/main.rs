@@ -252,10 +252,11 @@ fn main() {
     if let Some(Command::Sessions(Sessions::ListSessions {
         no_formatting,
         short,
+        exited,
         reverse,
     })) = opts.command
     {
-        commands::list_sessions(no_formatting, short, reverse);
+        commands::list_sessions(no_formatting, short, reverse, exited);
     } else if let Some(Command::Sessions(Sessions::ListAliases)) = opts.command {
         commands::list_aliases(opts);
     } else if let Some(Command::Sessions(Sessions::Watch { ref session_name })) = opts.command {

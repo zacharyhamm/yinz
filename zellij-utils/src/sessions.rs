@@ -367,14 +367,17 @@ pub fn delete_session(name: &str, force: bool) {
     }
 }
 
-pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool) {
+pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
     let exit_code = match get_sessions() {
         Ok(running_sessions) => {
-            let resurrectable_sessions = get_resurrectable_sessions();
-            let mut all_sessions: HashMap<String, (Duration, bool)> = resurrectable_sessions
-                .iter()
-                .map(|(name, timestamp)| (name.clone(), (*timestamp, true)))
-                .collect();
+            let mut all_sessions: HashMap<String, (Duration, bool)> = if exited {
+                get_resurrectable_sessions()
+                    .into_iter()
+                    .map(|(name, timestamp)| (name, (timestamp, true)))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
             for (session_name, duration) in running_sessions {
                 all_sessions.insert(session_name.clone(), (duration, false));
             }
