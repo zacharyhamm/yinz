@@ -1,4 +1,3 @@
-use crate::platform::Platform;
 use crate::shared::{calculate_list_bounds, render_list_tip};
 use crate::state::refresh_directory;
 use pretty_bytes::converter::convert as pretty_bytes;
@@ -13,7 +12,6 @@ pub struct FileListView {
     pub path_is_dir: bool,
     pub files: Vec<FsEntry>,
     pub cursor_hist: HashMap<PathBuf, usize>,
-    pub platform: Platform,
 }
 
 impl Default for FileListView {
@@ -23,18 +21,14 @@ impl Default for FileListView {
             path: PathBuf::new(),
             files: Default::default(),
             cursor_hist: Default::default(),
-            platform: Platform::default(),
         }
     }
 }
 
 impl FileListView {
     pub fn descend_to_previous_path(&mut self) {
-        if Platform::is_root(&self.path, self.platform) {
-            return;
-        }
         if let Some(parent) = self.path.parent() {
-            self.path = Platform::ensure_drive_root(parent.to_path_buf(), self.platform);
+            self.path = parent.to_path_buf();
         } else {
             self.path = PathBuf::new();
         }
@@ -71,7 +65,6 @@ impl FileListView {
     ) {
         let mut files = vec![];
         for (entry, entry_metadata) in paths {
-            let entry = Platform::normalize(&entry);
             let entry = self
                 .path
                 .join(entry.strip_prefix("/host").unwrap_or(&entry));
@@ -133,7 +126,7 @@ impl FileListView {
                     .map(|s| pretty_bytes(s as f64))
                     .unwrap_or("".to_owned());
                 if entry.is_folder() {
-                    file_or_folder_name.push(self.platform.separator());
+                    file_or_folder_name.push('/');
                 }
                 let file_or_folder_name_width = file_or_folder_name.width();
                 let size_width = size.width();

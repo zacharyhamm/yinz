@@ -204,7 +204,6 @@ enum CommandName {
   SetPaneRegexHighlights = 207;
   ClearPaneHighlights = 208;
   OpenPluginPaneFloating = 209;
-  ListWindowsVolumes = 210;
   GetSessionList = 211;
   KillSessionsAndReply = 212;
   DeleteDeadSessionAndReply = 213;

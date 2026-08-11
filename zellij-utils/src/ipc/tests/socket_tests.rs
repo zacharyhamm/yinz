@@ -8,21 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static IPC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-// --- Cross-platform IPC helpers ---
-// On Unix: use filesystem-based sockets (TempDir + PathBuf + GenericFilePath)
-// On Windows: use named pipes (no guard needed, String name + GenericNamespaced)
-
-#[cfg(unix)]
 type IpcGuard = tempfile::TempDir;
-#[cfg(unix)]
 type IpcName = std::path::PathBuf;
-
-#[cfg(windows)]
-type IpcGuard = ();
-#[cfg(windows)]
-type IpcName = String;
-
-#[cfg(unix)]
 fn new_ipc() -> (IpcGuard, IpcName) {
     let dir = tempfile::TempDir::new().expect("failed to create temp dir");
     let id = IPC_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -32,22 +19,6 @@ fn new_ipc() -> (IpcGuard, IpcName) {
     (dir, path)
 }
 
-#[cfg(windows)]
-fn new_ipc() -> (IpcGuard, IpcName) {
-    let id = IPC_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let name = format!(
-        "@zellij-test-{}-{}-{}",
-        std::process::id(),
-        id,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    ((), name)
-}
-
-#[cfg(unix)]
 fn bind_listener(name: &IpcName) -> interprocess::local_socket::Listener {
     use interprocess::local_socket::GenericFilePath;
     ListenerOptions::new()
@@ -56,39 +27,15 @@ fn bind_listener(name: &IpcName) -> interprocess::local_socket::Listener {
         .expect("bind failed")
 }
 
-#[cfg(windows)]
-fn bind_listener(name: &IpcName) -> interprocess::local_socket::Listener {
-    use interprocess::local_socket::GenericNamespaced;
-    ListenerOptions::new()
-        .name(name.as_str().to_ns_name::<GenericNamespaced>().unwrap())
-        .create_sync()
-        .expect("bind failed")
-}
-
-#[cfg(unix)]
 fn connect_stream(name: &IpcName) -> interprocess::local_socket::Stream {
     use interprocess::local_socket::{GenericFilePath, Stream as LocalSocketStream};
     LocalSocketStream::connect(name.as_path().to_fs_name::<GenericFilePath>().unwrap())
         .expect("connect failed")
 }
 
-#[cfg(windows)]
-fn connect_stream(name: &IpcName) -> interprocess::local_socket::Stream {
-    use interprocess::local_socket::{GenericNamespaced, Stream as LocalSocketStream};
-    LocalSocketStream::connect(name.as_str().to_ns_name::<GenericNamespaced>().unwrap())
-        .expect("connect failed")
-}
-
-#[cfg(unix)]
 fn try_connect(name: &IpcName) -> std::io::Result<interprocess::local_socket::Stream> {
     use interprocess::local_socket::{GenericFilePath, Stream as LocalSocketStream};
     LocalSocketStream::connect(name.as_path().to_fs_name::<GenericFilePath>().unwrap())
-}
-
-#[cfg(windows)]
-fn try_connect(name: &IpcName) -> std::io::Result<interprocess::local_socket::Stream> {
-    use interprocess::local_socket::{GenericNamespaced, Stream as LocalSocketStream};
-    LocalSocketStream::connect(name.as_str().to_ns_name::<GenericNamespaced>().unwrap())
 }
 
 #[test]

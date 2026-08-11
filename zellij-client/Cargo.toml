@@ -46,20 +46,10 @@ rustls-pki-types = "1"
 futures-util = "0.3"
 urlencoding = "2.1"
 
-[target.'cfg(not(windows))'.dependencies]
-signal-hook = { workspace = true }
-
 [target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
 daemonize = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
-
-[target.'cfg(windows)'.dependencies]
-crossterm = { workspace = true }
-tokio = { workspace = true }
-windows-sys = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_System_Console",
-] }
 
 [dev-dependencies]
 hegeltest = "0.29.3"

@@ -2,17 +2,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use zellij_utils::pane_size::Size;
 
-#[cfg(not(windows))]
 use crate::os_input_output_unix::{
     disable_mouse_support, enable_mouse_support, setup_ipc, AsyncSignalListener,
     BlockingSignalIterator,
 };
-#[cfg(windows)]
-use crate::os_input_output_windows::{
-    disable_mouse_support, enable_mouse_support, restore_console_mode, setup_ipc,
-    AsyncSignalListener, BlockingSignalIterator,
-};
-
 use std::io::prelude::*;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -152,11 +145,6 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     fn load_palette(&self) -> Palette;
     fn enable_mouse(&self) -> Result<()>;
     fn disable_mouse(&self) -> Result<()>;
-    /// Restore console input mode to its pre-Zellij state.
-    ///
-    /// On Windows this clears ENABLE_MOUSE_INPUT and ENABLE_VIRTUAL_TERMINAL_INPUT
-    /// that crossterm's disable_raw_mode() leaves behind. No-op on other platforms.
-    fn restore_console_mode(&self) {}
     fn env_variable(&self, _name: &str) -> Option<String> {
         None
     }
@@ -306,7 +294,7 @@ impl ClientOsApi for ClientOsInputOutput {
     }
     fn load_palette(&self) -> Palette {
         // this was removed because termbg doesn't release stdin in certain scenarios (we know of
-        // windows terminal and FreeBSD): https://github.com/zellij-org/zellij/issues/538
+        // some terminals (including FreeBSD): https://github.com/zellij-org/zellij/issues/538
         //
         // let palette = default_palette();
         // let timeout = std::time::Duration::from_millis(100);
@@ -326,11 +314,6 @@ impl ClientOsApi for ClientOsInputOutput {
     fn disable_mouse(&self) -> Result<()> {
         let mut stdout = self.get_stdout_writer();
         disable_mouse_support(&mut *stdout)
-    }
-
-    #[cfg(windows)]
-    fn restore_console_mode(&self) {
-        restore_console_mode();
     }
 
     fn env_variable(&self, name: &str) -> Option<String> {

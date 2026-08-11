@@ -31,7 +31,7 @@ Please attach the files that were created in `/tmp/zellij-1000/zellij-log/` to t
 
 `stty size`:
 
-`uname -av` or `ver`(Windows):
+`uname -av`:
 
 ## Further information
 Reproduction steps, noticeable behavior, related issues, etc
