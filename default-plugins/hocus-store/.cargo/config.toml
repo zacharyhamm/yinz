@@ -1,0 +1,8 @@
+# Pin the build target so `cargo build` and rust-analyzer stay on wasm. Without
+# this, every check compiles zellij-utils' host-only deps (tokio, isahc/system
+# curl, log4rs, interprocess) for the host triple.
+#
+# Note this also redirects `cargo test`, which then can't run the tests. Use
+# `make test`, which passes --target $(host triple) explicitly.
+[build]
+target = "wasm32-wasip1"

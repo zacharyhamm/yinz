@@ -249,10 +249,31 @@ plugins {
     hocus location="zellij:hocus" {
         shared true
     }
+    // Shared for the same reason hocus is: without it the plugin is
+    // instantiated once per client, and each instance runs its own poll timer
+    // against the same session.
+    hocus-agentd location="zellij:hocus-agentd" {
+        shared true
+    }
+    // Owns the project registry and the todo lists. Shared for the same reason,
+    // and more pressingly: two instances would each hold the whole store in
+    // memory and write the same files from under each other.
+    hocus-store location="zellij:hocus-store" {
+        shared true
+    }
 }
 
 // Plugins to load in the background when a new session starts
+// This block adds to the built-in defaults; `load_plugins clear-defaults=true`
+// replaces them instead
 load_plugins {
+    // Watches for coding agents from session start, rather than only while a
+    // hocus pane is open. Named by alias, not by "zellij:hocus-agentd", so the
+    // `shared true` above applies — plugin identity is (location,
+    // configuration), and the bare url would load a second, unshared instance
+    // that polls in parallel with the first.
+    "hocus-agentd"
+    "hocus-store"
     "zellij:link"
     // "file:/path/to/my-plugin.wasm"
     // "https://example.com/my-plugin.wasm"

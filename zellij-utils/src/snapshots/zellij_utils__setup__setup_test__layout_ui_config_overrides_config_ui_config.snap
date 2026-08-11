@@ -6178,6 +6178,34 @@ Config {
                 ),
                 initial_cwd: None,
             },
+            "hocus-agentd": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-agentd",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+            },
+            "hocus-store": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-store",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+            },
             "plugin-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(
@@ -6274,6 +6302,30 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "hocus-agentd",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "hocus-store",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
             },
         ),
     },

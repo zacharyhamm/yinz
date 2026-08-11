@@ -271,6 +271,12 @@ plugins {
     hocus location="zellij:hocus" {
         shared true
     }
+    hocus-agentd location="zellij:hocus-agentd" {
+        shared true
+    }
+    hocus-store location="zellij:hocus-store" {
+        shared true
+    }
     plugin-manager location="zellij:plugin-manager"
     session-manager location="zellij:session-manager"
     status-bar location="zellij:status-bar"
@@ -286,6 +292,8 @@ plugins {
 // eg. "https://example.com/my-plugin.wasm"
 load_plugins {
     zellij:link
+    hocus-agentd
+    hocus-store
 }
 web_client {
     font "monospace"
