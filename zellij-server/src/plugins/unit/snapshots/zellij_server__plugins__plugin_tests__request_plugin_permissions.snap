@@ -19,5 +19,6 @@ Some(
         WriteToClipboard,
         RunActionsAsUser,
         ReadSessionEnvironmentVariables,
+        ReadPaneContents,
     ],
 )

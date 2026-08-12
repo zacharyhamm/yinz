@@ -331,9 +331,16 @@ impl RemoteTerminal {
     pub fn attach_to_original_session(&mut self) {
         {
             let mut channel = self.channel.lock().unwrap();
+            // --data-dir must be repeated here: this fork always loads the builtin plugins from
+            // disk (there is no copy embedded in the binary), so an attach without it looks for
+            // them under the default data dir and every plugin pane fails to load.
             channel
                 .write_all(
-                    format!("{} attach {}\n", ZELLIJ_EXECUTABLE_LOCATION, SESSION_NAME).as_bytes(),
+                    format!(
+                        "{} --data-dir {} attach {}\n",
+                        ZELLIJ_EXECUTABLE_LOCATION, ZELLIJ_DATA_DIR, SESSION_NAME
+                    )
+                    .as_bytes(),
                 )
                 .unwrap();
             channel.flush().unwrap();
