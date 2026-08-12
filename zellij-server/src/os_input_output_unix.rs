@@ -37,7 +37,7 @@ use std::{
 use zellij_utils::{errors::prelude::*, input::command::RunCommand};
 
 use crate::pty_host::{
-    client::{self as pty_host_client, PtyHostHandle, SpawnParams},
+    client::{self as pty_host_client, PtyHostHandle, ReleasedPtyHost, SpawnParams},
     protocol::WireTermios,
 };
 
@@ -614,6 +614,112 @@ impl UnixPtyBackend {
                 .fetch_add(1, Ordering::Relaxed),
         )
     }
+
+    /// Give a pane's supervisor up without killing it, so another server can take
+    /// it over. `clear_terminal_id` minus the `terminate_host`.
+    ///
+    /// The master dup is deliberately not closed here: it belongs to the reader
+    /// task's `RawFdAsyncReader`, which closes it when the caller aborts that
+    /// task. Closing it here as well would race that drop into a double close of
+    /// a descriptor another pane may by then have been given.
+    pub fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+        let handle = self
+            .terminal_id_to_host
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "pane {terminal_id} has no pty-host supervisor, so it cannot be moved to \
+                     another session — detachable panes are disabled, or this pane's supervisor \
+                     failed to start and it fell back to an in-process pty"
+                )
+            })?;
+        let released = handle.release();
+        self.terminal_id_to_raw_fd
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id);
+        Ok(released)
+    }
+
+    /// Take a detached supervisor over into this session under a fresh terminal
+    /// id — ids are per-server, so whatever the pane was called in the session it
+    /// came from means nothing here.
+    pub fn adopt_terminal(
+        &self,
+        control_socket: &std::path::Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let terminal_id = self
+            .next_terminal_id()
+            .ok_or_else(|| anyhow!("failed to allocate a terminal id"))?;
+        self.reserve_terminal_id(terminal_id);
+        match self.adopt_into_terminal_id(control_socket, terminal_id, quit_cb) {
+            Ok(adopted) => Ok(adopted),
+            Err(e) => {
+                // Undo the reservation, but *not* through `clear_terminal_id` —
+                // that terminates the supervisor, and a failed adoption must leave
+                // it running for the next caller.
+                self.terminal_id_to_raw_fd
+                    .lock()
+                    .to_anyhow()?
+                    .remove(&terminal_id);
+                Err(e)
+            },
+        }
+    }
+
+    fn adopt_into_terminal_id(
+        &self,
+        control_socket: &std::path::Path,
+        terminal_id: u32,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let pending = pty_host_client::attach(pty_host_client::AttachParams {
+            control_socket,
+            terminal_id,
+            session_name: zellij_utils::envs::get_session_name().ok(),
+        })?;
+        let attached = pending.finish(quit_cb);
+        let master_fd = attached.master.into_raw_fd();
+        self.terminal_id_to_raw_fd
+            .lock()
+            .to_anyhow()?
+            .insert(terminal_id, Some(master_fd));
+        self.terminal_id_to_host
+            .lock()
+            .to_anyhow()?
+            .insert(terminal_id, attached.handle);
+        let reader = Box::new(
+            RawFdAsyncReader::new(master_fd)
+                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
+        ) as Box<dyn AsyncReader>;
+        Ok(AdoptedTerminal {
+            terminal_id,
+            reader,
+            child_pid: attached.child_pid,
+            cmd: attached.cmd,
+            buffered: attached.buffered,
+            child_exit_status: attached.status.child_exit_status,
+        })
+    }
+}
+
+/// A supervisor this server has just taken over, and everything the caller needs
+/// to give it a pane.
+pub struct AdoptedTerminal {
+    pub terminal_id: u32,
+    pub reader: Box<dyn AsyncReader>,
+    pub child_pid: u32,
+    /// The command the supervisor is running, for rebuilding a `quit_cb` that
+    /// holds or closes the pane the way the original did.
+    pub cmd: RunCommand,
+    /// Output produced while nobody was attached, to be replayed into the pane
+    /// before any live bytes.
+    pub buffered: Vec<u8>,
+    /// `Some` if the child has already exited — the pane should arrive held.
+    pub child_exit_status: Option<Option<i32>>,
 }
 
 #[cfg(test)]

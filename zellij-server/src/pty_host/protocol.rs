@@ -16,7 +16,11 @@ use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::
 /// the server that spawned it, so a later zellij may well find itself talking to
 /// an older host; both ends check this and refuse cleanly rather than
 /// misinterpreting a payload.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v2 added `Release`/`Attach`. The practical cost of the bump is that a v1
+/// orphan left over from before an upgrade cannot be adopted — `pty-host adopt`
+/// says so rather than failing obscurely.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The descriptor the control channel is `dup2`'d onto before the supervisor
 /// execs. Picked as the first free fd after stdio.
@@ -51,6 +55,27 @@ pub enum ServerToHostMsg {
     /// control connection means "detached", not "shut down".
     Terminate,
     Query,
+    /// Give the pane up without killing it, so someone else can take it.
+    ///
+    /// A dropped control channel already means "detached", so this carries no
+    /// information the supervisor could not eventually infer. What it buys is
+    /// *ordering*: `event_loop` polls the control channel before the named
+    /// socket, so a `Release` written before the new owner is told to connect is
+    /// always processed before that owner's `Attach` is accepted. Relying on EOF
+    /// instead would race two processes against each other.
+    Release,
+    /// Take a detached supervisor over: re-key it to the attaching server's pane
+    /// and hand the pty master back.
+    ///
+    /// Only ever arrives on the named socket — the accepted connection *becomes*
+    /// the new control channel, which is why it cannot be a control-channel
+    /// message.
+    Attach {
+        protocol_version: u32,
+        zellij_version: String,
+        terminal_id: u32,
+        session_name: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +103,50 @@ pub enum HostToServerMsg {
         status: Option<i32>,
     },
     Status(HostStatus),
+    /// Sent with the pty master fd as `SCM_RIGHTS` ancillary data, exactly like
+    /// `Spawned`. The connection this arrives on is the new control channel.
+    AttachAck {
+        protocol_version: u32,
+        zellij_version: String,
+        host_id: HostId,
+        host_pid: u32,
+        child_pid: u32,
+        /// The structured command. `HostStatus.command` only carries its display
+        /// form, and the adopting server needs `hold_on_close` to rebuild a
+        /// `quit_cb` that behaves like the original.
+        ///
+        /// `originating_plugin` is cleared before this is sent: its plugin and
+        /// client ids belong to the session the pane came from, and would name
+        /// something else entirely in the session adopting it.
+        cmd: RunCommand,
+        status: HostStatus,
+        /// What accumulated in the ring while nobody was attached, so the gap
+        /// between one server letting go and the next taking hold costs nothing.
+        ///
+        /// Base64 rather than `Vec<u8>` because serde_json renders a byte vector
+        /// as a JSON array of decimals — up to 4 bytes on the wire per byte of
+        /// output, which a full 256 KiB ring would push against `MAX_FRAME_LEN`.
+        buffered_base64: String,
+        /// Non-zero when the ring overflowed while detached. Reported rather than
+        /// hidden: the adopting pane is missing the *middle* of its output, and
+        /// that is worth a warning rather than a silently mangled screen.
+        dropped_bytes: u64,
+    },
+    AttachRefused {
+        reason: AttachRefusal,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachRefusal {
+    /// Someone else is already holding this supervisor's control channel. Two
+    /// servers reading the same master would each get half the output.
+    AlreadyAttached,
+    ProtocolMismatch,
+    /// The supervisor never got as far as spawning a child, so there is no pty
+    /// to hand over.
+    NoSession,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +218,28 @@ pub fn read_msg<T: DeserializeOwned, R: Read>(reader: &mut R) -> Result<Option<T
     serde_json::from_slice(&body)
         .map(Some)
         .with_context(err_context)
+}
+
+// --- buffered output encoding ---
+
+/// Encode the detached ring's contents for `AttachAck`.
+///
+/// Pty output is arbitrary bytes, not text — it is half-written UTF-8 and raw
+/// escape sequences — so it cannot ride in a JSON string directly, and a JSON
+/// array of decimals would cost up to 4 wire bytes per byte. Base64 is 4 bytes
+/// per 3, which keeps a full `RING_CAPACITY` well inside `MAX_FRAME_LEN`.
+pub fn encode_buffered(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    STANDARD.encode(bytes)
+}
+
+pub fn decode_buffered(encoded: &str) -> Result<Vec<u8>> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    STANDARD
+        .decode(encoded)
+        .context("failed to decode the buffered pty output in an AttachAck")
 }
 
 // --- socket layout ---

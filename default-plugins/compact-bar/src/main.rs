@@ -44,6 +44,7 @@ struct State {
     breadcrumb_range: Option<(usize, usize)>,
     display_area_rows: usize,
     display_area_cols: usize,
+    hostname: String,
 
     // Clipboard state
     text_copy_destination: Option<CopyDestination>,
@@ -80,6 +81,7 @@ impl ZellijPlugin for State {
         let plugin_ids = get_plugin_ids();
         self.own_plugin_id = Some(plugin_ids.plugin_id);
         self.own_client_id = plugin_ids.client_id;
+        self.hostname = plugin_ids.hostname;
         self.initialize_configuration(configuration);
         self.setup_subscriptions();
         self.configure_keybinds();
@@ -527,6 +529,7 @@ impl State {
         let tab_data = self.prepare_tab_data();
         let tab_line_output = tab_line(
             &self.mode_info,
+            &self.hostname,
             tab_data,
             cols,
             self.toggle_tooltip_key.clone(),

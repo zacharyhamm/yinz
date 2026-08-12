@@ -2745,6 +2745,8 @@ pub struct PluginIds {
     pub zellij_pid: u32,
     pub initial_cwd: PathBuf,
     pub client_id: ClientId,
+    /// Short hostname of the machine running this session's server, empty if unavailable
+    pub hostname: String,
 }
 
 /// Tag used to identify the plugin in layout and config kdl files
@@ -3089,6 +3091,41 @@ impl PipeMessage {
             is_private,
         }
     }
+}
+
+/// Where a warped or adopted pane should land in the session receiving it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum WarpPlacement {
+    /// A tab of its own. The default, because it is the only placement that
+    /// cannot disturb a layout the receiving session already has.
+    #[default]
+    NewTab,
+    /// A tiled split in whatever tab the receiving session has focused.
+    FocusedTab,
+    Floating,
+}
+
+/// Everything that has to travel with a pane moving between sessions, beyond what
+/// the pane's own supervisor can already report.
+///
+/// Deliberately small. The running process, its command and its exit status are
+/// all held by the pty-host, and the adopting server learns them from the
+/// `AttachAck` — so this carries only what lives in the *terminal emulator*: the
+/// screen, and how the pane was presented.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct WarpedPane {
+    /// Identifies the supervisor, for error messages and `pty-host adopt`.
+    pub host_id: String,
+    /// Where to attach. A supervisor that failed to bind a socket has no address
+    /// to hand out, which is the one way a pane can be detachable but not
+    /// transferable — the source refuses the warp rather than sending this empty.
+    pub control_socket: PathBuf,
+    /// The pane's title, so it does not arrive renamed.
+    pub title: Option<String>,
+    /// The screen and scrollback as an ANSI dump, replayed into the new pane the
+    /// same way session resurrection restores one.
+    pub contents: Option<String>,
+    pub borderless: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]

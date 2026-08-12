@@ -12,6 +12,7 @@ pub struct TabLineOutput {
 
 pub fn tab_line(
     mode_info: &ModeInfo,
+    hostname: &str,
     tab_data: TabRenderData,
     cols: usize,
     toggle_tooltip_key: Option<String>,
@@ -25,6 +26,7 @@ pub fn tab_line(
     };
     let nested_hint = NestedSessionHint::from_mode_info(mode_info);
     let config = TabLineConfig {
+        hostname: hostname.to_owned(),
         session_name: mode_info.session_name.to_owned(),
         hide_session_name: mode_info.style.hide_session_name,
         mode: mode_info.mode,
@@ -66,6 +68,7 @@ impl NestedSessionHint {
 
 #[derive(Debug, Clone)]
 pub struct TabLineConfig {
+    pub hostname: String,
     pub session_name: Option<String>,
     pub hide_session_name: bool,
     pub mode: InputMode,
@@ -323,6 +326,7 @@ enum TabAction {
 }
 
 struct TabLinePrefixBuilder<'a> {
+    hostname: &'a str,
     palette: Styling,
     cols: usize,
     dimmed: bool,
@@ -335,8 +339,15 @@ struct TabLinePrefix {
 }
 
 impl<'a> TabLinePrefixBuilder<'a> {
-    fn new(palette: Styling, cols: usize, dimmed: bool, breadcrumb_ancestry: &'a [String]) -> Self {
+    fn new(
+        hostname: &'a str,
+        palette: Styling,
+        cols: usize,
+        dimmed: bool,
+        breadcrumb_ancestry: &'a [String],
+    ) -> Self {
         Self {
+            hostname,
             palette,
             cols,
             dimmed,
@@ -433,7 +444,13 @@ impl<'a> TabLinePrefixBuilder<'a> {
     }
 
     fn create_zellij_part(&self) -> LinePart {
-        let prefix_text = " Zellij ";
+        // fall back to our own name if the host couldn't tell us its hostname
+        let prefix_text = if self.hostname.is_empty() {
+            " Zellij ".to_string()
+        } else {
+            format!(" {} ", self.hostname)
+        };
+        let prefix_len = prefix_text.width();
         let colors = self.get_text_colors();
         let text_style = if self.dimmed {
             style!(colors.text, colors.background).italic()
@@ -443,7 +460,7 @@ impl<'a> TabLinePrefixBuilder<'a> {
 
         LinePart {
             part: text_style.paint(prefix_text).to_string(),
-            len: prefix_text.chars().count(),
+            len: prefix_len,
             tab_index: None,
         }
     }
@@ -762,6 +779,7 @@ impl TabLineBuilder {
             &self.config.breadcrumb_ancestry
         };
         let prefix_builder = TabLinePrefixBuilder::new(
+            &self.config.hostname,
             self.palette,
             self.cols,
             self.config.dimmed,

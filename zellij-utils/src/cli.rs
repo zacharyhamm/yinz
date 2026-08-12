@@ -180,6 +180,23 @@ pub enum PtyHosts {
     },
     /// Terminate every supervisor, and every process they are running.
     KillAll,
+    /// Adopt a surviving pane into a session, putting it back on screen.
+    ///
+    /// The counterpart to `list`: what to do about a supervisor that outlived the
+    /// server that started it.
+    Adopt {
+        /// Supervisor ID from `zellij pty-host list`. A unique prefix is enough.
+        host_id: String,
+        /// Session to adopt the pane into. Defaults to the current session.
+        #[clap(long, short)]
+        session: Option<String>,
+        /// Land the pane in the session's focused tab instead of a new tab.
+        #[clap(long, conflicts_with = "floating")]
+        focused_tab: bool,
+        /// Land the pane floating in the session's focused tab.
+        #[clap(long, conflicts_with = "focused_tab")]
+        floating: bool,
+    },
 }
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
@@ -799,6 +816,21 @@ pub enum CliAction {
     FocusPaneId {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3
         pane_id: String,
+    },
+    /// Move a pane, with the process running in it, to another session
+    WarpPane {
+        /// Name of the session to move the pane to
+        #[clap(long, short)]
+        to_session: String,
+        /// The pane to move, eg. terminal_1 or 3. Defaults to the focused pane.
+        #[clap(long)]
+        pane_id: Option<String>,
+        /// Land the pane in the target session's focused tab instead of a new tab
+        #[clap(long, conflicts_with = "floating")]
+        focused_tab: bool,
+        /// Land the pane floating in the target session's focused tab
+        #[clap(long, conflicts_with = "focused_tab")]
+        floating: bool,
     },
     /// Change focus to the last focused frame
     FocusLastPane,

@@ -3,7 +3,7 @@ use crate::data::{
     BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates, GlobalPaneEdge,
     GlobalPanePlacement, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
     LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag, Resize,
-    WebSharing,
+    WarpPlacement, WarpedPane, WebSharing,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -837,6 +837,66 @@ fn test_client_messages() {
         action: Action::Quit,
         terminal_id: Some(1),
         client_id: Some(100),
+        is_cli_client: true,
+    });
+    // Moving a pane between sessions. The placement enum and the optional pane id
+    // are the parts a hand-written protobuf conversion gets wrong.
+    for placement in [
+        WarpPlacement::NewTab,
+        WarpPlacement::FocusedTab,
+        WarpPlacement::Floating,
+    ] {
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::WarpPane {
+                pane_id: None,
+                to_session: "other".to_owned(),
+                placement,
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::WarpPane {
+                pane_id: Some(PaneId::Terminal(3)),
+                to_session: "other".to_owned(),
+                placement,
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+    }
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::AdoptPane {
+            payload: Box::new(WarpedPane {
+                host_id: "a3f1c2d4e5b6".to_owned(),
+                control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
+                title: None,
+                contents: None,
+                borderless: false,
+            }),
+            placement: WarpPlacement::NewTab,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    // A warped pane carries its whole scrollback, so the payload is routinely
+    // orders of magnitude larger than any other action on this wire.
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::AdoptPane {
+            payload: Box::new(WarpedPane {
+                host_id: "a3f1c2d4e5b6".to_owned(),
+                control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
+                title: Some("vim src/main.rs".to_owned()),
+                contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(200_000)),
+                borderless: true,
+            }),
+            placement: WarpPlacement::Floating,
+        },
+        terminal_id: None,
+        client_id: None,
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4140,4 +4200,41 @@ fn rename_active_pane_wire_roundtrip() {
         .expect("Failed to convert decoded protobuf back to Rust");
 
     assert_eq!(original, roundtrip);
+}
+
+/// The length prefix is read straight off the wire and used as an allocation
+/// size, so without a bound a peer claiming four gigabytes gets four gigabytes.
+/// Nothing legitimate comes close: the largest real message is a warped pane's
+/// scrollback, which the sender caps far below this.
+#[test]
+fn an_oversized_frame_is_refused_without_allocating() {
+    use crate::ipc::MAX_IPC_FRAME_LEN;
+    use std::io::Read;
+
+    /// Yields the length prefix and then refuses to produce a single byte more,
+    /// so a reader that honours the limit returns before reading the body and one
+    /// that does not fails here rather than by exhausting memory.
+    struct LyingLength {
+        prefix: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl Read for LyingLength {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.prefix.read(buf)?;
+            if n == 0 {
+                panic!("the reader tried to read a body it had been told was oversized");
+            }
+            Ok(n)
+        }
+    }
+
+    let claimed = (MAX_IPC_FRAME_LEN + 1) as u32;
+    let mut reader = LyingLength {
+        prefix: std::io::Cursor::new(claimed.to_le_bytes().to_vec()),
+    };
+    let result = crate::ipc::read_protobuf_message_for_test(&mut reader);
+    assert!(
+        result.is_err(),
+        "a frame claiming {claimed} bytes should have been refused"
+    );
 }

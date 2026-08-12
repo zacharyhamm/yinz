@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use zellij_utils::data::WarpedPane;
 use zellij_utils::errors::prelude::*;
 
 use super::client;
@@ -176,25 +177,20 @@ fn human_bytes(bytes: usize) -> String {
     }
 }
 
-pub fn kill(host_id: &str) -> Result<()> {
+/// Resolve a host id, or any unique prefix of one, to the supervisor it names.
+///
+/// Shared by `kill` and `adopt` so the two agree on what counts as a match and
+/// word the ambiguity the same way.
+fn resolve(host_id: &str) -> Result<Entry> {
     let entries = collect()?;
-    let matches: Vec<&Entry> = entries
-        .iter()
+    let mut matches: Vec<Entry> = entries
+        .into_iter()
         .filter(|e| e.status.host_id == host_id || e.status.host_id.starts_with(host_id))
         .collect();
 
     match matches.len() {
         0 => Err(anyhow!("no pane supervisor matches '{host_id}'")),
-        1 => {
-            let entry = matches[0];
-            client::terminate_via_socket(&entry.path)
-                .with_context(|| format!("failed to terminate {}", entry.status.host_id))?;
-            println!(
-                "Terminated {} ({}).",
-                entry.status.host_id, entry.status.command
-            );
-            Ok(())
-        },
+        1 => Ok(matches.remove(0)),
         _ => {
             let ids: Vec<&str> = matches.iter().map(|e| e.status.host_id.as_str()).collect();
             Err(anyhow!(
@@ -203,6 +199,55 @@ pub fn kill(host_id: &str) -> Result<()> {
             ))
         },
     }
+}
+
+pub fn kill(host_id: &str) -> Result<()> {
+    let entry = resolve(host_id)?;
+    client::terminate_via_socket(&entry.path)
+        .with_context(|| format!("failed to terminate {}", entry.status.host_id))?;
+    println!(
+        "Terminated {} ({}).",
+        entry.status.host_id, entry.status.command
+    );
+    Ok(())
+}
+
+/// Where an `adopt` should send its `AdoptPane`, and the pane to put in it.
+///
+/// This runs as a plain CLI command with no session of its own, so it resolves
+/// the supervisor here — failing fast and legibly if it is gone or already
+/// spoken for — and leaves the actual adoption to the session, which is the only
+/// thing that can give the pane a home.
+pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, WarpedPane)> {
+    let entry = resolve(host_id)?;
+    if entry.status.attached {
+        return Err(anyhow!(
+            "{} is already attached to session '{}'; there is nothing to recover",
+            entry.status.host_id,
+            entry.status.session_name.as_deref().unwrap_or("<unknown>")
+        ));
+    }
+    let session = match session.or_else(|| zellij_utils::envs::get_session_name().ok()) {
+        Some(session) => session,
+        None => {
+            return Err(anyhow!(
+                "not inside a zellij session; say which one to adopt into with --session"
+            ));
+        },
+    };
+    Ok((
+        session,
+        WarpedPane {
+            host_id: entry.status.host_id.clone(),
+            control_socket: entry.path,
+            // A survivor has no screen to bring with it — the server that held
+            // its scrollback is what died. Name it after the command instead, and
+            // let the ring buffer supply whatever it wrote while orphaned.
+            title: Some(entry.status.command.clone()),
+            contents: None,
+            borderless: false,
+        },
+    ))
 }
 
 pub fn kill_all() -> Result<()> {

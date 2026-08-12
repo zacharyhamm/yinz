@@ -56,7 +56,7 @@ features = ["std"]
 close_fds = "0.3.2"
 daemonize = { workspace = true }
 libc = { workspace = true }
-nix = { workspace = true, features = ["fs", "poll", "process", "signal", "socket", "term", "uio"] }
+nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio"] }
 signal-hook = { workspace = true }
 
 [dev-dependencies]

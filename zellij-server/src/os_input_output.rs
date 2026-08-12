@@ -4,7 +4,8 @@ use crate::{panes::PaneId, ClientId};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
-use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
+use crate::os_input_output_unix::{AdoptedTerminal, UnixPtyBackend as PtyBackendImpl};
+use crate::pty_host::client::ReleasedPtyHost;
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -27,7 +28,7 @@ use std::{
     env,
     fs::File,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
 };
@@ -344,6 +345,25 @@ pub trait ServerOsApi: Send + Sync {
     fn set_pty_host_enabled(&self, _enabled: bool) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
+    /// Hand a pane's supervisor over without killing it, so another session can
+    /// take the running process. Defaulted to an error rather than a no-op: a
+    /// backend that cannot do this must refuse the warp, not silently succeed and
+    /// lose the pane.
+    fn release_terminal_for_warp(&self, _terminal_id: u32) -> Result<ReleasedPtyHost> {
+        Err(anyhow!(
+            "this backend does not support moving panes between sessions"
+        ))
+    }
+    /// Take a detached supervisor over into this session under a fresh terminal id.
+    fn adopt_terminal(
+        &self,
+        _control_socket: &Path,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        Err(anyhow!(
+            "this backend does not support adopting panes from another session"
+        ))
+    }
     fn cache_resizes(&mut self) {}
     fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
         Vec::new()
@@ -597,6 +617,18 @@ impl ServerOsApi for ServerOsInputOutput {
     #[cfg(not(windows))]
     fn shutdown_pty_hosts(&self) {
         self.pty_backend.shutdown_pty_hosts();
+    }
+    #[cfg(not(windows))]
+    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+        self.pty_backend.release_terminal_for_warp(terminal_id)
+    }
+    #[cfg(not(windows))]
+    fn adopt_terminal(
+        &self,
+        control_socket: &Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        self.pty_backend.adopt_terminal(control_socket, quit_cb)
     }
     fn cache_resizes(&mut self) {
         if self.cached_resizes.lock().unwrap().is_none() {

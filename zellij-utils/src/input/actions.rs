@@ -8,7 +8,8 @@ use super::layout::{
 use crate::cli::CliAction;
 use crate::data::{
     CommandOrPlugin, Direction, GlobalPaneEdge, GlobalPanePlacement, KeyWithModifier, LayoutInfo,
-    NewPanePlacement, OriginatingPlugin, PaneId, Resize, UnblockCondition,
+    NewPanePlacement, OriginatingPlugin, PaneId, Resize, UnblockCondition, WarpPlacement,
+    WarpedPane,
 };
 use crate::data::{FloatingPaneCoordinates, InputMode};
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -390,6 +391,27 @@ pub enum Action {
         layout: Option<LayoutInfo>,
         cwd: Option<PathBuf>,
     },
+    /// Move a pane, running process and all, to another session.
+    ///
+    /// Handled by the session the pane is *leaving*: it releases the pane's
+    /// pty-host supervisor without killing it and sends the other session an
+    /// `AdoptPane`.
+    WarpPane {
+        /// `None` means whichever pane is focused.
+        pane_id: Option<PaneId>,
+        to_session: String,
+        placement: WarpPlacement,
+    },
+    /// Take a pane over, from a session warping it here or from a supervisor that
+    /// outlived its server.
+    ///
+    /// Handled by the session the pane is *arriving in*, and sent by three
+    /// different callers: a warp's source, `zellij pty-host adopt`, and a warp
+    /// rolling itself back.
+    AdoptPane {
+        payload: Box<WarpedPane>,
+        placement: WarpPlacement,
+    },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
     LaunchOrFocusPlugin {
         plugin: RunPluginOrAlias,
@@ -716,6 +738,19 @@ fn parse_global_pane_placement(
     }
 }
 
+/// Both `warp-pane` and `pty-host adopt` spell placement the same way: two
+/// mutually exclusive flags over a new-tab default. clap enforces the exclusion,
+/// so this only has to pick.
+pub fn warp_placement(focused_tab: bool, floating: bool) -> WarpPlacement {
+    if floating {
+        WarpPlacement::Floating
+    } else if focused_tab {
+        WarpPlacement::FocusedTab
+    } else {
+        WarpPlacement::NewTab
+    }
+}
+
 impl Action {
     /// Checks that two Action are match except their mutable attributes.
     pub fn shallow_eq(&self, other_action: &Action) -> bool {
@@ -875,6 +910,28 @@ impl Action {
                         "Malformed pane id: {pane_id}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
                     ))?;
                 Ok(vec![Action::FocusPaneByPaneId { pane_id }])
+            },
+            CliAction::WarpPane {
+                to_session,
+                pane_id,
+                focused_tab,
+                floating,
+            } => {
+                let pane_id = pane_id
+                    .map(|pane_id| {
+                        PaneId::from_str(&pane_id).map_err(|_| format!(
+                            "Malformed pane id: {pane_id}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
+                        ))
+                    })
+                    .transpose()?;
+                if to_session.trim().is_empty() {
+                    return Err("--to-session cannot be empty".to_owned());
+                }
+                Ok(vec![Action::WarpPane {
+                    pane_id,
+                    to_session,
+                    placement: warp_placement(focused_tab, floating),
+                }])
             },
             CliAction::FocusLastPane => Ok(vec![Action::FocusLastPane]),
             CliAction::MoveFocus { direction } => Ok(vec![Action::MoveFocus { direction }]),

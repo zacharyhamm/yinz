@@ -35,13 +35,18 @@ fn main() {
     // Talks only to supervisor sockets, so like `recordings` it runs without any
     // client or server — the whole point is that it works when the session is
     // already gone.
+    // `adopt` is the exception: unlike list/kill it has to reach a running
+    // session, so it goes through the ordinary CLI-action path below rather than
+    // exiting here.
     #[cfg(unix)]
     if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
-        if let Err(e) = commands::pty_hosts(pty_hosts) {
-            eprintln!("Error: {e:#}");
-            std::process::exit(1);
+        if !matches!(pty_hosts, zellij_utils::cli::PtyHosts::Adopt { .. }) {
+            if let Err(e) = commands::pty_hosts(pty_hosts) {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
         }
-        std::process::exit(0);
     }
 
     // Handle offline recordings command before client/server startup
@@ -61,6 +66,11 @@ fn main() {
         let config = Config::try_from(&opts).ok();
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
+            std::process::exit(0);
+        }
+        #[cfg(unix)]
+        if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
+            commands::pty_host_adopt(pty_hosts, opts.session, config);
             std::process::exit(0);
         }
         if let Some(Command::Subscribe(subscribe_cli)) = opts.command {
