@@ -2668,6 +2668,48 @@ pub enum GetPaneCwdResponse {
     Err(String),
 }
 
+/// The outcome of moving a pane between sessions, in either direction.
+///
+/// Both variants carry prose meant to be shown to whoever asked. The failures in
+/// particular are not codes to be matched on: when a warp fails after the pane's
+/// supervisor has been released, the message is the only place the recovery
+/// instructions exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WarpPaneResponse {
+    Ok(String),
+    Err(String),
+}
+
+/// A pane whose session died but whose process is still running.
+///
+/// A projection of the server's own `HostStatus` rather than that type itself,
+/// which lives in `zellij-server` and could never cross the wasm boundary — and
+/// which carries a host pid and a socket path a plugin has no use for.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrphanedPane {
+    /// The id `adopt_orphaned_pane` takes, and that `zellij pty-host adopt` on
+    /// the command line takes too.
+    pub host_id: String,
+    /// The session it belonged to, if the supervisor was ever told one.
+    pub session_name: Option<String>,
+    pub command: String,
+    pub cwd: Option<PathBuf>,
+    pub child_pid: Option<u32>,
+    pub started_at_unix: u64,
+    /// `None` while the child is still running; `Some(None)` once it has been
+    /// killed by a signal; `Some(Some(code))` once it has exited.
+    pub exit_status: Option<Option<i32>>,
+    /// Output the supervisor caught while nobody was reading, which the adopting
+    /// session will replay.
+    pub buffered_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ListOrphanedPanesResponse {
+    Ok(Vec<OrphanedPane>),
+    Err(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetFocusedPaneInfoResponse {
     Ok { tab_index: usize, pane_id: PaneId },
@@ -3723,6 +3765,27 @@ pub enum PluginCommand {
     SearchRecordings {
         query: String,
         limit: usize,
+    },
+    /// Move a pane out of this session and into another one. Sends a response
+    /// back, and blocks until the pane has landed or the move has been undone.
+    WarpPaneToSession {
+        pane_id: PaneId,
+        to_session: String,
+        placement: WarpPlacement,
+    },
+    /// Ask another session for one of its panes. Sends a response back.
+    WarpPaneFromSession {
+        pane_id: PaneId,
+        from_session: String,
+        placement: WarpPlacement,
+    },
+    /// Panes whose session died but whose process is still running. Sends a
+    /// response back.
+    ListOrphanedPanes,
+    /// Take one of those panes into this session. Sends a response back.
+    AdoptOrphanedPane {
+        host_id: String,
+        placement: WarpPlacement,
     },
 }
 

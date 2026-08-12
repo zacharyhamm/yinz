@@ -5,7 +5,7 @@
 //! its supervisors running, and nothing else will ever reclaim them, so without
 //! this the only evidence a pane survived is a stray process in `ps`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zellij_utils::data::WarpedPane;
@@ -25,8 +25,14 @@ struct Entry {
 /// A stale socket is the normal residue of a `SIGKILL`'d supervisor, so garbage
 /// collecting here rather than reporting it keeps the listing honest.
 fn collect() -> Result<Vec<Entry>> {
-    let dir = protocol::socket_dir();
-    let read_dir = match std::fs::read_dir(&dir) {
+    collect_from(&protocol::socket_dir())
+}
+
+/// The directory is a parameter so this is reachable from a test without
+/// enumerating — and garbage collecting — the sockets of whatever sessions the
+/// developer running the suite happens to have open.
+fn collect_from(dir: &Path) -> Result<Vec<Entry>> {
+    let read_dir = match std::fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
@@ -51,7 +57,10 @@ fn collect() -> Result<Vec<Entry>> {
         match client::query(&path) {
             Ok(status) => entries.push(Entry { path, status }),
             Err(e) => {
-                eprintln!("Could not query {}: {e:#}", path.display());
+                // Logged rather than printed: this also runs inside the server,
+                // on behalf of a plugin, where a stray stderr write would land
+                // in whatever pty the server happens to be holding.
+                log::warn!("could not query {}: {e:#}", path.display());
             },
         }
     }
@@ -62,6 +71,12 @@ fn collect() -> Result<Vec<Entry>> {
             .then(a.status.terminal_id.cmp(&b.status.terminal_id))
     });
     Ok(entries)
+}
+
+/// Every live supervisor's status, for callers that want the data rather than
+/// the table `list` prints.
+pub fn statuses() -> Result<Vec<HostStatus>> {
+    Ok(collect()?.into_iter().map(|entry| entry.status).collect())
 }
 
 pub fn list(as_json: bool) -> Result<()> {
@@ -219,14 +234,7 @@ pub fn kill(host_id: &str) -> Result<()> {
 /// spoken for — and leaves the actual adoption to the session, which is the only
 /// thing that can give the pane a home.
 pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, WarpedPane)> {
-    let entry = resolve(host_id)?;
-    if entry.status.attached {
-        return Err(anyhow!(
-            "{} is already attached to session '{}'; there is nothing to recover",
-            entry.status.host_id,
-            entry.status.session_name.as_deref().unwrap_or("<unknown>")
-        ));
-    }
+    let payload = adopt_payload(host_id)?;
     let session = match session.or_else(|| zellij_utils::envs::get_session_name().ok()) {
         Some(session) => session,
         None => {
@@ -235,19 +243,33 @@ pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, 
             ));
         },
     };
-    Ok((
-        session,
-        WarpedPane {
-            host_id: entry.status.host_id.clone(),
-            control_socket: entry.path,
-            // A survivor has no screen to bring with it — the server that held
-            // its scrollback is what died. Name it after the command instead, and
-            // let the ring buffer supply whatever it wrote while orphaned.
-            title: Some(entry.status.command.clone()),
-            contents: None,
-            borderless: false,
-        },
-    ))
+    Ok((session, payload))
+}
+
+/// The pane a host id names, ready to be adopted.
+///
+/// Split out of `adopt_request` for callers that already know which session the
+/// pane is going to — a session adopting into itself has no `--session` to
+/// resolve and no environment to read it from.
+pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
+    let entry = resolve(host_id)?;
+    if entry.status.attached {
+        return Err(anyhow!(
+            "{} is already attached to session '{}'; there is nothing to recover",
+            entry.status.host_id,
+            entry.status.session_name.as_deref().unwrap_or("<unknown>")
+        ));
+    }
+    Ok(WarpedPane {
+        host_id: entry.status.host_id.clone(),
+        control_socket: entry.path,
+        // A survivor has no screen to bring with it — the server that held its
+        // scrollback is what died. Name it after the command instead, and let
+        // the ring buffer supply whatever it wrote while orphaned.
+        title: Some(entry.status.command.clone()),
+        contents: None,
+        borderless: false,
+    })
 }
 
 pub fn kill_all() -> Result<()> {

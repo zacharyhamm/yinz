@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -328,6 +328,109 @@ pub mod plugin_command {
         SearchRecordingsPayload(super::SearchRecordingsPayload),
         #[prost(string, tag="175")]
         NotifyPayload(::prost::alloc::string::String),
+        #[prost(message, tag="176")]
+        WarpPaneToSessionPayload(super::WarpPaneToSessionPayload),
+        #[prost(message, tag="177")]
+        WarpPaneFromSessionPayload(super::WarpPaneFromSessionPayload),
+        #[prost(message, tag="178")]
+        AdoptOrphanedPanePayload(super::AdoptOrphanedPanePayload),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpPaneToSessionPayload {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(string, tag="2")]
+    pub to_session: ::prost::alloc::string::String,
+    #[prost(enumeration="WarpPlacement", tag="3")]
+    pub placement: i32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpPaneFromSessionPayload {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(string, tag="2")]
+    pub from_session: ::prost::alloc::string::String,
+    #[prost(enumeration="WarpPlacement", tag="3")]
+    pub placement: i32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdoptOrphanedPanePayload {
+    #[prost(string, tag="1")]
+    pub host_id: ::prost::alloc::string::String,
+    #[prost(enumeration="WarpPlacement", tag="2")]
+    pub placement: i32,
+}
+/// Shared by every command in this family: a line to show whoever asked, or the
+/// reason it could not be done.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpPaneResponse {
+    #[prost(oneof="warp_pane_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<warp_pane_response::Result>,
+}
+/// Nested message and enum types in `WarpPaneResponse`.
+pub mod warp_pane_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(string, tag="1")]
+        Message(::prost::alloc::string::String),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+/// A pane supervisor that outlived the session it belonged to.
+///
+/// `exit_code` is meaningful only when `exited` is set, and its absence then
+/// means the child was killed by a signal rather than exiting with a status.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OrphanedPane {
+    #[prost(string, tag="1")]
+    pub host_id: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="2")]
+    pub session_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag="3")]
+    pub command: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="4")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, optional, tag="5")]
+    pub child_pid: ::core::option::Option<u32>,
+    #[prost(uint64, tag="6")]
+    pub started_at_unix: u64,
+    #[prost(bool, tag="7")]
+    pub exited: bool,
+    #[prost(int32, optional, tag="8")]
+    pub exit_code: ::core::option::Option<i32>,
+    #[prost(uint64, tag="9")]
+    pub buffered_bytes: u64,
+}
+/// A oneof cannot hold a repeated field, so the list needs a message of its own.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OrphanedPaneList {
+    #[prost(message, repeated, tag="1")]
+    pub panes: ::prost::alloc::vec::Vec<OrphanedPane>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListOrphanedPanesResponse {
+    #[prost(oneof="list_orphaned_panes_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<list_orphaned_panes_response::Result>,
+}
+/// Nested message and enum types in `ListOrphanedPanesResponse`.
+pub mod list_orphaned_panes_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Panes(super::OrphanedPaneList),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -2319,6 +2422,10 @@ pub enum CommandName {
     ListRecordings = 231,
     SearchRecordings = 232,
     Notify = 233,
+    WarpPaneToSession = 234,
+    WarpPaneFromSession = 235,
+    ListOrphanedPanes = 236,
+    AdoptOrphanedPane = 237,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2534,6 +2641,10 @@ impl CommandName {
             CommandName::ListRecordings => "ListRecordings",
             CommandName::SearchRecordings => "SearchRecordings",
             CommandName::Notify => "Notify",
+            CommandName::WarpPaneToSession => "WarpPaneToSession",
+            CommandName::WarpPaneFromSession => "WarpPaneFromSession",
+            CommandName::ListOrphanedPanes => "ListOrphanedPanes",
+            CommandName::AdoptOrphanedPane => "AdoptOrphanedPane",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2746,6 +2857,43 @@ impl CommandName {
             "ListRecordings" => Some(Self::ListRecordings),
             "SearchRecordings" => Some(Self::SearchRecordings),
             "Notify" => Some(Self::Notify),
+            "WarpPaneToSession" => Some(Self::WarpPaneToSession),
+            "WarpPaneFromSession" => Some(Self::WarpPaneFromSession),
+            "ListOrphanedPanes" => Some(Self::ListOrphanedPanes),
+            "AdoptOrphanedPane" => Some(Self::AdoptOrphanedPane),
+            _ => None,
+        }
+    }
+}
+/// Where a warped pane lands in the session receiving it.
+///
+/// Values are prefixed because proto3 scopes enum values to the package, and
+/// `CommandName` in this same file already has a `NewTab`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WarpPlacement {
+    NewTab = 0,
+    FocusedTab = 1,
+    Floating = 2,
+}
+impl WarpPlacement {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            WarpPlacement::NewTab => "WarpPlacementNewTab",
+            WarpPlacement::FocusedTab => "WarpPlacementFocusedTab",
+            WarpPlacement::Floating => "WarpPlacementFloating",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WarpPlacementNewTab" => Some(Self::NewTab),
+            "WarpPlacementFocusedTab" => Some(Self::FocusedTab),
+            "WarpPlacementFloating" => Some(Self::Floating),
             _ => None,
         }
     }

@@ -7357,9 +7357,18 @@ impl Screen {
         let mut found = false;
         for tab in self.tabs.values() {
             if tab.get_all_pane_ids().contains(&pane_id) {
-                // `Tab::close_pane` treats a suppressed pane as "swap the pane it
-                // is standing in for back", which would hand over the wrong pty.
-                if tab.get_suppressed_panes().any(|(id, _)| *id == pane_id) {
+                // Both halves of a scrollback-editor pair are refused, and for
+                // different reasons. `suppressed_panes` is keyed by the *visible*
+                // pane, so warping that one makes `Tab::close_pane` swap the
+                // hidden pane back in rather than remove it, handing over the
+                // wrong pty. Warping the hidden one is worse: it passes every
+                // check here, and only `take_released_pane_for_warp` discovers
+                // there is no pane at that id to serialize — by which point the
+                // supervisor has been released and the pane has no owner.
+                if tab
+                    .get_suppressed_panes()
+                    .any(|(id, (_, suppressed))| *id == pane_id || suppressed.pid() == pane_id)
+                {
                     return Err(
                         "this pane has a scrollback editor open; close it before moving the pane"
                             .to_owned(),

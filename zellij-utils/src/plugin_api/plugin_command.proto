@@ -222,6 +222,10 @@ enum CommandName {
   ListRecordings = 231;
   SearchRecordings = 232;
   Notify = 233;
+  WarpPaneToSession = 234;
+  WarpPaneFromSession = 235;
+  ListOrphanedPanes = 236;
+  AdoptOrphanedPane = 237;
 }
 
 message PluginCommand {
@@ -386,6 +390,73 @@ message PluginCommand {
     SetGlobalPanePlacementPayload set_global_pane_placement_payload = 173;
     SearchRecordingsPayload search_recordings_payload = 174;
     string notify_payload = 175;
+    WarpPaneToSessionPayload warp_pane_to_session_payload = 176;
+    WarpPaneFromSessionPayload warp_pane_from_session_payload = 177;
+    AdoptOrphanedPanePayload adopt_orphaned_pane_payload = 178;
+  }
+}
+
+// Where a warped pane lands in the session receiving it.
+//
+// Values are prefixed because proto3 scopes enum values to the package, and
+// `CommandName` in this same file already has a `NewTab`.
+enum WarpPlacement {
+  WarpPlacementNewTab = 0;
+  WarpPlacementFocusedTab = 1;
+  WarpPlacementFloating = 2;
+}
+
+message WarpPaneToSessionPayload {
+  PaneId pane_id = 1;
+  string to_session = 2;
+  WarpPlacement placement = 3;
+}
+
+message WarpPaneFromSessionPayload {
+  PaneId pane_id = 1;
+  string from_session = 2;
+  WarpPlacement placement = 3;
+}
+
+message AdoptOrphanedPanePayload {
+  string host_id = 1;
+  WarpPlacement placement = 2;
+}
+
+// Shared by every command in this family: a line to show whoever asked, or the
+// reason it could not be done.
+message WarpPaneResponse {
+  oneof result {
+    string message = 1;
+    string error = 2;
+  }
+}
+
+// A pane supervisor that outlived the session it belonged to.
+//
+// `exit_code` is meaningful only when `exited` is set, and its absence then
+// means the child was killed by a signal rather than exiting with a status.
+message OrphanedPane {
+  string host_id = 1;
+  optional string session_name = 2;
+  string command = 3;
+  optional string cwd = 4;
+  optional uint32 child_pid = 5;
+  uint64 started_at_unix = 6;
+  bool exited = 7;
+  optional int32 exit_code = 8;
+  uint64 buffered_bytes = 9;
+}
+
+// A oneof cannot hold a repeated field, so the list needs a message of its own.
+message OrphanedPaneList {
+  repeated OrphanedPane panes = 1;
+}
+
+message ListOrphanedPanesResponse {
+  oneof result {
+    OrphanedPaneList panes = 1;
+    string error = 2;
   }
 }
 

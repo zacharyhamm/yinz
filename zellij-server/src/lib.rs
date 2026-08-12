@@ -40,6 +40,7 @@ mod session_recorder;
 mod terminal_bytes;
 mod thread_bus;
 mod ui;
+mod warp;
 
 use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;

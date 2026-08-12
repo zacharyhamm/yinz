@@ -650,6 +650,51 @@ mod tests {
         assert!(state.pending.is_empty());
     }
 
+    /// Every tool that moves a pane between sessions stops for a y/n. The pane
+    /// leaves the screen, and a wrong target session puts it somewhere the user
+    /// is not looking.
+    #[test]
+    fn every_warp_stops_for_confirmation() {
+        for (name, arguments) in [
+            (
+                "warp_pane",
+                r#"{"pane_id":1,"is_plugin":false,"to_session":"other"}"#,
+            ),
+            ("warp_pane_here", r#"{"from_session":"other","pane_id":1}"#),
+            ("adopt_orphaned_pane", r#"{"host_id":"abc123"}"#),
+        ] {
+            let mut state = ready_state();
+            let frame = tool_call_frame("call_1", name, arguments);
+            state.on_chunk("hocus-1", &frame, false, None);
+            state.on_chunk("hocus-1", b"", true, None);
+
+            assert!(
+                matches!(state.status, Status::ConfirmingTool),
+                "{name} should ask before running"
+            );
+            assert!(
+                tool_results(&state).is_empty(),
+                "{name} should not have run yet"
+            );
+        }
+    }
+
+    #[test]
+    fn listing_other_sessions_runs_without_asking() {
+        for name in ["list_other_sessions", "list_orphaned_panes"] {
+            let mut state = ready_state();
+            let frame = tool_call_frame("call_1", name, "{}");
+            state.on_chunk("hocus-1", &frame, false, None);
+            state.on_chunk("hocus-1", b"", true, None);
+
+            assert!(
+                !matches!(state.status, Status::ConfirmingTool),
+                "{name} only reads; it should not ask"
+            );
+            assert_eq!(tool_results(&state).len(), 1);
+        }
+    }
+
     #[test]
     fn a_read_only_call_runs_without_asking() {
         let mut state = ready_state();

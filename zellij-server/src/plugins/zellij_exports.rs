@@ -36,19 +36,21 @@ use zellij_utils::data::{
     DeleteLayoutResponse, EditLayoutResponse, Event, FloatingPaneCoordinates,
     FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
     GetPaneRunningCommandResponse, HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo,
-    LayoutMetadata, LayoutParsingError, MessageToPlugin, NewPanePlacement, NewTabResponse,
-    NewTabUnfocusedResponse, NewTiledPaneInTabResponse, OpenCommandPaneBackgroundResponse,
-    OpenCommandPaneFloatingNearPluginResponse, OpenCommandPaneFloatingResponse,
-    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
-    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
+    LayoutMetadata, LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin,
+    NewPanePlacement, NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
+    OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
+    OpenCommandPaneFloatingResponse, OpenCommandPaneInPlaceOfPaneIdResponse,
+    OpenCommandPaneInPlaceOfPluginResponse, OpenCommandPaneInPlaceResponse,
+    OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
     OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
     OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
     OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
     OpenPluginPaneFloatingResponse, OpenTerminalFloatingNearPluginResponse,
     OpenTerminalFloatingResponse, OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
-    OriginatingPlugin, PaneFrameStyle, PaneScrollbackResponse, PermissionStatus, PermissionType,
-    PluginPermission, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, TabMetadata,
+    OriginatingPlugin, OrphanedPane, PaneFrameStyle, PaneScrollbackResponse, PermissionStatus,
+    PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse,
+    TabMetadata, WarpPaneResponse, WarpPlacement,
 };
 use zellij_utils::home::default_layout_dir;
 use zellij_utils::input::permission::PermissionCache;
@@ -96,7 +98,8 @@ use zellij_utils::{
             ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
             ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+            ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
+            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
             ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
@@ -116,6 +119,7 @@ use zellij_utils::{
             ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
             ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
             ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
+            ProtobufWarpPaneResponse,
         },
         plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion},
     },
@@ -467,6 +471,20 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     },
                     PluginCommand::DeleteAllDeadSessionsAndReply => {
                         delete_all_dead_sessions_and_reply(env)
+                    },
+                    PluginCommand::WarpPaneToSession {
+                        pane_id,
+                        to_session,
+                        placement,
+                    } => warp_pane_to_session(env, pane_id.into(), to_session, placement),
+                    PluginCommand::WarpPaneFromSession {
+                        pane_id,
+                        from_session,
+                        placement,
+                    } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
+                    PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
+                    PluginCommand::AdoptOrphanedPane { host_id, placement } => {
+                        adopt_orphaned_pane(env, host_id, placement)
                     },
                     PluginCommand::ScanHostFolder(folder_to_scan) => {
                         scan_host_folder(env, folder_to_scan)
@@ -3546,6 +3564,141 @@ fn kill_sessions_and_reply(env: &PluginEnv, session_names: Vec<String>) {
         .non_fatal();
 }
 
+// ---------------------------------------------------------------------------
+// Warping panes between sessions
+// ---------------------------------------------------------------------------
+//
+// These block the calling plugin's thread for as long as the warp takes, which
+// can be seconds — a supervisor is released here, attached over a socket there,
+// and the pane's scrollback travels with it. That is a real cost (the pinned
+// executor co-pins plugins once it is at capacity, so a long block can stall a
+// neighbour), and it is paid deliberately: the alternative is handing a plugin
+// an acknowledgement and no way to learn whether its pane arrived.
+//
+// What keeps it cheap in practice is that `crate::warp` checks the far session
+// is reachable before anything is released, so the overwhelmingly common failure
+// — a session name that does not exist — costs a `connect(2)`.
+
+fn warp_pane_to_session(
+    env: &PluginEnv,
+    pane_id: PaneId,
+    to_session: String,
+    placement: WarpPlacement,
+) {
+    let result = crate::warp::warp_pane_to_session(
+        &env.senders,
+        env.client_id,
+        // Always explicit, never "whichever pane is focused": a plugin is acting
+        // on a snapshot it took earlier, and for a shared plugin instance
+        // `env.client_id` is whichever client's event is being handled.
+        Some(pane_id),
+        &crate::warp::current_session_name(),
+        &to_session,
+        placement,
+        crate::warp::PLUGIN_WARP_TIMEOUT,
+    );
+    write_warp_response(env, result);
+}
+
+fn warp_pane_from_session(
+    env: &PluginEnv,
+    pane_id: PaneId,
+    from_session: String,
+    placement: WarpPlacement,
+) {
+    let result = crate::warp::warp_pane_from_session(
+        &crate::warp::current_session_name(),
+        &from_session,
+        pane_id,
+        placement,
+        crate::warp::PLUGIN_WARP_TIMEOUT,
+    );
+    write_warp_response(env, result);
+}
+
+#[cfg(unix)]
+fn adopt_orphaned_pane(env: &PluginEnv, host_id: String, placement: WarpPlacement) {
+    let result = crate::pty_host::cli::adopt_payload(&host_id)
+        .map_err(|e| format!("{e:#}"))
+        .and_then(|payload| {
+            crate::warp::adopt_pane_here(
+                &env.senders,
+                env.client_id,
+                Box::new(payload),
+                placement,
+                crate::warp::PLUGIN_WARP_TIMEOUT,
+            )
+        });
+    write_warp_response(env, result);
+}
+
+#[cfg(not(unix))]
+fn adopt_orphaned_pane(env: &PluginEnv, _host_id: String, _placement: WarpPlacement) {
+    write_warp_response(env, Err(NO_DETACHABLE_PANES.to_owned()));
+}
+
+#[cfg(unix)]
+fn list_orphaned_panes(env: &PluginEnv) {
+    let response = match crate::pty_host::cli::statuses() {
+        Ok(statuses) => ListOrphanedPanesResponse::Ok(
+            statuses
+                .iter()
+                // An attached supervisor is just a normal pane in some session,
+                // already reachable through `warp_pane_from_session`. Offering it
+                // here too would give a caller two ways to do one thing.
+                .filter(|status| !status.attached)
+                .map(|status| OrphanedPane {
+                    host_id: status.host_id.clone(),
+                    session_name: status.session_name.clone(),
+                    command: status.command.clone(),
+                    cwd: status.cwd.clone(),
+                    child_pid: status.child_pid,
+                    started_at_unix: status.started_at_unix,
+                    exit_status: status.child_exit_status,
+                    buffered_bytes: status.buffered_bytes as u64,
+                })
+                .collect(),
+        ),
+        Err(e) => ListOrphanedPanesResponse::Err(format!("{e:#}")),
+    };
+    write_orphaned_pane_list(env, response);
+}
+
+#[cfg(not(unix))]
+fn list_orphaned_panes(env: &PluginEnv) {
+    // Deliberately an error and not an empty list: an empty list says "there is
+    // nothing to recover", which is a different claim and a false one.
+    write_orphaned_pane_list(
+        env,
+        ListOrphanedPanesResponse::Err(NO_DETACHABLE_PANES.to_owned()),
+    );
+}
+
+#[cfg(not(unix))]
+const NO_DETACHABLE_PANES: &str = "detachable panes are not supported on this platform";
+
+fn write_warp_response(env: &PluginEnv, result: Result<String, String>) {
+    let response = match result {
+        Ok(message) => WarpPaneResponse::Ok(message),
+        Err(message) => WarpPaneResponse::Err(message),
+    };
+    wasi_write_object(
+        env,
+        &ProtobufWarpPaneResponse::from(response).encode_to_vec(),
+    )
+    .with_context(|| "failed to write the warp response".to_string())
+    .non_fatal();
+}
+
+fn write_orphaned_pane_list(env: &PluginEnv, response: ListOrphanedPanesResponse) {
+    wasi_write_object(
+        env,
+        &ProtobufListOrphanedPanesResponse::from(response).encode_to_vec(),
+    )
+    .with_context(|| "failed to write the orphaned pane list".to_string())
+    .non_fatal();
+}
+
 fn delete_dead_session_and_reply(env: &PluginEnv, session_name: String) {
     let response =
         match std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name)) {
@@ -5587,7 +5740,10 @@ fn check_command_permission(
         | PluginCommand::SetPaneRegexHighlights(..)
         | PluginCommand::ClearPaneHighlights(..)
         | PluginCommand::SetGlobalPanePlacement(..)
-        | PluginCommand::SetSoftKeyboard(..) => PermissionType::ChangeApplicationState,
+        | PluginCommand::SetSoftKeyboard(..)
+        | PluginCommand::WarpPaneToSession { .. }
+        | PluginCommand::WarpPaneFromSession { .. }
+        | PluginCommand::AdoptOrphanedPane { .. } => PermissionType::ChangeApplicationState,
         PluginCommand::UnblockCliPipeInput(..)
         | PluginCommand::BlockCliPipeInput(..)
         | PluginCommand::CliPipeOutput(..) => PermissionType::ReadCliPipes,
@@ -5606,7 +5762,8 @@ fn check_command_permission(
         | PluginCommand::CurrentSessionLastSavedTime
         | PluginCommand::GetPaneInfo(..)
         | PluginCommand::GetTabInfo(..)
-        | PluginCommand::GetSessionList => PermissionType::ReadApplicationState,
+        | PluginCommand::GetSessionList
+        | PluginCommand::ListOrphanedPanes => PermissionType::ReadApplicationState,
         PluginCommand::RebindKeys { .. } | PluginCommand::Reconfigure(..) => {
             PermissionType::Reconfigure
         },
