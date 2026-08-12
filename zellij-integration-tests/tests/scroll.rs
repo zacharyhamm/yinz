@@ -49,10 +49,12 @@ fn page_scroll_down() {
 
     zellij.send_stdin(&keys::ctrl('f'));
 
+    // Landing back at the bottom leaves Scroll mode: the mode follows the pane's scroll
+    // position, so the status bar here is the normal-mode one and not the scroll hints.
     let grid_snapshot =
         zellij.wait_until("scrolled back down toward the bottom", |grid_snapshot| {
             grid_snapshot.contains("line39")
-                && grid_snapshot.contains("PgDn|PgUp")
+                && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("SCROLL 0/")
         });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -89,10 +91,11 @@ fn half_page_scroll_down() {
 
     zellij.send_stdin(&keys::key('d'));
 
+    // As in `page_scroll_down`: back at the bottom is back in the default mode.
     let grid_snapshot =
         zellij.wait_until("scrolled back down toward the bottom", |grid_snapshot| {
             grid_snapshot.contains("line39")
-                && grid_snapshot.contains("PgDn|PgUp")
+                && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("SCROLL 0/")
         });
     assert_snapshot!(normalized(&grid_snapshot));

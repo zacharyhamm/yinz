@@ -85,6 +85,9 @@ fn isolate_process_environment(test_root: &Path) {
     std::env::set_var("XDG_DATA_HOME", test_root.join("data"));
     std::env::set_var("XDG_CONFIG_HOME", test_root.join("config"));
     std::env::set_var("XDG_RUNTIME_DIR", test_root.join("runtime"));
+    // The tab bar prints the machine's hostname. Without this every snapshot of it would only
+    // match on the machine that recorded it.
+    std::env::set_var("ZELLIJ_HOSTNAME", "Zellij");
     std::env::remove_var("ZELLIJ");
     std::env::remove_var("ZELLIJ_SESSION_NAME");
     std::env::remove_var("ZELLIJ_CONFIG_FILE");

@@ -8,9 +8,9 @@ $
                               │This plugin asks permission to: ReadApplicationState, Chan│
                               │geApplicationState, OpenFiles, RunCommands, OpenTerminalsO│
                               │rPlugins, WriteToStdin, WebAccess, ReadCliPipes, MessageAn│
-                              │dLaunchOtherPlugins, Reconfigure, RunActionsAsUser, WriteT│
-                              │oClipboard, ReadSessionEnvironmentVariables. Allow? (y/n) │
-                              │                                                          │
+                              │dLaunchOtherPlugins, Reconfigure, ReadPaneContents, RunAct│
+                              │ionsAsUser, WriteToClipboard, ReadSessionEnvironmentVariab│
+                              │les. Allow? (y/n)                                         │
                               │                                                          │
                               │                                                          │
                               │                                                          │

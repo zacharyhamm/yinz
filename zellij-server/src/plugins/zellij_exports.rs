@@ -966,13 +966,21 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
 
 /// Short hostname (first DNS label) of the machine running this server, for UI display.
 /// Empty if the host cannot be queried. Cached, since it can't change under us.
+///
+/// `ZELLIJ_HOSTNAME` overrides it. The tests need this: every snapshot of the tab bar would
+/// otherwise record whichever machine recorded it, and none of them would match anywhere else.
 fn host_display_name() -> String {
     static HOSTNAME: OnceLock<String> = OnceLock::new();
     HOSTNAME
         .get_or_init(|| {
-            nix::unistd::gethostname()
+            std::env::var("ZELLIJ_HOSTNAME")
                 .ok()
-                .and_then(|hostname| hostname.into_string().ok())
+                .filter(|hostname| !hostname.is_empty())
+                .or_else(|| {
+                    nix::unistd::gethostname()
+                        .ok()
+                        .and_then(|hostname| hostname.into_string().ok())
+                })
                 .map(|hostname| hostname.split('.').next().unwrap_or(&hostname).to_owned())
                 .unwrap_or_default()
         })
