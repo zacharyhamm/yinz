@@ -116,6 +116,17 @@ The build uses `cargo-zigbuild` to cross-compile a native musl binary (arm64 on 
 2. `brew install zig`
 </details>
 
+<details>
+<summary>Linux prerequisites (expand here):</summary>
+
+The build cross-compiles for `x86_64-unknown-linux-musl`, which needs the musl linker
+(this is what CI installs too). Without it `cargo xtask ci e2e --build` fails with
+`failed to find tool "x86_64-linux-musl-gcc"`.
+
+1. `sudo apt-get install -y --no-install-recommends musl-tools`
+2. `rustup target add x86_64-unknown-linux-musl`
+</details>
+
 
 To run these tests locally, you'll need to have either `docker` or `podman` and also `docker compose` installed.
 Once you do, in the repository root:

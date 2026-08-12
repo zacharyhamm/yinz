@@ -14,6 +14,7 @@ Some(
         ReadCliPipes,
         MessageAndLaunchOtherPlugins,
         Reconfigure,
+        ReadPaneContents,
         RunActionsAsUser,
         WriteToClipboard,
         ReadSessionEnvironmentVariables,
