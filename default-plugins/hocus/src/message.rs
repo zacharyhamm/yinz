@@ -122,7 +122,7 @@ pub enum Status {
     Idle,
     /// The head of `pending` is destructive and is waiting on `y`/`n`.
     ConfirmingTool,
-    /// The head of `pending` is a `run_command` waiting on `RunCommandResult`.
+    /// The head of `pending` is a Slack tool waiting on `RunCommandResult`.
     AwaitingCommand,
     /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
     AwaitingSearch,

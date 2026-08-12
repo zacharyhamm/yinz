@@ -25,22 +25,12 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// Outcome of dispatching a call.
-pub enum Dispatch {
-    /// Result is ready now.
-    Done(String),
-    /// The result will arrive later as `Event::RunCommandResult`, matched on the
-    /// `tool_call_id` carried through the command's context map.
-    Deferred,
-}
-
 /// Tools that need explicit confirmation before dispatch. All other tools run
 /// without asking.
 pub fn needs_confirmation(name: &str) -> bool {
     matches!(
         name,
-        "run_command"
-            | "rerun_pane"
+        "rerun_pane"
             | "clear_pane"
             | "send_input"
             | "agent_send"
@@ -413,22 +403,6 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
-            "run_command",
-            "Run a command in the background and get its exit code, stdout and stderr back. Use this when you need to read the output yourself; use new_pane when the user should watch it run. Do not invoke zellij when a dedicated tool covers the operation. Not a shell — there is no pipe, redirect, glob or ~ expansion; run [\"sh\", \"-c\", \"...\"] when you need one.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Program and arguments, e.g. [\"git\", \"status\", \"--short\"].",
-                    },
-                    "cwd": { "type": "string", "description": "Working directory. Defaults to the focused pane's." },
-                },
-                "required": ["command"],
-            }),
-        ),
-        tool(
             "close_pane",
             "Close a pane. This kills whatever is running in it.",
             json!({
@@ -450,7 +424,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "web_search",
-            "Search the web and get back titles, URLs and snippets. Use it for anything you would otherwise be guessing at — current events, release notes, error messages, documentation. Snippets only: fetch a page with run_command and curl when you need its full text.",
+            "Search the web and get back titles, URLs and snippets. Use it for anything you would otherwise be guessing at — current events, release notes, error messages, documentation. Snippets only: there is no way to fetch a page's full text.",
             json!({
                 "type": "object",
                 "properties": {
@@ -947,8 +921,8 @@ impl Args {
         serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))
     }
 
-    /// `command` is a string for `new_pane` and an array for `run_command`, and
-    /// models mix the two up. Accept either from either.
+    /// `command` is a string with a separate `args` array for `new_pane`, but
+    /// models often send the whole argv as one array. Accept either.
     pub fn command_words(&self) -> Vec<String> {
         match &self.command {
             Some(Value::String(word)) => {
@@ -1226,17 +1200,15 @@ mod host {
     use std::path::PathBuf;
     use zellij_tile::prelude::*;
 
-    pub fn dispatch(call: &ToolCall) -> Dispatch {
+    pub fn dispatch(call: &ToolCall) -> String {
         let args = match Args::parse(&call.arguments) {
             Ok(args) => args,
-            Err(error) => return Dispatch::Done(error),
+            Err(error) => return error,
         };
         match call.name.as_str() {
-            "list_session" => Dispatch::Done(list_session()),
-            "read_pane" => Dispatch::Done(with_pane(&args, |pane| {
-                read_pane(pane, args.full_scrollback)
-            })),
-            "send_input" => Dispatch::Done(with_pane(&args, |pane| {
+            "list_session" => list_session(),
+            "read_pane" => with_pane(&args, |pane| read_pane(pane, args.full_scrollback)),
+            "send_input" => with_pane(&args, |pane| {
                 match args.input_chunks(matches!(pane, PaneId::Terminal(_))) {
                     Ok(chunks) => {
                         for chunk in chunks {
@@ -1246,50 +1218,50 @@ mod host {
                     },
                     Err(error) => error,
                 }
-            })),
-            "new_pane" => Dispatch::Done(new_pane(&args)),
-            "new_tab" => Dispatch::Done(new_tab_tool(&args)),
-            "focus" => Dispatch::Done(focus(&args)),
-            "rename" => Dispatch::Done(rename(&args)),
-            "move_pane" => Dispatch::Done(with_pane(&args, |pane| move_pane(pane, &args))),
-            "swap_panes" => Dispatch::Done(swap_panes_tool(&args)),
-            "resize_pane" => Dispatch::Done(with_pane(&args, |pane| resize_pane(pane, &args))),
-            "toggle_pane" => Dispatch::Done(with_pane(&args, |pane| toggle_pane(pane, &args))),
-            "move_panes_to_tab" => Dispatch::Done(move_panes_to_tab(&args)),
-            "stack_panes" => Dispatch::Done(stack_panes_tool(&args)),
-            "set_pane_pinned" => Dispatch::Done(with_pane(&args, |pane| {
+            }),
+            "new_pane" => new_pane(&args),
+            "new_tab" => new_tab_tool(&args),
+            "focus" => focus(&args),
+            "rename" => rename(&args),
+            "move_pane" => with_pane(&args, |pane| move_pane(pane, &args)),
+            "swap_panes" => swap_panes_tool(&args),
+            "resize_pane" => with_pane(&args, |pane| resize_pane(pane, &args)),
+            "toggle_pane" => with_pane(&args, |pane| toggle_pane(pane, &args)),
+            "move_panes_to_tab" => move_panes_to_tab(&args),
+            "stack_panes" => stack_panes_tool(&args),
+            "set_pane_pinned" => with_pane(&args, |pane| {
                 let Some(pinned) = args.pinned else {
                     return "pinned is required".to_owned();
                 };
                 set_floating_pane_pinned(pane, pinned);
                 if pinned { "pinned" } else { "unpinned" }.to_owned()
-            })),
+            }),
             "set_floating_pane_geometry" => {
-                Dispatch::Done(with_pane(&args, |pane| match args.floating_geometry() {
+                with_pane(&args, |pane| match args.floating_geometry() {
                     Ok(geometry) => {
                         change_floating_panes_coordinates(vec![(pane, geometry)]);
                         "geometry set".to_owned()
                     },
                     Err(error) => error,
-                }))
+                })
             },
-            "rerun_pane" => Dispatch::Done(match args.terminal_pane_id() {
+            "rerun_pane" => match args.terminal_pane_id() {
                 Ok(id) => {
                     rerun_command_pane(id);
                     "rerun".to_owned()
                 },
                 Err(error) => error,
-            }),
-            "scroll_pane" => Dispatch::Done(with_pane(&args, |pane| scroll_pane(pane, &args))),
-            "clear_pane" => Dispatch::Done(with_pane(&args, |pane| {
+            },
+            "scroll_pane" => with_pane(&args, |pane| scroll_pane(pane, &args)),
+            "clear_pane" => with_pane(&args, |pane| {
                 clear_screen_for_pane_id(pane);
                 "cleared".to_owned()
-            })),
-            "close_pane" => Dispatch::Done(with_pane(&args, |pane| {
+            }),
+            "close_pane" => with_pane(&args, |pane| {
                 close_pane_with_id(pane);
                 "closed".to_owned()
-            })),
-            "close_tab" => Dispatch::Done(match args.tab_target() {
+            }),
+            "close_tab" => match args.tab_target() {
                 Ok(TabTarget::Index(index)) => {
                     close_tab_with_index(index);
                     "closed".to_owned()
@@ -1299,9 +1271,8 @@ mod host {
                     "closed".to_owned()
                 },
                 Err(error) => error,
-            }),
-            "run_command" => run(call, &args),
-            other => Dispatch::Done(format!("no such tool: {other}")),
+            },
+            other => format!("no such tool: {other}"),
         }
     }
 
@@ -1650,30 +1621,6 @@ mod host {
         "scrolled".to_owned()
     }
 
-    fn run(call: &ToolCall, args: &Args) -> Dispatch {
-        let words = args.command_words();
-        if words.is_empty() {
-            return Dispatch::Done("command is required and must not be empty".to_owned());
-        }
-        let borrowed: Vec<&str> = words.iter().map(String::as_str).collect();
-        let cwd = args
-            .cwd
-            .clone()
-            .map(PathBuf::from)
-            .unwrap_or_else(focused_cwd);
-
-        // The context map round-trips through the host, which is how the
-        // RunCommandResult event is matched back to the call that made it.
-        // Note `run_command()` is not used: it hardcodes a cwd of ".".
-        run_command_with_env_variables_and_cwd(
-            &borrowed,
-            BTreeMap::new(),
-            cwd,
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-        );
-        Dispatch::Deferred
-    }
-
     fn host_direction(direction: PaneDirection) -> Direction {
         match direction {
             PaneDirection::Left => Direction::Left,
@@ -1705,8 +1652,8 @@ pub use host::dispatch;
 
 /// Native builds exist only to run the unit tests; nothing there dispatches.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn dispatch(_call: &ToolCall) -> Dispatch {
-    Dispatch::Done("tools are unavailable outside zellij".to_owned())
+pub fn dispatch(_call: &ToolCall) -> String {
+    "tools are unavailable outside zellij".to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -1718,7 +1665,6 @@ mod tests {
     #[test]
     fn confirmation_policy_lists_tools_correctly() {
         for name in [
-            "run_command",
             "rerun_pane",
             "clear_pane",
             "send_input",
@@ -1883,9 +1829,9 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 41);
+        assert_eq!(names.len(), 40);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-        assert_eq!(confirmed, 8);
+        assert_eq!(confirmed, 7);
     }
 
     /// `agent_control` is the one tool whose argument is a verb rather than a target,
@@ -2535,7 +2481,7 @@ mod tests {
     fn names_lists_the_advertised_tools() {
         let names = names();
         assert_eq!(names.len(), specs().as_array().unwrap().len());
-        assert!(names.contains(&"run_command".to_owned()));
+        assert!(names.contains(&"new_pane".to_owned()));
     }
 
     /// The one argument each todo tool cannot work without. `todo_list` needs
