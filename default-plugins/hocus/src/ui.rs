@@ -727,17 +727,31 @@ fn right_align(line: &str, cols: usize) -> String {
     format!("{}{line}", " ".repeat(cols.saturating_sub(line.width())))
 }
 
+/// The transcript as it is drawn: every message wrapped into display lines, and
+/// where in that list each message began.
+pub struct Transcript {
+    pub lines: Vec<VLine>,
+    /// The first display line of each message, by message index — its first
+    /// *content* line, not the blank separator pushed ahead of it.
+    ///
+    /// Always one entry per message, which is what lets the viewport hold a
+    /// message on the top row by index and re-resolve it after a re-wrap.
+    pub starts: Vec<usize>,
+}
+
 /// Flatten the transcript into wrapped display lines, with a blank line between
 /// messages and a hanging indent on continuations.
 ///
 /// User turns are wrapped narrow and pushed against the right edge; replies run
 /// the full width from the left. That contrast is what tells them apart.
-pub fn transcript_lines(messages: &[crate::Message], cols: usize) -> Vec<VLine> {
+pub fn transcript(messages: &[crate::Message], cols: usize) -> Transcript {
     let mut lines = Vec::new();
+    let mut starts = Vec::with_capacity(messages.len());
     for (index, message) in messages.iter().enumerate() {
         if index > 0 {
             lines.push(VLine::blank());
         }
+        starts.push(lines.len());
         if message.role == Role::Assistant && message.tool_calls.is_empty() {
             lines.extend(markdown_lines(&message.content, cols));
             continue;
@@ -772,10 +786,10 @@ pub fn transcript_lines(messages: &[crate::Message], cols: usize) -> Vec<VLine> 
             });
         }
     }
-    lines
+    Transcript { lines, starts }
 }
 
-/// What `transcript_lines`' output depends on: the width it was wrapped for,
+/// What `transcript`'s output depends on: the width it was wrapped for,
 /// the number of messages, and the length of the one message that can grow
 /// without the count moving.
 ///
@@ -785,13 +799,13 @@ pub fn transcript_lines(messages: &[crate::Message], cols: usize) -> Vec<VLine> 
 /// transcript is a push, a pop or a clear, all of which move the count.
 pub type TranscriptKey = (usize, usize, usize);
 
-/// `transcript_lines`, memoised on the state. Wrapping the whole transcript is
-/// the single most expensive thing a render does, and typing does not change
-/// any of it.
-fn cached_transcript_lines(state: &mut State, cols: usize) -> &[VLine] {
+/// `transcript`, memoised on the state. Wrapping the whole transcript is the
+/// single most expensive thing a render does, and typing does not change any of
+/// it.
+fn cached_transcript(state: &mut State, cols: usize) -> &Transcript {
     let key: TranscriptKey = (cols, state.messages.len(), state.mutable_len());
     if state.transcript_cache.as_ref().map(|(k, _)| *k) != Some(key) {
-        state.transcript_cache = Some((key, transcript_lines(&state.messages, cols)));
+        state.transcript_cache = Some((key, transcript(&state.messages, cols)));
     }
     &state.transcript_cache.as_ref().expect("just populated").1
 }
@@ -1003,6 +1017,54 @@ fn render_title(state: &State, cols: usize) {
     );
 }
 
+/// The slice of transcript lines a render draws, and whether the anchor is what
+/// put it there.
+struct Window {
+    start: usize,
+    end: usize,
+    /// Lines hidden *below* the viewport — the number `State`'s scroll map holds.
+    offset: usize,
+    /// The top row is the anchored line, so the viewport has stopped following
+    /// the tail.
+    frozen: bool,
+}
+
+/// Which lines to draw out of `total`, in a viewport `height` rows tall.
+///
+/// `offset` counts lines hidden *below* the viewport, so 0 means pinned to the
+/// bottom and a growing transcript follows itself with no extra state.
+///
+/// `anchor_line` is the first line of the reply this client is still being held
+/// to. Following the tail past it would scroll the opening of the reply off the
+/// pane, so once the reply outgrows the viewport the anchor sits on the top row
+/// instead and everything after a screenful of it is hidden below. `requested`
+/// is ignored while anchored: a client that scrolled for itself was released
+/// from the anchor by the same keystroke, and honouring a stale count here would
+/// break the anchor the next time `height` changed under it.
+///
+/// Clamping is done here rather than by the scroll keys, which know neither the
+/// line count nor the height, and it absorbs resizes and a growing transcript
+/// for free.
+fn transcript_window(
+    total: usize,
+    height: usize,
+    requested: usize,
+    anchor_line: Option<usize>,
+) -> Window {
+    let max_offset = total.saturating_sub(height);
+    let offset = anchor_line
+        .map_or(requested, |line| total.saturating_sub(line + height))
+        .min(max_offset);
+    let end = total - offset;
+    let start = end.saturating_sub(height);
+    Window {
+        start,
+        end,
+        offset,
+        frozen: anchor_line == Some(start),
+    }
+}
+
 fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     if height == 0 {
         return;
@@ -1015,8 +1077,17 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // call and result behind it; no caret then rather than one on the wrong line.
     let streaming = state.is_receiving() && state.reply_is_last();
     let scroll_offset = state.scroll_offset();
+    // Never while a tool is waiting on a y/n: that prompt renders into the tail,
+    // and an anchor holding an older line on the top row would leave it off the
+    // bottom of the pane, unanswerable and unexplained.
+    let anchor = state.anchor().filter(|_| prompt.is_none());
 
-    let lines = cached_transcript_lines(state, cols);
+    let transcript = cached_transcript(state, cols);
+    let lines = &transcript.lines;
+    // A stale index cannot happen — `pop_empty_placeholder` drops the anchor
+    // with the message — but resolving it fallibly costs nothing and keeps a
+    // future edit that moves indices from indexing out of bounds.
+    let anchor_line = anchor.and_then(|at| transcript.starts.get(at).copied());
 
     // Every decoration lands on the tail, so the cached lines are never mutated
     // and at most one of them is ever copied.
@@ -1083,13 +1154,12 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
         return;
     }
 
-    // scroll_offset counts lines hidden *below* the viewport, so 0 means pinned
-    // to the bottom and a growing transcript follows itself with no extra state.
-    // Clamping here also absorbs resizes and message growth for free.
-    let max_offset = total.saturating_sub(height);
-    let offset = scroll_offset.min(max_offset);
-    let end = total - offset;
-    let start = end.saturating_sub(height);
+    let Window {
+        start,
+        end,
+        offset,
+        frozen,
+    } = transcript_window(total, height, scroll_offset, anchor_line);
 
     for (index, position) in (start..end).enumerate() {
         let line = match body.get(position) {
@@ -1099,7 +1169,14 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
         print_text_with_coordinates(styled(line), 0, y + index, Some(cols), None);
     }
 
-    if start > 0 {
+    // `body` is done with, so the cache's borrow of `state` is over and the
+    // window can be written back. The render is the only thing that knows where
+    // a client actually ended up, and the key handler has to start from there.
+    state.set_scroll_offset(offset);
+
+    // The badge prints over the top row, and while frozen that row is the first
+    // line of the reply — the one line the anchor exists to keep on screen.
+    if start > 0 && !frozen {
         print_text_with_coordinates(
             Text::new(format!("↑ {start} more")).dim_range(..),
             0,
@@ -1237,6 +1314,12 @@ fn place_cursor(state: &State, cols: usize, input_y: usize, skipped_rows: usize)
 mod tests {
     use super::*;
     use crate::Message;
+
+    /// Most of these care only about the wrapping, not about where each message
+    /// starts in it.
+    fn transcript_lines(messages: &[Message], cols: usize) -> Vec<VLine> {
+        transcript(messages, cols).lines
+    }
 
     // -- wrap ---------------------------------------------------------------
 
@@ -1614,24 +1697,333 @@ mod tests {
     fn the_transcript_cache_notices_text_appended_to_the_last_message() {
         let mut state = State::default();
         state.messages.push(Message::assistant("Hel"));
-        assert_eq!(cached_transcript_lines(&mut state, 40)[0].text, "Hel");
+        assert_eq!(cached_transcript(&mut state, 40).lines[0].text, "Hel");
 
         state.messages.last_mut().unwrap().content.push_str("lo");
-        assert_eq!(cached_transcript_lines(&mut state, 40)[0].text, "Hello");
+        assert_eq!(cached_transcript(&mut state, 40).lines[0].text, "Hello");
     }
 
     #[test]
     fn the_transcript_cache_rewraps_when_the_pane_is_resized() {
         let mut state = State::default();
         state.messages.push(Message::user("aaaa bbbb"));
-        assert_eq!(cached_transcript_lines(&mut state, 40).len(), 1);
-        assert_eq!(cached_transcript_lines(&mut state, 9).len(), 2);
+        assert_eq!(cached_transcript(&mut state, 40).lines.len(), 1);
+        assert_eq!(cached_transcript(&mut state, 9).lines.len(), 2);
     }
 
     #[test]
     fn transcript_keeps_the_role_on_continuation_lines() {
         let lines = transcript_lines(&[Message::error("aaaa bbbb")], 9);
         assert!(lines.iter().all(|l| l.role == Role::Error));
+    }
+
+    // -- where each message starts ------------------------------------------
+
+    #[test]
+    fn every_message_gets_a_start_line() {
+        let transcript = transcript(
+            &[
+                Message::user("aaaa bbbb cccc"),
+                Message::assistant("dddd"),
+                Message::error("eeee"),
+            ],
+            9,
+        );
+        assert_eq!(transcript.starts.len(), 3);
+        assert_eq!(transcript.starts[0], 0);
+        assert!(transcript.starts.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// The anchor puts this line on the top row, so it has to be the reply
+    /// itself rather than the blank line separating it from the question.
+    #[test]
+    fn a_start_line_is_the_first_content_line_not_the_separator() {
+        let transcript = transcript(&[Message::user("hi"), Message::assistant("yo")], 40);
+        let start = transcript.starts[1];
+        assert_eq!(transcript.lines[start].text, "yo");
+        assert!(transcript.lines[start - 1].text.is_empty());
+    }
+
+    /// The placeholder a reply streams into is empty, and the spinner renders on
+    /// it. Its start is that line, which is where the first token lands.
+    #[test]
+    fn the_streaming_placeholder_still_gets_a_start_line() {
+        let transcript = transcript(&[Message::user("hi"), Message::assistant("")], 40);
+        assert_eq!(transcript.starts.len(), 2);
+        assert_eq!(transcript.starts[1], transcript.lines.len() - 1);
+    }
+
+    // -- the transcript window ----------------------------------------------
+
+    #[test]
+    fn without_an_anchor_the_window_is_the_requested_offset_clamped() {
+        assert_eq!(transcript_window(100, 10, 0, None).offset, 0);
+        assert_eq!(transcript_window(100, 10, 25, None).offset, 25);
+        assert_eq!(transcript_window(100, 10, 999, None).offset, 90);
+        assert_eq!(transcript_window(4, 10, 3, None).offset, 0);
+    }
+
+    /// Until the reply outgrows the pane there is nothing to protect, so the
+    /// viewport goes on following the tail exactly as it always did.
+    #[test]
+    fn a_reply_that_fits_the_pane_still_follows_the_tail() {
+        // 30 lines, a 10-row pane, the reply starting at line 25: five lines of
+        // it so far, so the whole thing is on screen with room to spare.
+        let window = transcript_window(30, 10, 0, Some(25));
+        assert_eq!(window.offset, 0);
+        assert_eq!(window.start, 20);
+        assert!(!window.frozen);
+    }
+
+    /// The frame the reply fills the pane exactly: its first line has just
+    /// reached the top row, and the next line is what would push it off.
+    #[test]
+    fn a_reply_exactly_as_tall_as_the_pane_is_pinned_and_frozen() {
+        let window = transcript_window(30, 10, 0, Some(20));
+        assert_eq!(window.offset, 0);
+        assert_eq!(window.start, 20);
+        assert!(window.frozen);
+    }
+
+    /// The whole point: the reply goes on growing and its opening line does not
+    /// move off the top row.
+    #[test]
+    fn a_growing_reply_stops_at_the_line_it_started_on() {
+        for grown in 0..40 {
+            let window = transcript_window(30 + grown, 10, 0, Some(20));
+            assert_eq!(window.start, 20, "reply grown by {grown} lines");
+            assert_eq!(window.end - window.start, 10);
+            assert_eq!(window.offset, grown);
+            assert!(window.frozen);
+        }
+    }
+
+    /// The offset that would hold the anchor depends on the height, so a stored
+    /// one goes stale the moment the picker opens or the input box grows. The
+    /// anchor is re-resolved instead, which is why `requested` is ignored.
+    #[test]
+    fn the_anchor_survives_the_viewport_changing_height() {
+        assert_eq!(transcript_window(60, 10, 0, Some(20)).start, 20);
+        let shrunk = transcript_window(60, 5, 30, Some(20));
+        assert_eq!(shrunk.start, 20);
+        assert_eq!(transcript_window(60, 10, shrunk.offset, Some(20)).start, 20);
+    }
+
+    /// A transcript that is all reply: nothing to hide above it, everything to
+    /// hide below.
+    #[test]
+    fn an_anchor_on_the_first_line_hides_only_what_is_below() {
+        let window = transcript_window(100, 10, 0, Some(0));
+        assert_eq!(window.start, 0);
+        assert_eq!(window.offset, 90);
+        assert!(window.frozen);
+    }
+
+    #[test]
+    fn an_anchor_past_the_end_cannot_scroll_past_the_bottom() {
+        let window = transcript_window(30, 10, 0, Some(999));
+        assert_eq!(window.offset, 0);
+        assert_eq!(window.end, 30);
+        assert!(!window.frozen);
+    }
+
+    /// A pane too short to hold the transcript's first line still has to draw
+    /// something rather than underflow.
+    #[test]
+    fn a_viewport_taller_than_the_transcript_shows_all_of_it() {
+        let window = transcript_window(4, 10, 0, Some(2));
+        assert_eq!((window.start, window.end, window.offset), (0, 4, 0));
+    }
+
+    /// The two halves together, over a reply arriving a word at a time: the
+    /// anchored message index resolves through `starts` to a line that stays on
+    /// the top row however much more text lands under it.
+    #[test]
+    fn a_streamed_reply_keeps_its_first_line_on_the_top_row() {
+        const HEIGHT: usize = 6;
+        let mut messages = vec![Message::user("count"), Message::assistant("")];
+        let mut tops = Vec::new();
+
+        for word in 1..20 {
+            messages[1].content.push_str(&format!("line {word}\n\n"));
+            let transcript = transcript(&messages, 40);
+            let window = transcript_window(
+                transcript.lines.len(),
+                HEIGHT,
+                0,
+                Some(transcript.starts[1]),
+            );
+            tops.push(transcript.lines[window.start].text.clone());
+        }
+
+        // Followed the tail while the reply was short — the question was still
+        // on screen above it — then stopped dead on the reply's first line
+        // rather than scrolling it away.
+        assert!(tops[0].trim_end().ends_with("count"), "{:?}", tops[0]);
+        assert_eq!(tops.last().unwrap(), "line 1");
+        assert!(tops.iter().rev().take(12).all(|top| top == "line 1"));
+    }
+
+    // -- rendering the window -----------------------------------------------
+
+    /// `render_transcript` only ever prints, so a test can drive the real thing
+    /// and read the viewport it settled on back off the state.
+    const RENDER_HEIGHT: usize = 6;
+    const RENDER_COLS: usize = 40;
+
+    /// A question, then a reply four times taller than the pane.
+    fn state_mid_reply() -> State {
+        let mut state = State::default();
+        state.messages = vec![
+            Message::user("count"),
+            Message::assistant(
+                (1..=12)
+                    .map(|n| format!("line {n}\n\n"))
+                    .collect::<String>(),
+            ),
+        ];
+        state.view.anchor = Some(1);
+        state
+    }
+
+    /// Where the reply starts, which is where the anchor should hold the pane.
+    fn reply_start(state: &State) -> usize {
+        transcript(&state.messages, RENDER_COLS).starts[1]
+    }
+
+    fn render(state: &mut State) {
+        render_transcript(state, 0, RENDER_HEIGHT, RENDER_COLS);
+    }
+
+    /// The offset the render settled on is the one the scroll keys then work
+    /// from. Nothing else knows it: the anchor and the clamp are applied here.
+    #[test]
+    fn rendering_records_the_viewport_it_settled_on() {
+        let mut state = state_mid_reply();
+        let total = transcript(&state.messages, RENDER_COLS).lines.len();
+
+        render(&mut state);
+
+        assert_eq!(
+            total - state.scroll_offset() - RENDER_HEIGHT,
+            reply_start(&state),
+            "the reply's first line is on the top row"
+        );
+    }
+
+    /// The reply goes on arriving and the pane does not move.
+    #[test]
+    fn a_reply_growing_under_a_frozen_pane_does_not_move_it() {
+        let mut state = state_mid_reply();
+        render(&mut state);
+        let before = state.scroll_offset();
+
+        state.messages[1].content.push_str("and another\n\n");
+        render(&mut state);
+
+        let total = transcript(&state.messages, RENDER_COLS).lines.len();
+        assert!(state.scroll_offset() > before, "more is hidden below");
+        assert_eq!(
+            total - state.scroll_offset() - RENDER_HEIGHT,
+            reply_start(&state),
+            "but the top row is the same line it was"
+        );
+    }
+
+    /// What the write-back is for. Without it the client reads as pinned to the
+    /// bottom, and this PageDown would saturate at 0 and drop them at the end of
+    /// the reply — the trip back up the anchor exists to save.
+    #[test]
+    fn the_first_page_down_after_a_freeze_moves_one_page() {
+        let mut state = state_mid_reply();
+        render(&mut state);
+        let frozen = state.scroll_offset();
+        assert!(frozen > 0, "the pane is frozen to begin with");
+
+        state.scroll_down(RENDER_HEIGHT);
+
+        assert_eq!(state.scroll_offset(), frozen - RENDER_HEIGHT);
+    }
+
+    /// Scrolling is how you say you don't want the anchor. It does not come back
+    /// and take the pane again on the next frame.
+    #[test]
+    fn a_client_that_scrolled_is_not_dragged_back_by_the_anchor() {
+        let mut state = state_mid_reply();
+        state.scroll_up(3);
+
+        render(&mut state);
+
+        assert_eq!(state.scroll_offset(), 3);
+    }
+
+    /// The `run? …` prompt renders below the transcript. Freezing an older line
+    /// on the top row would leave it off the bottom of the pane, and the tool
+    /// waits on a keypress nothing on screen has asked for.
+    #[test]
+    fn a_pending_confirmation_is_never_frozen_off_screen() {
+        let mut state = state_mid_reply();
+        state.status = Status::ConfirmingTool;
+        state.pending = vec![crate::ToolCall {
+            id: "a".into(),
+            name: "close_pane".into(),
+            arguments: "{}".into(),
+        }]
+        .into();
+        assert!(state.confirmation_prompt().is_some(), "the prompt is up");
+
+        render(&mut state);
+
+        assert_eq!(state.scroll_offset(), 0, "pinned to the bottom instead");
+    }
+
+    /// Every other client goes on being held by it.
+    #[test]
+    fn one_client_scrolling_does_not_release_another() {
+        let mut state = state_mid_reply();
+        state.client = 1;
+        state.scroll_up(3);
+        render(&mut state);
+        assert_eq!(state.scroll_offset(), 3);
+
+        state.client = 2;
+        render(&mut state);
+
+        let total = transcript(&state.messages, RENDER_COLS).lines.len();
+        assert_eq!(
+            total - state.scroll_offset() - RENDER_HEIGHT,
+            reply_start(&state)
+        );
+    }
+
+    /// The pane the anchor was measured against is gone, and the offset that
+    /// held it is wrong for the new one. Re-resolving the message index is what
+    /// makes that not matter.
+    #[test]
+    fn the_anchor_survives_the_pane_being_resized_under_it() {
+        let mut state = state_mid_reply();
+        render(&mut state);
+
+        render_transcript(&mut state, 0, RENDER_HEIGHT * 2, RENDER_COLS);
+
+        let total = transcript(&state.messages, RENDER_COLS).lines.len();
+        assert_eq!(
+            total - state.scroll_offset() - RENDER_HEIGHT * 2,
+            reply_start(&state)
+        );
+    }
+
+    /// A reply still short enough to fit is nothing to protect, and the pane
+    /// goes on following the tail exactly as it always did.
+    #[test]
+    fn an_anchored_reply_that_fits_still_follows_the_tail() {
+        let mut state = State::default();
+        state.messages = vec![Message::user("hi"), Message::assistant("yo")];
+        state.view.anchor = Some(1);
+
+        render(&mut state);
+
+        assert_eq!(state.scroll_offset(), 0);
     }
 
     // -- the waiting indicator ----------------------------------------------

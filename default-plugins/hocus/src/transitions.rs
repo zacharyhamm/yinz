@@ -28,7 +28,7 @@ impl State {
             manual_head: std::mem::take(&mut self.manual_head),
             chat_id: self.chat_id.take(),
             saved: std::mem::take(&mut self.saved),
-            scroll: std::mem::take(&mut self.scroll),
+            view: std::mem::take(&mut self.view),
             job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
         }
     }
@@ -49,7 +49,7 @@ impl State {
         self.manual_head = chat.manual_head;
         self.chat_id = chat.chat_id;
         self.saved = chat.saved;
-        self.scroll = chat.scroll;
+        self.view = chat.view;
         self.job_auto_confirm = chat.job_auto_confirm;
     }
 
@@ -489,9 +489,16 @@ impl State {
     /// Removing it shifts everything a typed tool appended after it, so this is
     /// the one place indices move; `reply_at` is cleared either way, since after
     /// this there is no placeholder left to append to.
+    ///
+    /// The viewport's anchor is an index into the same list and goes with it,
+    /// or it would slide onto whichever message took the placeholder's place.
+    /// Note a reply that did arrive is *not* removed, so cancelling one part way
+    /// leaves the anchor holding its first line on screen — a reply cut short is
+    /// still worth reading.
     pub(crate) fn pop_empty_placeholder(&mut self) {
         if let (true, Some(at)) = (self.reply_is_empty(), self.reply_at) {
             self.messages.remove(at);
+            self.view.anchor = None;
         }
         self.reply_at = None;
     }
@@ -557,14 +564,24 @@ impl State {
     /// Scroll toward older messages, for the client that asked. Clamped at
     /// render against the real line count, which the key handler doesn't know.
     pub(crate) fn scroll_up(&mut self, lines: usize) -> bool {
-        *self.scroll.entry(self.client).or_default() += lines;
+        self.release();
+        *self.view.scroll.entry(self.client).or_default() += lines;
         true
     }
 
     pub(crate) fn scroll_down(&mut self, lines: usize) -> bool {
-        let offset = self.scroll.entry(self.client).or_default();
+        self.release();
+        let offset = self.view.scroll.entry(self.client).or_default();
         *offset = offset.saturating_sub(lines);
         true
+    }
+
+    /// Hand the viewport to the client that just scrolled: whatever the arriving
+    /// reply is doing, it stops being the thing that decides where they are
+    /// looking. Until the next `pin_to_bottom`, which is the next time the
+    /// conversation changes under them.
+    fn release(&mut self) {
+        self.view.released.insert(self.client);
     }
 
     pub(crate) fn log(&mut self, kind: &str, payload: serde_json::Value) {
