@@ -44,8 +44,10 @@ fn scrolling_inside_a_pane_with_mouse() {
     });
 
     zellij.send_stdin(&sgr_mouse_report(64, 2, 64));
+    // Scrolling the pane puts the client in Scroll mode, so the status bar is the scroll hints
+    // rather than the normal-mode bar.
     let grid_snapshot = zellij.wait_until("scrolled up inside the right pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears()
+        grid_snapshot.contains("PgDn|PgUp")
             && grid_snapshot.contains("SCROLL:")
             && grid_snapshot.contains("line1 ")
     });

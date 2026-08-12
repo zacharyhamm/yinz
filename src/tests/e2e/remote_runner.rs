@@ -17,7 +17,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 const ZELLIJ_EXECUTABLE_LOCATION: &str = "/usr/src/zellij/zellij";
-const SET_ENV_VARIABLES: &str = "EDITOR=/usr/bin/vi";
+// ZELLIJ_HOSTNAME pins the name the tab bar prints, which is otherwise the container's hostname
+// and would put it in every snapshot taken here.
+const SET_ENV_VARIABLES: &str = "EDITOR=/usr/bin/vi ZELLIJ_HOSTNAME=Zellij";
 const ZELLIJ_DATA_DIR: &str = "/usr/src/zellij/e2e-data";
 const ZELLIJ_FIXTURE_PATH: &str = "/usr/src/zellij/fixtures";
 const CONNECTION_STRING: &str = "127.0.0.1:2222";
@@ -334,11 +336,16 @@ impl RemoteTerminal {
             // --data-dir must be repeated here: this fork always loads the builtin plugins from
             // disk (there is no copy embedded in the binary), so an attach without it looks for
             // them under the default data dir and every plugin pane fails to load.
+            // The env variables belong here as much as on the initial start: this attach is what
+            // spawns the server for a session whose own server has quit.
             channel
                 .write_all(
                     format!(
-                        "{} --data-dir {} attach {}\n",
-                        ZELLIJ_EXECUTABLE_LOCATION, ZELLIJ_DATA_DIR, SESSION_NAME
+                        "{} {} --data-dir {} attach {}\n",
+                        SET_ENV_VARIABLES,
+                        ZELLIJ_EXECUTABLE_LOCATION,
+                        ZELLIJ_DATA_DIR,
+                        SESSION_NAME
                     )
                     .as_bytes(),
                 )

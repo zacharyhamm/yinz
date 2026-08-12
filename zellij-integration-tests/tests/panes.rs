@@ -477,9 +477,14 @@ fn move_focus_or_tab_switches_tab_when_single_pane() {
 
     zellij.send_stdin(&keys::alt('h'));
 
-    let grid_snapshot = zellij
-        .wait_until("focus switched back to the first tab", |grid_snapshot| {
-            grid_snapshot.status_bar_appears() && grid_snapshot.contains("oneone")
+    // `Tab #2` has to be back on the bar before this settles: the first tab's own tab-bar
+    // instance renders its cached state, from when it was last active and the second tab did
+    // not exist, before it catches up. Without this the snapshot can land on that stale frame.
+    let grid_snapshot =
+        zellij.wait_until("focus switched back to the first tab", |grid_snapshot| {
+            grid_snapshot.status_bar_appears()
+                && grid_snapshot.contains("oneone")
+                && grid_snapshot.contains("Tab #2")
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

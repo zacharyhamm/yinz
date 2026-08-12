@@ -37,6 +37,11 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         .context(err_context)?;
     } else {
         println!(">> cargo-nextest not found, falling back to `cargo test -- --test-threads=1`");
+        // The fallback shares one process per test binary, and session names come from a
+        // counter that is process-global, so snapshots that record a session name match only
+        // when their test is the first in its binary to start one. Those failures are the
+        // runner's, not the code's, and are confusing enough to be worth this line.
+        println!(">> expect false failures in snapshot tests that record session names; install cargo-nextest for a run that means something");
         cmd!(
             sh,
             "{cargo} test --profile {profile} -p zellij-integration-tests -- --test-threads=1"
