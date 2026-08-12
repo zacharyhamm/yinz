@@ -23,6 +23,7 @@ use std::{
     path::PathBuf,
     process,
     str::FromStr,
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -945,12 +946,28 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
         ))
 }
 
+/// Short hostname (first DNS label) of the machine running this server, for UI display.
+/// Empty if the host cannot be queried. Cached, since it can't change under us.
+fn host_display_name() -> String {
+    static HOSTNAME: OnceLock<String> = OnceLock::new();
+    HOSTNAME
+        .get_or_init(|| {
+            nix::unistd::gethostname()
+                .ok()
+                .and_then(|hostname| hostname.into_string().ok())
+                .map(|hostname| hostname.split('.').next().unwrap_or(&hostname).to_owned())
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
 fn get_plugin_ids(env: &PluginEnv) {
     let ids = PluginIds {
         plugin_id: env.plugin_id,
         zellij_pid: process::id(),
         initial_cwd: env.plugin_cwd.clone(),
         client_id: env.client_id,
+        hostname: host_display_name(),
     };
     ProtobufPluginIds::try_from(ids)
         .map_err(|e| anyhow!("Failed to serialized plugin ids: {}", e))

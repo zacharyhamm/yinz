@@ -20,8 +20,8 @@ use crate::panes::PaneId;
 
 use super::fdpass::{clear_cloexec, recv_fd};
 use super::protocol::{
-    read_msg, write_msg, HostToServerMsg, ServerToHostMsg, SpawnFailureKind, WireTermios,
-    WireWinsize, CONTROL_FD, PROTOCOL_VERSION,
+    self, read_msg, write_msg, AttachRefusal, HostStatus, HostToServerMsg, ServerToHostMsg,
+    SpawnFailureKind, WireTermios, WireWinsize, CONTROL_FD, PROTOCOL_VERSION,
 };
 use super::PTY_HOST_FLAG;
 
@@ -64,20 +64,35 @@ pub struct PendingHost {
     cmd: RunCommand,
 }
 
+/// How this server can observe the supervisor process itself.
+///
+/// Only ever used for reaping. A supervisor's *death* is detected the same way
+/// either side of this split: the control channel hits EOF.
+enum HostProcess {
+    /// We forked it, so we can and must `waitpid` it.
+    Spawned(Child),
+    /// Adopted over a named socket. Not our child — `waitpid` would return
+    /// `ECHILD` — so liveness is probed with `kill(pid, 0)` and the reaping is
+    /// left to init.
+    Foreign,
+}
+
 impl PendingHost {
     pub fn finish(mut self, quit_cb: QuitCb) -> SpawnedHost {
         let reported = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
         spawn_reader_thread(
             self.reader_stream
                 .take()
                 .expect("reader stream taken twice"),
-            self.host_child.take().expect("host child taken twice"),
+            HostProcess::Spawned(self.host_child.take().expect("host child taken twice")),
             self.host_id.clone(),
             self.host_pid,
             self.terminal_id,
             self.cmd.clone(),
             quit_cb,
             reported.clone(),
+            released.clone(),
         );
         SpawnedHost {
             handle: PtyHostHandle {
@@ -86,6 +101,7 @@ impl PendingHost {
                 control_socket: self.control_socket.take(),
                 control: self.control.take().expect("control taken twice"),
                 reported,
+                released,
             },
             master: self.master.take().expect("master taken twice"),
             child_pid: self.child_pid,
@@ -119,6 +135,20 @@ pub struct PtyHostHandle {
     /// Set once the pane's exit has been reported, so `ChildExited` and an
     /// unexpected supervisor death cannot both fire `quit_cb`.
     reported: Arc<AtomicBool>,
+    /// Set when the pane is being handed to someone else rather than closed, so
+    /// the reader thread winds itself down instead of reaping the supervisor.
+    released: Arc<AtomicBool>,
+}
+
+/// What a caller needs to hand a released supervisor on to its next owner.
+#[derive(Debug, Clone)]
+pub struct ReleasedPtyHost {
+    pub host_id: String,
+    pub host_pid: u32,
+    /// `None` if the supervisor never managed to bind its named socket, which is
+    /// the one case where a pane is detachable but not transferable — there is no
+    /// address for the next owner to attach to.
+    pub control_socket: Option<PathBuf>,
 }
 
 impl PtyHostHandle {
@@ -144,6 +174,43 @@ impl PtyHostHandle {
         }
         // Unblocks the reader thread so it can reap the supervisor and exit.
         let _ = self.control.shutdown(Shutdown::Both);
+    }
+
+    /// Hand this pane's supervisor to someone else.
+    ///
+    /// The opposite of `terminate` in every way that matters: the supervisor and
+    /// its child keep running, and the next owner picks them up with
+    /// `attach()`. Two flags have to be set first, and both are load-bearing:
+    ///
+    /// * `reported`, so the reader thread's "the supervisor died without telling
+    ///   us" fallback does not fire `quit_cb` and close the pane on its way out.
+    ///   The pane is leaving, not dying.
+    /// * `released`, so the reader thread skips `reap_host`, which waits
+    ///   `HOST_EXIT_GRACE` for an exit that is never coming and then `SIGKILL`s.
+    ///   Without it a warp would work, and four seconds later the pane would die
+    ///   in the session that just adopted it.
+    pub fn release(mut self) -> ReleasedPtyHost {
+        self.reported.store(true, Ordering::SeqCst);
+        self.released.store(true, Ordering::SeqCst);
+        let _ = self.control.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
+        if let Err(e) = write_msg(&mut self.control, &ServerToHostMsg::Release) {
+            // Not fatal: the shutdown below detaches it anyway, just without the
+            // ordering guarantee that makes a hand-off race-free.
+            log::warn!(
+                "could not tell pty-host {} it was released ({e:#}); \
+                 it will notice when the channel closes",
+                self.host_id
+            );
+        }
+        // Acts on the socket rather than one descriptor, so the reader thread's
+        // `try_clone` sees EOF too. Without this the supervisor keeps one live
+        // dup, never leaves `Attached`, and refuses every attempt to attach.
+        let _ = self.control.shutdown(Shutdown::Both);
+        ReleasedPtyHost {
+            host_id: std::mem::take(&mut self.host_id),
+            host_pid: self.host_pid,
+            control_socket: self.control_socket.take(),
+        }
     }
 }
 
@@ -314,6 +381,251 @@ fn handshake_and_spawn(
     }
 }
 
+/// How long to keep retrying an attach that is refused because someone is still
+/// attached. A server that was `kill -9`'d leaves its supervisor holding a socket
+/// it has not yet noticed is dead, and that takes a scheduling quantum, not a
+/// human timescale.
+const ATTACH_RETRY_WINDOW: Duration = Duration::from_millis(1000);
+const ATTACH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+pub struct AttachParams<'a> {
+    pub control_socket: &'a Path,
+    /// The terminal id this pane will have in the *adopting* session. Ids are
+    /// per-server, so the one it had before means nothing here.
+    pub terminal_id: u32,
+    pub session_name: Option<String>,
+}
+
+/// A supervisor that has handed its pty over to us, but whose lifecycle messages
+/// nobody is listening to yet. The attach-side mirror of `PendingHost`.
+pub struct PendingAttach {
+    control: Option<UnixStream>,
+    reader_stream: Option<UnixStream>,
+    host_id: String,
+    host_pid: u32,
+    control_socket: PathBuf,
+    master: Option<OwnedFd>,
+    child_pid: u32,
+    terminal_id: u32,
+    cmd: RunCommand,
+    buffered: Vec<u8>,
+    status: HostStatus,
+}
+
+impl PendingAttach {
+    /// The command the supervisor reported, for rebuilding a `quit_cb` that holds
+    /// or closes the pane the way the original did.
+    pub fn cmd(&self) -> &RunCommand {
+        &self.cmd
+    }
+
+    pub fn status(&self) -> &HostStatus {
+        &self.status
+    }
+
+    pub fn finish(mut self, quit_cb: QuitCb) -> AttachedHost {
+        let reported = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        spawn_reader_thread(
+            self.reader_stream
+                .take()
+                .expect("reader stream taken twice"),
+            HostProcess::Foreign,
+            self.host_id.clone(),
+            self.host_pid,
+            self.terminal_id,
+            self.cmd.clone(),
+            quit_cb,
+            reported.clone(),
+            released.clone(),
+        );
+        AttachedHost {
+            handle: PtyHostHandle {
+                host_id: std::mem::take(&mut self.host_id),
+                host_pid: self.host_pid,
+                control_socket: Some(std::mem::take(&mut self.control_socket)),
+                control: self.control.take().expect("control taken twice"),
+                reported,
+                released,
+            },
+            master: self.master.take().expect("master taken twice"),
+            child_pid: self.child_pid,
+            cmd: std::mem::take(&mut self.cmd),
+            buffered: std::mem::take(&mut self.buffered),
+            status: self.status.clone(),
+        }
+    }
+}
+
+/// Deliberately *not* a mirror of `Drop for PendingHost`, which kills the
+/// supervisor it half-started. An attach that falls over halfway has not created
+/// anything: the supervisor belonged to someone before us and, if we walk away,
+/// belongs to whoever attaches next. Closing the socket is the whole job — that
+/// puts it straight back to draining into its ring.
+impl Drop for PendingAttach {
+    fn drop(&mut self) {
+        if let Some(control) = self.control.take() {
+            let _ = control.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+pub struct AttachedHost {
+    pub handle: PtyHostHandle,
+    pub master: OwnedFd,
+    pub child_pid: u32,
+    pub cmd: RunCommand,
+    /// Everything the child wrote while nobody was attached. Replayed into the
+    /// new pane before any live output, so the hand-off costs no bytes.
+    pub buffered: Vec<u8>,
+    pub status: HostStatus,
+}
+
+/// Take over a detached supervisor and get its pty master.
+///
+/// The counterpart of `spawn`, and the same shape once the process exists:
+/// handshake, then a descriptor over `SCM_RIGHTS`. Failure leaves the supervisor
+/// exactly as it was found — running, detached, and available to the next caller.
+pub fn attach(params: AttachParams<'_>) -> Result<PendingAttach> {
+    let err_context = || {
+        format!(
+            "failed to attach to the pty-host at {}",
+            params.control_socket.display()
+        )
+    };
+    let deadline = Instant::now() + ATTACH_RETRY_WINDOW;
+    loop {
+        match try_attach(&params) {
+            Ok(pending) => return Ok(pending),
+            Err(e) => {
+                let still_attached = matches!(
+                    e.downcast_ref::<AttachRefusedError>(),
+                    Some(AttachRefusedError {
+                        reason: AttachRefusal::AlreadyAttached,
+                        ..
+                    })
+                );
+                if !still_attached || Instant::now() >= deadline {
+                    return Err(e).with_context(err_context);
+                }
+                // The previous owner is on its way out but the supervisor has not
+                // processed the closed channel yet. Give it a moment.
+                std::thread::sleep(ATTACH_RETRY_INTERVAL);
+            },
+        }
+    }
+}
+
+/// A refusal from the supervisor, kept typed so `attach` can tell "try again in a
+/// moment" apart from "this will never work".
+#[derive(Debug)]
+struct AttachRefusedError {
+    reason: AttachRefusal,
+    message: String,
+}
+
+impl std::fmt::Display for AttachRefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the pty-host refused to hand the pane over: {}",
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for AttachRefusedError {}
+
+fn try_attach(params: &AttachParams<'_>) -> Result<PendingAttach> {
+    let control = UnixStream::connect(params.control_socket)
+        .with_context(|| format!("failed to connect to {}", params.control_socket.display()))?;
+    control
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("failed to bound the attach handshake")?;
+    control
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("failed to bound the attach handshake")?;
+
+    let mut stream = &control;
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+            terminal_id: params.terminal_id,
+            session_name: params.session_name.clone(),
+        },
+    )
+    .context("failed to send Attach")?;
+
+    let reply: HostToServerMsg = read_msg(&mut stream)
+        .context("failed to read the attach result")?
+        .ok_or_else(|| anyhow!("pty-host closed the connection during the attach"))?;
+    let (host_id, host_pid, child_pid, cmd, status, buffered_base64, dropped_bytes) = match reply {
+        HostToServerMsg::AttachAck {
+            protocol_version,
+            host_id,
+            host_pid,
+            child_pid,
+            cmd,
+            status,
+            buffered_base64,
+            dropped_bytes,
+            ..
+        } => {
+            if protocol_version != PROTOCOL_VERSION {
+                return Err(anyhow!(
+                    "pty-host speaks protocol v{protocol_version}, we speak v{PROTOCOL_VERSION}"
+                ));
+            }
+            (
+                host_id,
+                host_pid,
+                child_pid,
+                cmd,
+                status,
+                buffered_base64,
+                dropped_bytes,
+            )
+        },
+        HostToServerMsg::AttachRefused { reason, message } => {
+            return Err(AttachRefusedError { reason, message }.into());
+        },
+        other => return Err(anyhow!("expected AttachAck, got {other:?}")),
+    };
+
+    let master = recv_fd(&control).context("failed to take the pty master")?;
+    let buffered = protocol::decode_buffered(&buffered_base64)?;
+    if dropped_bytes > 0 {
+        log::warn!(
+            "pty-host {host_id} dropped {dropped_bytes} bytes while it was detached; \
+             this pane is missing part of its output"
+        );
+    }
+
+    // Back to blocking reads now the handshake is done; the reader thread should
+    // sit on this socket indefinitely.
+    let _ = control.set_read_timeout(None);
+    let _ = control.set_write_timeout(None);
+    let reader_stream = control
+        .try_clone()
+        .context("failed to clone the control channel")?;
+
+    Ok(PendingAttach {
+        control: Some(control),
+        reader_stream: Some(reader_stream),
+        host_id,
+        host_pid,
+        control_socket: params.control_socket.to_path_buf(),
+        master: Some(master),
+        child_pid,
+        terminal_id: params.terminal_id,
+        cmd,
+        buffered,
+        status,
+    })
+}
+
 /// Put the control socket on fd 3 for the supervisor to find after exec.
 ///
 /// Runs between fork and exec, so it must stay to raw syscalls.
@@ -334,13 +646,14 @@ fn place_control_fd(host_raw: RawFd) -> std::io::Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn spawn_reader_thread(
     mut stream: UnixStream,
-    host_child: Child,
+    host_process: HostProcess,
     host_id: String,
     host_pid: u32,
     terminal_id: u32,
     cmd: RunCommand,
     quit_cb: QuitCb,
     reported: Arc<AtomicBool>,
+    released: Arc<AtomicBool>,
 ) {
     std::thread::Builder::new()
         .name(format!("pty-host-{host_id}"))
@@ -364,6 +677,18 @@ fn spawn_reader_thread(
                     },
                 }
             }
+            if released.load(Ordering::SeqCst) {
+                // Not a death: we handed this pane to another server, and the
+                // supervisor is meant to outlive us. So no synthesized close and
+                // emphatically no `reap_host` — its grace-then-SIGKILL would kill
+                // the pane the new owner just adopted. Still wait, so it does not
+                // zombie here when that owner eventually terminates it. The cost
+                // is one parked thread per warped pane.
+                if let HostProcess::Spawned(mut child) = host_process {
+                    let _ = child.wait();
+                }
+                return;
+            }
             // The supervisor is gone. If it died without reporting an exit, the
             // pane's child is now unsupervised and nobody will ever `waitpid` it,
             // so the pane would hang open forever. Close it out with an unknown
@@ -372,29 +697,47 @@ fn spawn_reader_thread(
                 log::warn!("pty-host {host_id} died without reporting an exit status");
                 quit_cb(PaneId::Terminal(terminal_id), None, cmd.clone());
             }
-            reap_host(host_child, host_pid, &host_id);
+            reap_host(host_process, host_pid, &host_id);
         })
         .map(|_| ())
         .unwrap_or_else(|e| log::error!("could not start the pty-host reader thread: {e}"));
 }
 
-/// Reap the supervisor so it does not become a zombie. It is a direct child of
-/// ours, which is exactly what lets us do this — and why no double fork.
-fn reap_host(mut host_child: Child, host_pid: u32, host_id: &str) {
+/// Reap the supervisor so it does not become a zombie. A supervisor we spawned is
+/// a direct child of ours, which is exactly what lets us do this — and why no
+/// double fork.
+///
+/// An *adopted* supervisor is not our child, so `waitpid` would only return
+/// `ECHILD`. It still has to be held to the same deadline, since this runs on the
+/// paths where the pane really is finished; liveness is probed with a null signal
+/// instead, and the reaping is left to init once it exits.
+fn reap_host(host_process: HostProcess, host_pid: u32, host_id: &str) {
+    let pid = Pid::from_raw(host_pid as i32);
+    let mut host_process = host_process;
     let deadline = Instant::now() + HOST_EXIT_GRACE;
     loop {
-        match host_child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) => {},
-            Err(e) => {
-                log::warn!("could not wait on pty-host {host_id}: {e}");
-                return;
+        match &mut host_process {
+            HostProcess::Spawned(child) => match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {},
+                Err(e) => {
+                    log::warn!("could not wait on pty-host {host_id}: {e}");
+                    return;
+                },
+            },
+            HostProcess::Foreign => {
+                if kill(pid, None).is_err() {
+                    // ESRCH: it is gone, and whatever reparented it will reap it.
+                    return;
+                }
             },
         }
         if Instant::now() >= deadline {
             log::warn!("pty-host {host_id} did not exit in time; killing it");
-            let _ = kill(Pid::from_raw(host_pid as i32), Some(Signal::SIGKILL));
-            let _ = host_child.wait();
+            let _ = kill(pid, Some(Signal::SIGKILL));
+            if let HostProcess::Spawned(child) = &mut host_process {
+                let _ = child.wait();
+            }
             return;
         }
         std::thread::sleep(Duration::from_millis(20));

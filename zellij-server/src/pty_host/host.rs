@@ -34,8 +34,8 @@ use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunComma
 
 use super::fdpass::{self, send_fd};
 use super::protocol::{
-    self, read_msg, write_msg, HostStatus, HostToServerMsg, ServerToHostMsg, SpawnFailureKind,
-    WireTermios, WireWinsize, PROTOCOL_VERSION,
+    self, read_msg, write_msg, AttachRefusal, HostStatus, HostToServerMsg, ServerToHostMsg,
+    SpawnFailureKind, WireTermios, WireWinsize, PROTOCOL_VERSION,
 };
 
 /// How much detached output to keep. Only reached when no server is attached, so
@@ -96,6 +96,17 @@ impl RingBuffer {
 
     fn len(&self) -> usize {
         self.buf.len()
+    }
+
+    /// Hand the buffered output over and start again empty.
+    ///
+    /// Called once per attach. Resetting `dropped` along with the bytes is what
+    /// makes the count mean "lost during *this* detachment" — a pane that is
+    /// warped twice should not re-report the first gap.
+    fn take(&mut self) -> (Vec<u8>, u64) {
+        let dropped = std::mem::take(&mut self.dropped);
+        let bytes = std::mem::take(&mut self.buf).into();
+        (bytes, dropped)
     }
 }
 
@@ -377,6 +388,13 @@ fn event_loop(
         // Rebuilt each pass: which descriptors are interesting depends on state,
         // and the master is polled only while detached — the read-ownership
         // invariant, expressed directly.
+        //
+        // The order is load-bearing, not cosmetic: `ready` below preserves it, so
+        // `Control` before `Listener` means a pending `Release` is always handled
+        // before a pending accept in the same wakeup. That is what makes a warp
+        // race-free — the releasing server and the attaching one are different
+        // processes with nothing else ordering them, and an `Attach` that arrived
+        // first would be refused for a pane its owner had already let go of.
         let mut sources: Vec<PollSource> = Vec::with_capacity(4);
         if attached_control.is_some() {
             sources.push(PollSource::Control);
@@ -430,10 +448,13 @@ fn event_loop(
                         continue;
                     };
                     match read_msg::<ServerToHostMsg, _>(stream) {
-                        Ok(Some(msg)) => {
-                            if handle_server_msg(ctx, msg, stream, &event_rx)? {
-                                return Ok(());
-                            }
+                        Ok(Some(msg)) => match handle_server_msg(ctx, msg, stream, &event_rx)? {
+                            ControlOutcome::Continue => {},
+                            ControlOutcome::Exit => return Ok(()),
+                            ControlOutcome::Detach => {
+                                attached_control = None;
+                                enter_detached(ctx)?;
+                            },
                         },
                         Ok(None) => {
                             // The server went away without saying Terminate: that
@@ -471,11 +492,19 @@ fn event_loop(
                 PollSource::Listener => {
                     if let Some(listener) = listener.as_ref() {
                         match listener.accept() {
-                            Ok((stream, _)) => {
-                                if serve_cli_connection(ctx, stream) {
+                            Ok((stream, _)) => match serve_cli_connection(ctx, stream) {
+                                CliOutcome::Done => {},
+                                CliOutcome::Terminate => {
                                     terminate(ctx, &event_rx);
                                     return Ok(());
-                                }
+                                },
+                                CliOutcome::Attached(stream) => {
+                                    // `attach` refuses while a server is attached, so
+                                    // there is nothing here to displace. Say so rather
+                                    // than silently dropping a live server's channel.
+                                    debug_assert!(attached_control.is_none());
+                                    attached_control = Some(stream);
+                                },
                             },
                             Err(e) => {
                                 log::warn!("pty-host {} accept failed: {e}", ctx.host_id)
@@ -499,26 +528,53 @@ enum PollSource {
     Master,
 }
 
-/// Returns `true` when the supervisor should exit.
+/// What a message on the control channel asked us to do.
+enum ControlOutcome {
+    Continue,
+    Exit,
+    /// The server gave the pane up. Same end state as it crashing, reached
+    /// deliberately.
+    Detach,
+}
+
 fn handle_server_msg(
     ctx: &mut HostContext,
     msg: ServerToHostMsg,
     control: &mut UnixStream,
     event_rx: &Receiver<HostEvent>,
-) -> Result<bool> {
+) -> Result<ControlOutcome> {
     match msg {
         ServerToHostMsg::Terminate => {
             terminate(ctx, event_rx);
-            Ok(true)
+            Ok(ControlOutcome::Exit)
         },
         ServerToHostMsg::Query => {
             write_msg(control, &HostToServerMsg::Status(ctx.status()))
                 .context("failed to answer Query")?;
-            Ok(false)
+            Ok(ControlOutcome::Continue)
+        },
+        ServerToHostMsg::Release => {
+            log::info!(
+                "pty-host {} ({}) released by its server",
+                ctx.host_id,
+                ctx.label
+            );
+            Ok(ControlOutcome::Detach)
+        },
+        ServerToHostMsg::Attach { .. } => {
+            // An `Attach` only makes sense from someone who is *not* already the
+            // control channel, and the accepted connection has to become the new
+            // channel, which a message here cannot do.
+            log::warn!(
+                "pty-host {} got an Attach on the control channel; \
+                 it belongs on the named socket",
+                ctx.host_id
+            );
+            Ok(ControlOutcome::Continue)
         },
         ServerToHostMsg::Hello { .. } | ServerToHostMsg::Spawn { .. } => {
             log::warn!("pty-host {} got a duplicate handshake message", ctx.host_id);
-            Ok(false)
+            Ok(ControlOutcome::Continue)
         },
     }
 }
@@ -609,31 +665,181 @@ fn drain_wake(wake_rx: &mut UnixStream) {
     }
 }
 
-/// Handles one `pty-host list|kill` connection inline. Returns `true` if it asked
-/// us to terminate.
-fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> bool {
+/// What an accepted named-socket connection asked us to do.
+enum CliOutcome {
+    /// Answered in place; the connection is finished with.
+    Done,
+    Terminate,
+    /// The connection has become our new control channel.
+    Attached(UnixStream),
+}
+
+/// Handles one `pty-host list|kill|adopt` connection inline.
+fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOutcome {
     // A wedged or malicious client must not be able to stall the supervisor.
     let _ = stream.set_read_timeout(Some(CLI_CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CLI_CONNECTION_TIMEOUT));
     match read_msg::<ServerToHostMsg, _>(&mut stream) {
         Ok(Some(ServerToHostMsg::Query)) => {
             let _ = write_msg(&mut stream, &HostToServerMsg::Status(ctx.status()));
-            false
+            CliOutcome::Done
         },
         Ok(Some(ServerToHostMsg::Terminate)) => {
             let _ = write_msg(&mut stream, &HostToServerMsg::Status(ctx.status()));
-            true
+            CliOutcome::Terminate
         },
-        Ok(Some(_)) => {
-            // Attach and friends arrive here in a later step.
-            false
-        },
-        Ok(None) => false,
+        Ok(Some(ServerToHostMsg::Attach {
+            protocol_version,
+            terminal_id,
+            session_name,
+            ..
+        })) => attach(ctx, stream, protocol_version, terminal_id, session_name),
+        Ok(Some(_)) => CliOutcome::Done,
+        Ok(None) => CliOutcome::Done,
         Err(e) => {
             log::warn!("pty-host {} bad CLI request: {e:#}", ctx.host_id);
-            false
+            CliOutcome::Done
         },
     }
+}
+
+fn refuse_attach(
+    ctx: &HostContext,
+    stream: &mut UnixStream,
+    reason: AttachRefusal,
+    message: String,
+) -> CliOutcome {
+    log::warn!("pty-host {} refused an attach: {message}", ctx.host_id);
+    let _ = write_msg(stream, &HostToServerMsg::AttachRefused { reason, message });
+    CliOutcome::Done
+}
+
+/// Hand this pane over to a new server.
+///
+/// The mirror of the `Spawn` half of `serve`: same `AttachAck`-then-`send_fd`
+/// shape, except the pty already exists and the ring has been catching its
+/// output in the meantime.
+fn attach(
+    ctx: &mut HostContext,
+    mut stream: UnixStream,
+    protocol_version: u32,
+    terminal_id: u32,
+    session_name: Option<String>,
+) -> CliOutcome {
+    if protocol_version != PROTOCOL_VERSION {
+        return refuse_attach(
+            ctx,
+            &mut stream,
+            AttachRefusal::ProtocolMismatch,
+            format!(
+                "this supervisor speaks v{PROTOCOL_VERSION}, the caller speaks v{protocol_version}"
+            ),
+        );
+    }
+    if ctx.state == State::Attached {
+        // Two servers holding dups of the same master would each read half the
+        // pane's output. The caller retries: a server that crashed a moment ago
+        // may not have been noticed yet.
+        return refuse_attach(
+            ctx,
+            &mut stream,
+            AttachRefusal::AlreadyAttached,
+            "a server is still attached to this pane".to_owned(),
+        );
+    }
+    let Some(session) = ctx.session.as_ref() else {
+        return refuse_attach(
+            ctx,
+            &mut stream,
+            AttachRefusal::NoSession,
+            "this supervisor never spawned a child, so it has no pty to hand over".to_owned(),
+        );
+    };
+    let master_fd = session.master.as_raw_fd();
+    let child_pid = session.child_pid;
+    let child_exited = session.exit_status;
+
+    // Re-key before building the status, so `pty-host list` names the session
+    // that owns the pane now rather than the one it came from.
+    ctx.terminal_id = terminal_id;
+    ctx.session_name = session_name;
+    ctx.label = match ctx.session_name.as_ref() {
+        Some(name) => format!("{name}/{terminal_id}"),
+        None => terminal_id.to_string(),
+    };
+    ctx.state = State::Attached;
+    let (buffered, dropped_bytes) = ctx.ring.take();
+    if dropped_bytes > 0 {
+        log::warn!(
+            "pty-host {} dropped {dropped_bytes} bytes while detached; \
+             the adopted pane is missing the middle of its output",
+            ctx.host_id
+        );
+    }
+
+    // `cmd` travels for `hold_on_close`; its `originating_plugin` names a plugin
+    // in the session this pane is leaving, so it must not follow it.
+    let mut cmd = ctx.cmd.clone();
+    cmd.originating_plugin = None;
+
+    let ack = HostToServerMsg::AttachAck {
+        protocol_version: PROTOCOL_VERSION,
+        zellij_version: VERSION.to_owned(),
+        host_id: ctx.host_id.clone(),
+        host_pid: ctx.host_pid,
+        child_pid,
+        cmd,
+        status: ctx.status(),
+        buffered_base64: protocol::encode_buffered(&buffered),
+        dropped_bytes,
+    };
+    if let Err(e) = write_msg(&mut stream, &ack) {
+        log::warn!(
+            "pty-host {} could not send an AttachAck: {e:#}",
+            ctx.host_id
+        );
+        return abandon_attach(ctx, buffered);
+    }
+    if let Err(e) = send_fd(&stream, master_fd) {
+        log::warn!(
+            "pty-host {} could not hand the pty master over: {e:#}",
+            ctx.host_id
+        );
+        return abandon_attach(ctx, buffered);
+    }
+
+    // Back to blocking: these timeouts exist so a wedged `pty-host list` cannot
+    // stall us, but a control channel that timed out mid-frame would be read as
+    // a detach and would silently drop a live server.
+    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_write_timeout(None);
+
+    if let Some(status) = child_exited {
+        // The child died while nobody was attached, so `on_child_exited` had no
+        // control channel to report it on. Without this the adopted pane would
+        // sit there looking alive forever.
+        if let Err(e) = write_msg(&mut stream, &HostToServerMsg::ChildExited { status }) {
+            log::warn!(
+                "pty-host {} could not report its already-exited child: {e:#}",
+                ctx.host_id
+            );
+        }
+    }
+
+    log::info!(
+        "pty-host {} ({}) attached by a new server",
+        ctx.host_id,
+        ctx.label
+    );
+    CliOutcome::Attached(stream)
+}
+
+/// Undo a half-finished attach: go back to draining, and keep the output we had
+/// already taken out of the ring so the next attacher still gets it.
+fn abandon_attach(ctx: &mut HostContext, buffered: Vec<u8>) -> CliOutcome {
+    ctx.state = State::Detached;
+    ctx.ring.push(&buffered);
+    CliOutcome::Done
 }
 
 fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {

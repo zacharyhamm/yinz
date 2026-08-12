@@ -10,6 +10,8 @@ pub struct PluginIds {
     pub initial_cwd: ::prost::alloc::string::String,
     #[prost(uint32, tag="4")]
     pub client_id: u32,
+    #[prost(string, tag="5")]
+    pub hostname: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -465,12 +465,36 @@ where
     }
 }
 
+/// Refuse absurd frames rather than allocating whatever a peer claims.
+///
+/// The length prefix below is read straight off the wire and used as an
+/// allocation size, so without this a peer — or a corrupted stream — asking for
+/// 4 GiB gets it. Generous rather than tight, because real messages can be large:
+/// moving a pane between sessions carries its whole scrollback as an ANSI dump.
+/// The same guard exists on the pty-host's own wire format, which sizes it far
+/// smaller because it only ever carries control messages.
+pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
+
 // Protobuf wire format utilities
+/// The frame reader, reachable from the tests in this crate so the length guard
+/// can be exercised without standing up a socket pair.
+#[cfg(test)]
+pub(crate) fn read_protobuf_message_for_test(
+    reader: &mut impl Read,
+) -> Result<ProtoClientToServerMsg> {
+    read_protobuf_message(reader)
+}
+
 fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result<T> {
     // Read length-prefixed protobuf message
     let mut len_bytes = [0u8; 4];
     reader.read_exact(&mut len_bytes)?;
     let len = u32::from_le_bytes(len_bytes) as usize;
+    if len > MAX_IPC_FRAME_LEN {
+        return Err(anyhow!(
+            "refusing a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"
+        ));
+    }
 
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf)?;
@@ -480,6 +504,12 @@ fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result
 
 fn write_protobuf_message<T: Message>(writer: &mut impl Write, msg: &T) -> Result<()> {
     let encoded = msg.encode_to_vec();
+    if encoded.len() > MAX_IPC_FRAME_LEN {
+        return Err(anyhow!(
+            "refusing to send a {} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit",
+            encoded.len()
+        ));
+    }
     let len = encoded.len() as u32;
 
     // we measure the length of the message and transmit it first so that the reader will be able

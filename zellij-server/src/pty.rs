@@ -21,13 +21,18 @@ use crate::{
     ClientId, ServerInstruction,
 };
 use std::sync::Arc;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
+use crate::pty_host::client::ReleasedPtyHost;
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
         CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse, GetPanePidResponse,
         GetPaneRunningCommandResponse, GlobalPanePlacement, NewPanePlacement, OriginatingPlugin,
-        SessionInfo,
+        SessionInfo, WarpPlacement, WarpedPane,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -122,6 +127,19 @@ fn new_terminal_screen_instruction(
     }
 }
 
+/// What `Pty::adopt_terminal` hands back so Screen can build the pane.
+pub struct AdoptedPane {
+    pub terminal_id: u32,
+    pub cmd: RunCommand,
+    /// Output the supervisor caught while nobody was attached. Replayed into the
+    /// pane after the transferred screen and before any live bytes, so the
+    /// hand-off costs nothing.
+    pub buffered: Vec<u8>,
+    /// `Some` when the child is already gone, so the pane can arrive held rather
+    /// than pretending to run.
+    pub child_exit_status: Option<Option<i32>>,
+}
+
 /// Instructions related to PTYs (pseudoterminals).
 #[derive(Clone, Debug)]
 pub enum PtyInstruction {
@@ -168,6 +186,27 @@ pub enum PtyInstruction {
     ),
     ClosePane(PaneId, Option<NotificationEnd>),
     CloseTab(Vec<PaneId>),
+    /// Give a pane's supervisor up so another session can take it, keeping the
+    /// child alive. The opposite of `ClosePane` in the one way that matters.
+    ///
+    /// The reply goes back to Screen as `ScreenInstruction::PaneReleasedForWarp`
+    /// rather than down a response channel, because Screen must not block on this
+    /// thread — and because by the time it lands, the reader task is gone and
+    /// every `PtyBytes` it ever emitted is already queued ahead of it, so what
+    /// Screen serializes next is exactly what the user was looking at.
+    ReleaseTerminalForWarp {
+        terminal_id: u32,
+        to_session: String,
+        placement: WarpPlacement,
+        client_id: ClientId,
+    },
+    /// Take a detached supervisor over into this session and give it a pane.
+    AdoptTerminal {
+        payload: Box<WarpedPane>,
+        placement: WarpPlacement,
+        client_id: ClientId,
+        response_channel: crossbeam::channel::Sender<Result<()>>,
+    },
     ReRunCommandInPane(PaneId, RunCommand, Option<NotificationEnd>),
     DropToShellInPane {
         pane_id: PaneId,
@@ -248,6 +287,8 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::GoToTab(..) => PtyContext::GoToTab,
             PtyInstruction::ClosePane(..) => PtyContext::ClosePane,
             PtyInstruction::CloseTab(_) => PtyContext::CloseTab,
+            PtyInstruction::ReleaseTerminalForWarp { .. } => PtyContext::ReleaseTerminalForWarp,
+            PtyInstruction::AdoptTerminal { .. } => PtyContext::AdoptTerminal,
             PtyInstruction::NewTab(..) => PtyContext::NewTab,
             PtyInstruction::OverrideLayout(..) => PtyContext::OverrideLayout,
             PtyInstruction::ReRunCommandInPane(..) => PtyContext::ReRunCommandInPane,
@@ -678,6 +719,55 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             .send_to_server(ServerInstruction::UnblockInputThread)
                     })
                     .context("failed to close tabs")?;
+            },
+            PtyInstruction::ReleaseTerminalForWarp {
+                terminal_id,
+                to_session,
+                placement,
+                client_id,
+            } => {
+                // Screen hears about this either way: it has a pane sitting in
+                // limbo and has to either send it on or put it back.
+                let result = pty.release_terminal_for_warp(terminal_id);
+                let _ = pty
+                    .bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::PaneReleasedForWarp {
+                        terminal_id,
+                        to_session,
+                        placement,
+                        client_id,
+                        released: result.map_err(|e| format!("{e:#}")),
+                    });
+            },
+            PtyInstruction::AdoptTerminal {
+                payload,
+                placement,
+                client_id,
+                response_channel,
+            } => {
+                // Matched rather than mapped so the payload — which carries the
+                // pane's whole scrollback — moves into the Screen instruction
+                // instead of being cloned.
+                let result = match pty.adopt_terminal(&payload.control_socket) {
+                    Ok(adopted) => {
+                        let _ =
+                            pty.bus
+                                .senders
+                                .send_to_screen(ScreenInstruction::AdoptedPaneReady {
+                                    terminal_id: adopted.terminal_id,
+                                    payload,
+                                    placement,
+                                    client_id,
+                                    cmd: adopted.cmd,
+                                    buffered: adopted.buffered,
+                                    child_exit_status: adopted.child_exit_status,
+                                });
+                        Ok(())
+                    },
+                    Err(e) => Err(e),
+                };
+                let _ = response_channel.send(result);
             },
             PtyInstruction::ReRunCommandInPane(pane_id, run_command, _completion_tx) => {
                 let err_context = || format!("failed to rerun command in pane {:?}", pane_id);
@@ -1927,6 +2017,119 @@ impl Pty {
                 .with_context(|| format!("failed to close tab for pane {id:?}"))?;
         }
         Ok(())
+    }
+
+    /// Let go of a pane so another session can take it, without killing anything.
+    ///
+    /// Everything `close_pane` does *except* the two things that end a process:
+    /// no `kill` of the child, and `release_terminal_for_warp` in place of
+    /// `clear_terminal_id`, which would terminate the supervisor. Aborting the
+    /// reader task drops its `RawFdAsyncReader`, which closes this server's dup of
+    /// the master — the supervisor keeps its own and starts draining into the ring.
+    pub fn release_terminal_for_warp(&mut self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+        let err_context = || format!("failed to release pane {terminal_id} for a warp");
+        let released = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")
+            .and_then(|os_input| os_input.release_terminal_for_warp(terminal_id))
+            .with_context(err_context)?;
+
+        if let Some(handle) = self.task_handles.remove(&terminal_id) {
+            handle.abort();
+        }
+        // Removed, emphatically not killed: the process is the point.
+        let _ = self.id_to_child_pid.remove(&terminal_id);
+        self.pane_activity_flags.remove(&terminal_id);
+        self.terminal_cwds.remove(&terminal_id);
+        self.terminal_cmds.remove(&terminal_id);
+        self.terminal_foreground_cmds.remove(&terminal_id);
+        // The plugin that spawned this pane lives in *this* session, so it does
+        // not follow the pane out.
+        self.originating_plugins.remove(&terminal_id);
+        Ok(released)
+    }
+
+    /// Take a supervisor over from another session (or from a server that died)
+    /// and give this session a pane for it.
+    ///
+    /// Returns the fresh terminal id, the command it is running, whatever the
+    /// supervisor buffered while nobody held it, and its exit status if the child
+    /// is already gone.
+    pub fn adopt_terminal(&mut self, control_socket: &Path) -> Result<AdoptedPane> {
+        let err_context = || {
+            format!(
+                "failed to adopt the pane supervised at {}",
+                control_socket.display()
+            )
+        };
+
+        // Built before the attach, because `adopt_terminal` hands it to the
+        // reader thread. `hold_on_close` is the only thing that varies, and it
+        // comes from the supervisor — which we have not asked yet — so this
+        // closure reads it from a cell the attach fills in. Simpler: attach
+        // first is impossible, so the callback consults the command it is given.
+        let senders = self.bus.senders.clone();
+        let quit_cb = Box::new(move |pane_id, exit_status, command: RunCommand| {
+            // Deliberately no `CommandPaneExited`/`EditPaneExited`: an
+            // originating plugin belongs to the session this pane came from, and
+            // its plugin id would name something else entirely here. The
+            // supervisor clears it from the command for the same reason.
+            if command.hold_on_close {
+                let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
+                    pane_id,
+                    exit_status,
+                    command,
+                ));
+            } else {
+                let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
+                    pane_id,
+                    None,
+                    None,
+                    exit_status,
+                ));
+            }
+        });
+
+        let adopted = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")
+            .and_then(|os_input| os_input.adopt_terminal(control_socket, quit_cb))
+            .with_context(err_context)?;
+
+        let terminal_id = adopted.terminal_id;
+        let child_pid = adopted.child_pid;
+        let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminal_bytes = async_runtime().spawn({
+            let err_context =
+                |terminal_id: u32| format!("failed to run async task for terminal {terminal_id}");
+            let senders = self.bus.senders.clone();
+            let debug_to_file = self.debug_to_file;
+            let activity_flag = activity_flag.clone();
+            let reader = adopted.reader;
+            async move {
+                TerminalBytes::new(terminal_id, reader, senders, debug_to_file, activity_flag)
+                    .listen()
+                    .await
+                    .with_context(|| err_context(terminal_id))
+                    .fatal();
+            }
+        });
+
+        self.task_handles.insert(terminal_id, terminal_bytes);
+        self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.id_to_child_pid.insert(terminal_id, child_pid);
+        self.capture_initial_cwd(terminal_id, child_pid);
+
+        Ok(AdoptedPane {
+            terminal_id,
+            cmd: adopted.cmd,
+            buffered: adopted.buffered,
+            child_exit_status: adopted.child_exit_status,
+        })
     }
     pub fn set_active_pane(&mut self, pane_id: Option<PaneId>, client_id: ClientId) {
         if let Some(pane_id) = pane_id {

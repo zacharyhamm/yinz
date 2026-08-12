@@ -21,7 +21,7 @@ use crate::{
         SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToPaneRendersMsg,
         SubscribedPaneClosedMsg, SwitchSessionMsg, TabMetadata as ProtoTabMetadata,
         TerminalPixelDimensionsMsg, TerminalResizeMsg, UnblockCliPipeInputMsg,
-        UnblockInputThreadMsg, WebServerStartedMsg,
+        UnblockInputThreadMsg, WarpPlacement as ProtobufWarpPlacement, WebServerStartedMsg,
     },
     data::{HostTerminalThemeMode, InputMode, PaneId},
     errors::prelude::*,
@@ -1116,6 +1116,29 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
     }
 }
 
+impl From<crate::data::WarpPlacement> for ProtobufWarpPlacement {
+    fn from(placement: crate::data::WarpPlacement) -> Self {
+        match placement {
+            crate::data::WarpPlacement::NewTab => ProtobufWarpPlacement::NewTab,
+            crate::data::WarpPlacement::FocusedTab => ProtobufWarpPlacement::FocusedTab,
+            crate::data::WarpPlacement::Floating => ProtobufWarpPlacement::Floating,
+        }
+    }
+}
+
+/// Protobuf enums arrive as bare `i32`, so an unknown value is a real
+/// possibility — a newer peer with a placement this build has never heard of.
+/// Refuse rather than silently landing the pane somewhere the user did not ask
+/// for.
+fn warp_placement_from_i32(value: i32) -> Result<crate::data::WarpPlacement> {
+    match ProtobufWarpPlacement::try_from(value) {
+        Ok(ProtobufWarpPlacement::NewTab) => Ok(crate::data::WarpPlacement::NewTab),
+        Ok(ProtobufWarpPlacement::FocusedTab) => Ok(crate::data::WarpPlacement::FocusedTab),
+        Ok(ProtobufWarpPlacement::Floating) => Ok(crate::data::WarpPlacement::Floating),
+        Err(_) => Err(anyhow!("unknown warp placement: {value}")),
+    }
+}
+
 // Complete Action conversion implementation - all 91 variants
 impl TryFrom<crate::input::actions::Action>
     for crate::client_server_contract::client_server_contract::Action
@@ -1125,6 +1148,7 @@ impl TryFrom<crate::input::actions::Action>
     fn try_from(action: crate::input::actions::Action) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
             action::ActionType,
+            AdoptPaneAction,
             AreFloatingPanesVisibleAction,
             BreakPaneAction,
             BreakPaneLeftAction,
@@ -1272,6 +1296,7 @@ impl TryFrom<crate::input::actions::Action>
             UndoRenameTabAction,
             // Tab-targeting
             UndoRenameTabByTabIdAction,
+            WarpPaneAction,
             WriteAction,
             WriteCharsAction,
             WriteCharsToPaneIdAction,
@@ -1695,6 +1720,25 @@ impl TryFrom<crate::input::actions::Action>
                 layout: layout.as_ref().map(|l| l.clone().into()),
                 cwd: cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
             }),
+            crate::input::actions::Action::WarpPane {
+                pane_id,
+                to_session,
+                placement,
+            } => ActionType::WarpPane(WarpPaneAction {
+                to_session: to_session.clone(),
+                pane_id: pane_id.map(|pane_id| pane_id.into()),
+                placement: ProtobufWarpPlacement::from(placement) as i32,
+            }),
+            crate::input::actions::Action::AdoptPane { payload, placement } => {
+                ActionType::AdoptPane(AdoptPaneAction {
+                    host_id: payload.host_id.clone(),
+                    control_socket: payload.control_socket.to_string_lossy().to_string(),
+                    title: payload.title.clone(),
+                    contents: payload.contents.clone(),
+                    borderless: payload.borderless,
+                    placement: ProtobufWarpPlacement::from(placement) as i32,
+                })
+            },
             crate::input::actions::Action::LaunchOrFocusPlugin {
                 plugin,
                 should_float,
@@ -2630,6 +2674,26 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .map(|l| l.try_into())
                         .transpose()?,
                     cwd: switch_session_action.cwd.map(PathBuf::from),
+                })
+            },
+            ActionType::WarpPane(warp_pane_action) => Ok(crate::input::actions::Action::WarpPane {
+                to_session: warp_pane_action.to_session.clone(),
+                pane_id: warp_pane_action
+                    .pane_id
+                    .map(|pane_id| pane_id.try_into())
+                    .transpose()?,
+                placement: warp_placement_from_i32(warp_pane_action.placement)?,
+            }),
+            ActionType::AdoptPane(adopt_pane_action) => {
+                Ok(crate::input::actions::Action::AdoptPane {
+                    placement: warp_placement_from_i32(adopt_pane_action.placement)?,
+                    payload: Box::new(crate::data::WarpedPane {
+                        host_id: adopt_pane_action.host_id.clone(),
+                        control_socket: PathBuf::from(&adopt_pane_action.control_socket),
+                        title: adopt_pane_action.title.clone(),
+                        contents: adopt_pane_action.contents.clone(),
+                        borderless: adopt_pane_action.borderless,
+                    }),
                 })
             },
             ActionType::LaunchOrFocusPlugin(launch_plugin_action) => {

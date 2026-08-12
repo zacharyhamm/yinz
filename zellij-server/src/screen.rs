@@ -66,6 +66,7 @@ use std::time::{Duration, Instant};
 
 use crate::route::NotificationEnd;
 
+use crate::pty_host::client::ReleasedPtyHost;
 use crate::ui::notification::{notification_chunks, notification_origins, notification_width};
 use log::{debug, warn};
 use zellij_utils::data::{
@@ -73,7 +74,8 @@ use zellij_utils::data::{
     GlobalPaneEdge, GlobalPanePlacement, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
     LayoutWithError, ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneContents, PaneInfo,
     PaneListEntry, PaneManifest, PaneRenderReport, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WebSharing,
+    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement,
+    WarpedPane, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
@@ -804,6 +806,40 @@ pub enum ScreenInstruction {
     BreakPane(Option<TerminalAction>, ClientId, Option<NotificationEnd>),
     BreakPaneRight(ClientId, Option<NotificationEnd>),
     BreakPaneLeft(ClientId, Option<NotificationEnd>),
+    /// Move a pane, running process and all, to another session.
+    ///
+    /// Every refusal happens here, before anything is released — a pane whose
+    /// warp is going to fail should never leave its tab.
+    WarpPane {
+        pane_id: Option<PaneId>,
+        to_session: String,
+        placement: WarpPlacement,
+        client_id: ClientId,
+        response_channel: crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+    },
+    /// The pty thread has let a pane's supervisor go. Serializing the pane *here*
+    /// rather than when the warp was requested is what makes the screen that
+    /// travels match the one the user was looking at: by now the reader task is
+    /// gone, so every `PtyBytes` it ever emitted is queued ahead of this and has
+    /// already been applied.
+    PaneReleasedForWarp {
+        terminal_id: u32,
+        to_session: String,
+        placement: WarpPlacement,
+        client_id: ClientId,
+        released: Result<ReleasedPtyHost, String>,
+    },
+    /// The pty thread has taken a supervisor over and this session now owns
+    /// `terminal_id`. All that is left is to give it a pane and paint it.
+    AdoptedPaneReady {
+        terminal_id: u32,
+        payload: Box<WarpedPane>,
+        placement: WarpPlacement,
+        client_id: ClientId,
+        cmd: RunCommand,
+        buffered: Vec<u8>,
+        child_exit_status: Option<Option<i32>>,
+    },
     UpdateSessionInfos(
         BTreeMap<String, SessionInfo>, // String is the session name
         BTreeMap<String, Duration>,    // resurrectable sessions - <name, created>
@@ -1223,6 +1259,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::BreakPane(..) => ScreenContext::BreakPane,
             ScreenInstruction::BreakPaneRight(..) => ScreenContext::BreakPaneRight,
             ScreenInstruction::BreakPaneLeft(..) => ScreenContext::BreakPaneLeft,
+            ScreenInstruction::WarpPane { .. } => ScreenContext::WarpPane,
+            ScreenInstruction::PaneReleasedForWarp { .. } => ScreenContext::PaneReleasedForWarp,
+            ScreenInstruction::AdoptedPaneReady { .. } => ScreenContext::AdoptedPaneReady,
             ScreenInstruction::UpdateSessionInfos(..) => ScreenContext::UpdateSessionInfos,
             ScreenInstruction::ReplacePane(..) => ScreenContext::ReplacePane,
             ScreenInstruction::NewInPlacePluginPane(..) => ScreenContext::NewInPlacePluginPane,
@@ -1587,6 +1626,12 @@ pub(crate) struct Screen {
     session_serialization: bool,
     serialize_pane_viewport: bool,
     scrollback_lines_to_serialize: Option<usize>,
+    /// Warps waiting on the pty thread, keyed by the terminal id being released.
+    ///
+    /// A warp takes two hops — ask pty to let the supervisor go, then serialize
+    /// the pane once it has — and whoever is waiting on the far end has to still
+    /// be reachable from the second hop.
+    pending_warps: HashMap<u32, crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>>,
     session_is_mirrored: bool,
     copy_options: CopyOptions,
     debug: bool,
@@ -1807,6 +1852,7 @@ impl Screen {
             session_serialization,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
+            pending_warps: HashMap::new(),
             styled_underlines,
             osc8_hyperlinks,
             arrow_fonts,
@@ -7248,6 +7294,301 @@ impl Screen {
         }
         Ok(())
     }
+    /// Keep a warped pane's screen dump inside something a message bus should be
+    /// asked to carry.
+    ///
+    /// A 10,000-line scrollback with heavy styling runs to tens of megabytes, and
+    /// it is copied several times between the two processes. Truncating from the
+    /// *front* is the safe end: the receiving side feeds this to a VTE parser,
+    /// which resumes mid-stream quite happily — what is lost is the styling state
+    /// established before the cut, not the integrity of what follows.
+    fn fit_to_warp_budget(contents: String) -> String {
+        /// Roughly 200 columns of styled text over a few thousand lines. Well
+        /// inside `MAX_IPC_FRAME_LEN`, and far past what anyone reads back.
+        const WARP_CONTENTS_BUDGET: usize = 4 * 1024 * 1024;
+
+        if contents.len() <= WARP_CONTENTS_BUDGET {
+            return contents;
+        }
+        let mut cut = contents.len() - WARP_CONTENTS_BUDGET;
+        // Never split a character; a lone continuation byte would desync the
+        // parser on the far side.
+        while cut < contents.len() && !contents.is_char_boundary(cut) {
+            cut += 1;
+        }
+        log::warn!(
+            "a warped pane's scrollback was {} bytes; keeping the most recent {}",
+            contents.len(),
+            contents.len() - cut
+        );
+        contents[cut..].to_owned()
+    }
+
+    /// Decide whether a pane may be moved to another session, and say which
+    /// terminal it is if so.
+    ///
+    /// Every reason a warp cannot work is checked here, before the pty thread is
+    /// asked for anything. Once the supervisor is released the pane is briefly in
+    /// nobody's hands, so nothing that could have been decided beforehand should
+    /// be discovered then.
+    fn check_pane_can_be_warped(
+        &mut self,
+        pane_id: Option<PaneId>,
+        client_id: ClientId,
+    ) -> Result<u32, String> {
+        let pane_id = match pane_id {
+            Some(pane_id) => pane_id,
+            None => self
+                .get_active_tab(client_id)
+                .ok()
+                .and_then(|tab| tab.get_active_pane_id(client_id))
+                .ok_or_else(|| "no pane is focused".to_owned())?,
+        };
+        let terminal_id = match pane_id {
+            PaneId::Terminal(terminal_id) => terminal_id,
+            PaneId::Plugin(_) => {
+                return Err(
+                    "this is a plugin pane; it has no process, so there is nothing to move"
+                        .to_owned(),
+                );
+            },
+        };
+
+        let mut found = false;
+        for tab in self.tabs.values() {
+            if tab.get_all_pane_ids().contains(&pane_id) {
+                // `Tab::close_pane` treats a suppressed pane as "swap the pane it
+                // is standing in for back", which would hand over the wrong pty.
+                if tab.get_suppressed_panes().any(|(id, _)| *id == pane_id) {
+                    return Err(
+                        "this pane has a scrollback editor open; close it before moving the pane"
+                            .to_owned(),
+                    );
+                }
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(format!("there is no pane {terminal_id} in this session"));
+        }
+
+        // Warping the session's only pane would end the session, which is not
+        // what moving a pane should mean. A tab's last pane is fine — the render
+        // pass sweeps tabs with nothing selectable left in them.
+        if self.selectable_terminal_pane_count() <= 1 {
+            return Err(
+                "this is the session's only pane; moving it would close the session".to_owned(),
+            );
+        }
+        Ok(terminal_id)
+    }
+
+    fn selectable_terminal_pane_count(&self) -> usize {
+        self.tabs
+            .values()
+            .map(|tab| {
+                tab.get_selectable_tiled_panes_count()
+                    + tab.get_visible_selectable_floating_panes_count()
+            })
+            .sum()
+    }
+
+    /// Serialize the released pane and take it out of its tab.
+    ///
+    /// Note what is *not* here: `PtyInstruction::ClosePane`. That is what the
+    /// `ScreenInstruction::ClosePane` handler sends, and it SIGHUPs the child and
+    /// terminates the supervisor. `Tab::close_pane` itself touches nothing on the
+    /// pty thread — it just tidies the tab up, moves clients off the pane and
+    /// relayouts, which is exactly what is wanted when a pane leaves.
+    fn take_released_pane_for_warp(
+        &mut self,
+        terminal_id: u32,
+        released: Result<ReleasedPtyHost, String>,
+    ) -> Result<Box<WarpedPane>, String> {
+        let released = released?;
+        let Some(control_socket) = released.control_socket else {
+            // The pane is still ours and still working; it just has no address to
+            // hand out. Nothing to roll back, because nothing has moved yet.
+            return Err(format!(
+                "the supervisor for this pane ({}) never bound a socket, so no other session \
+                 can reach it — this usually means the runtime directory path is too long",
+                released.host_id
+            ));
+        };
+        let pane_id = PaneId::Terminal(terminal_id);
+
+        let mut payload = None;
+        for tab in self.tabs.values_mut() {
+            if !tab.get_all_pane_ids().contains(&pane_id) {
+                continue;
+            }
+            let scrollback_lines = self.scrollback_lines_to_serialize;
+            let Some(pane) = tab.get_pane_with_id(pane_id) else {
+                continue;
+            };
+            // Not gated on `serialize_pane_viewport`: that option governs
+            // automatic session serialization, and a warp is something the user
+            // asked for by name.
+            let contents = pane
+                .serialize(scrollback_lines)
+                .map(Self::fit_to_warp_budget);
+            let title = Some(pane.current_title());
+            let borderless = pane.borderless();
+            tab.close_pane(pane_id, false, None);
+            payload = Some(Box::new(WarpedPane {
+                host_id: released.host_id.clone(),
+                control_socket: control_socket.clone(),
+                title,
+                contents,
+                borderless,
+            }));
+            break;
+        }
+        self.clear_nested_guest(pane_id);
+        payload.ok_or_else(|| {
+            format!("pane {terminal_id} vanished while its supervisor was being released")
+        })
+    }
+
+    /// Give an adopted supervisor a pane in this session.
+    ///
+    /// Deliberately expressed as the ordinary pane-creation instructions rather
+    /// than by building a `TerminalPane` here: a pane object is full of
+    /// per-session `Rc`s and could never have been carried across anyway, and
+    /// `NewPane` already knows how to place one.
+    fn place_adopted_pane(
+        &mut self,
+        terminal_id: u32,
+        payload: WarpedPane,
+        placement: WarpPlacement,
+        client_id: ClientId,
+        cmd: RunCommand,
+        buffered: Vec<u8>,
+        child_exit_status: Option<Option<i32>>,
+    ) -> Result<()> {
+        let err_context = || format!("failed to place adopted pane {terminal_id}");
+        let pane_id = PaneId::Terminal(terminal_id);
+        let invoked_with = Some(Run::Command(cmd.clone()));
+        // A pane whose child is already gone should arrive held, showing its exit
+        // status, rather than pretending to run.
+        let hold_for_command = match child_exit_status {
+            Some(_) => Some(cmd.clone()),
+            None => None,
+        };
+
+        let (placement, tab_target) = match placement {
+            WarpPlacement::Floating => (
+                NewPanePlacement::Floating(None),
+                ClientTabIndexOrPaneId::ClientId(client_id),
+            ),
+            WarpPlacement::FocusedTab => (
+                NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: Some(payload.borderless),
+                },
+                ClientTabIndexOrPaneId::ClientId(client_id),
+            ),
+            WarpPlacement::NewTab => {
+                let tab_index = self.new_tab_for_adopted_pane(invoked_with.clone(), client_id)?;
+                (
+                    NewPanePlacement::Tiled {
+                        direction: None,
+                        borderless: Some(payload.borderless),
+                    },
+                    ClientTabIndexOrPaneId::TabIndex(tab_index),
+                )
+            },
+        };
+
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::NewPane(
+                pane_id,
+                payload.title.clone(),
+                hold_for_command,
+                invoked_with,
+                placement,
+                false,
+                tab_target,
+                None,
+                false,
+            ))
+            .with_context(err_context)?;
+
+        // The transferred screen first, then whatever the supervisor caught during
+        // the hand-off, then live output. `NewPane` is ahead of these on the same
+        // channel, and `pending_events_waiting_for_pane` would buffer them anyway.
+        if let Some(contents) = payload.contents {
+            if !contents.is_empty() {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::PtyBytes(
+                        terminal_id,
+                        contents.into_bytes(),
+                    ))
+                    .with_context(err_context)?;
+            }
+        }
+        if !buffered.is_empty() {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, buffered))
+                .with_context(err_context)?;
+        }
+        if let Some(exit_status) = child_exit_status {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::HoldPane(pane_id, exit_status, cmd))
+                .with_context(err_context)?;
+        }
+        Ok(())
+    }
+
+    /// A tab of its own for an adopted pane, following `break_pane`'s dance.
+    ///
+    /// `ignore_run_instruction` is the load-bearing part: without it the new tab's
+    /// layout template also spawns a default shell, and the user gets two panes
+    /// where they asked for one.
+    fn new_tab_for_adopted_pane(
+        &mut self,
+        invoked_with: Option<Run>,
+        client_id: ClientId,
+    ) -> Result<usize> {
+        let err_context = || "failed to open a tab for an adopted pane".to_string();
+        let default_layout = self.default_layout.clone();
+        let tab_index = self.get_new_tab_id();
+        let swap_layouts = (
+            default_layout.swap_tiled_layouts.clone(),
+            default_layout.swap_floating_layouts.clone(),
+        );
+        self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
+        let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
+        tiled_panes_layout.ignore_run_instruction(invoked_with);
+        let is_web_client = self
+            .connected_clients
+            .borrow()
+            .get(&client_id)
+            .copied()
+            .unwrap_or(false);
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::NewTab(
+                None,
+                None,
+                Some(tiled_panes_layout),
+                floating_panes_layout,
+                tab_index,
+                None,
+                false,
+                true,
+                (client_id, is_web_client),
+                None,
+            ))
+            .with_context(err_context)?;
+        Ok(tab_index)
+    }
+
     pub fn break_pane(
         &mut self,
         default_shell: Option<TerminalAction>,
@@ -12931,6 +13272,70 @@ pub(crate) fn screen_thread_main(
                         ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission),
                     );
                 }
+            },
+            ScreenInstruction::WarpPane {
+                pane_id,
+                to_session,
+                placement,
+                client_id,
+                response_channel,
+            } => {
+                // Every check that can fail happens before the pty thread is asked
+                // for anything: a warp that is going to be refused must leave the
+                // pane exactly where it was.
+                match screen.check_pane_can_be_warped(pane_id, client_id) {
+                    Ok(terminal_id) => {
+                        screen.pending_warps.insert(terminal_id, response_channel);
+                        screen
+                            .bus
+                            .senders
+                            .send_to_pty(PtyInstruction::ReleaseTerminalForWarp {
+                                terminal_id,
+                                to_session,
+                                placement,
+                                client_id,
+                            })?;
+                    },
+                    Err(e) => {
+                        let _ = response_channel.send(Err(e));
+                    },
+                }
+            },
+            ScreenInstruction::PaneReleasedForWarp {
+                terminal_id,
+                placement: _,
+                to_session: _,
+                client_id: _,
+                released,
+            } => {
+                let response_channel = screen.pending_warps.remove(&terminal_id);
+                let result = screen.take_released_pane_for_warp(terminal_id, released);
+                if let Some(response_channel) = response_channel {
+                    let _ = response_channel.send(result);
+                }
+                screen.log_and_report_session_state().non_fatal();
+                screen.render(None)?;
+            },
+            ScreenInstruction::AdoptedPaneReady {
+                terminal_id,
+                payload,
+                placement,
+                client_id,
+                cmd,
+                buffered,
+                child_exit_status,
+            } => {
+                screen.place_adopted_pane(
+                    terminal_id,
+                    *payload,
+                    placement,
+                    client_id,
+                    cmd,
+                    buffered,
+                    child_exit_status,
+                )?;
+                screen.log_and_report_session_state().non_fatal();
+                screen.render(None)?;
             },
             ScreenInstruction::BreakPane(default_shell, client_id, mut completion_tx) => {
                 if screen.reject_focused_global_for_tab_operation_with_completion(

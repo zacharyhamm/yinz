@@ -198,15 +198,21 @@ fn right_more_message(
 }
 
 fn tab_line_prefix(
+    hostname: &str,
     session_name: Option<&str>,
     palette: Styling,
     cols: usize,
     dimmed: bool,
     breadcrumb_ancestry: &[String],
 ) -> (Vec<LinePart>, Option<(usize, usize)>) {
-    let prefix_text = " Zellij ".to_string();
+    // fall back to our own name if the host couldn't tell us its hostname
+    let prefix_text = if hostname.is_empty() {
+        " Zellij ".to_string()
+    } else {
+        format!(" {} ", hostname)
+    };
 
-    let running_text_len = prefix_text.chars().count();
+    let running_text_len = prefix_text.width();
     let text_color = palette.text_unselected.base;
     let bg_color = palette.text_unselected.background;
     let prefix_style = if dimmed {
@@ -291,6 +297,7 @@ pub fn tab_separator(capabilities: PluginCapabilities) -> &'static str {
 }
 
 pub fn tab_line(
+    hostname: &str,
     session_name: Option<&str>,
     mut all_tabs: Vec<LinePart>,
     active_tab_index: usize,
@@ -321,8 +328,15 @@ pub fn tab_line(
         tabs_before_active.pop().unwrap()
     };
     let (mut prefix, breadcrumb_range) = match hide_session_name {
-        true => tab_line_prefix(None, palette, cols, dimmed, &[]),
-        false => tab_line_prefix(session_name, palette, cols, dimmed, breadcrumb_ancestry),
+        true => tab_line_prefix(hostname, None, palette, cols, dimmed, &[]),
+        false => tab_line_prefix(
+            hostname,
+            session_name,
+            palette,
+            cols,
+            dimmed,
+            breadcrumb_ancestry,
+        ),
     };
 
     let mut swap_layout_indicator = if hide_swap_layout_indicator {

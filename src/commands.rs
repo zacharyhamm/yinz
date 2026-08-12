@@ -1031,7 +1031,56 @@ pub(crate) fn pty_hosts(command: zellij_utils::cli::PtyHosts) -> anyhow::Result<
         PtyHostsCli::List { json } => cli::list(json),
         PtyHostsCli::Kill { host_id } => cli::kill(&host_id),
         PtyHostsCli::KillAll => cli::kill_all(),
+        // Handled by `pty_host_adopt`: it needs a session, which the rest of this
+        // command deliberately does not.
+        PtyHostsCli::Adopt { .. } => Ok(()),
     }
+}
+
+/// `zellij pty-host adopt` — put a surviving pane back on screen.
+///
+/// Resolves the supervisor here, where the failures are legible without a
+/// session, then hands the pane to one as an ordinary CLI action.
+#[cfg(unix)]
+pub(crate) fn pty_host_adopt(
+    command: zellij_utils::cli::PtyHosts,
+    requested_session_name: Option<String>,
+    config: Option<Config>,
+) {
+    use zellij_server::pty_host::cli;
+    use zellij_utils::cli::PtyHosts as PtyHostsCli;
+    use zellij_utils::input::actions::warp_placement;
+
+    let PtyHostsCli::Adopt {
+        host_id,
+        session,
+        focused_tab,
+        floating,
+    } = command
+    else {
+        return;
+    };
+
+    let session = session.or(requested_session_name);
+    let (session, payload) = match cli::adopt_request(&host_id, session) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        },
+    };
+
+    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
+    let exit_status = zellij_client::cli_client::start_cli_client(
+        Box::new(os_input),
+        &session,
+        vec![Action::AdoptPane {
+            payload: Box::new(payload),
+            placement: warp_placement(focused_tab, floating),
+        }],
+    );
+    let _ = config;
+    std::process::exit(exit_status);
 }
 
 pub(crate) fn recordings(

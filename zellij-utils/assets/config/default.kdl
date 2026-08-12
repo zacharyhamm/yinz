@@ -417,7 +417,10 @@ load_plugins {
 
 // Run each pane's process under a small supervisor process, so that panes
 // survive their session's server exiting - for instance if it is killed or
-// crashes. Recover or clean up survivors with `zellij pty-host list|kill`.
+// crashes. List survivors with `zellij pty-host list`, put one back on screen
+// with `zellij pty-host adopt <id>`, or give up on it with `zellij pty-host
+// kill <id>`. This is also what lets `zellij action warp-pane` move a running
+// pane from one session to another.
 // Read once when the session is created; attaching later will not change it.
 // (Requires restart)
 // Options:

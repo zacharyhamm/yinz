@@ -912,3 +912,379 @@ fn the_dropped_byte_count_never_decreases(tc: hegel::TestCase) {
         previous = ring.dropped;
     }
 }
+
+// ---- attach ----
+
+/// Connect to a supervisor's named socket and ask it to hand the pane over,
+/// returning the reply and (on success) the pty master it sent with it.
+fn attach_over_socket(
+    socket: &std::path::Path,
+    terminal_id: u32,
+    session_name: Option<&str>,
+) -> (HostToServerMsg, Option<std::fs::File>) {
+    let mut stream = UnixStream::connect(socket).expect("failed to connect to the named socket");
+    stream
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+            terminal_id,
+            session_name: session_name.map(str::to_owned),
+        },
+    )
+    .expect("failed to send Attach");
+    let reply = read_msg::<HostToServerMsg, _>(&mut stream)
+        .expect("failed to read the attach reply")
+        .expect("the supervisor closed the connection");
+    let master = match &reply {
+        HostToServerMsg::AttachAck { .. } => {
+            let fd = recv_fd(&stream).expect("failed to receive the pty master");
+            Some(unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) })
+        },
+        _ => None,
+    };
+    (reply, master)
+}
+
+fn query_status(socket: &std::path::Path) -> HostStatus {
+    let mut stream = UnixStream::connect(socket).expect("failed to connect to the named socket");
+    stream
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
+    write_msg(&mut stream, &ServerToHostMsg::Query).expect("failed to send Query");
+    match read_msg::<HostToServerMsg, _>(&mut stream)
+        .expect("failed to read the query reply")
+        .expect("the supervisor closed the connection")
+    {
+        HostToServerMsg::Status(status) => status,
+        other => panic!("expected Status, got {other:?}"),
+    }
+}
+
+/// `Release` is the deliberate half of what a crashed server does by accident.
+/// It must detach without touching the child.
+#[test]
+fn a_release_detaches_without_killing_the_child() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (child_pid, master) = host.spawn(sh("sleep 60"));
+
+    assert!(query_status(&control_socket).attached);
+    host.send(&ServerToHostMsg::Release);
+    wait_until(
+        || !query_status(&control_socket).attached,
+        "the supervisor to report itself detached",
+    );
+    assert!(
+        process_alive(child_pid),
+        "Release must not kill the pane's child"
+    );
+    // The supervisor dropped the control channel, so the released server has no
+    // way to reach it any more — only the named socket is left. That is what
+    // makes the hand-off a clean break rather than a shared pane.
+    //
+    // Asserted by reading rather than writing: a write to a socket whose peer has
+    // just closed succeeds once before `EPIPE`, whereas the EOF is unambiguous
+    // the moment the FIN lands.
+    host.control
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
+    assert!(
+        matches!(read_msg::<HostToServerMsg, _>(&mut host.control), Ok(None)),
+        "a released supervisor should have closed the old control channel"
+    );
+
+    drop(master);
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}
+
+/// The point of the whole feature: a detached supervisor hands its pty to a new
+/// server, along with everything the child wrote while nobody was listening.
+#[test]
+fn an_attach_hands_the_master_and_the_buffered_output_over() {
+    let (mut host, host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    // Driven by input rather than a timer: the child says nothing until asked, so
+    // "output produced while detached" is a fact the test establishes rather than
+    // a race it hopes to win.
+    let (child_pid, mut master) = host.spawn(sh("while read line; do echo \"got:$line\"; done"));
+
+    host.send(&ServerToHostMsg::Release);
+    wait_until(
+        || !query_status(&control_socket).attached,
+        "the supervisor to report itself detached",
+    );
+    master
+        .write_all(b"during-the-gap\n")
+        .expect("failed to write to the pty while detached");
+    drop(master);
+    wait_until(
+        || query_status(&control_socket).buffered_bytes >= b"got:during-the-gap".len(),
+        "the detached supervisor to buffer its child's output",
+    );
+
+    let (reply, master) = attach_over_socket(&control_socket, 42, Some("the-other-session"));
+    let (buffered, cmd, status) = match reply {
+        HostToServerMsg::AttachAck {
+            host_id: acked_id,
+            child_pid: acked_pid,
+            buffered_base64,
+            cmd,
+            status,
+            ..
+        } => {
+            assert_eq!(acked_id, host_id);
+            assert_eq!(acked_pid, child_pid, "the pane kept its process");
+            (
+                crate::pty_host::protocol::decode_buffered(&buffered_base64).expect("bad base64"),
+                cmd,
+                status,
+            )
+        },
+        other => panic!("expected AttachAck, got {other:?}"),
+    };
+    assert!(
+        master.is_some(),
+        "the attach should have sent the master fd"
+    );
+    let buffered = String::from_utf8_lossy(&buffered).to_string();
+    assert!(
+        buffered.contains("during-the-gap"),
+        "output produced while detached should arrive with the attach, got {buffered:?}"
+    );
+    assert!(
+        cmd.originating_plugin.is_none(),
+        "a plugin id from the previous session must not follow the pane"
+    );
+
+    // Re-keyed to the session that owns it now, so `pty-host list` does not lie.
+    assert_eq!(status.terminal_id, 42);
+    assert_eq!(status.session_name.as_deref(), Some("the-other-session"));
+    assert!(status.attached);
+
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}
+
+/// The ring is handed over, not copied: a second attach must not replay output
+/// the first one already took.
+#[test]
+fn the_buffered_output_is_delivered_once_and_then_cleared() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (_child_pid, mut master) = host.spawn(sh("while read line; do echo \"got:$line\"; done"));
+
+    host.send(&ServerToHostMsg::Release);
+    wait_until(
+        || !query_status(&control_socket).attached,
+        "the supervisor to report itself detached",
+    );
+    master
+        .write_all(b"only-once\n")
+        .expect("failed to write to the pty while detached");
+    drop(master);
+    wait_until(
+        || query_status(&control_socket).buffered_bytes >= b"got:only-once".len(),
+        "the detached supervisor to buffer its child's output",
+    );
+
+    let (first, first_master) = attach_over_socket(&control_socket, 1, None);
+    let first_buffered = match first {
+        HostToServerMsg::AttachAck {
+            buffered_base64, ..
+        } => crate::pty_host::protocol::decode_buffered(&buffered_base64).expect("bad base64"),
+        other => panic!("expected AttachAck, got {other:?}"),
+    };
+    assert!(!first_buffered.is_empty());
+    assert_eq!(
+        query_status(&control_socket).buffered_bytes,
+        0,
+        "the ring should be empty once its contents have been handed over"
+    );
+
+    // Let go again and take it a second time: nothing new was written, so there
+    // should be nothing to replay.
+    //
+    // `attach_over_socket` drops its control stream on return, which is what
+    // detaches the supervisor again — but it has to notice before a second attach
+    // will be entertained, and "an attach is refused while attached" is a rule
+    // this test is not the one to exercise.
+    drop(first_master);
+    wait_until(
+        || !query_status(&control_socket).attached,
+        "the supervisor to notice the first attacher went away",
+    );
+    let (second, _) = attach_over_socket(&control_socket, 2, None);
+    match second {
+        HostToServerMsg::AttachAck {
+            buffered_base64, ..
+        } => {
+            let second_buffered =
+                crate::pty_host::protocol::decode_buffered(&buffered_base64).expect("bad base64");
+            assert!(
+                second_buffered.is_empty(),
+                "the second attach replayed output the first already took: {:?}",
+                String::from_utf8_lossy(&second_buffered)
+            );
+        },
+        other => panic!("expected AttachAck, got {other:?}"),
+    }
+
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}
+
+/// Two servers holding dups of the same master would each read half the pane's
+/// output, so an attach has to lose to whoever is already there.
+#[test]
+fn an_attach_is_refused_while_a_server_is_attached() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (_child_pid, master) = host.spawn(sh("sleep 60"));
+
+    let (reply, no_master) = attach_over_socket(&control_socket, 42, None);
+    match reply {
+        HostToServerMsg::AttachRefused { reason, .. } => {
+            assert_eq!(reason, AttachRefusal::AlreadyAttached)
+        },
+        other => panic!("expected AttachRefused, got {other:?}"),
+    }
+    assert!(no_master.is_none(), "a refused attach must not send the fd");
+
+    // The original control channel is untouched.
+    assert!(query_status(&control_socket).attached);
+    drop(master);
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// A supervisor outlives the binary that spawned it, so an upgraded zellij can
+/// meet an older host. Refuse rather than misread its messages.
+#[test]
+fn an_attach_with_a_mismatched_protocol_version_is_refused() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (_child_pid, master) = host.spawn(sh("sleep 60"));
+    host.send(&ServerToHostMsg::Release);
+    drop(master);
+    wait_until(
+        || !query_status(&control_socket).attached,
+        "the supervisor to report itself detached",
+    );
+
+    let mut stream =
+        UnixStream::connect(&control_socket).expect("failed to connect to the named socket");
+    stream
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Attach {
+            protocol_version: PROTOCOL_VERSION + 1,
+            zellij_version: VERSION.to_owned(),
+            terminal_id: 42,
+            session_name: None,
+        },
+    )
+    .expect("failed to send Attach");
+    match read_msg::<HostToServerMsg, _>(&mut stream)
+        .expect("failed to read the reply")
+        .expect("the supervisor closed the connection")
+    {
+        HostToServerMsg::AttachRefused { reason, .. } => {
+            assert_eq!(reason, AttachRefusal::ProtocolMismatch)
+        },
+        other => panic!("expected AttachRefused, got {other:?}"),
+    }
+
+    // Refusing must not have disturbed it: still alive, still detached, still
+    // available to a caller that speaks the right version.
+    assert!(!query_status(&control_socket).attached);
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}
+
+/// A child that died while nobody was attached has no one to report to, so the
+/// exit has to be re-announced on attach. Without this the adopted pane sits
+/// there looking alive forever.
+#[test]
+fn attaching_after_the_child_exited_reports_the_exit() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (_child_pid, master) = host.spawn(sh("echo done; exit 7"));
+
+    host.send(&ServerToHostMsg::Release);
+    drop(master);
+    wait_until(
+        || query_status(&control_socket).child_exit_status.is_some(),
+        "the child to exit while detached",
+    );
+
+    let mut stream =
+        UnixStream::connect(&control_socket).expect("failed to connect to the named socket");
+    stream
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+            terminal_id: 42,
+            session_name: None,
+        },
+    )
+    .expect("failed to send Attach");
+    match read_msg::<HostToServerMsg, _>(&mut stream)
+        .expect("failed to read the attach reply")
+        .expect("the supervisor closed the connection")
+    {
+        HostToServerMsg::AttachAck { .. } => {},
+        other => panic!("expected AttachAck, got {other:?}"),
+    }
+    let _ = recv_fd(&stream).expect("failed to receive the pty master");
+
+    match read_msg::<HostToServerMsg, _>(&mut stream)
+        .expect("failed to read the follow-up")
+        .expect("the supervisor closed the connection")
+    {
+        HostToServerMsg::ChildExited { status } => assert_eq!(status, Some(7)),
+        other => panic!("expected ChildExited straight after the AttachAck, got {other:?}"),
+    }
+
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}
+
+/// The releasing server and the attaching one are different processes with
+/// nothing ordering them. What makes the hand-off deterministic is that
+/// `event_loop` polls the control channel before the listener, so a `Release`
+/// already on the wire is always processed before a pending accept.
+///
+/// This drives that directly: both are queued before the supervisor gets a chance
+/// to run, and the attach must still win.
+#[test]
+fn a_release_racing_an_attach_is_ordered_by_the_poll_loop() {
+    let (mut host, _host_id, control_socket) = TestHost::start();
+    let control_socket = control_socket.expect("the supervisor should have bound a socket");
+    let (child_pid, master) = host.spawn(sh("sleep 60"));
+
+    // Both land in kernel buffers with the supervisor still blocked in `poll`.
+    host.send(&ServerToHostMsg::Release);
+    let (reply, attached_master) = attach_over_socket(&control_socket, 42, Some("second"));
+    match reply {
+        HostToServerMsg::AttachAck { child_pid: p, .. } => assert_eq!(p, child_pid),
+        other => panic!(
+            "a Release written before the Attach should have been processed first, got {other:?}"
+        ),
+    }
+    assert!(attached_master.is_some());
+
+    drop(master);
+    let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
+    host.join();
+}

@@ -2158,6 +2158,11 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::SetPaneBorderless { .. }
             | Action::SkipConfirm { action: _ }
             | Action::SwitchSession { .. }
+            // Moving a pane between sessions is a CLI operation, like
+            // SwitchSession: it needs a session name, which a plugin binding has
+            // no way to supply meaningfully.
+            | Action::WarpPane { .. }
+            | Action::AdoptPane { .. }
             | Action::SaveSession
             | Action::ListTabs { .. }
             | Action::CurrentTabInfo { .. }

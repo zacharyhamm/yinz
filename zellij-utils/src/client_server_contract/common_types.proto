@@ -287,6 +287,8 @@ message Action {
     FocusGuestSessionAction focus_guest_session = 147;
     SetGlobalPanePlacementAction set_global_pane_placement = 148;
     NotifyAction notify = 149;
+    WarpPaneAction warp_pane = 150;
+    AdoptPaneAction adopt_pane = 151;
   }
 }
 
@@ -887,6 +889,35 @@ message SwitchSessionAction {
   optional PaneIdWithPlugin pane_id = 3;
   optional LayoutInfo layout = 4;
   optional string cwd = 5;
+}
+
+// Where a warped or adopted pane lands in the session receiving it.
+enum WarpPlacement {
+  WarpPlacementNewTab = 0;
+  WarpPlacementFocusedTab = 1;
+  WarpPlacementFloating = 2;
+}
+
+// Move a pane, running process and all, to another session.
+message WarpPaneAction {
+  string to_session = 1;
+  // Absent means "whichever pane is focused".
+  optional PaneId pane_id = 2;
+  WarpPlacement placement = 3;
+}
+
+// Take a pane over: from a session warping it here, or from a supervisor that
+// outlived its server. Everything the running process itself knows comes from
+// the supervisor over its own socket, so only the terminal's presentation state
+// travels here.
+message AdoptPaneAction {
+  string host_id = 1;
+  string control_socket = 2;
+  optional string title = 3;
+  // The screen and scrollback as an ANSI dump. Can be megabytes.
+  optional string contents = 4;
+  bool borderless = 5;
+  WarpPlacement placement = 6;
 }
 
 message NewPanePlacement {

@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::pty_host::protocol;
 use nix::pty::openpty;
 use nix::sys::termios;
 use std::io::Cursor;
@@ -253,7 +254,7 @@ fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
 /// still has to survive the framing in order to be *recognised* as mismatched.
 #[hegel::composite]
 fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
-    match tc.draw(generators::integers::<u8>().max_value(3)) {
+    match tc.draw(generators::integers::<u8>().max_value(5)) {
         0 => ServerToHostMsg::Hello {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
@@ -267,13 +268,39 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
             initial_size: tc.draw(generators::optional(wire_winsizes())),
         },
         2 => ServerToHostMsg::Terminate,
+        3 => ServerToHostMsg::Release,
+        4 => ServerToHostMsg::Attach {
+            protocol_version: tc.draw(generators::integers::<u32>()),
+            zellij_version: tc.draw(generators::text()),
+            terminal_id: tc.draw(generators::integers::<u32>()),
+            session_name: tc.draw(generators::optional(generators::text())),
+        },
         _ => ServerToHostMsg::Query,
     }
 }
 
 #[hegel::composite]
 fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
-    match tc.draw(generators::integers::<u8>().max_value(4)) {
+    match tc.draw(generators::integers::<u8>().max_value(6)) {
+        5 => HostToServerMsg::AttachAck {
+            protocol_version: tc.draw(generators::integers::<u32>()),
+            zellij_version: tc.draw(generators::text()),
+            host_id: tc.draw(generators::text()),
+            host_pid: tc.draw(generators::integers::<u32>()),
+            child_pid: tc.draw(generators::integers::<u32>()),
+            cmd: tc.draw(run_commands()),
+            status: tc.draw(host_statuses()),
+            buffered_base64: protocol::encode_buffered(&tc.draw(generators::binary().max_size(64))),
+            dropped_bytes: tc.draw(generators::integers::<u64>()),
+        },
+        6 => HostToServerMsg::AttachRefused {
+            reason: match tc.draw(generators::integers::<u8>().max_value(2)) {
+                0 => AttachRefusal::AlreadyAttached,
+                1 => AttachRefusal::ProtocolMismatch,
+                _ => AttachRefusal::NoSession,
+            },
+            message: tc.draw(generators::text()),
+        },
         0 => HostToServerMsg::HelloAck {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
@@ -568,5 +595,73 @@ fn host_ids_are_unique_across_many_draws() {
         ids.iter()
             .all(|id| id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit())),
         "every host id should be 12 hex characters"
+    );
+}
+
+// ---- the detached ring's wire encoding ----
+
+/// Pty output is arbitrary bytes — half-written UTF-8, raw escape sequences — so
+/// whatever carries it across the attach has to be exact, not merely lossy-safe.
+#[hegel::test]
+fn buffered_output_survives_its_wire_encoding(tc: hegel::TestCase) {
+    let bytes = tc.draw(generators::binary().max_size(4096));
+    let encoded = protocol::encode_buffered(&bytes);
+    let decoded = protocol::decode_buffered(&encoded).expect("decode failed");
+    assert_eq!(
+        decoded,
+        bytes,
+        "{} bytes did not survive base64 round trip",
+        bytes.len()
+    );
+}
+
+/// The ring holds up to `RING_CAPACITY`, and all of it rides in a single frame on
+/// attach. Base64 is 4 bytes per 3, so a full ring has to stay inside
+/// `MAX_FRAME_LEN` — a JSON array of decimals would not have.
+#[test]
+fn a_full_ring_fits_in_one_frame() {
+    // 256 KiB, matching `host::RING_CAPACITY`. Not imported because it is private
+    // to the supervisor; if it grows, this test is where the consequence lands.
+    let full_ring = vec![0xffu8; 256 * 1024];
+    let msg = HostToServerMsg::AttachAck {
+        protocol_version: PROTOCOL_VERSION,
+        zellij_version: "0.0.0-a-generously-long-version-string".to_owned(),
+        host_id: "a3f1c2d4e5b6".to_owned(),
+        host_pid: u32::MAX,
+        child_pid: u32::MAX,
+        cmd: RunCommand {
+            command: PathBuf::from("/usr/bin/some-fairly-long-command-name"),
+            args: vec!["--with".to_owned(), "--several".to_owned()],
+            cwd: Some(PathBuf::from("/home/someone/a/reasonably/deep/directory")),
+            hold_on_close: true,
+            hold_on_start: false,
+            originating_plugin: None,
+            use_terminal_title: false,
+        },
+        status: HostStatus {
+            host_id: "a3f1c2d4e5b6".to_owned(),
+            session_name: Some("a-session-with-a-name".to_owned()),
+            terminal_id: u32::MAX,
+            command: "some-fairly-long-command-name --with --several".to_owned(),
+            cwd: Some(PathBuf::from("/home/someone/a/reasonably/deep/directory")),
+            child_pid: Some(u32::MAX),
+            host_pid: u32::MAX,
+            started_at_unix: u64::MAX,
+            attached: true,
+            child_exit_status: None,
+            buffered_bytes: 256 * 1024,
+        },
+        buffered_base64: protocol::encode_buffered(&full_ring),
+        dropped_bytes: u64::MAX,
+    };
+
+    let mut buf: Vec<u8> = Vec::new();
+    write_msg(&mut buf, &msg).expect("a full ring should fit in one frame");
+    // `write_msg` enforces the limit itself, so reaching here is the assertion —
+    // but say the margin out loud, because it is the thing that could erode.
+    assert!(
+        buf.len() < 4 * 1024 * 1024,
+        "an AttachAck carrying a full ring came to {} bytes, against a 4 MiB frame limit",
+        buf.len()
     );
 }

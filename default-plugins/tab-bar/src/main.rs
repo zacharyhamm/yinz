@@ -40,6 +40,7 @@ struct State {
     hovered_new_tab_button: bool,
     hint_text: Option<BTreeMap<usize, StyledText>>,
     outstanding_hint_timeouts: usize,
+    hostname: String,
 }
 
 static ARROW_SEPARATOR: &str = "";
@@ -48,6 +49,7 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        self.hostname = get_plugin_ids().hostname;
         self.hide_swap_layout_indication = configuration
             .get("hide_swap_layout_indication")
             .map(|s| s == "true")
@@ -241,6 +243,7 @@ impl ZellijPlugin for State {
             vec![]
         };
         let (line, new_tab_button_range, breadcrumb_range) = tab_line(
+            &self.hostname,
             self.mode_info.session_name.as_deref(),
             all_tabs,
             active_tab_index,

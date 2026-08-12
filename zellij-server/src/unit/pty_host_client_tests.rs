@@ -521,6 +521,7 @@ fn a_supervisor_that_will_not_take_a_message_is_killed() {
         control_socket: None,
         control: server_end,
         reported: Arc::new(AtomicBool::new(false)),
+        released: Arc::new(AtomicBool::new(false)),
     };
     handle.terminate();
 
@@ -540,7 +541,7 @@ fn a_supervisor_that_will_not_exit_is_killed_and_reaped() {
     let host_pid = child.id();
 
     let started = Instant::now();
-    reap_host(child, host_pid, "abcdef012345");
+    reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
     let elapsed = started.elapsed();
 
     assert!(
@@ -559,7 +560,7 @@ fn a_supervisor_that_has_already_exited_is_reaped_immediately() {
     let host_pid = child.id();
 
     let started = Instant::now();
-    reap_host(child, host_pid, "abcdef012345");
+    reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
     assert!(
         started.elapsed() < HOST_EXIT_GRACE,
         "reaping an already-dead supervisor should not wait out the grace period"
@@ -847,7 +848,7 @@ impl Drop for KillOnDrop {
 /// and these tests are not serialized.
 fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
     let wrapper = write_host_wrapper(dir);
-    spawn(SpawnParams {
+    let params = |cmd: RunCommand| SpawnParams {
         host_bin: &wrapper,
         terminal_id: 7,
         session_name: Some("client-tests".to_owned()),
@@ -860,7 +861,23 @@ fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
             width_in_pixels: 0,
             height_in_pixels: 0,
         }),
-    })
+    };
+
+    // `exec` can fail with `ETXTBSY` here for reasons that have nothing to do
+    // with what is being tested: these tests run in parallel threads of one
+    // process, and a `fork` in this thread duplicates every fd open in the
+    // others — including a sibling's still-open handle on its own wrapper
+    // script. The kernel then refuses to exec a file some process holds open for
+    // writing. It clears as soon as the sibling's write completes, so retry.
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        match spawn(params(cmd.clone())) {
+            Err(e) if Instant::now() < deadline && format!("{e:#}").contains("Text file busy") => {
+                std::thread::sleep(Duration::from_millis(20));
+            },
+            result => return result,
+        }
+    }
 }
 
 /// The whole path across a real process boundary: fork, exec, `place_control_fd`,
@@ -973,6 +990,294 @@ fn a_pane_survives_the_server_that_started_it() {
         || !process_alive(child_pid),
         "the orphaned pane to be killed",
     );
+}
+
+/// Read from a pty master until `needle` shows up, or fail the test.
+///
+/// A master handed over by a supervisor arrives non-blocking: `enter_detached`
+/// sets `O_NONBLOCK` to drain into the ring, and that flag lives on the open file
+/// description, which `SCM_RIGHTS` shares rather than copies. The server proper
+/// does not care — `RawFdAsyncReader` sets the flag itself and drives the fd
+/// through epoll — but a bare read here has to expect `EAGAIN` rather than block.
+fn read_until(master: &mut std::fs::File, needle: &str) {
+    let mut seen = String::new();
+    let mut buf = [0u8; 1024];
+    let start = Instant::now();
+    while !seen.contains(needle) {
+        assert!(
+            start.elapsed() < TEST_TIMEOUT,
+            "never saw {needle:?} in the pty output; saw {seen:?}"
+        );
+        match master.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+            // The pty reports the slave closing as EIO rather than EOF on Linux.
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            },
+            Err(e) => panic!("read from the pty master failed: {e}"),
+        }
+    }
+    assert!(
+        seen.contains(needle),
+        "the pty closed before {needle:?} appeared; saw {seen:?}"
+    );
+}
+
+// ---- releasing a pane instead of closing it ----
+
+/// The reader thread holds a `try_clone` of the control socket, so removing the
+/// handle closes nothing: `release()` has to `shutdown()` the socket itself. Get
+/// this wrong and the supervisor never leaves `Attached`, and every attempt to
+/// warp the pane is refused for a pane its owner has already let go of.
+#[test]
+fn releasing_a_pane_detaches_its_supervisor() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    let pending =
+        spawn_real_host(dir.path(), sh("sleep 60")).expect("spawning a real supervisor failed");
+    let guard = KillOnDrop(pending.host_pid);
+    let control_socket = pending
+        .control_socket
+        .clone()
+        .expect("the supervisor should have bound a socket");
+
+    let reports: Reports = Arc::default();
+    let spawned = pending.finish(recording_quit_cb(&reports));
+    let child_pid = spawned.child_pid;
+    assert!(
+        query(&control_socket)
+            .expect("the supervisor should answer")
+            .attached,
+        "the supervisor should start out attached"
+    );
+
+    let released = spawned.handle.release();
+    assert_eq!(released.host_pid, guard.0);
+
+    wait_until(
+        || {
+            query(&control_socket)
+                .map(|status| !status.attached)
+                .unwrap_or(false)
+        },
+        "the released supervisor to report itself detached",
+    );
+    assert!(
+        process_alive(child_pid),
+        "releasing a pane must not kill its child"
+    );
+
+    terminate_via_socket(&control_socket).expect("failed to terminate the released supervisor");
+    wait_until(
+        || !process_alive(child_pid),
+        "the released pane to be killed",
+    );
+}
+
+/// `reap_host` waits `HOST_EXIT_GRACE` for an exit and then `SIGKILL`s. That is
+/// right for a pane being closed and catastrophic for one being handed over: the
+/// warp would appear to work, and four seconds later the pane would die in the
+/// session that had just adopted it.
+#[test]
+fn a_released_supervisor_is_not_reaped_or_killed() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    let pending =
+        spawn_real_host(dir.path(), sh("sleep 60")).expect("spawning a real supervisor failed");
+    let guard = KillOnDrop(pending.host_pid);
+    let control_socket = pending
+        .control_socket
+        .clone()
+        .expect("the supervisor should have bound a socket");
+
+    let reports: Reports = Arc::default();
+    let spawned = pending.finish(recording_quit_cb(&reports));
+    let child_pid = spawned.child_pid;
+    spawned.handle.release();
+
+    // Past the deadline the reader thread would have used, with room to spare.
+    std::thread::sleep(HOST_EXIT_GRACE + Duration::from_millis(500));
+
+    assert!(
+        process_alive(guard.0),
+        "a released supervisor was reaped and killed; it has to outlive the server that let it go"
+    );
+    assert!(
+        process_alive(child_pid),
+        "the released pane's child was killed"
+    );
+    assert!(
+        reported(&reports).is_empty(),
+        "releasing a pane must not report it closed, got {:?}",
+        reported(&reports)
+    );
+
+    terminate_via_socket(&control_socket).expect("failed to terminate the released supervisor");
+    wait_until(
+        || !process_alive(child_pid),
+        "the released pane to be killed",
+    );
+}
+
+/// The whole point, end to end across two real server-side lifetimes: one server
+/// lets a pane go, another takes it over, and the child never notices.
+#[test]
+fn a_released_pane_can_be_attached_by_another_server() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    // Writes on demand rather than continuously, so the test can tell output
+    // produced *during* the hand-off from output produced before or after it.
+    let pending = spawn_real_host(
+        dir.path(),
+        sh("while read line; do echo \"got:$line\"; done"),
+    )
+    .expect("spawning a real supervisor failed");
+    let guard = KillOnDrop(pending.host_pid);
+    let control_socket = pending
+        .control_socket
+        .clone()
+        .expect("the supervisor should have bound a socket");
+
+    let first_reports: Reports = Arc::default();
+    let spawned = pending.finish(recording_quit_cb(&first_reports));
+    let child_pid = spawned.child_pid;
+    let mut first_master = std::fs::File::from(
+        spawned
+            .master
+            .try_clone()
+            .expect("failed to clone the master"),
+    );
+
+    // Wait for the shell to actually be reading before letting go. Without this
+    // the test races its own fixture: the write below would sit in the pty buffer
+    // unprocessed, and the assertion on `buffered` would be checking whether a
+    // shell had got round to starting rather than whether the hand-off works.
+    first_master
+        .write_all(b"before-the-gap\n")
+        .expect("failed to write to the pty");
+    read_until(&mut first_master, "got:before-the-gap");
+
+    // The first server lets go. Anything the child writes from here until the
+    // second server attaches lands in the supervisor's ring.
+    spawned.handle.release();
+    wait_until(
+        || {
+            query(&control_socket)
+                .map(|status| !status.attached)
+                .unwrap_or(false)
+        },
+        "the released supervisor to report itself detached",
+    );
+    first_master
+        .write_all(b"during-the-gap\n")
+        .expect("failed to write to the pty while detached");
+    // The pty echoes input, so a non-zero buffer proves nothing on its own —
+    // wait for the ring to be at least as big as the shell's reply will be.
+    let expected = b"got:during-the-gap".len();
+    wait_until(
+        || {
+            query(&control_socket)
+                .map(|status| status.buffered_bytes >= expected)
+                .unwrap_or(false)
+        },
+        "the detached supervisor to buffer the child's output",
+    );
+    drop(first_master);
+
+    // A second server takes the pane over under a new id, as another session
+    // would: ids are per-server, so 7 there and 42 here are the same pane.
+    let pending = attach(AttachParams {
+        control_socket: &control_socket,
+        terminal_id: 42,
+        session_name: Some("the-other-session".to_owned()),
+    })
+    .expect("attaching to the released supervisor failed");
+    assert_eq!(
+        pending.status().child_pid,
+        Some(child_pid),
+        "the adopted supervisor should still own the same child"
+    );
+    assert_eq!(
+        pending.status().terminal_id,
+        42,
+        "the supervisor should have re-keyed itself to the adopting session's pane"
+    );
+    assert_eq!(
+        pending.status().session_name.as_deref(),
+        Some("the-other-session"),
+        "the supervisor should report the session that owns the pane now"
+    );
+    assert!(
+        pending.cmd().originating_plugin.is_none(),
+        "a plugin id from the previous session must not follow the pane"
+    );
+
+    let second_reports: Reports = Arc::default();
+    let attached = pending.finish(recording_quit_cb(&second_reports));
+    assert_eq!(attached.child_pid, child_pid);
+    assert_eq!(
+        String::from_utf8_lossy(&attached.buffered).contains("got:during-the-gap"),
+        true,
+        "output produced during the hand-off should arrive with the attach, got {:?}",
+        String::from_utf8_lossy(&attached.buffered)
+    );
+
+    // And the new master is live, not just a corpse.
+    let mut second_master =
+        std::fs::File::from(attached.master.try_clone().expect("failed to clone"));
+    second_master
+        .write_all(b"after-the-warp\n")
+        .expect("failed to write to the adopted pty");
+    read_until(&mut second_master, "got:after-the-warp");
+
+    assert!(
+        reported(&first_reports).is_empty(),
+        "the releasing server must not have been told its pane closed"
+    );
+
+    let mut handle = attached.handle;
+    handle.terminate();
+    wait_until(|| !process_alive(guard.0), "the adopted supervisor to exit");
+}
+
+/// A supervisor still held by a live server must not be handed to a second one:
+/// both would read the same master and each would get half the pane's output.
+#[test]
+fn attaching_to_a_pane_someone_else_holds_is_refused() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    let pending =
+        spawn_real_host(dir.path(), sh("sleep 60")).expect("spawning a real supervisor failed");
+    let guard = KillOnDrop(pending.host_pid);
+    let control_socket = pending
+        .control_socket
+        .clone()
+        .expect("the supervisor should have bound a socket");
+
+    let reports: Reports = Arc::default();
+    let mut spawned = pending.finish(recording_quit_cb(&reports));
+
+    let err = match attach(AttachParams {
+        control_socket: &control_socket,
+        terminal_id: 42,
+        session_name: Some("the-other-session".to_owned()),
+    }) {
+        Ok(_) => panic!("attaching to an attached supervisor should have been refused"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:#}").contains("still attached"),
+        "expected a refusal naming the live server, got {err:#}"
+    );
+    assert!(
+        query(&control_socket)
+            .expect("the supervisor should still answer")
+            .attached,
+        "a refused attach must leave the original server attached"
+    );
+
+    spawned.handle.terminate();
+    wait_until(|| !process_alive(guard.0), "the supervisor to shut down");
 }
 
 /// A `host_bin` that is not a supervisor at all — the shape a botched upgrade or
