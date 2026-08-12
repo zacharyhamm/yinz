@@ -109,6 +109,12 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_REFRESH {
+            // No reply of its own: each probe that finishes publishes, so the
+            // asker gets the answer the same way it gets everything else.
+            self.refresh_repositories();
+            return false;
+        }
         if pipe_message.name == wire::AGENT_SUBSCRIBE {
             // A CLI pipe has no plugin id to reply to; it can still refresh the
             // overrides and publish the cached event-fed snapshot.
@@ -180,7 +186,22 @@ impl State {
         }
     }
 
+    /// Probe every agent folder we have not probed yet.
     fn resolve_repositories(&mut self) {
+        self.probe_repositories(false);
+    }
+
+    /// Probe every agent folder again, whatever we already know about it.
+    ///
+    /// The identity a probe finds — root, remote, common directory — cannot
+    /// change under a folder, but the branch can, and no host event says when.
+    /// The cached answer stays in place until the new one lands, so nothing
+    /// blinks while this runs.
+    fn refresh_repositories(&mut self) {
+        self.probe_repositories(true);
+    }
+
+    fn probe_repositories(&mut self, again: bool) {
         let Some(panes) = &self.panes else {
             return;
         };
@@ -188,8 +209,11 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| pane.cwd.clone())
+            // A probe already in flight answers for this folder either way, so
+            // even a forced refresh must not start a second one.
             .filter(|cwd| {
-                !self.repositories.contains_key(cwd) && !self.git_probes.contains_key(cwd)
+                !self.git_probes.contains_key(cwd)
+                    && (again || !self.repositories.contains_key(cwd))
             })
             .collect();
         for cwd in unresolved {
