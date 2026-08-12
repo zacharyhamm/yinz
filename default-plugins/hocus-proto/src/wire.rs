@@ -21,6 +21,12 @@ pub const AGENT_SUBSCRIBE: &str = "agent_subscribe";
 pub const AGENT_HELLO: &str = "agent_hello";
 /// agentd → hocus and agentd → store: a fresh pane snapshot.
 pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
+/// hocus → agentd: "read the Git checkouts again".
+///
+/// The one thing no host event reports: a `git checkout` in a folder the daemon
+/// already probed changes the branch and nothing says so. Whoever shows a branch
+/// asks for this; the answer arrives as an ordinary snapshot.
+pub const AGENT_REFRESH: &str = "agent_refresh";
 /// hocus → store: "keep me posted".
 pub const STORE_SUBSCRIBE: &str = "store_subscribe";
 /// store → everyone: "I just started; subscribe again if you were watching".

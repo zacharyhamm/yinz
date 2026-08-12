@@ -668,6 +668,22 @@ impl State {
             .collect()
     }
 
+    /// Pane id to branch name, for each agent sitting in a checkout.
+    ///
+    /// Deliberately not gated on the folder belonging to a project the way
+    /// `pane_projects` is: a checkout nobody named is still on a branch, and an
+    /// agent working in one is exactly what the picker has to tell apart.
+    pub(crate) fn pane_branches(&self) -> BTreeMap<u32, String> {
+        self.panes
+            .iter()
+            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .filter_map(|pane| {
+                let repository = self.repositories.get(pane.cwd.as_deref()?)?;
+                Some((pane.pane_id, repository.branch.clone()?))
+            })
+            .collect()
+    }
+
     /// The project that owns an agent's folder, when Git claims that folder.
     ///
     /// A folder outside a repository belongs to no project even when a project
@@ -784,6 +800,7 @@ impl State {
             &self.manual_kinds,
             &self.activity,
             &self.pane_projects(),
+            &self.pane_branches(),
             |pane_id| read_pane_text(pane_id),
         )
     }

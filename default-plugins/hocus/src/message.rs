@@ -150,15 +150,50 @@ pub struct Job {
     pub auto_confirm: bool,
 }
 
-/// The chat archive or the model list, open over the transcript. Modal: while it
-/// is open it owns every key, because a keystroke leaking into the input box
-/// behind it would be invisible.
+/// The chat archive, the model list or the agent list, open over the top half of
+/// the pane. Modal: while it is open it owns every key, because a keystroke
+/// leaking into the input box below it would be invisible.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Picker {
     /// What is shown, one row per entry.
-    pub entries: Vec<String>,
+    pub entries: Vec<PickerRow>,
     pub selected: usize,
     pub kind: PickerKind,
+}
+
+/// One line of a picker: what to draw, and whether the user can land on it.
+///
+/// A header is drawn and skipped over. That is what lets the agent list group
+/// its rows while keeping its pane ids parallel to its lines — a header simply
+/// has no id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PickerRow {
+    pub text: String,
+    pub kind: RowKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RowKind {
+    /// A row the user can select.
+    Item,
+    /// The project the rows below it belong to.
+    Project,
+    /// The branch the rows below it are checked out on, under a project header.
+    Branch,
+}
+
+impl PickerRow {
+    /// A row that is nothing but itself — every chat title and model id.
+    pub fn item(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            kind: RowKind::Item,
+        }
+    }
+
+    pub fn selectable(&self) -> bool {
+        matches!(self.kind, RowKind::Item)
+    }
 }
 
 /// Which list the picker is showing. `Tab` cycles between them.
@@ -169,7 +204,7 @@ pub enum PickerKind {
     /// `entries` are model ids. Empty means the fetch is still in flight — every
     /// response either fills the list or closes the picker.
     Models,
-    /// `entries` are agent rows; the pane ids are parallel to them.
-    /// `Enter` focuses the pane.
-    Agents(Vec<u32>),
+    /// `entries` are agent rows and the group headers over them; the pane ids
+    /// are parallel to them, and a header's is `None`. `Enter` focuses the pane.
+    Agents(Vec<Option<u32>>),
 }

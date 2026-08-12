@@ -225,50 +225,100 @@ pub fn status_cell(status: AgentStatus, activity: Option<&(u64, u32)>) -> String
     }
 }
 
-/// One row per agent: the pane id it names, and the line as drawn.
+/// What a header stands in for when there is nothing to name.
+const NO_PROJECT: &str = "no project";
+const NO_BRANCH: &str = "no branch";
+/// How far a branch header sits in under the project header above it.
+const BRANCH_INDENT: &str = "  ";
+
+/// One line of the agent strip: an agent, or a header grouping the agents below.
+///
+/// A header is drawn and never selected, which is what lets the picker keep its
+/// pane ids parallel to its lines while still showing structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StripRow {
+    /// The project the agents below belong to.
+    Project(String),
+    /// The branch they are checked out on, under the project header above it.
+    Branch(String),
+    /// One agent: the pane it names, and the line as drawn.
+    Agent { pane_id: u32, text: String },
+}
+
+/// The agent strip: every agent as a line, under a project header and a branch
+/// header.
 ///
 /// One formatter for the agent picker and anything else that shows an agent as
 /// a line, so they can never disagree. The tab name goes last and is clipped by
 /// the renderer, not here.
 ///
-/// `owners` gives the project of a pane. The rows come back sorted by project,
-/// with the agents of no known project last, which puts the agents of one
-/// project together. There is no header row: the picker keeps its list of pane
-/// ids parallel to its list of lines, and a row that the user cannot select
-/// would break that.
+/// `owners` gives the project of a pane and `branches` its checkout's branch.
+/// Neither is repeated on the agent's own line: the headers carry them, so an
+/// agent row stays short enough to read in a narrow sidebar. Agents of no known
+/// project come last, under a header that says so.
 pub fn strip_rows(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
     activity: &Activity,
     owners: &BTreeMap<u32, String>,
-) -> Vec<(u32, String)> {
-    let mut rows: Vec<(Option<&str>, u32, String)> = panes
+    branches: &BTreeMap<u32, String>,
+) -> Vec<StripRow> {
+    let mut agents: Vec<(Option<&str>, Option<&str>, u32, String)> = panes
         .iter()
         .filter_map(|pane| {
             let (kind, _) = classify(pane, manual)?;
-            let owner = owners.get(&pane.pane_id).map(String::as_str);
             let mut row = format!(
                 "{:>3}  {kind}  {}",
                 pane.pane_id,
                 status_cell(pane.status, activity.get(&pane.pane_id))
             );
-            if let Some(owner) = owner {
-                row.push_str("  ");
-                row.push_str(owner);
-            }
             if let Some((_, name)) = &pane.tab {
                 row.push_str("  ");
                 row.push_str(name);
             }
-            Some((owner, pane.pane_id, row))
+            Some((
+                owners.get(&pane.pane_id).map(String::as_str),
+                branches.get(&pane.pane_id).map(String::as_str),
+                pane.pane_id,
+                row,
+            ))
         })
         .collect();
-    rows.sort_by(|left, right| {
-        // `None` sorts before `Some`, and these agents must go last, so the key
-        // is "has no project" first and then the project name.
-        (left.0.is_none(), left.0, left.1).cmp(&(right.0.is_none(), right.0, right.1))
+    agents.sort_by(|left, right| {
+        // `None` sorts before `Some`, and the nameless go last on both keys, so
+        // each is preceded by "has nothing to name".
+        (left.0.is_none(), left.0, left.1.is_none(), left.1, left.2).cmp(&(
+            right.0.is_none(),
+            right.0,
+            right.1.is_none(),
+            right.1,
+            right.2,
+        ))
     });
-    rows.into_iter().map(|(_, id, row)| (id, row)).collect()
+
+    // `None` is "no header written yet", which is not the same as a header for
+    // an agent with no project — that one is written, and says so.
+    let mut project: Option<Option<&str>> = None;
+    let mut branch: Option<Option<&str>> = None;
+    let mut rows = Vec::with_capacity(agents.len());
+    for (owner, checkout, pane_id, text) in agents {
+        if project != Some(owner) {
+            rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
+            project = Some(owner);
+            // A branch header belongs to the project above it, so the next
+            // agent needs one even when it is on the branch just written.
+            branch = None;
+        }
+        if branch != Some(checkout) {
+            rows.push(StripRow::Branch(format!(
+                "{BRANCH_INDENT}{}",
+                checkout.unwrap_or(NO_BRANCH)
+            )));
+            branch = Some(checkout);
+        }
+        rows.push(StripRow::Agent { pane_id, text });
+    }
+    rows
 }
 
 /// The project each tab agrees on.
@@ -427,6 +477,7 @@ pub fn list_json(
     manual: &BTreeMap<u32, String>,
     activity: &Activity,
     owners: &BTreeMap<u32, String>,
+    branches: &BTreeMap<u32, String>,
     mut read: impl FnMut(u32) -> String,
 ) -> String {
     let items: Vec<Value> = panes
@@ -460,6 +511,12 @@ pub fn list_json(
             if let Some(owner) = owners.get(&pane.pane_id) {
                 item["project"] = json!(owner);
             }
+            // The branch of the checkout the agent sits in, which the picker
+            // groups by. Absent on a folder Git does not claim and on a
+            // detached HEAD.
+            if let Some(branch) = branches.get(&pane.pane_id) {
+                item["branch"] = json!(branch);
+            }
             Some(item)
         })
         .collect();
@@ -492,6 +549,25 @@ mod tests {
 
     fn owners(pairs: &[(u32, &str)]) -> BTreeMap<u32, String> {
         manual(pairs)
+    }
+
+    fn branches(pairs: &[(u32, &str)]) -> BTreeMap<u32, String> {
+        manual(pairs)
+    }
+
+    fn project(name: &str) -> StripRow {
+        StripRow::Project(name.to_owned())
+    }
+
+    fn branch(name: &str) -> StripRow {
+        StripRow::Branch(format!("  {name}"))
+    }
+
+    fn agent(pane_id: u32, text: &str) -> StripRow {
+        StripRow::Agent {
+            pane_id,
+            text: text.to_owned(),
+        }
     }
 
     /// The case that made the dash rule earn its place: an installer that puts a
@@ -743,12 +819,18 @@ mod tests {
             &manual(&[]),
             &Activity::new(),
             &owners(&[]),
+            &branches(&[]),
         );
+        // Nothing to group by, and the headers say so rather than going missing:
+        // a row with no header above it would read as belonging to the one above
+        // that.
         assert_eq!(
             rows,
             vec![
-                (3, "  3  codex  running  work".to_owned()),
-                (5, "  5  aider  running".to_owned()),
+                project("no project"),
+                branch("no branch"),
+                agent(3, "  3  codex  running  work"),
+                agent(5, "  5  aider  running"),
             ],
         );
     }
@@ -764,6 +846,7 @@ mod tests {
             &manual(&[]),
             &Activity::new(),
             &owners(&[]),
+            &branches(&[]),
             |_| String::new(),
         );
         let value: Value = serde_json::from_str(&json).unwrap();
@@ -789,6 +872,7 @@ mod tests {
             &manual(&[(5, "reviewer")]),
             &activity,
             &owners(&[]),
+            &branches(&[]),
             |pane_id| {
                 reads.push(pane_id);
                 "ready".to_owned()
@@ -811,19 +895,20 @@ mod tests {
     }
 
     #[test]
-    fn list_json_carries_the_folder_and_the_project() {
-        let agent = in_folder(3, "codex", "/work/hocus/src", 9);
+    fn list_json_carries_the_folder_the_project_and_the_branch() {
+        let pane = in_folder(3, "codex", "/work/hocus/src", 9);
         let json = list_json(
-            &[agent],
+            &[pane],
             &manual(&[]),
             &Activity::new(),
             &owners(&[(3, "hocus")]),
+            &branches(&[(3, "topic")]),
             |_| String::new(),
         );
 
         assert_eq!(
             json,
-            r#"[{"cwd":"/work/hocus/src","kind":"codex","pane_id":3,"preview":"","project":"hocus","source":"auto","status":"running","tab":"tab 9","tab_id":9,"title":"codex"}]"#,
+            r#"[{"branch":"topic","cwd":"/work/hocus/src","kind":"codex","pane_id":3,"preview":"","project":"hocus","source":"auto","status":"running","tab":"tab 9","tab_id":9,"title":"codex"}]"#,
         );
     }
 
@@ -839,14 +924,81 @@ mod tests {
             &manual(&[]),
             &Activity::new(),
             &owners(&[(3, "pocus"), (5, "hocus")]),
+            &branches(&[(3, "main"), (5, "main")]),
+        );
+
+        // Projects in name order with the unowned agent last, and no row
+        // repeating what the headers above it already say.
+        assert_eq!(
+            rows,
+            vec![
+                project("hocus"),
+                branch("main"),
+                agent(5, "  5  codex  running  tab 2"),
+                project("pocus"),
+                branch("main"),
+                agent(3, "  3  codex  running  tab 1"),
+                project("no project"),
+                branch("no branch"),
+                agent(4, "  4  aider  running  tab 1"),
+            ],
+        );
+    }
+
+    /// The case the branch header exists for: one project, two worktrees. The
+    /// project is named once and the agents of each checkout sit together.
+    #[test]
+    fn strip_rows_group_the_worktrees_of_one_project_by_branch() {
+        let panes = vec![
+            in_folder(3, "codex", "/work/hocus", 1),
+            in_folder(4, "claude", "/work/trees/topic", 2),
+            in_folder(5, "aider", "/work/hocus", 1),
+        ];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[(3, "hocus"), (4, "hocus"), (5, "hocus")]),
+            &branches(&[(3, "main"), (4, "topic"), (5, "main")]),
         );
 
         assert_eq!(
             rows,
             vec![
-                (5, "  5  codex  running  hocus  tab 2".to_owned()),
-                (3, "  3  codex  running  pocus  tab 1".to_owned()),
-                (4, "  4  aider  running  tab 1".to_owned()),
+                project("hocus"),
+                branch("main"),
+                agent(3, "  3  codex  running  tab 1"),
+                agent(5, "  5  aider  running  tab 1"),
+                branch("topic"),
+                agent(4, "  4  claude  running  tab 2"),
+            ],
+        );
+    }
+
+    /// A checkout nobody named still has a branch, and an agent in one is still
+    /// worth telling apart from an agent in the next.
+    #[test]
+    fn strip_rows_group_by_branch_without_a_project() {
+        let panes = vec![
+            in_folder(3, "codex", "/work/one", 1),
+            in_folder(4, "codex", "/work/two", 2),
+        ];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[]),
+            &branches(&[(3, "main"), (4, "topic")]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                project("no project"),
+                branch("main"),
+                agent(3, "  3  codex  running  tab 1"),
+                branch("topic"),
+                agent(4, "  4  codex  running  tab 2"),
             ],
         );
     }

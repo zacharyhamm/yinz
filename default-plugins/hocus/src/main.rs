@@ -13,7 +13,9 @@ mod transitions;
 mod ui;
 mod worker;
 
-pub use message::{Job, Message, Picker, PickerKind, Role, Status, StreamState};
+pub use message::{
+    Job, Message, Picker, PickerKind, PickerRow, Role, RowKind, Status, StreamState,
+};
 use worker::{post_log, post_prompt_history, post_save};
 
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
@@ -459,11 +461,16 @@ impl ZellijPlugin for State {
         };
         self.agent_seq = seq;
         self.repositories = reply.repositories;
-        match reply.panes {
+        let applied = match reply.panes {
             Some(panes) => self.apply_poll(panes, reply.activity),
             // No current session. A quiet reply, not a dead daemon.
             None => false,
-        }
+        };
+        // This is also the answer to the branch refresh an open agent picker
+        // asked for, so the list has to take it rather than go on showing the
+        // rows it was built from.
+        let refreshed = self.refresh_agent_picker();
+        applied || refreshed
     }
 }
 
@@ -1517,7 +1524,7 @@ mod tests {
     fn picker_state(titles: &[&str]) -> State {
         State {
             picker: Some(Picker {
-                entries: titles.iter().map(|title| (*title).to_owned()).collect(),
+                entries: titles.iter().map(|title| PickerRow::item(*title)).collect(),
                 selected: 0,
                 kind: PickerKind::Chats((1..=titles.len() as u64).collect()),
             }),
@@ -1527,6 +1534,16 @@ mod tests {
 
     fn picker(state: &State) -> &Picker {
         state.picker.as_ref().expect("the picker is open")
+    }
+
+    /// The open picker's rows as plain lines, which is all most of these tests
+    /// care about.
+    fn entry_texts(state: &State) -> Vec<&str> {
+        picker(state)
+            .entries
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect()
     }
 
     /// The point of the archive: starting over must not destroy what came
@@ -1862,25 +1879,24 @@ mod tests {
     }
 
     /// The agent picker opens on its own key, lists the same rows the agent tools
-    /// would act on, stands outside any cycle, and Enter hands the pane to the
-    /// focus tool — stubbed off wasm, so what is checked is that it closes.
+    /// would act on under the headers that group them, stands outside any cycle,
+    /// and Enter hands the pane to the focus tool — stubbed off wasm, so what is
+    /// checked is that it closes.
     #[test]
     fn ctrl_r_opens_the_agent_picker_and_enter_closes_it() {
         let mut state = state_with_panes();
         settle(&mut state);
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
-        let rows: Vec<String> = agents::strip_rows(
-            &state.panes,
-            &state.manual_kinds,
-            &state.activity,
-            &state.pane_projects(),
-        )
-        .into_iter()
-        .map(|(_, row)| row)
-        .collect();
-        assert_eq!(picker(&state).entries, rows);
-        assert!(matches!(picker(&state).kind, PickerKind::Agents(ref ids) if ids == &vec![3]));
+        assert_eq!(
+            entry_texts(&state),
+            ["no project", "  no branch", "  3  codex  running"]
+        );
+        assert!(
+            matches!(picker(&state).kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
+        );
+        // Past the two headers, which nothing can land on.
+        assert_eq!(picker(&state).selected, 2);
 
         state.picker_key(KeyWithModifier::new(BareKey::Tab));
         assert!(
@@ -1890,6 +1906,123 @@ mod tests {
 
         state.picker_key(KeyWithModifier::new(BareKey::Enter));
         assert!(state.picker.is_none());
+    }
+
+    /// Two agents in two worktrees of one repository — the case the branch
+    /// headers exist for. Nothing names the project, so they group under the
+    /// header that says so and are still told apart by their branches.
+    fn state_with_worktrees() -> State {
+        let mut state = idle_state();
+        state.set_panes(vec![
+            agent_in(3, "/work/hocus", 1),
+            agent_in(5, "/work/trees/topic", 2),
+        ]);
+        state.repositories = BTreeMap::from([
+            ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
+            (
+                "/work/trees/topic".to_owned(),
+                on_branch("/work/trees/topic", "topic"),
+            ),
+        ]);
+        state
+    }
+
+    /// The pane the open agent picker would focus.
+    fn selected_pane(state: &State) -> Option<u32> {
+        match &picker(state).kind {
+            PickerKind::Agents(ids) => ids.get(picker(state).selected).copied().flatten(),
+            _ => None,
+        }
+    }
+
+    /// Arrow keys step over the headers, so every landing is an agent and there
+    /// is never a selection that `Enter` could do nothing with.
+    #[test]
+    fn the_agent_picker_never_lands_on_a_header() {
+        let mut state = state_with_worktrees();
+        settle(&mut state);
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+
+        assert_eq!(
+            entry_texts(&state),
+            [
+                "no project",
+                "  main",
+                "  3  codex  running  tab 1",
+                "  topic",
+                "  5  codex  running  tab 2",
+            ]
+        );
+        assert_eq!(selected_pane(&state), Some(3), "opens on the first agent");
+
+        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        assert_eq!(selected_pane(&state), Some(5), "over the branch header");
+        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        assert_eq!(selected_pane(&state), Some(5), "and stops at the last");
+        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        assert_eq!(selected_pane(&state), Some(3));
+        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        assert_eq!(
+            selected_pane(&state),
+            Some(3),
+            "the headers above are not rows to climb onto"
+        );
+    }
+
+    /// The daemon's snapshot of the two worktree agents, with pane 3 moved to
+    /// `branch`.
+    fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Plugin(1),
+            name: wire::AGENT_SNAPSHOT.to_owned(),
+            payload: Some(
+                serde_json::to_string(&PollReply {
+                    panes: Some(vec![
+                        agent_in(3, "/work/hocus", 1),
+                        agent_in(5, "/work/trees/topic", 2),
+                    ]),
+                    activity: agents::Activity::new(),
+                    manual_kinds: BTreeMap::new(),
+                    repositories: BTreeMap::from([
+                        ("/work/hocus".to_owned(), on_branch("/work/hocus", branch)),
+                        (
+                            "/work/trees/topic".to_owned(),
+                            on_branch("/work/trees/topic", "topic"),
+                        ),
+                    ]),
+                })
+                .expect("serialize"),
+            ),
+            args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
+            is_private: true,
+        }
+    }
+
+    /// Opening the picker asks for the branches to be re-read, so the snapshot
+    /// that answers has to reach the open list. The selection follows the pane,
+    /// not the row number — the re-read moved every row here.
+    #[test]
+    fn a_snapshot_rebuilds_the_open_agent_picker_and_keeps_the_pane() {
+        let mut state = state_with_worktrees();
+        settle(&mut state);
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        assert_eq!(selected_pane(&state), Some(5));
+
+        // Pane 3 turns out to be on `zzz`, which sorts it below pane 5.
+        assert!(state.pipe(worktree_snapshot(7, "zzz")), "asks to redraw");
+
+        assert_eq!(
+            entry_texts(&state),
+            [
+                "no project",
+                "  topic",
+                "  5  codex  running  tab 2",
+                "  zzz",
+                "  3  codex  running  tab 1",
+            ]
+        );
+        assert_eq!(selected_pane(&state), Some(5), "still on the same agent");
     }
 
     /// The list is also a display of where you are, so it must open on the model
@@ -1904,7 +2037,11 @@ mod tests {
         );
 
         assert!(rendered);
-        assert_eq!(picker(&state).entries, ["gpt-4o", "gpt-4o-mini", "o3-mini"]);
+        assert_eq!(
+            entry_texts(&state),
+            ["gpt-4o", "gpt-4o-mini", "o3-mini"],
+            "sorted"
+        );
         assert_eq!(picker(&state).selected, 1, "DEFAULT_MODEL, sorted second");
     }
 
@@ -2293,6 +2430,7 @@ mod tests {
                 remote: Some("git@example.com:hocus.git".to_owned()),
                 worktree_status: Some(projects::WorktreeStatus::Linked),
                 common_dir: Some("/work/hocus/.git".to_owned()),
+                branch: Some("topic".to_owned()),
             },
         );
 
@@ -2332,11 +2470,17 @@ mod tests {
 
     /// A folder Git claims, as the daemon's probe would report it.
     fn checkout(root: &str) -> projects::Repository {
+        on_branch(root, "main")
+    }
+
+    /// The same, with the branch it has out.
+    fn on_branch(root: &str, branch: &str) -> projects::Repository {
         projects::Repository {
             root: root.to_owned(),
             remote: None,
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: Some(format!("{root}/.git")),
+            branch: Some(branch.to_owned()),
         }
     }
 
@@ -3303,6 +3447,7 @@ mod tests {
                     remote: Some("git@example.com:work.git".to_owned()),
                     worktree_status: Some(projects::WorktreeStatus::Linked),
                     common_dir: Some("/tmp/main/.git".to_owned()),
+                    branch: Some("topic".to_owned()),
                 },
             )]),
         };

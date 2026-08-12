@@ -122,6 +122,9 @@ pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
             WorktreeStatus::Linked
         }),
         common_dir: Some((*common_dir).to_owned()),
+        // `--abbrev-ref HEAD` answers the literal word `HEAD` on a detached
+        // checkout, which names no branch and would read as one called HEAD.
+        branch: (*branch != "HEAD" && !branch.is_empty()).then(|| (*branch).to_owned()),
     }
 }
 
@@ -140,5 +143,20 @@ mod tests {
         assert_eq!(repository.root, "/worktrees/topic");
         assert_eq!(repository.remote.as_deref(), Some("https://example/fork"));
         assert_eq!(repository.worktree_status, Some(WorktreeStatus::Linked));
+        assert_eq!(repository.branch.as_deref(), Some("topic"));
+    }
+
+    /// A detached HEAD is on no branch, and the word Git answers with is not the
+    /// name of one.
+    #[test]
+    fn repository_reports_a_detached_head_as_no_branch() {
+        let repository = repository(
+            "/repos/hocus",
+            b"/repos/hocus\n/repos/hocus/.git\n/repos/hocus/.git\nHEAD\n",
+            b"remote.origin.url\nhttps://example/origin\0",
+        );
+
+        assert_eq!(repository.worktree_status, Some(WorktreeStatus::Primary));
+        assert_eq!(repository.branch, None);
     }
 }
