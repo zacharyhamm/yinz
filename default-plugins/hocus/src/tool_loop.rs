@@ -717,13 +717,20 @@ impl State {
 
     /// The snapshot every agent tool works from. Split out so the host calls in
     /// Host-side pane reads are the only part that cannot run under `make test`.
-    pub(crate) fn set_panes(&mut self, panes: Vec<agents::AgentPane>) {
+    pub(crate) fn set_panes(&mut self, panes: Vec<agents::AgentPane>) -> bool {
         self.panes = panes;
-        // A pane that closed is a registration that no longer names anything.
-        self.manual_kinds
-            .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
+        let before = self.manual_kinds.len();
+        self.pending_agent_panes
+            .retain(|id| !self.panes.iter().any(|pane| pane.pane_id == *id));
+        // A pane that closed is a registration that no longer names anything. A
+        // newly spawned pane is the exception until its first snapshot arrives.
+        self.manual_kinds.retain(|id, _| {
+            self.pending_agent_panes.contains(id)
+                || self.panes.iter().any(|pane| pane.pane_id == *id)
+        });
         self.activity
             .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
+        self.manual_kinds.len() != before
     }
 
     /// Name a pane as an agent by hand, for what detection cannot know.
@@ -840,16 +847,18 @@ impl State {
     }
 
     /// Fold a spawn's kind into `manual_kinds`, keyed by the pane id `new_pane`
-    /// reported. The pane is not in the snapshot yet — the next poll, at most one
-    /// heartbeat away, brings it in; the id is already allocated, so the kind
-    /// survives that poll's prune. No kind means detection covers it.
+    /// reported. The pane is not necessarily in the snapshot yet, so its id stays
+    /// pending until one arrives. No kind means detection covers it.
     pub(crate) fn register_spawned(&mut self, kind: Option<&str>, result: &str) -> String {
         let pane_id = serde_json::from_str::<serde_json::Value>(result)
             .ok()
             .and_then(|value| value["pane_id"].as_u64());
         match (kind, pane_id) {
             (Some(kind), Some(pane_id)) => {
-                self.manual_kinds.insert(pane_id as u32, kind.to_owned());
+                let pane_id = pane_id as u32;
+                self.manual_kinds.insert(pane_id, kind.to_owned());
+                self.pending_agent_panes.insert(pane_id);
+                self.subscribe_to_agentd();
                 format!("{result} (registered as {kind})")
             },
             _ => result.to_owned(),
@@ -933,7 +942,7 @@ impl State {
         // closed still has its kind in the notice.
         let before = agents::agent_map(&self.panes, &self.manual_kinds);
         self.activity = activity;
-        self.set_panes(panes);
+        let kinds_pruned = self.set_panes(panes);
         // Project discovery used to run here off the same snapshot. It lives in
         // hocus-store now, which receives that snapshot directly and pushes the
         // registry back; `refresh_tab_projects` still runs against our copy.
@@ -948,6 +957,9 @@ impl State {
                 "notice",
                 serde_json::json!({"content": log::truncate(notice)}),
             );
+        }
+        if kinds_pruned {
+            self.subscribe_to_agentd();
         }
         !notices.is_empty()
     }

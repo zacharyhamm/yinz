@@ -21,7 +21,7 @@ use worker::{post_log, post_prompt_history, post_save};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects, todos};
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use zellij_tile::prelude::*;
 
 use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator};
@@ -225,8 +225,10 @@ pub struct State {
     /// Kinds the user set by hand with `agent_register`, keyed by pane id. These win
     /// over detection, and are dropped when their pane leaves the snapshot.
     manual_kinds: BTreeMap<u32, String>,
-    /// Activity retained for wire compatibility. Event-driven snapshots currently
-    /// leave it empty rather than polling scrollback to infer idle time.
+    /// Spawned panes whose ids are allocated but have not reached a pane snapshot yet.
+    /// Their manual kinds survive early snapshots and are pruned normally once seen.
+    pending_agent_panes: BTreeSet<u32>,
+    /// Consecutive unchanged scrollback observations from hocus-agentd.
     activity: agents::Activity,
     /// The tool call waiting on hocus-store, and how long it has left. At most
     /// one: the tool queue runs a single call at a time.
@@ -312,6 +314,7 @@ impl Default for State {
             panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
+            pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
             pending_write: None,
             store_seq: 0,
@@ -3141,6 +3144,28 @@ mod tests {
             state.manual_kinds.get(&7).map(String::as_str),
             Some("reviewer")
         );
+        assert!(state.pending_agent_panes.contains(&7));
+
+        // The subscribe reply can beat the pane-created event back to hocus.
+        // That early snapshot must not discard the override it just sent.
+        assert!(!state.set_panes(Vec::new()));
+        assert_eq!(
+            state.manual_kinds.get(&7).map(String::as_str),
+            Some("reviewer")
+        );
+
+        state.set_panes(terminal_panes(
+            &manifest(vec![pane_info(7, "zsh", Some("zsh"))]),
+            &[],
+        ));
+        assert!(!state.pending_agent_panes.contains(&7));
+        assert_eq!(
+            state.manual_kinds.get(&7).map(String::as_str),
+            Some("reviewer")
+        );
+
+        assert!(state.set_panes(Vec::new()));
+        assert!(!state.manual_kinds.contains_key(&7));
 
         // No kind, or no pane in the answer: the result passes through untouched.
         assert_eq!(
@@ -3151,7 +3176,7 @@ mod tests {
             state.register_spawned(Some("scout"), "zellij did not open the pane"),
             "zellij did not open the pane",
         );
-        assert_eq!(state.manual_kinds.len(), 1);
+        assert!(state.manual_kinds.is_empty());
     }
 
     /// The whole of `agent_control`, compared as the complete host call it becomes.

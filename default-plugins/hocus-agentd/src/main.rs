@@ -2,17 +2,19 @@
 //!
 //! Background-only plugin. Never rendered.
 //!
-//! The daemon takes one startup snapshot, then follows Zellij's pane, command,
-//! and CWD events. It remains alive after hocus closes, so project discovery and
-//! agent detection keep their session-wide state warm without polling.
+//! The daemon takes one startup snapshot, follows Zellij's pane, command, and CWD
+//! events, and samples agent output on a small heartbeat for activity and Git changes.
 
 mod poll;
 
 use hocus_proto::panes::terminal_panes;
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::*;
+
+const ACTIVITY_SECONDS: f64 = 5.0;
+const GIT_REFRESH_SECONDS: f64 = 60.0;
 
 #[derive(Default)]
 struct State {
@@ -26,8 +28,11 @@ struct State {
     tabs: Vec<TabInfo>,
     commands: BTreeMap<u32, String>,
     cwds: BTreeMap<u32, String>,
+    activity: agents::Activity,
     repositories: BTreeMap<String, projects::Repository>,
     git_probes: BTreeMap<String, GitProbe>,
+    git_probe_seq: u64,
+    git_refresh_elapsed: f64,
     /// Who to push snapshots to — hocus, and hocus-store for its project
     /// discovery. A list rather than a single slot because both want the same
     /// snapshot, and broadcasting it instead would hand every plugin in the
@@ -38,6 +43,7 @@ struct State {
 
 #[derive(Default)]
 struct GitProbe {
+    id: u64,
     metadata: Option<Vec<u8>>,
     config: Option<Vec<u8>>,
 }
@@ -52,6 +58,7 @@ impl ZellijPlugin for State {
             EventType::CommandChanged,
             EventType::CwdChanged,
             EventType::RunCommandResult,
+            EventType::Timer,
         ]);
         // No `request_permission` here, deliberately. A builtin plugin — one
         // loaded from a `zellij:` location — is granted every gated call
@@ -64,6 +71,7 @@ impl ZellijPlugin for State {
         // against a pane that never arrives and the answer never comes.
 
         self.bootstrap();
+        set_timeout(ACTIVITY_SECONDS);
         // A reload drops the in-memory subscriber list. Ask existing watchers
         // to subscribe again instead of silently stopping their snapshots.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_HELLO));
@@ -101,6 +109,16 @@ impl ZellijPlugin for State {
             },
             Event::RunCommandResult(exit_code, stdout, _, context) => {
                 self.finish_git_probe(exit_code, stdout, context);
+            },
+            Event::Timer(elapsed) => {
+                self.observe_activity();
+                self.git_refresh_elapsed += elapsed;
+                if self.git_refresh_elapsed >= GIT_REFRESH_SECONDS {
+                    self.git_refresh_elapsed %= GIT_REFRESH_SECONDS;
+                    self.refresh_repositories();
+                }
+                self.publish();
+                set_timeout(ACTIVITY_SECONDS);
             },
             _ => {},
         }
@@ -181,22 +199,48 @@ impl State {
     }
 
     fn resolve_repositories(&mut self) {
-        let Some(panes) = &self.panes else {
-            return;
-        };
-        let unresolved: Vec<String> = panes
+        let active = self.agent_cwds();
+        self.repositories.retain(|cwd, _| active.contains(cwd));
+        self.git_probes.retain(|cwd, _| active.contains(cwd));
+        self.start_git_probes(self.repository_cwds(false));
+    }
+
+    fn refresh_repositories(&mut self) {
+        self.start_git_probes(self.repository_cwds(true));
+    }
+
+    fn repository_cwds(&self, refresh: bool) -> Vec<String> {
+        self.agent_cwds()
+            .into_iter()
+            .filter(|cwd| refresh || !self.repositories.contains_key(cwd))
+            .filter(|cwd| !self.git_probes.contains_key(cwd))
+            .collect()
+    }
+
+    fn agent_cwds(&self) -> BTreeSet<String> {
+        self.panes
             .iter()
+            .flatten()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| pane.cwd.clone())
-            .filter(|cwd| {
-                !self.repositories.contains_key(cwd) && !self.git_probes.contains_key(cwd)
-            })
-            .collect();
-        for cwd in unresolved {
-            self.git_probes.insert(cwd.clone(), GitProbe::default());
+            .collect()
+    }
+
+    fn start_git_probes(&mut self, cwds: Vec<String>) {
+        for cwd in cwds {
+            self.git_probe_seq += 1;
+            let id = self.git_probe_seq;
+            self.git_probes.insert(
+                cwd.clone(),
+                GitProbe {
+                    id,
+                    ..GitProbe::default()
+                },
+            );
             let context = |kind: &str| {
                 BTreeMap::from([
                     ("git_probe".to_owned(), kind.to_owned()),
+                    ("git_probe_id".to_owned(), id.to_string()),
                     ("cwd".to_owned(), cwd.clone()),
                 ])
             };
@@ -230,16 +274,43 @@ impl State {
         }
     }
 
+    fn observe_activity(&mut self) {
+        self.observe_activity_with(poll::read_pane_text);
+    }
+
+    fn observe_activity_with(&mut self, mut read: impl FnMut(u32) -> String) {
+        let running: BTreeSet<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| {
+                pane.status == agents::AgentStatus::Running
+                    && agents::classify(pane, &self.manual_kinds).is_some()
+            })
+            .map(|pane| pane.pane_id)
+            .collect();
+        self.activity.retain(|id, _| running.contains(id));
+        for pane_id in running {
+            agents::observe(&mut self.activity, pane_id, &read(pane_id));
+        }
+    }
+
     fn finish_git_probe(
         &mut self,
         exit_code: Option<i32>,
         stdout: Vec<u8>,
         context: BTreeMap<String, String>,
     ) {
-        let (Some(cwd), Some(kind)) = (context.get("cwd"), context.get("git_probe")) else {
+        let (Some(cwd), Some(kind), Some(id)) = (
+            context.get("cwd"),
+            context.get("git_probe"),
+            context
+                .get("git_probe_id")
+                .and_then(|id| id.parse::<u64>().ok()),
+        ) else {
             return;
         };
-        let Some(probe) = self.git_probes.get_mut(cwd) else {
+        let Some(probe) = self.git_probes.get_mut(cwd).filter(|probe| probe.id == id) else {
             return;
         };
         let output = if exit_code == Some(0) {
@@ -273,7 +344,7 @@ impl State {
         self.seq += 1;
         let reply = PollReply {
             panes: self.panes.clone(),
-            activity: agents::Activity::new(),
+            activity: self.activity.clone(),
             manual_kinds: self.manual_kinds.clone(),
             repositories: self.repositories.clone(),
         };
@@ -299,6 +370,17 @@ impl State {
 mod tests {
     use super::*;
 
+    fn pane(id: u32, command: &str, cwd: &str) -> agents::AgentPane {
+        agents::AgentPane {
+            pane_id: id,
+            title: command.to_owned(),
+            command: Some(command.to_owned()),
+            cwd: Some(cwd.to_owned()),
+            status: agents::AgentStatus::Running,
+            tab: None,
+        }
+    }
+
     #[test]
     fn command_and_cwd_events_survive_the_next_pane_snapshot() {
         let mut state = State::default();
@@ -323,5 +405,67 @@ mod tests {
         state.rebuild_panes();
         assert!(state.commands.is_empty());
         assert!(state.cwds.is_empty());
+    }
+
+    #[test]
+    fn activity_tracks_running_agents_and_prunes_everything_else() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "codex", "/work"), pane(8, "zsh", "/tmp")]),
+            activity: agents::Activity::from([(9, (1, 4))]),
+            ..State::default()
+        };
+
+        state.observe_activity_with(|_| "working".to_owned());
+        state.observe_activity_with(|_| "working".to_owned());
+        assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
+        assert_eq!(state.activity.len(), 1);
+
+        state.panes.as_mut().unwrap()[0].status = agents::AgentStatus::Held;
+        state.observe_activity_with(|_| "ignored".to_owned());
+        assert!(state.activity.is_empty());
+    }
+
+    #[test]
+    fn repository_refresh_reprobes_cached_cwds_without_overlapping() {
+        let cached = projects::Repository::folder("/work");
+        let mut state = State {
+            panes: Some(vec![pane(7, "codex", "/work")]),
+            repositories: BTreeMap::from([("/work".to_owned(), cached)]),
+            ..State::default()
+        };
+
+        assert!(state.repository_cwds(false).is_empty());
+        assert_eq!(state.repository_cwds(true), vec!["/work"]);
+        state
+            .git_probes
+            .insert("/work".to_owned(), GitProbe::default());
+        assert!(state.repository_cwds(true).is_empty());
+
+        state.panes = Some(vec![pane(8, "codex", "/elsewhere")]);
+        state.resolve_repositories();
+        assert!(!state.repositories.contains_key("/work"));
+        assert!(!state.git_probes.contains_key("/work"));
+    }
+
+    #[test]
+    fn a_result_from_a_replaced_git_probe_is_ignored() {
+        let mut state = State {
+            git_probes: BTreeMap::from([(
+                "/work".to_owned(),
+                GitProbe {
+                    id: 2,
+                    ..GitProbe::default()
+                },
+            )]),
+            ..State::default()
+        };
+        let context = BTreeMap::from([
+            ("cwd".to_owned(), "/work".to_owned()),
+            ("git_probe".to_owned(), "metadata".to_owned()),
+            ("git_probe_id".to_owned(), "1".to_owned()),
+        ]);
+
+        state.finish_git_probe(Some(0), b"stale".to_vec(), context);
+        assert!(state.git_probes["/work"].metadata.is_none());
     }
 }
