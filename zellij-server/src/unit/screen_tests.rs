@@ -16470,3 +16470,126 @@ pub fn focusing_a_scrolled_pane_enters_scroll_mode_with_locked_default() {
     // them to Locked (not Normal), and Scroll is entered from Locked.
     assert_focus_change_syncs_scroll_mode(InputMode::Locked);
 }
+
+// ---------------------------------------------------------------------------
+// Warp eligibility
+// ---------------------------------------------------------------------------
+//
+// `check_pane_can_be_warped` is the only place a warp can be refused cheaply.
+// Everything it does not catch is caught after the supervisor has been released,
+// when the pane belongs to nobody and the refusal costs a recovery step, so each
+// of these is worth pinning down.
+
+#[test]
+fn a_plugin_pane_cannot_be_warped() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Plugin(1)), 1),
+        Err("this is a plugin pane; it has no process, so there is nothing to move".to_owned())
+    );
+}
+
+#[test]
+fn a_pane_from_another_session_cannot_be_warped() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(99)), 1),
+        Err("there is no pane 99 in this session".to_owned())
+    );
+}
+
+/// A tab where terminal 1 has been replaced by a scrollback editor (terminal 9)
+/// and is now suppressed behind it, plus a second tab so the session is never
+/// down to its last pane.
+fn screen_with_a_scrollback_editor_open() -> Screen {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .suppress_pane_and_replace_with_pid(
+            PaneId::Terminal(1),
+            PaneId::Terminal(9),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("TEST");
+    screen
+}
+
+#[test]
+fn the_visible_half_of_a_scrollback_editor_pair_cannot_be_warped() {
+    // `Tab::close_pane` would swap the hidden pane back in rather than remove
+    // this one, so the far session would end up holding the wrong pty.
+    let mut screen = screen_with_a_scrollback_editor_open();
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(9)), 1),
+        Err("this pane has a scrollback editor open; close it before moving the pane".to_owned())
+    );
+}
+
+#[test]
+fn the_hidden_half_of_a_scrollback_editor_pair_cannot_be_warped() {
+    // The dangerous one. `suppressed_panes` is keyed by the visible pane, so
+    // nothing downstream can find pane 1 to serialize — and `take_released_pane_for_warp`
+    // only discovers that after the supervisor has been released, which would
+    // leave a running pane with no session to go back to.
+    let mut screen = screen_with_a_scrollback_editor_open();
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Err("this pane has a scrollback editor open; close it before moving the pane".to_owned())
+    );
+}
+
+#[test]
+fn the_sessions_only_pane_cannot_be_warped() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Err("this is the session's only pane; moving it would close the session".to_owned())
+    );
+}
+
+#[test]
+fn a_terminal_pane_with_somewhere_to_leave_behind_can_be_warped() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Ok(1)
+    );
+}
+
+#[test]
+fn a_tabs_last_pane_can_still_be_warped() {
+    // Deliberately allowed: the render pass sweeps a tab with nothing selectable
+    // left in it, so emptying a tab is a tab closing, not a session ending.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    assert_eq!(
+        screen.tabs.get(&1).expect("TEST").get_all_pane_ids().len(),
+        1
+    );
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
+        Ok(2)
+    );
+}

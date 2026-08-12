@@ -26,8 +26,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
     ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
+    ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+    ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
     ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
     ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
     ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
@@ -41,8 +41,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
     ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, RenameWebTokenResponse,
-    RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
+    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -1757,6 +1757,108 @@ where
     match protobuf_response.error {
         Some(err) => Err(err),
         None => Ok(()),
+    }
+}
+
+/// Move a pane, and the program running in it, into another session.
+///
+/// The process is not restarted: same pid, same working directory, same open
+/// files. The pane's scrollback travels with it.
+///
+/// Blocks until the pane has landed in the other session, or until the move has
+/// failed and been rolled back. That can take seconds — a supervisor is released
+/// here and re-attached there — and the plugin's thread is held for the
+/// duration, which at executor capacity can also delay a co-pinned plugin. An
+/// unreachable target session is refused before anything is released, so the
+/// common mistake is cheap.
+///
+/// `Ok` carries a line to show the user; `Err` carries the reason, which in the
+/// worst case is also the only place the recovery instructions exist.
+///
+/// # Permissions Required
+/// * `ChangeApplicationState`
+pub fn warp_pane_to_session(
+    pane_id: PaneId,
+    to_session: &str,
+    placement: WarpPlacement,
+) -> Result<String, String> {
+    warp_request(PluginCommand::WarpPaneToSession {
+        pane_id,
+        to_session: to_session.to_owned(),
+        placement,
+    })
+}
+
+/// Bring a pane from another session into this one.
+///
+/// The mirror of [`warp_pane_to_session`]: the source session does the work, so
+/// `pane_id` is an id in *that* session's numbering, not this one's.
+///
+/// # Permissions Required
+/// * `ChangeApplicationState`
+pub fn warp_pane_from_session(
+    pane_id: PaneId,
+    from_session: &str,
+    placement: WarpPlacement,
+) -> Result<String, String> {
+    warp_request(PluginCommand::WarpPaneFromSession {
+        pane_id,
+        from_session: from_session.to_owned(),
+        placement,
+    })
+}
+
+/// Take an orphaned pane over into this session, reconnecting it to its
+/// still-running process. `host_id` comes from [`list_orphaned_panes`].
+///
+/// # Permissions Required
+/// * `ChangeApplicationState`
+pub fn adopt_orphaned_pane(host_id: &str, placement: WarpPlacement) -> Result<String, String> {
+    warp_request(PluginCommand::AdoptOrphanedPane {
+        host_id: host_id.to_owned(),
+        placement,
+    })
+}
+
+fn warp_request(plugin_command: PluginCommand) -> Result<String, String> {
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let response_bytes =
+        bytes_from_stdin().map_err(|e| format!("Failed to read warp response: {}", e))?;
+    let protobuf_response = ProtobufWarpPaneResponse::decode(response_bytes.as_slice())
+        .map_err(|e| format!("Malformed warp response: {}", e))?;
+    match WarpPaneResponse::try_from(protobuf_response) {
+        Ok(WarpPaneResponse::Ok(message)) => Ok(message),
+        Ok(WarpPaneResponse::Err(error)) => Err(error),
+        Err(e) => Err(format!("Malformed warp response: {}", e)),
+    }
+}
+
+/// Panes whose session died but whose process is still running, waiting to be
+/// recovered with [`adopt_orphaned_pane`].
+///
+/// Empty unless a zellij server was killed rather than shut down. Panes that are
+/// merely in another *live* session are not listed here — those move with
+/// [`warp_pane_from_session`].
+///
+/// # Permissions Required
+/// * `ReadApplicationState`
+pub fn list_orphaned_panes() -> Result<Vec<OrphanedPane>, String> {
+    let plugin_command = PluginCommand::ListOrphanedPanes;
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let response_bytes = bytes_from_stdin()
+        .map_err(|e| format!("Failed to read ListOrphanedPanes response: {}", e))?;
+    let protobuf_response = ProtobufListOrphanedPanesResponse::decode(response_bytes.as_slice())
+        .map_err(|e| format!("Malformed ListOrphanedPanes response: {}", e))?;
+    match ListOrphanedPanesResponse::try_from(protobuf_response) {
+        Ok(ListOrphanedPanesResponse::Ok(panes)) => Ok(panes),
+        Ok(ListOrphanedPanesResponse::Err(error)) => Err(error),
+        Err(e) => Err(format!("Malformed ListOrphanedPanes response: {}", e)),
     }
 }
 

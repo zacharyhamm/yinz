@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use zellij_tile::prelude::{FloatingPaneCoordinates, PaneId};
+use zellij_tile::prelude::{FloatingPaneCoordinates, PaneId, WarpPlacement};
 
 /// One complete call requested by the model, reassembled from stream fragments.
 ///
@@ -39,6 +39,12 @@ pub fn needs_confirmation(name: &str) -> bool {
             // The one tool that removes something the user meant to keep.
             | "project_forget"
             | "slack_post"
+            // Moving a pane is disruptive in a way the user cannot undo by
+            // looking away: the pane leaves the screen, and for a moment during
+            // the handoff it belongs to no session at all.
+            | "warp_pane"
+            | "warp_pane_here"
+            | "adopt_orphaned_pane"
     )
 }
 
@@ -142,6 +148,16 @@ fn input_properties() -> Value {
     })
 }
 
+/// Where a warped pane lands in the session receiving it. A closed set, so a
+/// placement the model invents is rejected by the schema rather than at dispatch.
+fn placement_property() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["new_tab", "focused_tab", "floating"],
+        "description": "Where the pane lands in the receiving session. Defaults to new_tab, the only placement that cannot disturb a layout that session already has.",
+    })
+}
+
 /// How the Slack tools address a conversation and a span of days. Shared by
 /// `slack_read` and `slack_backfill`, which take the same window and differ only
 /// in whether they read the archive or fill it.
@@ -159,6 +175,7 @@ pub fn specs() -> Value {
     let pane = pane_properties();
     let input = input_properties();
     let slack = slack_properties();
+    let placement = placement_property();
     let pane_ref = json!({
         "type": "object",
         "properties": pane_properties(),
@@ -169,6 +186,55 @@ pub fn specs() -> Value {
             "list_session",
             "List every tab and pane in the current Zellij session, with the ids needed by the other tools. Call this first — ids from an earlier turn may be stale.",
             json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "list_other_sessions",
+            "List the other Zellij sessions running on this machine and the terminal panes in them. Pane ids are per-session, so these are the ids to give warp_pane_here — never the ones from list_session. The data is a snapshot and can be a moment stale.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "warp_pane",
+            "Move a pane, and the program running in it, out of this session and into another one. The process keeps running and its scrollback goes with it. Call list_other_sessions first for the target's name. Cannot move a plugin pane, a pane with a scrollback editor open, or this session's last pane.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pane_id": pane["pane_id"],
+                    "is_plugin": pane["is_plugin"],
+                    "to_session": { "type": "string", "description": "Name of the session to move the pane into, from list_other_sessions." },
+                    "placement": placement.clone(),
+                },
+                "required": ["pane_id", "is_plugin", "to_session"],
+            }),
+        ),
+        tool(
+            "warp_pane_here",
+            "Bring a pane from another session into this one, with its process still running. pane_id is that session's id for the pane, from list_other_sessions — ids from list_session name different panes.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "from_session": { "type": "string", "description": "Name of the session the pane is currently in, from list_other_sessions." },
+                    "pane_id": { "type": "integer", "description": "The pane's id in from_session, from list_other_sessions." },
+                    "placement": placement.clone(),
+                },
+                "required": ["from_session", "pane_id"],
+            }),
+        ),
+        tool(
+            "list_orphaned_panes",
+            "List panes whose session died but whose process is still running, waiting to be recovered. Empty unless a Zellij server was killed. Panes in other live sessions are not listed here — those move with warp_pane_here.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "adopt_orphaned_pane",
+            "Take an orphaned pane into this session, reconnecting it to its still-running process along with whatever it printed while orphaned. host_id comes from list_orphaned_panes.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "host_id": { "type": "string", "description": "The orphaned pane's host_id, from list_orphaned_panes." },
+                    "placement": placement.clone(),
+                },
+                "required": ["host_id"],
+            }),
         ),
         tool(
             "read_pane",
@@ -921,6 +987,12 @@ pub struct Args {
     pub from: Option<String>,
     pub to: Option<String>,
     pub thread: Option<String>,
+    // Moving panes between sessions. `to_session` rather than `to`, which the
+    // Slack tools already own.
+    pub to_session: Option<String>,
+    pub from_session: Option<String>,
+    pub placement: Option<String>,
+    pub host_id: Option<String>,
 }
 
 impl Args {
@@ -932,6 +1004,20 @@ impl Args {
             return Ok(Args::default());
         }
         serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))
+    }
+
+    /// Where a warped pane should land. Absent means a tab of its own: the only
+    /// placement that cannot disturb a layout the receiving session has, and so
+    /// the only safe thing to assume when the model did not say.
+    pub fn placement(&self) -> Result<WarpPlacement, String> {
+        match self.placement.as_deref() {
+            None | Some("new_tab") => Ok(WarpPlacement::NewTab),
+            Some("focused_tab") => Ok(WarpPlacement::FocusedTab),
+            Some("floating") => Ok(WarpPlacement::Floating),
+            Some(other) => Err(format!(
+                "unknown placement {other:?}; use new_tab, focused_tab or floating"
+            )),
+        }
     }
 
     /// `command` is a string with a separate `args` array for `new_pane`, but
@@ -1220,6 +1306,11 @@ mod host {
         };
         match call.name.as_str() {
             "list_session" => list_session(),
+            "list_other_sessions" => list_other_sessions(),
+            "warp_pane" => warp_pane(&args),
+            "warp_pane_here" => warp_pane_here(&args),
+            "list_orphaned_panes" => list_orphaned_panes_tool(),
+            "adopt_orphaned_pane" => adopt_orphaned_pane_tool(&args),
             "read_pane" => with_pane(&args, |pane| read_pane(pane, args.full_scrollback)),
             "send_input" => with_pane(&args, |pane| {
                 match args.input_chunks(matches!(pane, PaneId::Terminal(_))) {
@@ -1354,6 +1445,182 @@ mod host {
             .collect();
 
         json!({ "session": session.name, "tabs": tabs }).to_string()
+    }
+
+    /// The other live sessions, terminal panes only.
+    ///
+    /// A separate tool rather than a flag on `list_session` on purpose.
+    /// `list_session` is called constantly and its shape is load-bearing for
+    /// every other tool; widening it would make every turn pay for every
+    /// session's panes. The name also states the scoping rule, which matters
+    /// because the ids in here are only meaningful to the session they came
+    /// from.
+    ///
+    /// Plugin panes are dropped rather than listed and refused later: a plugin
+    /// pane has no process to move, so an id the model cannot use is worse than
+    /// no id at all.
+    fn list_other_sessions() -> String {
+        let snapshot = match get_session_list() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return format!("could not list sessions: {error}"),
+        };
+
+        let sessions: Vec<Value> = snapshot
+            .live_sessions
+            .iter()
+            .filter(|session| !session.is_current_session)
+            .map(|session| {
+                let tabs: Vec<Value> = session
+                    .tabs
+                    .iter()
+                    .map(|tab| {
+                        // PaneManifest is keyed by tab *position*, not by TabInfo.tab_id.
+                        let panes: Vec<Value> = session
+                            .panes
+                            .panes
+                            .get(&tab.position)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin)
+                            .map(|pane| {
+                                json!({
+                                    "pane_id": pane.id,
+                                    "title": pane.title,
+                                    "command": pane.terminal_command,
+                                    "exit_status": pane.exit_status,
+                                })
+                            })
+                            .collect();
+                        json!({ "name": tab.name, "panes": panes })
+                    })
+                    .collect();
+                json!({ "session": session.name, "tabs": tabs })
+            })
+            .collect();
+
+        if sessions.is_empty() {
+            return "no other zellij sessions are running".to_owned();
+        }
+        json!({ "sessions": sessions }).to_string()
+    }
+
+    /// Whether a session by this name is currently running, other than ours.
+    ///
+    /// Checked before the host call because that call blocks the plugin — and
+    /// this whole pane, including its UI — for as long as the warp takes. A
+    /// session name the model made up is by far the likeliest failure, and it is
+    /// answerable from a snapshot we already have.
+    fn other_session_exists(name: &str) -> Result<bool, String> {
+        let snapshot =
+            get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
+        Ok(snapshot
+            .live_sessions
+            .iter()
+            .any(|session| !session.is_current_session && session.name == name))
+    }
+
+    fn warp_pane(args: &Args) -> String {
+        let Some(to_session) = args.to_session.as_deref() else {
+            return "to_session is required; call list_other_sessions for the names".to_owned();
+        };
+        let placement = match args.placement() {
+            Ok(placement) => placement,
+            Err(error) => return error,
+        };
+        match other_session_exists(to_session) {
+            Ok(false) => {
+                return format!(
+                    "no other session named {to_session:?} is running; call list_other_sessions"
+                )
+            },
+            Err(error) => return error,
+            Ok(true) => {},
+        }
+        with_pane(args, |pane| {
+            if let PaneId::Plugin(_) = pane {
+                // The same refusal the server would give, without spending a
+                // round trip to hear it.
+                return "this is a plugin pane; it has no process, so there is nothing to move"
+                    .to_owned();
+            }
+            match warp_pane_to_session(pane, to_session, placement) {
+                // Both halves are already prose written for whoever asked, and
+                // the failures carry their own recovery instructions.
+                Ok(message) | Err(message) => message,
+            }
+        })
+    }
+
+    fn warp_pane_here(args: &Args) -> String {
+        let Some(from_session) = args.from_session.as_deref() else {
+            return "from_session is required; call list_other_sessions for the names".to_owned();
+        };
+        let Some(pane_id) = args.pane_id else {
+            return "pane_id is required; call list_other_sessions for the pane's id in that session"
+                .to_owned();
+        };
+        let placement = match args.placement() {
+            Ok(placement) => placement,
+            Err(error) => return error,
+        };
+        match other_session_exists(from_session) {
+            Ok(false) => {
+                return format!(
+                    "no other session named {from_session:?} is running; call list_other_sessions"
+                )
+            },
+            Err(error) => return error,
+            Ok(true) => {},
+        }
+        match warp_pane_from_session(PaneId::Terminal(pane_id), from_session, placement) {
+            Ok(message) | Err(message) => message,
+        }
+    }
+
+    fn list_orphaned_panes_tool() -> String {
+        let panes = match list_orphaned_panes() {
+            Ok(panes) => panes,
+            Err(error) => return format!("could not list orphaned panes: {error}"),
+        };
+        if panes.is_empty() {
+            return "no orphaned panes; nothing has outlived its session".to_owned();
+        }
+        // `started_at_unix` is a wall clock the model has no way to compare
+        // against, so the age is computed here.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let orphans: Vec<Value> = panes
+            .iter()
+            .map(|pane| {
+                json!({
+                    "host_id": pane.host_id,
+                    "command": pane.command,
+                    "cwd": pane.cwd,
+                    "session": pane.session_name,
+                    "exited": pane.exit_status.is_some(),
+                    "exit_code": pane.exit_status.flatten(),
+                    "age_seconds": now.saturating_sub(pane.started_at_unix),
+                    "buffered_bytes": pane.buffered_bytes,
+                })
+            })
+            .collect();
+        json!({ "orphans": orphans }).to_string()
+    }
+
+    fn adopt_orphaned_pane_tool(args: &Args) -> String {
+        let Some(host_id) = args.host_id.as_deref() else {
+            return "host_id is required; call list_orphaned_panes to get one".to_owned();
+        };
+        let placement = match args.placement() {
+            Ok(placement) => placement,
+            Err(error) => return error,
+        };
+        match adopt_orphaned_pane(host_id, placement) {
+            Ok(message) | Err(message) => message,
+        }
     }
 
     fn read_pane(pane: PaneId, full: bool) -> String {
@@ -1687,11 +1954,19 @@ mod tests {
             // something away.
             "project_forget",
             "slack_post",
+            // Moving a pane takes it off the screen, and briefly leaves it
+            // belonging to no session at all.
+            "warp_pane",
+            "warp_pane_here",
+            "adopt_orphaned_pane",
         ] {
             assert!(needs_confirmation(name), "{name} should be confirmed");
         }
         for name in [
             "list_session",
+            // Listing is always free, including the two that look outward.
+            "list_other_sessions",
+            "list_orphaned_panes",
             "read_pane",
             "new_pane",
             "new_tab",
@@ -1845,9 +2120,9 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 41);
+        assert_eq!(names.len(), 46);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-        assert_eq!(confirmed, 8);
+        assert_eq!(confirmed, 11);
     }
 
     /// `agent_control` is the one tool whose argument is a verb rather than a target,
@@ -1919,6 +2194,105 @@ mod tests {
         assert_eq!(panes["minItems"], 2);
         assert_eq!(panes["maxItems"], 2);
         assert_eq!(panes["items"]["required"], json!(["pane_id", "is_plugin"]));
+    }
+
+    /// An open string here would let the model invent `"float"` and only find
+    /// out at dispatch; a closed enum makes the provider reject it first.
+    #[test]
+    fn every_warp_schema_has_a_closed_placement_set() {
+        let specs = specs();
+        for name in ["warp_pane", "warp_pane_here", "adopt_orphaned_pane"] {
+            let spec = specs
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|spec| spec["function"]["name"] == name)
+                .unwrap_or_else(|| panic!("{name} should be advertised"));
+            assert_eq!(
+                spec["function"]["parameters"]["properties"]["placement"]["enum"],
+                json!(["new_tab", "focused_tab", "floating"]),
+                "{name} should take a closed set of placements",
+            );
+        }
+    }
+
+    /// `warp_pane_here` deliberately takes no `is_plugin`: a plugin pane has no
+    /// process to move, and `list_other_sessions` never offers one.
+    #[test]
+    fn the_warp_schemas_require_a_destination_and_a_pane() {
+        let specs = specs();
+        for (name, required) in [
+            ("warp_pane", json!(["pane_id", "is_plugin", "to_session"])),
+            ("warp_pane_here", json!(["from_session", "pane_id"])),
+            ("adopt_orphaned_pane", json!(["host_id"])),
+            ("list_other_sessions", Value::Null),
+            ("list_orphaned_panes", Value::Null),
+        ] {
+            let spec = specs
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|spec| spec["function"]["name"] == name)
+                .unwrap_or_else(|| panic!("{name} should be advertised"));
+            assert_eq!(
+                spec["function"]["parameters"]["required"], required,
+                "{name} requires the wrong arguments",
+            );
+        }
+        let here = specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["function"]["name"] == "warp_pane_here")
+            .unwrap();
+        assert_eq!(
+            here["function"]["parameters"]["properties"]["is_plugin"],
+            Value::Null,
+        );
+    }
+
+    #[test]
+    fn an_absent_placement_lands_the_pane_in_a_tab_of_its_own() {
+        assert_eq!(Args::default().placement(), Ok(WarpPlacement::NewTab));
+    }
+
+    #[test]
+    fn every_advertised_placement_parses() {
+        for (name, expected) in [
+            ("new_tab", WarpPlacement::NewTab),
+            ("focused_tab", WarpPlacement::FocusedTab),
+            ("floating", WarpPlacement::Floating),
+        ] {
+            let args = Args {
+                placement: Some(name.to_owned()),
+                ..Args::default()
+            };
+            assert_eq!(args.placement(), Ok(expected), "{name} should parse");
+        }
+    }
+
+    #[test]
+    fn an_invented_placement_is_answered_with_the_ones_that_exist() {
+        let args = Args {
+            placement: Some("float".to_owned()),
+            ..Args::default()
+        };
+        let error = args.placement().expect_err("float is not a placement");
+        for legal in ["new_tab", "focused_tab", "floating"] {
+            assert!(
+                error.contains(legal),
+                "the error should name {legal}, got: {error}"
+            );
+        }
+    }
+
+    /// `to` belongs to the Slack tools; a warp that quietly read it would send
+    /// the pane to a channel name.
+    #[test]
+    fn the_warp_arguments_do_not_collide_with_the_slack_ones() {
+        let args = Args::parse(r##"{"to":"#general","to_session":"other"}"##).unwrap();
+        assert_eq!(args.to, Some("#general".to_owned()));
+        assert_eq!(args.to_session, Some("other".to_owned()));
     }
 
     #[test]

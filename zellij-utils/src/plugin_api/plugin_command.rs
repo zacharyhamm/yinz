@@ -17,10 +17,11 @@ pub use super::generated_api::api::{
         dump_session_layout_response, edit_layout_response, focus_or_create_tab_response,
         get_focused_pane_info_response, get_pane_cwd_response, get_pane_pid_response,
         get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
-        highlight_style::Style as ProtobufHighlightStyleVariant, new_tab_response,
-        new_tab_unfocused_response, parse_layout_response, plugin_command::Payload,
-        rename_layout_response, save_layout_response, save_session_response,
-        show_floating_panes_response, BreakPanesToNewTabPayload,
+        highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
+        new_tab_response, new_tab_unfocused_response, parse_layout_response,
+        plugin_command::Payload, rename_layout_response, save_layout_response,
+        save_session_response, show_floating_panes_response, warp_pane_response,
+        AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -68,6 +69,7 @@ pub use super::generated_api::api::{
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
         KillSessionsResponse as ProtobufKillSessionsResponse,
+        ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
         ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
         LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
         MovePaneWithPaneIdPayload, MovePayload, NewPluginArgs as ProtobufNewPluginArgs,
@@ -111,7 +113,8 @@ pub use super::generated_api::api::{
         OpenTerminalNearPluginResponse as ProtobufOpenTerminalNearPluginResponse,
         OpenTerminalPaneInPlaceOfPaneIdPayload,
         OpenTerminalPaneInPlaceOfPaneIdResponse as ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
-        OpenTerminalResponse as ProtobufOpenTerminalResponse, OverrideLayoutPayload,
+        OpenTerminalResponse as ProtobufOpenTerminalResponse, OrphanedPane as ProtobufOrphanedPane,
+        OrphanedPaneList as ProtobufOrphanedPaneList, OverrideLayoutPayload,
         PageScrollDownInPaneIdPayload, PageScrollUpInPaneIdPayload, PaneId as ProtobufPaneId,
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
@@ -138,7 +141,9 @@ pub use super::generated_api::api::{
         StackPanesPayload, SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload,
         SwitchTabToPayload, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
         TogglePaneEmbedOrEjectForPaneIdPayload, TogglePaneIdFullscreenPayload, UnsubscribePayload,
-        WebRequestPayload, WriteCharsToPaneIdPayload, WriteToPaneIdPayload,
+        WarpPaneFromSessionPayload, WarpPaneResponse as ProtobufWarpPaneResponse,
+        WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement, WebRequestPayload,
+        WriteCharsToPaneIdPayload, WriteToPaneIdPayload,
     },
     plugin_permission::PermissionType as ProtobufPermissionType,
     resize::ResizeAction as ProtobufResizeAction,
@@ -149,9 +154,10 @@ use crate::data::{
     DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
     GetPaneCwdResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GetSessionListResponse,
     HighlightLayer, HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    MessageToPlugin, NewPluginArgs, PaneId, PermissionType, PluginCommand, RecordingSummary,
-    RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit, SessionInfo,
-    SessionListSnapshot,
+    ListOrphanedPanesResponse, MessageToPlugin, NewPluginArgs, OrphanedPane, PaneId,
+    PermissionType, PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse,
+    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
+    WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -2842,7 +2848,70 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for OpenPluginPaneFloating"),
             },
+            Some(CommandName::WarpPaneToSession) => match protobuf_plugin_command.payload {
+                Some(Payload::WarpPaneToSessionPayload(payload)) => {
+                    Ok(PluginCommand::WarpPaneToSession {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("Missing pane_id for WarpPaneToSession")?
+                            .try_into()?,
+                        to_session: payload.to_session,
+                        placement: warp_placement_from_i32(payload.placement)?,
+                    })
+                },
+                _ => Err("Mismatched payload for WarpPaneToSession"),
+            },
+            Some(CommandName::WarpPaneFromSession) => match protobuf_plugin_command.payload {
+                Some(Payload::WarpPaneFromSessionPayload(payload)) => {
+                    Ok(PluginCommand::WarpPaneFromSession {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("Missing pane_id for WarpPaneFromSession")?
+                            .try_into()?,
+                        from_session: payload.from_session,
+                        placement: warp_placement_from_i32(payload.placement)?,
+                    })
+                },
+                _ => Err("Mismatched payload for WarpPaneFromSession"),
+            },
+            Some(CommandName::ListOrphanedPanes) => match protobuf_plugin_command.payload {
+                Some(_) => Err("ListOrphanedPanes should have no payload"),
+                None => Ok(PluginCommand::ListOrphanedPanes),
+            },
+            Some(CommandName::AdoptOrphanedPane) => match protobuf_plugin_command.payload {
+                Some(Payload::AdoptOrphanedPanePayload(payload)) => {
+                    Ok(PluginCommand::AdoptOrphanedPane {
+                        host_id: payload.host_id,
+                        placement: warp_placement_from_i32(payload.placement)?,
+                    })
+                },
+                _ => Err("Mismatched payload for AdoptOrphanedPane"),
+            },
             None => Err("Unrecognized plugin command"),
+        }
+    }
+}
+
+/// Unknown values are rejected rather than defaulted.
+///
+/// A placement this build does not know about came from a plugin built against a
+/// newer API, and guessing "new tab" for it would put the pane somewhere the
+/// plugin did not ask for — with no way for it to tell.
+fn warp_placement_from_i32(placement: i32) -> Result<WarpPlacement, &'static str> {
+    match ProtobufWarpPlacement::try_from(placement) {
+        Ok(ProtobufWarpPlacement::NewTab) => Ok(WarpPlacement::NewTab),
+        Ok(ProtobufWarpPlacement::FocusedTab) => Ok(WarpPlacement::FocusedTab),
+        Ok(ProtobufWarpPlacement::Floating) => Ok(WarpPlacement::Floating),
+        Err(_) => Err("Unrecognized warp placement"),
+    }
+}
+
+impl From<WarpPlacement> for ProtobufWarpPlacement {
+    fn from(placement: WarpPlacement) -> Self {
+        match placement {
+            WarpPlacement::NewTab => ProtobufWarpPlacement::NewTab,
+            WarpPlacement::FocusedTab => ProtobufWarpPlacement::FocusedTab,
+            WarpPlacement::Floating => ProtobufWarpPlacement::Floating,
         }
     }
 }
@@ -4635,6 +4704,146 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
+            PluginCommand::WarpPaneToSession {
+                pane_id,
+                to_session,
+                placement,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::WarpPaneToSession as i32,
+                payload: Some(Payload::WarpPaneToSessionPayload(
+                    WarpPaneToSessionPayload {
+                        pane_id: Some(pane_id.try_into()?),
+                        to_session,
+                        placement: ProtobufWarpPlacement::from(placement) as i32,
+                    },
+                )),
+            }),
+            PluginCommand::WarpPaneFromSession {
+                pane_id,
+                from_session,
+                placement,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::WarpPaneFromSession as i32,
+                payload: Some(Payload::WarpPaneFromSessionPayload(
+                    WarpPaneFromSessionPayload {
+                        pane_id: Some(pane_id.try_into()?),
+                        from_session,
+                        placement: ProtobufWarpPlacement::from(placement) as i32,
+                    },
+                )),
+            }),
+            PluginCommand::ListOrphanedPanes => Ok(ProtobufPluginCommand {
+                name: CommandName::ListOrphanedPanes as i32,
+                payload: None,
+            }),
+            PluginCommand::AdoptOrphanedPane { host_id, placement } => Ok(ProtobufPluginCommand {
+                name: CommandName::AdoptOrphanedPane as i32,
+                payload: Some(Payload::AdoptOrphanedPanePayload(
+                    AdoptOrphanedPanePayload {
+                        host_id,
+                        placement: ProtobufWarpPlacement::from(placement) as i32,
+                    },
+                )),
+            }),
+        }
+    }
+}
+
+impl From<WarpPaneResponse> for ProtobufWarpPaneResponse {
+    fn from(response: WarpPaneResponse) -> Self {
+        match response {
+            WarpPaneResponse::Ok(message) => ProtobufWarpPaneResponse {
+                result: Some(warp_pane_response::Result::Message(message)),
+            },
+            WarpPaneResponse::Err(error) => ProtobufWarpPaneResponse {
+                result: Some(warp_pane_response::Result::Error(error)),
+            },
+        }
+    }
+}
+
+impl TryFrom<ProtobufWarpPaneResponse> for WarpPaneResponse {
+    type Error = &'static str;
+    fn try_from(protobuf_response: ProtobufWarpPaneResponse) -> Result<Self, &'static str> {
+        match protobuf_response.result {
+            Some(warp_pane_response::Result::Message(message)) => Ok(WarpPaneResponse::Ok(message)),
+            Some(warp_pane_response::Result::Error(error)) => Ok(WarpPaneResponse::Err(error)),
+            None => Err("WarpPaneResponse without a result"),
+        }
+    }
+}
+
+impl From<OrphanedPane> for ProtobufOrphanedPane {
+    fn from(pane: OrphanedPane) -> Self {
+        // proto3 has no nested optional, so `Option<Option<i32>>` travels as a
+        // flag plus a code: not exited, exited on a signal, exited with a status.
+        let (exited, exit_code) = match pane.exit_status {
+            None => (false, None),
+            Some(code) => (true, code),
+        };
+        ProtobufOrphanedPane {
+            host_id: pane.host_id,
+            session_name: pane.session_name,
+            command: pane.command,
+            cwd: pane.cwd.map(|cwd| cwd.display().to_string()),
+            child_pid: pane.child_pid,
+            started_at_unix: pane.started_at_unix,
+            exited,
+            exit_code,
+            buffered_bytes: pane.buffered_bytes,
+        }
+    }
+}
+
+impl From<ProtobufOrphanedPane> for OrphanedPane {
+    fn from(pane: ProtobufOrphanedPane) -> Self {
+        OrphanedPane {
+            host_id: pane.host_id,
+            session_name: pane.session_name,
+            command: pane.command,
+            cwd: pane.cwd.map(PathBuf::from),
+            child_pid: pane.child_pid,
+            started_at_unix: pane.started_at_unix,
+            exit_status: if pane.exited {
+                Some(pane.exit_code)
+            } else {
+                None
+            },
+            buffered_bytes: pane.buffered_bytes,
+        }
+    }
+}
+
+impl From<ListOrphanedPanesResponse> for ProtobufListOrphanedPanesResponse {
+    fn from(response: ListOrphanedPanesResponse) -> Self {
+        match response {
+            ListOrphanedPanesResponse::Ok(panes) => ProtobufListOrphanedPanesResponse {
+                result: Some(list_orphaned_panes_response::Result::Panes(
+                    ProtobufOrphanedPaneList {
+                        panes: panes.into_iter().map(Into::into).collect(),
+                    },
+                )),
+            },
+            ListOrphanedPanesResponse::Err(error) => ProtobufListOrphanedPanesResponse {
+                result: Some(list_orphaned_panes_response::Result::Error(error)),
+            },
+        }
+    }
+}
+
+impl TryFrom<ProtobufListOrphanedPanesResponse> for ListOrphanedPanesResponse {
+    type Error = &'static str;
+    fn try_from(
+        protobuf_response: ProtobufListOrphanedPanesResponse,
+    ) -> Result<Self, &'static str> {
+        match protobuf_response.result {
+            Some(list_orphaned_panes_response::Result::Panes(list)) => Ok(
+                ListOrphanedPanesResponse::Ok(list.panes.into_iter().map(Into::into).collect()),
+            ),
+            Some(list_orphaned_panes_response::Result::Error(error)) => {
+                Ok(ListOrphanedPanesResponse::Err(error))
+            },
+            None => Err("ListOrphanedPanesResponse without a result"),
         }
     }
 }
@@ -5541,6 +5750,158 @@ mod tests {
         match decoded {
             PluginCommand::CancelWebRequest(stream_id) => assert_eq!(stream_id, "stream-1"),
             other => panic!("expected CancelWebRequest, got {:?}", other),
+        }
+    }
+
+    /// Every placement, every time: a mis-numbered proto enum is exactly the kind
+    /// of mistake a single-value test walks straight past.
+    const EVERY_PLACEMENT: [WarpPlacement; 3] = [
+        WarpPlacement::NewTab,
+        WarpPlacement::FocusedTab,
+        WarpPlacement::Floating,
+    ];
+
+    #[test]
+    fn warp_pane_to_session_protobuf_round_trip() {
+        for placement in EVERY_PLACEMENT {
+            let original = PluginCommand::WarpPaneToSession {
+                pane_id: PaneId::Terminal(7),
+                to_session: "other".to_owned(),
+                placement,
+            };
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::WarpPaneToSession {
+                    pane_id,
+                    to_session,
+                    placement: decoded_placement,
+                } => {
+                    assert_eq!(pane_id, PaneId::Terminal(7));
+                    assert_eq!(to_session, "other");
+                    assert_eq!(decoded_placement, placement);
+                },
+                other => panic!("expected WarpPaneToSession, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn warp_pane_from_session_protobuf_round_trip() {
+        for placement in EVERY_PLACEMENT {
+            let original = PluginCommand::WarpPaneFromSession {
+                pane_id: PaneId::Terminal(11),
+                from_session: "other".to_owned(),
+                placement,
+            };
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::WarpPaneFromSession {
+                    pane_id,
+                    from_session,
+                    placement: decoded_placement,
+                } => {
+                    assert_eq!(pane_id, PaneId::Terminal(11));
+                    assert_eq!(from_session, "other");
+                    assert_eq!(decoded_placement, placement);
+                },
+                other => panic!("expected WarpPaneFromSession, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn list_orphaned_panes_protobuf_round_trip() {
+        let original = PluginCommand::ListOrphanedPanes;
+        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        match decoded {
+            PluginCommand::ListOrphanedPanes => {},
+            other => panic!("expected ListOrphanedPanes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn adopt_orphaned_pane_protobuf_round_trip() {
+        for placement in EVERY_PLACEMENT {
+            let original = PluginCommand::AdoptOrphanedPane {
+                host_id: "abc123".to_owned(),
+                placement,
+            };
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::AdoptOrphanedPane {
+                    host_id,
+                    placement: decoded_placement,
+                } => {
+                    assert_eq!(host_id, "abc123");
+                    assert_eq!(decoded_placement, placement);
+                },
+                other => panic!("expected AdoptOrphanedPane, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn a_warp_placement_from_a_newer_api_is_rejected_rather_than_defaulted() {
+        // Defaulting an unknown placement to NewTab would put the pane somewhere
+        // the caller did not ask for, with no way for it to find out.
+        assert!(warp_placement_from_i32(99).is_err());
+    }
+
+    #[test]
+    fn warp_pane_response_protobuf_round_trip() {
+        for response in [
+            WarpPaneResponse::Ok("Moved pane to session 'other'".to_owned()),
+            WarpPaneResponse::Err("this is the session's only pane".to_owned()),
+        ] {
+            let protobuf: ProtobufWarpPaneResponse = response.clone().into();
+            assert_eq!(
+                WarpPaneResponse::try_from(protobuf).expect("decode"),
+                response
+            );
+        }
+    }
+
+    /// The three exit states an orphan can be in. Flattening `Option<Option<i32>>`
+    /// into a flag plus a code is the one place in this conversion where
+    /// information could silently go missing.
+    #[test]
+    fn an_orphaned_panes_exit_state_survives_the_wire() {
+        for exit_status in [None, Some(None), Some(Some(1))] {
+            let pane = OrphanedPane {
+                host_id: "abc123".to_owned(),
+                session_name: Some("gone".to_owned()),
+                command: "top".to_owned(),
+                cwd: Some(PathBuf::from("/tmp")),
+                child_pid: Some(4242),
+                started_at_unix: 1_700_000_000,
+                exit_status,
+                buffered_bytes: 4096,
+            };
+            let protobuf: ProtobufOrphanedPane = pane.clone().into();
+            assert_eq!(OrphanedPane::from(protobuf), pane);
+        }
+    }
+
+    #[test]
+    fn list_orphaned_panes_response_protobuf_round_trip() {
+        for response in [
+            ListOrphanedPanesResponse::Ok(vec![]),
+            ListOrphanedPanesResponse::Ok(vec![OrphanedPane {
+                host_id: "abc123".to_owned(),
+                command: "top".to_owned(),
+                ..Default::default()
+            }]),
+            ListOrphanedPanesResponse::Err("not supported here".to_owned()),
+        ] {
+            let protobuf: ProtobufListOrphanedPanesResponse = response.clone().into();
+            assert_eq!(
+                ListOrphanedPanesResponse::try_from(protobuf).expect("decode"),
+                response
+            );
         }
     }
 }

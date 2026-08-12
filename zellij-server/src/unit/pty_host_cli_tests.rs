@@ -1,13 +1,13 @@
-//! Tests for the pure formatting half of `zellij pty-host list`.
+//! Tests for the pure formatting half of `zellij pty-host list`, and for the
+//! directory scan underneath it.
 //!
-//! `collect`, `list`, `kill` and `kill_all` are deliberately **not** tested here.
-//! They all enumerate the real `$ZELLIJ_SOCK_DIR/pty`, which is shared with
-//! whatever zellij sessions the developer running the suite happens to have open:
-//! `kill_all()` would terminate their live detached panes and `collect()` would
-//! unlink sockets it decided were stale. `ZELLIJ_SOCK_DIR` is a `lazy_static`
-//! resolved once per process, so there is no way to point them somewhere safe
-//! from inside a test. Covering them needs a `collect_from(dir)` seam, which is a
-//! production change and out of scope.
+//! `list`, `kill` and `kill_all` are deliberately **not** tested here: they all
+//! enumerate the real `$ZELLIJ_SOCK_DIR/pty`, which is shared with whatever
+//! zellij sessions the developer running the suite happens to have open, and
+//! `kill_all()` would terminate their live detached panes. `ZELLIJ_SOCK_DIR` is
+//! a `lazy_static` resolved once per process, so there is no way to point them
+//! somewhere safe from inside a test. `collect_from` takes its directory as an
+//! argument precisely so the scan itself can be covered without that risk.
 
 use super::*;
 
@@ -250,4 +250,58 @@ fn only_an_orphan_with_buffered_output_mentions_buffering(tc: hegel::TestCase) {
         status.child_exit_status,
         status.buffered_bytes
     );
+}
+
+// ---------------------------------------------------------------------------
+// The directory scan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_directory_that_does_not_exist_is_not_an_error() {
+    // The normal state of a machine that has never run a detachable pane. There
+    // being nothing to list is not a failure to list.
+    let dir = tempfile::tempdir().expect("TEST");
+    let missing = dir.path().join("never-created");
+
+    let entries = collect_from(&missing).expect("a missing socket dir means no supervisors");
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn an_empty_directory_yields_no_supervisors() {
+    let dir = tempfile::tempdir().expect("TEST");
+
+    let entries = collect_from(dir.path()).expect("TEST");
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn a_socket_nobody_is_listening_on_is_garbage_collected() {
+    // The residue of a SIGKILL'd supervisor. Reporting it would be worse than
+    // useless: it names a pane that no longer exists.
+    let dir = tempfile::tempdir().expect("TEST");
+    let stale = dir.path().join("deadbeef.sock");
+    std::fs::write(&stale, b"").expect("TEST");
+
+    let entries = collect_from(dir.path()).expect("TEST");
+
+    assert!(entries.is_empty());
+    assert!(
+        !stale.exists(),
+        "a socket whose owner is gone should have been unlinked"
+    );
+}
+
+#[test]
+fn files_that_are_not_sockets_are_left_alone() {
+    // Supervisors keep a sibling `<host_id>.json` beside each socket, so the
+    // scan has to be able to walk past a file it did not put there.
+    let dir = tempfile::tempdir().expect("TEST");
+    let metadata = dir.path().join("deadbeef.json");
+    std::fs::write(&metadata, b"{}").expect("TEST");
+
+    let entries = collect_from(dir.path()).expect("TEST");
+
+    assert!(entries.is_empty());
+    assert!(metadata.exists(), "a non-socket file must not be unlinked");
 }

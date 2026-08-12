@@ -29,7 +29,7 @@ use zellij_utils::{
     data::{
         BareKey, ConnectToSession, Direction, Event, GlobalPanePlacement, InputMode, KeyModifier,
         ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy,
-        TabInfo, UnblockCondition, WarpPlacement, WarpedPane,
+        TabInfo, UnblockCondition,
     },
     envs,
     errors::prelude::*,
@@ -37,10 +37,7 @@ use zellij_utils::{
         actions::{Action, SearchDirection, SearchOption},
         command::TerminalAction,
     },
-    ipc::{
-        ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcSenderWithContext,
-        ServerToClientMsg,
-    },
+    ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, ServerToClientMsg},
 };
 
 use crate::ClientId;
@@ -1254,121 +1251,34 @@ pub(crate) fn route_action(
             placement,
         } => {
             drop(completion_tx);
-            let current_session_name = envs::get_session_name().unwrap_or_default();
-            if to_session == current_session_name {
-                send_error_to_client(
-                    cli_client_id,
-                    os_input.as_ref(),
-                    &format!("this pane is already in session '{to_session}'"),
-                );
-                return Ok((should_break, None));
-            }
-
-            // Reachability first, and the connection is kept: everything after
-            // this point has released a supervisor, and a failure then costs the
-            // user a recovery step rather than nothing.
-            let mut sender = match connect_to_session(&to_session) {
-                Ok(sender) => sender,
-                Err(e) => {
-                    send_error_to_client(cli_client_id, os_input.as_ref(), &format!("{e:#}"));
-                    return Ok((should_break, None));
+            match crate::warp::warp_pane_to_session(
+                &senders,
+                client_id,
+                pane_id.map(|pane_id| pane_id.into()),
+                &crate::warp::current_session_name(),
+                &to_session,
+                placement,
+                crate::warp::WARP_TIMEOUT,
+            ) {
+                Ok(message) => {
+                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
                 },
-            };
-
-            let (response_sender, response_receiver) = crossbeam::channel::unbounded();
-            senders
-                .send_to_screen(ScreenInstruction::WarpPane {
-                    pane_id: pane_id.map(|pane_id| pane_id.into()),
-                    to_session: to_session.clone(),
-                    placement,
-                    client_id,
-                    response_channel: response_sender,
-                })
-                .with_context(err_context)?;
-
-            let payload = match response_receiver.recv_timeout(WARP_TIMEOUT) {
-                Ok(Ok(payload)) => payload,
-                Ok(Err(reason)) => {
-                    send_error_to_client(cli_client_id, os_input.as_ref(), &reason);
-                    return Ok((should_break, None));
-                },
-                Err(_) => {
-                    send_error_to_client(
-                        cli_client_id,
-                        os_input.as_ref(),
-                        "timed out preparing the pane to be moved",
-                    );
-                    return Ok((should_break, None));
-                },
-            };
-
-            // From here the pane belongs to nobody until someone adopts it.
-            let host_id = payload.host_id.clone();
-            match send_pane_to_session(&mut sender, payload.clone(), placement) {
-                Ok(()) => {
-                    send_output_to_client(
-                        cli_client_id,
-                        os_input.as_ref(),
-                        vec![format!("Moved pane to session '{to_session}'")],
-                    );
-                },
-                Err(e) => {
-                    // Take it back. Adopting is the same operation from this
-                    // side, so the rollback is the feature's own primitive.
-                    let (rollback_sender, rollback_receiver) = crossbeam::channel::unbounded();
-                    let rollback = senders
-                        .send_to_pty(PtyInstruction::AdoptTerminal {
-                            payload,
-                            placement,
-                            client_id,
-                            response_channel: rollback_sender,
-                        })
-                        .map_err(|e| anyhow!("{e:#}"))
-                        .and_then(|_| {
-                            rollback_receiver
-                                .recv_timeout(WARP_TIMEOUT)
-                                .map_err(|_| anyhow!("timed out taking the pane back"))
-                        })
-                        .and_then(|result| result);
-                    let message = match rollback {
-                        Ok(()) => format!(
-                            "Could not move the pane to '{to_session}' ({e:#}); it is back in this session"
-                        ),
-                        Err(rollback_error) => format!(
-                            "Could not move the pane to '{to_session}' ({e:#}), and could not take \
-                             it back either ({rollback_error:#}). The process is still running — \
-                             recover it with `zellij pty-host adopt {host_id}`"
-                        ),
-                    };
-                    send_error_to_client(cli_client_id, os_input.as_ref(), &message);
-                },
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
             }
         },
         Action::AdoptPane { payload, placement } => {
             drop(completion_tx);
-            let (response_sender, response_receiver) = crossbeam::channel::unbounded();
-            senders
-                .send_to_pty(PtyInstruction::AdoptTerminal {
-                    payload,
-                    placement,
-                    client_id,
-                    response_channel: response_sender,
-                })
-                .with_context(err_context)?;
-            match response_receiver.recv_timeout(WARP_TIMEOUT) {
-                Ok(Ok(())) => send_output_to_client(
-                    cli_client_id,
-                    os_input.as_ref(),
-                    vec!["Adopted pane".to_owned()],
-                ),
-                Ok(Err(e)) => {
-                    send_error_to_client(cli_client_id, os_input.as_ref(), &format!("{e:#}"))
+            match crate::warp::adopt_pane_here(
+                &senders,
+                client_id,
+                payload,
+                placement,
+                crate::warp::WARP_TIMEOUT,
+            ) {
+                Ok(message) => {
+                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
                 },
-                Err(_) => send_error_to_client(
-                    cli_client_id,
-                    os_input.as_ref(),
-                    "timed out adopting the pane",
-                ),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
             }
         },
         Action::SwitchSession {
@@ -3515,56 +3425,6 @@ fn format_current_tab_info_plain(tab_info: &TabInfo) -> Vec<String> {
         format!("id: {}", tab_info.tab_id),
         format!("position: {}", tab_info.position),
     ]
-}
-
-/// How long to wait on the far session before giving up on a warp.
-///
-/// Generous compared to the other CLI round trips in this file, because this one
-/// includes another server's pty thread attaching to a supervisor over a socket.
-const WARP_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Connect to another session the way `zellij action` does, and confirm someone
-/// is listening before anything is released.
-///
-/// Returns the live connection, so the warp itself can reuse it. Reconnecting
-/// afterwards would reopen exactly the window this is checking for.
-fn connect_to_session(session_name: &str) -> Result<IpcSenderWithContext<ClientToServerMsg>> {
-    use zellij_utils::consts::{ipc_connect, ZELLIJ_SOCK_DIR};
-
-    let path = ZELLIJ_SOCK_DIR.join(session_name);
-    let stream =
-        ipc_connect(&path).with_context(|| format!("session '{session_name}' is not running"))?;
-    Ok(IpcSenderWithContext::new(stream))
-}
-
-/// Hand a pane to another session and wait to hear that it landed.
-fn send_pane_to_session(
-    sender: &mut IpcSenderWithContext<ClientToServerMsg>,
-    payload: Box<WarpedPane>,
-    placement: WarpPlacement,
-) -> Result<()> {
-    sender
-        .send_client_msg(ClientToServerMsg::Action {
-            action: Action::AdoptPane { payload, placement },
-            terminal_id: None,
-            client_id: None,
-            is_cli_client: true,
-        })
-        .context("failed to send the pane to the other session")?;
-
-    // The far side answers through the same cli-client reply path `zellij action`
-    // uses, so a `Log` is success and a `LogError` is the reason it failed.
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
-    match receiver.recv_server_msg() {
-        Some((ServerToClientMsg::Log { .. }, _)) => Ok(()),
-        Some((ServerToClientMsg::LogError { lines }, _)) => Err(anyhow!("{}", lines.join(" "))),
-        Some((other, _)) => Err(anyhow!(
-            "unexpected reply from the other session: {other:?}"
-        )),
-        None => Err(anyhow!(
-            "the other session closed the connection without answering"
-        )),
-    }
 }
 
 fn send_error_to_client(
