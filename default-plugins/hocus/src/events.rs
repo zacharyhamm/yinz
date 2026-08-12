@@ -46,13 +46,31 @@ impl State {
     /// This client's scroll position: wrapped transcript lines hidden below the
     /// viewport, zero being pinned to the bottom.
     pub fn scroll_offset(&self) -> usize {
-        self.scroll.get(&self.client).copied().unwrap_or(0)
+        self.view.scroll.get(&self.client).copied().unwrap_or(0)
+    }
+
+    /// Record where this client's viewport actually ended up, which the render
+    /// is the only thing that knows: it is the one place the anchor and the
+    /// clamp are applied. Without it a client held to the anchor still reads as
+    /// pinned to the bottom, and the first PageDown would fall off it.
+    pub(crate) fn set_scroll_offset(&mut self, lines: usize) {
+        self.view.scroll.insert(self.client, lines);
+    }
+
+    /// The message whose first line this client's viewport is being held to, if
+    /// any. `None` once they have scrolled for themselves — the anchor exists to
+    /// save them a trip back up, not to take the scrollbar off them.
+    pub(crate) fn anchor(&self) -> Option<usize> {
+        (!self.view.released.contains(&self.client))
+            .then_some(self.view.anchor)
+            .flatten()
     }
 
     /// Pin *every* client back to the tail. The conversation changing is not
-    /// one client's business, so nobody is left reading a stale middle of it.
+    /// one client's business, so nobody is left reading a stale middle of it,
+    /// held to a reply that is no longer what is arriving.
     pub(crate) fn pin_to_bottom(&mut self) {
-        self.scroll.clear();
+        self.view.pin();
     }
 
     pub(crate) fn on_permissions(&mut self, status: PermissionStatus) -> bool {
@@ -373,6 +391,9 @@ impl State {
             finishing: false,
         });
         self.pin_to_bottom();
+        // After the pin, which clears it: everyone starts this reply following
+        // the tail, and is held at its first line once it outgrows the pane.
+        self.view.anchor = self.reply_at;
         self.arm_timer(FRAME_SECONDS);
     }
 

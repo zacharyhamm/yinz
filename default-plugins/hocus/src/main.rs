@@ -109,7 +109,7 @@ struct Chat {
     pub(crate) manual_head: bool,
     pub(crate) chat_id: Option<u64>,
     pub(crate) saved: (usize, usize),
-    pub(crate) scroll: BTreeMap<ClientId, usize>,
+    pub(crate) view: View,
     pub(crate) job_auto_confirm: bool,
 }
 
@@ -118,6 +118,46 @@ impl Chat {
     /// rather than let the archive have it back.
     pub(crate) fn is_live(&self) -> bool {
         self.stream.is_some() || !matches!(self.status, Status::Idle)
+    }
+}
+
+/// Where each client is looking at one conversation, and what holds them there.
+///
+/// Part of `Chat` rather than of `State` alone: a parked chat receiving a reply
+/// pins and anchors its own viewport, and doing that to whoever is reading the
+/// foreground would be someone else's chat moving their screen.
+#[derive(Default)]
+pub(crate) struct View {
+    /// Wrapped transcript lines hidden *below* the viewport, per client. Zero —
+    /// which is what a missing entry means — is pinned to the bottom, and is
+    /// what makes a growing reply follow itself.
+    ///
+    /// Keyed by client because one shared instance renders once per attached
+    /// client (see `State::client`), and one person reading back should not drag
+    /// everyone else with them. `pin` clears the map on any conversation change,
+    /// so a departed client leaves nothing behind.
+    scroll: BTreeMap<ClientId, usize>,
+    /// Clients that scrolled for themselves and so are no longer held by
+    /// `anchor`. Sticky until the next `pin`: re-arming when someone scrolls
+    /// back to the bottom would yank them up to the anchor again the instant
+    /// they read to the end of an arriving reply.
+    released: BTreeSet<ClientId>,
+    /// The message whose first line must stay on the top row — the reply being
+    /// streamed — so a long answer cannot scroll its own opening off the pane.
+    ///
+    /// A message index rather than a line count, because it has to survive the
+    /// transcript being re-wrapped at a new width and the viewport changing
+    /// height; both move line numbers, neither moves messages.
+    anchor: Option<usize>,
+}
+
+impl View {
+    /// Put every client back on the tail, and stop holding anyone to a reply.
+    /// The conversation changing is not one client's business.
+    fn pin(&mut self) {
+        self.scroll.clear();
+        self.released.clear();
+        self.anchor = None;
     }
 }
 
@@ -178,15 +218,8 @@ pub struct State {
     /// property of how we ran it, not of what was asked for.
     manual_head: bool,
     stream_seq: u64,
-    /// Wrapped transcript lines hidden *below* the viewport, per client. Zero —
-    /// which is what a missing entry means — is pinned to the bottom, and is
-    /// what makes a growing reply follow itself.
-    ///
-    /// Keyed by client because one shared instance renders once per attached
-    /// client (see `client`), and one person reading back should not drag
-    /// everyone else with them. `pin_to_bottom` clears the map on any
-    /// conversation change, so a departed client leaves nothing behind.
-    scroll: BTreeMap<ClientId, usize>,
+    /// Where each client is looking at the foreground conversation. See `View`.
+    view: View,
     /// The client whose event we are handling, or whom we are rendering for.
     ///
     /// Hocus runs as a session-*shared* plugin: one wasm instance serves every
@@ -198,10 +231,10 @@ pub struct State {
     /// One number for every client: the host renders a shared plugin at a
     /// single size, so each client's render pass gets the same `rows`.
     pub transcript_rows: usize,
-    /// Memoised `ui::transcript_lines`, so a keystroke — which changes nothing
-    /// in the transcript — re-wraps nothing. See `ui::TranscriptKey` for why
-    /// the key is sufficient.
-    pub transcript_cache: Option<(ui::TranscriptKey, Vec<ui::VLine>)>,
+    /// Memoised `ui::transcript`, so a keystroke — which changes nothing in the
+    /// transcript — re-wraps nothing. See `ui::TranscriptKey` for why the key is
+    /// sufficient.
+    pub transcript_cache: Option<(ui::TranscriptKey, ui::Transcript)>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
@@ -300,7 +333,7 @@ impl Default for State {
             owes_reply: false,
             manual_head: false,
             stream_seq: 0,
-            scroll: BTreeMap::new(),
+            view: View::default(),
             // Overwritten by the host on the first event or render; nothing
             // reads it before then.
             client: 0,
@@ -410,8 +443,8 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, rows: usize, cols: usize) {
         // Called once per attached client, each pass with a different client
-        // set here. Only `scroll` differs between them; everything else on
-        // screen is the one conversation everyone shares.
+        // set here. Only `view` differs between them; everything else on screen
+        // is the one conversation everyone shares.
         self.client = get_plugin_ids().client_id;
         ui::render(self, rows, cols);
     }
@@ -2196,6 +2229,85 @@ mod tests {
         assert_eq!(state.scroll_offset(), 0);
         state.client = 2;
         assert_eq!(state.scroll_offset(), 0);
+    }
+
+    /// The anchor is what stops an arriving reply scrolling its own first line
+    /// off the top, and scrolling by hand is how you say you don't want it.
+    #[test]
+    fn scrolling_releases_only_the_client_that_scrolled() {
+        let mut state = State::default();
+        state.view.anchor = Some(3);
+
+        state.client = 1;
+        state.scroll_up(4);
+
+        assert_eq!(state.anchor(), None, "the client that scrolled");
+        state.client = 2;
+        assert_eq!(state.anchor(), Some(3), "the client that did not");
+    }
+
+    /// Whatever just changed the conversation is not the reply anyone was being
+    /// held to, so the hold and the handover both go.
+    #[test]
+    fn pinning_to_the_bottom_drops_the_anchor_and_re_arms_everyone() {
+        let mut state = State::default();
+        state.view.anchor = Some(3);
+        state.scroll_up(4);
+
+        state.pin_to_bottom();
+
+        assert_eq!(state.scroll_offset(), 0);
+        assert_eq!(state.view.anchor, None);
+        assert!(state.view.released.is_empty());
+    }
+
+    /// `pop_empty_placeholder` is the one place message indices move. An anchor
+    /// left behind would hold whatever slid into the removed message's place.
+    #[test]
+    fn dropping_the_placeholder_drops_the_anchor_with_it() {
+        let mut state = State::default();
+        state.messages = vec![Message::user("hi"), Message::assistant("")];
+        state.reply_at = Some(1);
+        state.view.anchor = Some(1);
+
+        state.pop_empty_placeholder();
+
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.view.anchor, None);
+    }
+
+    /// Nothing is removed when the reply did arrive, so the indices — and the
+    /// anchor — still hold. Cancelling one part way leaves its opening on screen.
+    #[test]
+    fn a_reply_cut_short_keeps_its_anchor() {
+        let mut state = State::default();
+        state.messages = vec![Message::user("hi"), Message::assistant("half a th")];
+        state.reply_at = Some(1);
+        state.view.anchor = Some(1);
+
+        state.pop_empty_placeholder();
+
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.view.anchor, Some(1));
+    }
+
+    /// A parked chat pins and anchors as its own reply arrives. Those belong to
+    /// it, or someone else's tool result would move the screen you are reading.
+    #[test]
+    fn parking_a_chat_takes_its_viewport_with_it() {
+        let mut state = State::default();
+        state.view.anchor = Some(3);
+        state.client = 1;
+        state.scroll_up(4);
+
+        let parked = state.take_chat();
+        assert_eq!(state.anchor(), None, "the empty chat left behind");
+        assert_eq!(state.scroll_offset(), 0);
+
+        state.put_chat(parked);
+        assert_eq!(state.view.anchor, Some(3));
+        assert_eq!(state.scroll_offset(), 4);
+        assert!(state.view.released.contains(&1));
     }
 
     // -----------------------------------------------------------------------
