@@ -352,6 +352,7 @@ impl State {
                 | "project_list"
                 | "project_assign"
                 | "project_open"
+                | "project_forget"
                 | "todo_list"
                 | "todo_search"
                 | "agent_register"
@@ -372,6 +373,7 @@ impl State {
             "project_list" => self.project_list(),
             "project_assign" => self.project_assign(&args),
             "project_open" => self.project_open(&args),
+            "project_forget" => self.project_forget(&args),
             "todo_list" => self.todo_list(&args),
             "todo_search" => self.todo_search(&args),
             "agent_register" => self.agent_register(&args),
@@ -494,6 +496,32 @@ impl State {
             Dispatch::Deferred => return "project opening cannot be deferred".to_owned(),
         };
         self.register_opened_project(&project.name, &result)
+    }
+
+    /// Drop a project from the registry, here and in the store.
+    ///
+    /// Applied to our copy first for the same reason `remember_project` is: the
+    /// answer is known without asking, and everything that named the project
+    /// has to stop naming it now rather than a round trip later, or `agent_list`
+    /// answers "unknown project" for a tab in between.
+    pub(crate) fn project_forget(&mut self, args: &tools::Args) -> String {
+        let Some(name) = args
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return "name is required".to_owned();
+        };
+        let Some(project) = self.projects.remove(name) else {
+            return format!("unknown project {name}; call project_list");
+        };
+        self.tab_projects.retain(|_, assigned| assigned != name);
+        // Rebuilds the tabs the poll worked out and the active project with
+        // them, which is what the store's next snapshot would do anyway.
+        self.refresh_tab_projects();
+        self.send_store_write("project_forget", serde_json::json!({ "name": name }));
+        projects::forgotten(&project)
     }
 
     pub(crate) fn register_opened_project(&mut self, name: &str, result: &str) -> String {
@@ -652,12 +680,20 @@ impl State {
             .collect()
     }
 
+    /// The project that owns an agent's folder, when Git claims that folder.
+    ///
+    /// A folder outside a repository belongs to no project even when a project
+    /// root contains it: an agent that is not in a checkout is not working on a
+    /// project. The daemon fills `repositories` from its Git probe, so an agent
+    /// has no project for the moment between its pane appearing and that probe
+    /// landing.
     fn project_for_cwd(&self, cwd: &str) -> Option<&projects::Project> {
-        projects::for_cwd(&self.projects, cwd).or_else(|| {
-            self.repositories
-                .get(cwd)
-                .and_then(|repository| projects::for_repository(&self.projects, repository))
-        })
+        let repository = self
+            .repositories
+            .get(cwd)
+            .filter(|repository| repository.is_checkout())?;
+        projects::for_cwd(&self.projects, cwd)
+            .or_else(|| projects::for_repository(&self.projects, repository))
     }
 
     /// Point everything that names a project that went away at the project that
