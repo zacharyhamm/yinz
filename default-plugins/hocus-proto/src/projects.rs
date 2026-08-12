@@ -27,6 +27,17 @@ pub struct Project {
     pub discovered: bool,
 }
 
+impl Project {
+    /// True when this project carries the Git identity of a checkout.
+    ///
+    /// A user project need not have one — the user can name any folder. A
+    /// discovered project always does, because discovery only runs on
+    /// checkouts.
+    pub fn is_checkout(&self) -> bool {
+        self.worktree_status.is_some() || self.common_dir.is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorktreeStatus {
@@ -47,6 +58,10 @@ pub struct Repository {
 }
 
 impl Repository {
+    /// A folder Git did not claim: probed, and not a checkout.
+    ///
+    /// Still worth recording, because it is what tells the daemon it has
+    /// already run `git rev-parse` here and need not run it again.
     pub fn folder(root: impl Into<String>) -> Self {
         Self {
             root: root.into(),
@@ -54,6 +69,11 @@ impl Repository {
             worktree_status: None,
             common_dir: None,
         }
+    }
+
+    /// True when Git claimed this folder. Only a checkout makes a project.
+    pub fn is_checkout(&self) -> bool {
+        self.worktree_status.is_some() || self.common_dir.is_some()
     }
 }
 
@@ -73,7 +93,11 @@ fn parse(json: &[u8]) -> Registry {
             project.remote = saved.remote;
             project.worktree_status = saved.worktree_status;
             project.common_dir = saved.common_dir;
-            Some(project)
+            // Older polls made a project out of any folder an agent sat in.
+            // Discovery is for checkouts now, so those go away here rather
+            // than living on as projects nothing would ever make again. A
+            // project the user named stays, whatever its folder is.
+            (!project.discovered || project.is_checkout()).then_some(project)
         })
         .map(|project| (project.name.clone(), project))
         .collect()
@@ -185,14 +209,19 @@ fn unique_name(projects: &Registry, base: &str) -> String {
         .unwrap_or_else(|| base.to_owned())
 }
 
-/// Make a project for each folder that no project owns yet.
+/// Make a project for each checkout that no project owns yet.
 ///
-/// The folders are sorted with the shortest first, so the result does not
-/// change with the order the panes came in. A folder that an existing project
-/// owns makes nothing.
+/// Only a Git checkout makes a project. A folder outside a repository is
+/// somewhere an agent happened to be started, not work worth remembering for
+/// good under a name taken from its last path component.
+///
+/// The checkouts are sorted with the shortest root first, so the result does
+/// not change with the order the panes came in. A folder that an existing
+/// project owns makes nothing.
 pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discovery {
     let mut roots: Vec<&Repository> = repositories
         .iter()
+        .filter(|repository| repository.is_checkout())
         .filter(|repository| !repository.root.trim().is_empty())
         .collect();
     roots.sort_by_key(|repository| {
@@ -311,6 +340,23 @@ pub fn adopt(projects: &mut Registry, mut project: Project) -> Option<String> {
     stale
 }
 
+/// What to say for a project that was just forgotten.
+///
+/// A discovered project is made again by the next poll that sees an agent in
+/// its checkout. Saying so is what keeps the caller from forgetting it a second
+/// time and expecting a different outcome.
+pub fn forgotten(project: &Project) -> String {
+    let name = &project.name;
+    if project.discovered {
+        format!(
+            "forgot {name}; a poll makes it again while an agent runs in {}",
+            project.root
+        )
+    } else {
+        format!("forgot {name}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +401,20 @@ mod tests {
         cwds.iter().map(|cwd| Repository::folder(*cwd)).collect()
     }
 
+    /// The same roots, as checkouts Git claimed. Each keeps its own common
+    /// directory, so unrelated roots are not joined by identity.
+    fn checkouts(roots: &[&str]) -> Vec<Repository> {
+        roots
+            .iter()
+            .map(|root| Repository {
+                root: (*root).to_owned(),
+                remote: None,
+                worktree_status: Some(WorktreeStatus::Primary),
+                common_dir: Some(format!("{root}/.git")),
+            })
+            .collect()
+    }
+
     fn registry(projects: &[Project]) -> Registry {
         projects
             .iter()
@@ -363,9 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn discovery_makes_a_project_from_an_unclaimed_folder() {
+    fn discovery_makes_a_project_from_an_unclaimed_checkout() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &folders(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &checkouts(&["/work/hocus/src"]));
 
         assert_eq!(discovery.added, vec!["src".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -374,9 +434,18 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_outside_a_repository_makes_no_project() {
+        let mut projects = Registry::new();
+        let discovery = discover(&mut projects, &folders(&["/work/notes"]));
+
+        assert!(!discovery.changed());
+        assert!(projects.is_empty());
+    }
+
+    #[test]
     fn an_agent_inside_a_known_project_starts_no_new_project() {
         let mut projects = registry(&[validate("hocus", "/work/hocus").unwrap()]);
-        let discovery = discover(&mut projects, &folders(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &checkouts(&["/work/hocus/src"]));
 
         assert!(!discovery.changed());
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
@@ -385,8 +454,8 @@ mod tests {
     #[test]
     fn discovery_keeps_a_name_stable_across_polls() {
         let mut projects = Registry::new();
-        discover(&mut projects, &folders(&["/work/hocus"]));
-        let again = discover(&mut projects, &folders(&["/work/hocus"]));
+        discover(&mut projects, &checkouts(&["/work/hocus"]));
+        let again = discover(&mut projects, &checkouts(&["/work/hocus"]));
 
         assert!(!again.changed());
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
@@ -395,7 +464,7 @@ mod tests {
     #[test]
     fn discovery_dedupes_a_name_that_is_taken() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &folders(&["/a/hocus", "/b/hocus"]));
+        let discovery = discover(&mut projects, &checkouts(&["/a/hocus", "/b/hocus"]));
 
         assert_eq!(
             discovery.added,
@@ -408,8 +477,8 @@ mod tests {
     #[test]
     fn a_shallower_root_absorbs_its_discovered_children() {
         let mut projects = Registry::new();
-        discover(&mut projects, &folders(&["/work/hocus/src"]));
-        let discovery = discover(&mut projects, &folders(&["/work/hocus"]));
+        discover(&mut projects, &checkouts(&["/work/hocus/src"]));
+        let discovery = discover(&mut projects, &checkouts(&["/work/hocus"]));
 
         assert_eq!(discovery.added, vec!["hocus".to_owned()]);
         assert_eq!(
@@ -422,7 +491,10 @@ mod tests {
     #[test]
     fn one_pass_puts_the_shallowest_folder_first() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &folders(&["/work/hocus/src", "/work/hocus"]));
+        let discovery = discover(
+            &mut projects,
+            &checkouts(&["/work/hocus/src", "/work/hocus"]),
+        );
 
         assert_eq!(discovery.added, vec!["hocus".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -432,7 +504,7 @@ mod tests {
     #[test]
     fn discovery_never_absorbs_a_user_project() {
         let mut projects = registry(&[validate("hocus", "/work/hocus").unwrap()]);
-        let discovery = discover(&mut projects, &folders(&["/work"]));
+        let discovery = discover(&mut projects, &checkouts(&["/work"]));
 
         assert_eq!(discovery.added, vec!["work".to_owned()]);
         assert!(discovery.replaced.is_empty());
@@ -465,7 +537,7 @@ mod tests {
     #[test]
     fn discovery_skips_the_filesystem_root() {
         let mut projects = Registry::new();
-        let discovery = discover(&mut projects, &folders(&["/", ""]));
+        let discovery = discover(&mut projects, &checkouts(&["/", ""]));
 
         assert!(!discovery.changed());
         assert!(projects.is_empty());
@@ -477,14 +549,48 @@ mod tests {
         assert!(!projects["hocus"].discovered);
     }
 
+    /// Discovery used to make a project out of any agent folder. Those saves
+    /// go away on load; the ones the user named stay, repository or not.
+    #[test]
+    fn a_saved_folder_project_from_discovery_is_dropped_on_load() {
+        let projects = parse(
+            br#"{
+                "notes":{"name":"notes","root":"/work/notes","discovered":true},
+                "hocus":{"name":"hocus","root":"/work/hocus","discovered":true,"common_dir":"/work/hocus/.git"},
+                "papers":{"name":"papers","root":"/work/papers"}
+            }"#,
+        );
+
+        assert_eq!(
+            projects.keys().collect::<Vec<_>>(),
+            vec!["hocus", "papers"],
+            "only the discovered folder project went away"
+        );
+    }
+
     #[test]
     fn the_discovered_flag_survives_a_save_and_a_load() {
         let mut projects = Registry::new();
-        discover(&mut projects, &folders(&["/work/hocus"]));
+        discover(&mut projects, &checkouts(&["/work/hocus"]));
         let saved = parse(json(&projects).unwrap().as_bytes());
 
         assert_eq!(saved, projects);
         assert!(saved["hocus"].discovered);
+    }
+
+    #[test]
+    fn forgetting_says_when_a_poll_makes_the_project_again() {
+        let mut projects = Registry::new();
+        discover(&mut projects, &checkouts(&["/work/hocus"]));
+        let found = forgotten(&projects["hocus"]);
+
+        assert!(found.starts_with("forgot hocus"), "got {found}");
+        assert!(found.contains("/work/hocus"), "got {found}");
+        assert_eq!(
+            forgotten(&validate("pocus", "/work/pocus").unwrap()),
+            "forgot pocus",
+            "a project the user named is not made again"
+        );
     }
 
     fn git(root: &str, remote: Option<&str>, status: WorktreeStatus) -> Repository {

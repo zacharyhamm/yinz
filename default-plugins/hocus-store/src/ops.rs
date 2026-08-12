@@ -59,8 +59,11 @@ pub fn mutate(
             let Some(name) = arg(args, "name") else {
                 return Err("name is required".to_owned());
             };
+            // The folder's todo list stays. It is keyed by root rather than by
+            // project, `todos::resolve` still answers for it, and forgetting a
+            // project is not a reason to throw away the user's own notes.
             match projects.remove(name) {
-                Some(_) => Ok(format!("forgot {name}")),
+                Some(project) => Ok(projects::forgotten(&project)),
                 None => Err(format!("unknown project {name}; call project_list")),
             }
         },
@@ -384,5 +387,72 @@ mod tests {
         .expect("forgot");
         assert!(projects.contains_key("work"));
         assert!(!projects.contains_key("other"));
+    }
+
+    /// Forgetting a project is not a way to lose notes: the list is keyed by
+    /// the folder, and the read tools still answer for it by root.
+    #[test]
+    fn forgetting_a_project_keeps_the_todo_list_of_its_folder() {
+        let (mut projects, mut todos_store) = store_with_project();
+        mutate(
+            &mut projects,
+            &mut todos_store,
+            "todo_add",
+            &json!({ "project": "work", "text": "ship it" }),
+        )
+        .expect("added");
+        mutate(
+            &mut projects,
+            &mut todos_store,
+            "project_forget",
+            &json!({ "name": "work" }),
+        )
+        .expect("forgot");
+
+        let list = query(
+            &projects,
+            &todos_store,
+            "todo_list",
+            &json!({ "project": "/tmp/work" }),
+        )
+        .expect("listed");
+        assert!(list.contains("ship it"), "got {list}");
+    }
+
+    /// A discovered project comes back on the next poll, so the answer says so
+    /// rather than reading as a deletion that did not take.
+    #[test]
+    fn forgetting_a_discovered_project_says_a_poll_makes_it_again() {
+        let (mut projects, mut todos_store) = store_with_project();
+        projects.insert(
+            "found".to_owned(),
+            projects::Project {
+                name: "found".to_owned(),
+                root: "/tmp/found".to_owned(),
+                remote: None,
+                worktree_status: Some(projects::WorktreeStatus::Primary),
+                common_dir: Some("/tmp/found/.git".to_owned()),
+                discovered: true,
+            },
+        );
+        let said = mutate(
+            &mut projects,
+            &mut todos_store,
+            "project_forget",
+            &json!({ "name": "found" }),
+        )
+        .expect("forgot");
+
+        assert!(said.contains("/tmp/found"), "got {said}");
+        assert_eq!(
+            mutate(
+                &mut projects,
+                &mut todos_store,
+                "project_forget",
+                &json!({ "name": "work" }),
+            ),
+            Ok("forgot work".to_owned()),
+            "a project the user named goes quietly"
+        );
     }
 }
