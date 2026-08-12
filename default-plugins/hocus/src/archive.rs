@@ -1,4 +1,4 @@
-use crate::message::{Message, Picker, PickerKind};
+use crate::message::{Message, Picker, PickerKind, PickerRow, RowKind};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -83,7 +83,7 @@ impl State {
             }
         }
         let live: Vec<u64> = self.live_chat_ids();
-        let (ids, titles) = history::list()
+        let (ids, titles): (Vec<u64>, Vec<PickerRow>) = history::list()
             .into_iter()
             .map(|entry| {
                 // A dot marks the ones still working, so a background reply is
@@ -92,7 +92,7 @@ impl State {
                     true => format!("● {}", entry.title),
                     false => entry.title,
                 };
-                (entry.id, title)
+                (entry.id, PickerRow::item(title))
             })
             .unzip();
         self.picker = Some(Picker {
@@ -151,27 +151,92 @@ impl State {
 
     /// Ctrl-r's answer: the agent picker. Opens over a streaming reply for the
     /// same reason `/history` does — it drives the session, not the conversation.
+    ///
+    /// The branches the list groups by are the only part of a snapshot that goes
+    /// stale on its own — a checkout in an agent's folder changes one and no host
+    /// event says so — so opening the list asks for a fresh probe. The cached
+    /// answer is drawn now and `refresh_agent_picker` redraws the list when the
+    /// new one lands.
     pub(crate) fn open_agent_picker(&mut self) -> bool {
         self.autosave();
         self.show_agents();
+        Self::request_branch_refresh();
         true
     }
 
     /// The agent list from the latest event-fed daemon snapshot.
     pub(crate) fn show_agents(&mut self) {
-        let (ids, entries) = agents::strip_rows(
+        let (entries, ids) = self.agent_rows();
+        // The first row is a project header, which cannot be selected.
+        let selected = entries.iter().position(PickerRow::selectable).unwrap_or(0);
+        self.picker = Some(Picker {
+            entries,
+            selected,
+            kind: PickerKind::Agents(ids),
+        });
+    }
+
+    /// Rebuild an open agent list from the snapshot that just landed, staying on
+    /// the agent it was on. Whether anything about it changed.
+    ///
+    /// Panes come and go and branches are re-read while the list is open, and
+    /// none of that would be visible otherwise. The selection follows the pane
+    /// rather than the row number, so a project appearing above it does not move
+    /// what `Enter` would focus.
+    pub(crate) fn refresh_agent_picker(&mut self) -> bool {
+        let was = match self
+            .picker
+            .as_ref()
+            .map(|picker| (&picker.kind, picker.selected))
+        {
+            Some((PickerKind::Agents(ids), selected)) => ids.get(selected).copied().flatten(),
+            _ => return false,
+        };
+        let (entries, ids) = self.agent_rows();
+        let selected = was
+            .and_then(|pane_id| ids.iter().position(|id| *id == Some(pane_id)))
+            // The pane it was on is gone: back to the top of the list.
+            .or_else(|| entries.iter().position(PickerRow::selectable))
+            .unwrap_or(0);
+        let picker = Picker {
+            entries,
+            selected,
+            kind: PickerKind::Agents(ids),
+        };
+        let changed = self.picker.as_ref() != Some(&picker);
+        self.picker = Some(picker);
+        changed
+    }
+
+    /// The agent strip as picker rows, and the pane each row names — `None` for
+    /// the group headers, which are drawn and skipped over.
+    fn agent_rows(&self) -> (Vec<PickerRow>, Vec<Option<u32>>) {
+        agents::strip_rows(
             &self.panes,
             &self.manual_kinds,
             &self.activity,
             &self.pane_projects(),
+            &self.pane_branches(),
         )
         .into_iter()
-        .unzip();
-        self.picker = Some(Picker {
-            entries,
-            selected: 0,
-            kind: PickerKind::Agents(ids),
-        });
+        .map(|row| match row {
+            agents::StripRow::Project(text) => (
+                PickerRow {
+                    text,
+                    kind: RowKind::Project,
+                },
+                None,
+            ),
+            agents::StripRow::Branch(text) => (
+                PickerRow {
+                    text,
+                    kind: RowKind::Branch,
+                },
+                None,
+            ),
+            agents::StripRow::Agent { pane_id, text } => (PickerRow::item(text), Some(pane_id)),
+        })
+        .unzip()
     }
 
     /// Bring an agent's pane into view, through the tool that already does it —
@@ -240,7 +305,7 @@ impl State {
             .unwrap_or_default();
         self.picker = Some(Picker {
             selected: models.iter().position(|id| *id == current).unwrap_or(0),
-            entries: models,
+            entries: models.into_iter().map(PickerRow::item).collect(),
             kind: PickerKind::Models,
         });
         true
@@ -267,13 +332,14 @@ impl State {
                         if let (Some(model), Ok(cfg)) =
                             (picker.entries.get(picker.selected), &mut self.cfg)
                         {
-                            let m = model.clone();
+                            let m = model.text.clone();
                             cfg.model = m.clone();
                             self.log_global("model_switch", serde_json::json!({"model": m}));
                         }
                     },
+                    // A header has no pane id, and movement never lands on one.
                     PickerKind::Agents(ids) => {
-                        if let Some(id) = ids.get(picker.selected).copied() {
+                        if let Some(id) = ids.get(picker.selected).copied().flatten() {
                             self.focus_agent(id);
                         }
                     },
@@ -283,11 +349,7 @@ impl State {
                 let Some(picker) = self.picker.as_mut() else {
                     return false;
                 };
-                let last = picker.entries.len().saturating_sub(1);
-                picker.selected = match key.bare_key {
-                    BareKey::Up => picker.selected.saturating_sub(1),
-                    _ => (picker.selected + 1).min(last),
-                };
+                picker.selected = step(&picker.entries, picker.selected, key.bare_key);
             },
             _ => return false,
         }
@@ -338,4 +400,18 @@ impl State {
             self.parked.push(outgoing);
         }
     }
+}
+
+/// The row one arrow key lands on: the next selectable one in that direction,
+/// stepping over the headers between.
+///
+/// Staying put when there is none is what makes the header the agent list opens
+/// with harmless — there is nothing above it to reach, so `Up` on the first
+/// agent is a no-op rather than a jump onto a line that means nothing.
+fn step(entries: &[PickerRow], selected: usize, direction: BareKey) -> usize {
+    let next = match direction {
+        BareKey::Up => (0..selected).rev().find(|at| entries[*at].selectable()),
+        _ => (selected.saturating_add(1)..entries.len()).find(|at| entries[*at].selectable()),
+    };
+    next.unwrap_or(selected)
 }

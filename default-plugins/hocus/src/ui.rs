@@ -9,7 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
 
 use crate::api::ConfigError;
-use crate::{Picker, PickerKind, Role, State, Status};
+use crate::{Picker, PickerKind, Role, RowKind, State, Status};
 
 /// Below this we can't lay out a title, a transcript row and an input row,
 /// so we say so instead of rendering nonsense.
@@ -17,8 +17,6 @@ const MIN_ROWS: usize = 6;
 const MIN_COLS: usize = 24;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
-/// Rows consumed by the chrome: title, blank separator.
-const CHROME_ROWS: usize = 2;
 
 const PROMPT: &str = "> ";
 
@@ -861,12 +859,37 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         return;
     }
 
-    // The archive replaces the transcript and the input box outright: it is a
-    // list you move around in, and nothing below it would accept a keystroke.
+    // A list you move around in, drawn over the top half of the pane. The
+    // conversation stays put underneath: the picker is modal, so the input box
+    // below it is visible but inert, and hiding the transcript to pick an agent
+    // would take away the very thing you are picking one about.
     if let Some(picker) = &state.picker {
+        // Must precede any print_*, same as `place_cursor` below: the host reads
+        // the cursor out of the render output stream in order.
         show_cursor(None);
         render_title(state, cols);
-        render_picker(picker, 1, rows - 2, cols);
+
+        // Always half the pane, whatever the list holds. A region that grew and
+        // shrank with the agent count would shift the conversation under it on
+        // every snapshot.
+        let picker_rows = (rows / 2).saturating_sub(1).max(1);
+        let ruled = picker_rows > 1;
+        render_picker(picker, 1, picker_rows - usize::from(ruled), cols);
+        if ruled {
+            print_text_with_coordinates(
+                Text::new("─".repeat(cols)).dim_range(..),
+                0,
+                picker_rows,
+                Some(cols),
+                None,
+            );
+        }
+
+        let body_y = 1 + picker_rows;
+        let layout = chat_layout(state, rows.saturating_sub(body_y + 1), cols);
+        state.transcript_rows = layout.transcript_rows;
+        render_chat(state, body_y, cols, &layout);
+
         print_text_with_coordinates(
             Text::new(help_line(state)).dim_range(..),
             0,
@@ -877,38 +900,65 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         return;
     }
 
-    let input_text = format!("{PROMPT}{}", state.input.get_text());
-    let all_input_lines = wrap_hard(&input_text, cols);
-    // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
-    // minimum-height pane a tall input would otherwise be laid out past the
-    // last row.
-    let room_for_input = rows.saturating_sub(CHROME_ROWS).max(1);
-    let input_rows = all_input_lines
-        .len()
-        .clamp(1, INPUT_MAX_ROWS.min(room_for_input));
-    // Show the tail so the box follows the cursor on a long multi-line message.
-    let input_lines = &all_input_lines[all_input_lines.len() - input_rows..];
-    let skipped_input_rows = all_input_lines.len() - input_rows;
-
-    let transcript_rows = rows.saturating_sub(CHROME_ROWS + input_rows);
-    state.transcript_rows = transcript_rows;
-
-    let transcript_y = 1;
-    let input_y = transcript_y + transcript_rows + 1;
+    let layout = chat_layout(state, rows.saturating_sub(1), cols);
+    state.transcript_rows = layout.transcript_rows;
 
     // Must precede any print_*: the host reads the cursor position out of the
     // render output stream in order.
-    place_cursor(state, cols, input_y, skipped_input_rows);
+    place_cursor(state, cols, layout.input_y(1), layout.skipped_input_rows);
 
     render_title(state, cols);
+    render_chat(state, 1, cols, &layout);
+}
 
+/// How the conversation lays out in the rows below the title: the transcript on
+/// top, a blank row, and the input box at the bottom.
+struct ChatLayout {
+    /// The tail of the wrapped input, one entry per row of the box.
+    input_lines: Vec<String>,
+    /// Wrapped input rows above that tail, which the box has scrolled past.
+    skipped_input_rows: usize,
+    transcript_rows: usize,
+}
+
+impl ChatLayout {
+    /// The first row of the input box, given the first row of the whole body.
+    fn input_y(&self, y: usize) -> usize {
+        y + self.transcript_rows + 1
+    }
+}
+
+fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
+    let input_text = format!("{PROMPT}{}", state.input.get_text());
+    let all_input_lines = wrap_hard(&input_text, cols);
+    // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
+    // minimum-height body a tall input would otherwise be laid out past the
+    // last row. The row held back is the blank one above the box.
+    let room_for_input = height.saturating_sub(1).max(1);
+    let input_rows = all_input_lines
+        .len()
+        .clamp(1, INPUT_MAX_ROWS.min(room_for_input));
+    ChatLayout {
+        // Show the tail so the box follows the cursor on a long multi-line
+        // message.
+        input_lines: all_input_lines[all_input_lines.len() - input_rows..].to_vec(),
+        skipped_input_rows: all_input_lines.len() - input_rows,
+        transcript_rows: height.saturating_sub(1 + input_rows),
+    }
+}
+
+/// The transcript and the input box, in the rows `layout` was measured for,
+/// starting at `y`. The caller places the cursor, because that has to happen
+/// before anything is printed.
+fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
     if let Err(error) = &state.cfg {
-        render_config_banner(error, transcript_y, transcript_rows, cols);
+        render_config_banner(error, y, layout.transcript_rows, cols);
     } else {
-        render_transcript(state, transcript_y, transcript_rows, cols);
+        render_transcript(state, y, layout.transcript_rows, cols);
     }
 
-    for (index, line) in input_lines.iter().enumerate() {
+    let input_y = layout.input_y(y);
+    for (index, line) in layout.input_lines.iter().enumerate() {
         print_text_with_coordinates(Text::new(line), 0, input_y + index, Some(cols), None);
     }
 }
@@ -1069,8 +1119,9 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     }
 }
 
-/// The archive (one chat per row, titled by its opening question) or the model
-/// list (one id per row).
+/// The archive (one chat per row, titled by its opening question), the model
+/// list (one id per row), or the agent list (agents under the project and
+/// branch headers that group them).
 fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize) {
     if picker.entries.is_empty() {
         // An empty model list is the fetch still being in flight — `finish_models`
@@ -1096,18 +1147,24 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize) {
         // Titles are already stripped of control characters by `history::title`,
         // and the host clips to `cols`, so neither is repeated here.
         let selected = start + index == picker.selected;
-        let text = Text::new(format!("{} {}", if selected { ">" } else { " " }, entry));
-        print_text_with_coordinates(
-            if selected {
-                text.color_range(2, ..)
-            } else {
-                text.dim_range(..)
+        let text = match entry.kind {
+            // A header takes no marker column: nothing can land on it, and the
+            // indentation it carries is what shows the nesting.
+            RowKind::Project => Text::new(&entry.text).color_range(0, ..),
+            RowKind::Branch => Text::new(&entry.text).color_range(3, ..),
+            RowKind::Item => {
+                let line = Text::new(format!(
+                    "{} {}",
+                    if selected { ">" } else { " " },
+                    entry.text
+                ));
+                match selected {
+                    true => line.color_range(2, ..),
+                    false => line.dim_range(..),
+                }
             },
-            0,
-            y + index,
-            Some(cols),
-            None,
-        );
+        };
+        print_text_with_coordinates(text, 0, y + index, Some(cols), None);
     }
 }
 
