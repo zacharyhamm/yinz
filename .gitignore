@@ -8,3 +8,4 @@ target/
 .hegel/
 mutants.out/
 mutants.out.*/
+.claude/worktrees
