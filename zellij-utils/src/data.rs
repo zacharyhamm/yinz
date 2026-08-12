@@ -2358,6 +2358,15 @@ pub struct PaneInfo {
     /// True if this global pane is hidden.
     #[serde(default)]
     pub is_hidden: bool,
+    /// The folder this pane's process is in right now, for a terminal pane.
+    ///
+    /// Carried on every manifest rather than only announced by `CwdChanged`: an
+    /// announcement is heard once, so a plugin that loaded after it — or missed
+    /// it — had no second way to find out and stayed wrong about the pane for as
+    /// long as it lived. `None` for a plugin pane, which is not a process in a
+    /// folder.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

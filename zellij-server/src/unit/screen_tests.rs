@@ -879,6 +879,51 @@ fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
         .expect("TEST");
 }
 
+/// `CwdChanged` announces a move once. The manifest says where every pane is
+/// every time, which is what puts right a plugin that was not listening yet.
+#[test]
+fn a_pane_manifest_carries_the_pane_cwd() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    screen
+        .terminal_cwds
+        .insert(1, std::path::PathBuf::from("/work/hocus"));
+
+    let manifest = screen.generate_and_report_pane_state().expect("TEST");
+
+    let pane = manifest
+        .panes
+        .values()
+        .flatten()
+        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .expect("the terminal pane is in the manifest");
+    assert_eq!(pane.cwd.as_deref(), Some("/work/hocus"));
+}
+
+/// A plugin is not a process in a folder, and a plugin id shares its number
+/// space with a terminal id — so an unguarded lookup would hand it one.
+#[test]
+fn a_plugin_pane_has_no_cwd() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    screen
+        .terminal_cwds
+        .insert(1, std::path::PathBuf::from("/work/hocus"));
+
+    let manifest = screen.generate_and_report_pane_state().expect("TEST");
+
+    assert!(
+        manifest
+            .panes
+            .values()
+            .flatten()
+            .chain(manifest.global_panes.iter())
+            .filter(|pane| pane.is_plugin)
+            .all(|pane| pane.cwd.is_none()),
+        "no plugin pane was given a folder"
+    );
+}
+
 #[test]
 fn global_pane_renders_once_for_clients_on_different_tabs() {
     use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};

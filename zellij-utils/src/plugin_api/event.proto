@@ -480,6 +480,7 @@ message PaneInfo {
     optional string default_bg = 25;
     optional action.GlobalPanePlacement global_placement = 26;
     bool is_hidden = 27;
+    optional string cwd = 28;
 }
 
 message IndexInPaneGroup {

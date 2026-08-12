@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Component, Path};
+use std::path::Path;
 
 const FILE: &str = "/cache/projects.json";
 
@@ -124,17 +124,14 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
     if name.is_empty() || name.chars().any(char::is_control) {
         return Err("project name must contain visible characters".to_owned());
     }
-    let root = Path::new(root);
-    if !root.is_absolute()
-        || root
-            .components()
-            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
-    {
-        return Err("project root must be an absolute path without . or ..".to_owned());
-    }
+    // Normalized, not merely checked: a root that kept a last separator would
+    // key the registry differently from the same folder as the Git probe
+    // reports it, and `discover` compares the two as strings.
+    let root = crate::paths::normalize(root)
+        .map_err(|_| "project root must be an absolute path without . or ..".to_owned())?;
     Ok(Project {
         name: name.to_owned(),
-        root: root.to_string_lossy().into_owned(),
+        root,
         remote: None,
         worktree_status: None,
         common_dir: None,
@@ -375,6 +372,21 @@ mod tests {
         assert!(validate("", "/work/hocus").is_err());
         assert!(validate("hocus", "work/hocus").is_err());
         assert!(validate("hocus", "/work/../hocus").is_err());
+    }
+
+    /// The probe reports a root without a last separator. A user who typed one
+    /// must still name the same folder, or the two are separate registry keys
+    /// and `discover` makes a second project for a checkout that already has one.
+    #[test]
+    fn validation_takes_a_last_separator_off_a_root() {
+        assert_eq!(
+            validate("hocus", "/work/hocus/").unwrap().root,
+            "/work/hocus"
+        );
+        assert_eq!(
+            validate("hocus", "/work//hocus").unwrap().root,
+            "/work/hocus"
+        );
     }
 
     #[test]

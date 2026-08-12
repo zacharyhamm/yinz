@@ -7,6 +7,7 @@
 
 pub mod agents;
 pub mod panes;
+pub mod paths;
 pub mod projects;
 pub mod todos;
 pub mod wire;

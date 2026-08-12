@@ -421,8 +421,10 @@ impl ZellijPlugin for State {
             // against the cached grant, so a longer list re-prompts every
             // existing user for a permission that was never enforced. A hocus
             // loaded from a `file:` path is not a builtin and so loses every
-            // pipe: agents fall back to polling inline, but the store has no
-            // fallback, so projects and todos never arrive and writes time out.
+            // pipe. There is no inline fallback for any of it any more: the
+            // daemon's snapshot is the only source of panes and folders, and
+            // the store's is the only source of projects and todos, so agents
+            // and projects both simply go missing and writes time out.
             // Not worth re-prompting everyone over — hot-reloading a builtin
             // keeps the `zellij:` location and resolves to the freshly built
             // wasm anyway (see `BUILTIN_PLUGIN_DEV_DIRS`).
@@ -451,10 +453,10 @@ impl ZellijPlugin for State {
 
     /// Snapshots pushed by `hocus-agentd`.
     ///
-    /// The daemon and the poll worker both end up in `apply_poll`, which is
-    /// idempotent — applying the same snapshot twice changes nothing, and a
-    /// transition is only reported against the map we last held. That is what
-    /// lets both paths run at once while the daemon proves itself.
+    /// Every snapshot ends up in `apply_poll`, which is idempotent — applying
+    /// the same one twice changes nothing, and a transition is only reported
+    /// against the map we last held. There is no second path into it any more;
+    /// the daemon is the only source of panes and folders.
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         match pipe_message.name.as_str() {
             wire::STORE_SNAPSHOT => return self.on_store_snapshot(&pipe_message),
@@ -2594,6 +2596,115 @@ mod tests {
         assert_eq!(
             state.pane_projects().get(&3).map(String::as_str),
             Some("hocus")
+        );
+    }
+
+    /// The daemon probes the folder an agent is in, so a `cd` into a
+    /// subdirectory has no answer of its own until a fresh probe lands. The
+    /// agent is in the checkout it was in a moment ago, and on screen the wait
+    /// read as it losing its project and getting it back.
+    #[test]
+    fn an_agent_in_a_subdirectory_keeps_the_project_of_its_checkout() {
+        let mut state = state_with_panes();
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        state.panes[0].cwd = Some("/work/hocus/src/deep".to_owned());
+        state
+            .repositories
+            .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "topic"));
+
+        assert_eq!(
+            state.pane_projects().get(&3).map(String::as_str),
+            Some("hocus")
+        );
+        assert_eq!(
+            state.pane_branches().get(&3).map(String::as_str),
+            Some("topic"),
+            "the branch header follows the same stand-in"
+        );
+    }
+
+    /// The nearest answer above wins, and only on a component boundary.
+    #[test]
+    fn a_sibling_folder_with_a_common_prefix_is_not_an_ancestor() {
+        let mut state = state_with_panes();
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        state.panes[0].cwd = Some("/work/hocus-old/src".to_owned());
+        state
+            .repositories
+            .insert("/work/hocus".to_owned(), checkout("/work/hocus"));
+
+        assert!(state.pane_projects().get(&3).is_none());
+    }
+
+    /// A project root that merely contains the folder is a proxy for "this is
+    /// the repository". When Git says otherwise, Git is right.
+    #[test]
+    fn git_identity_beats_a_project_root_that_merely_contains_the_folder() {
+        let mut state = state_with_panes();
+        // The outer folder the user named, which is not a checkout itself.
+        state.projects.insert(
+            "workspace".to_owned(),
+            projects::validate("workspace", "/work").unwrap(),
+        );
+        let mut inner = projects::validate("hocus", "/elsewhere/hocus").unwrap();
+        inner.remote = Some("git@example.com:hocus.git".to_owned());
+        inner.worktree_status = Some(projects::WorktreeStatus::Primary);
+        inner.common_dir = Some("/elsewhere/hocus/.git".to_owned());
+        state.projects.insert("hocus".to_owned(), inner);
+
+        state.panes[0].cwd = Some("/work/checkout".to_owned());
+        state.repositories.insert(
+            "/work/checkout".to_owned(),
+            projects::Repository {
+                root: "/work/checkout".to_owned(),
+                remote: Some("git@example.com:hocus.git".to_owned()),
+                worktree_status: Some(projects::WorktreeStatus::Linked),
+                common_dir: Some("/elsewhere/hocus/.git".to_owned()),
+                branch: Some("topic".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            state.pane_projects().get(&3).map(String::as_str),
+            Some("hocus"),
+            "the repository it is a worktree of, not the folder above it"
+        );
+    }
+
+    /// `for_repository` gives up when two projects share a remote. Falling
+    /// through to the containing root answers with the worktree the user named,
+    /// which beats answering with nothing.
+    #[test]
+    fn two_projects_on_one_remote_fall_back_to_the_containing_root() {
+        let mut state = state_with_panes();
+        for (name, root) in [("main", "/work/main"), ("topic", "/work/topic")] {
+            let mut project = projects::validate(name, root).unwrap();
+            project.remote = Some("git@example.com:hocus.git".to_owned());
+            project.worktree_status = Some(projects::WorktreeStatus::Primary);
+            project.common_dir = Some("/work/main/.git".to_owned());
+            state.projects.insert(name.to_owned(), project);
+        }
+        state.panes[0].cwd = Some("/work/topic/src".to_owned());
+        state.repositories.insert(
+            "/work/topic/src".to_owned(),
+            projects::Repository {
+                root: "/work/topic".to_owned(),
+                remote: Some("git@example.com:hocus.git".to_owned()),
+                worktree_status: Some(projects::WorktreeStatus::Linked),
+                common_dir: Some("/work/main/.git".to_owned()),
+                branch: Some("topic".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            state.pane_projects().get(&3).map(String::as_str),
+            Some("topic")
         );
     }
 

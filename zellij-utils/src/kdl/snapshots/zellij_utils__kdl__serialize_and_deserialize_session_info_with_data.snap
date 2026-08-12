@@ -63,6 +63,7 @@ panes {
         pane_content_columns 21
         cursor_coordinates_in_pane 0 0
         terminal_command "foo"
+        cwd "/work/hocus"
         is_selectable true
         tab_position 0
     }
@@ -103,4 +104,3 @@ tab_history {
 pane_history {
 }
 creation_time 300
-

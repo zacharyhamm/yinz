@@ -31,7 +31,7 @@ fn pane_running_command(pane_id: u32) -> Option<String> {
         .map(|args| args.join(" "))
 }
 
-fn pane_cwd(pane_id: u32) -> Option<String> {
+pub fn pane_cwd(pane_id: u32) -> Option<String> {
     get_pane_cwd(PaneId::Terminal(pane_id))
         .ok()
         .map(|path| path.to_string_lossy().into_owned())
@@ -76,15 +76,58 @@ pub fn gather() -> Option<Vec<agents::AgentPane>> {
     Some(panes)
 }
 
+/// What one folder's Git probe concluded.
+///
+/// Three outcomes rather than two, because "Git could not tell us" and "Git told
+/// us this is not a repository" must not be cached the same way. Recording a
+/// failure as a plain folder denies the pane a project for as long as the entry
+/// lives, and nothing would ever ask again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Git claimed the folder.
+    Checkout(Repository),
+    /// Git ran and said this is not a repository.
+    NotARepository,
+    /// The probe told us nothing — git is missing, or could not be spawned.
+    Failed,
+}
+
+/// Git's exit code for "not a git repository", which is also what it answers for
+/// a ref that does not resolve.
+const NOT_A_REPOSITORY: i32 = 128;
+
 /// Turn the two Git command results into the checkout identity discovery needs.
-pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
+///
+/// The exit code does not gate the parse. A checkout with no commits writes its
+/// full identity to stdout and *then* exits 128, because `--abbrev-ref HEAD`
+/// cannot resolve an unborn branch — so refusing to read stdout on failure
+/// records a real repository as an ordinary folder. The identity is the first
+/// three lines; the branch is a fourth line that a repository need not have.
+pub fn repository(exit_code: Option<i32>, metadata: &[u8], config: &[u8]) -> ProbeOutcome {
     let lines: Vec<&str> = std::str::from_utf8(metadata)
         .unwrap_or_default()
         .lines()
         .collect();
-    let [root, git_dir, common_dir, branch] = lines.as_slice() else {
-        return Repository::folder(cwd);
+    let [root, git_dir, common_dir] = lines.as_slice()[..lines.len().min(3)] else {
+        return if exit_code == Some(NOT_A_REPOSITORY) {
+            ProbeOutcome::NotARepository
+        } else {
+            ProbeOutcome::Failed
+        };
     };
+    // Git answers absolute paths here because of `--path-format=absolute`.
+    // Anything else is not the output we asked for, and guessing at it would put
+    // a nonsense root in the registry under a name taken from its last component.
+    if !std::path::Path::new(root).is_absolute() {
+        return ProbeOutcome::Failed;
+    }
+    // `--abbrev-ref HEAD` answers the literal word `HEAD` on a detached
+    // checkout, which names no branch and would read as one called HEAD. A
+    // checkout with no commits prints it too, and has no branch either.
+    let branch = lines
+        .get(3)
+        .filter(|branch| **branch != "HEAD" && !branch.is_empty())
+        .map(|branch| (*branch).to_owned());
     let entries: BTreeMap<&str, &str> = config
         .split(|byte| *byte == 0)
         .filter_map(|entry| std::str::from_utf8(entry).ok()?.split_once('\n'))
@@ -102,6 +145,7 @@ pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
         .get("remote.pushdefault")
         .and_then(url)
         .or_else(|| {
+            let branch = branch.as_deref()?;
             entries
                 .get(format!("branch.{branch}.remote").as_str())
                 .and_then(url)
@@ -113,32 +157,38 @@ pub fn repository(cwd: &str, metadata: &[u8], config: &[u8]) -> Repository {
                 .flatten()
         });
 
-    Repository {
-        root: (*root).to_owned(),
+    ProbeOutcome::Checkout(Repository {
+        root: root.to_owned(),
         remote: preferred.filter(|url| !url.is_empty()).map(str::to_owned),
         worktree_status: Some(if git_dir == common_dir {
             WorktreeStatus::Primary
         } else {
             WorktreeStatus::Linked
         }),
-        common_dir: Some((*common_dir).to_owned()),
-        // `--abbrev-ref HEAD` answers the literal word `HEAD` on a detached
-        // checkout, which names no branch and would read as one called HEAD.
-        branch: (*branch != "HEAD" && !branch.is_empty()).then(|| (*branch).to_owned()),
-    }
+        common_dir: Some(common_dir.to_owned()),
+        branch,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The checkout out of an outcome, or a panic naming what came back instead.
+    fn checkout(outcome: ProbeOutcome) -> Repository {
+        match outcome {
+            ProbeOutcome::Checkout(repository) => repository,
+            other => panic!("expected a checkout, got {other:?}"),
+        }
+    }
+
     #[test]
     fn repository_prefers_push_default_and_detects_a_linked_worktree() {
-        let repository = repository(
-            "/worktrees/topic/src",
+        let repository = checkout(repository(
+            Some(0),
             b"/worktrees/topic\n/repos/hocus/.git/worktrees/topic\n/repos/hocus/.git\ntopic\n",
             b"remote.origin.url\nhttps://example/origin\0remote.fork.url\nhttps://example/fork\0remote.pushdefault\nfork\0branch.topic.remote\norigin\0",
-        );
+        ));
 
         assert_eq!(repository.root, "/worktrees/topic");
         assert_eq!(repository.remote.as_deref(), Some("https://example/fork"));
@@ -150,13 +200,60 @@ mod tests {
     /// name of one.
     #[test]
     fn repository_reports_a_detached_head_as_no_branch() {
-        let repository = repository(
-            "/repos/hocus",
+        let repository = checkout(repository(
+            Some(0),
             b"/repos/hocus\n/repos/hocus/.git\n/repos/hocus/.git\nHEAD\n",
             b"remote.origin.url\nhttps://example/origin\0",
-        );
+        ));
 
         assert_eq!(repository.worktree_status, Some(WorktreeStatus::Primary));
         assert_eq!(repository.branch, None);
+    }
+
+    /// The case that silently denied a whole repository its project: `git
+    /// rev-parse` writes the identity and *then* fails on the unborn ref, so the
+    /// exit code alone says "not a repository" about a repository.
+    #[test]
+    fn a_checkout_with_no_commits_keeps_its_identity() {
+        let repository = checkout(repository(
+            Some(128),
+            b"/work/fresh\n/work/fresh/.git\n/work/fresh/.git\nHEAD\n",
+            b"",
+        ));
+
+        assert_eq!(repository.root, "/work/fresh");
+        assert_eq!(repository.worktree_status, Some(WorktreeStatus::Primary));
+        assert_eq!(repository.common_dir.as_deref(), Some("/work/fresh/.git"));
+        assert_eq!(repository.branch, None);
+        assert!(repository.is_checkout(), "a project can be made from it");
+    }
+
+    /// Git ran and answered. The folder is not a repository, and saying so is
+    /// what stops the daemon probing it again on every event.
+    #[test]
+    fn a_folder_outside_a_repository_is_conclusively_not_one() {
+        assert_eq!(
+            repository(Some(128), b"", b""),
+            ProbeOutcome::NotARepository
+        );
+    }
+
+    /// Nothing was learned. Recording this as a folder would be a guess that
+    /// outlives the reason for it.
+    #[test]
+    fn a_probe_that_could_not_run_is_not_recorded() {
+        assert_eq!(repository(None, b"", b""), ProbeOutcome::Failed);
+        assert_eq!(repository(Some(2), b"", b""), ProbeOutcome::Failed);
+    }
+
+    /// Output that is not what we asked for is not something to guess at: a
+    /// relative root would name a project after whatever its last part happened
+    /// to be.
+    #[test]
+    fn output_that_is_not_the_shape_we_asked_for_is_a_failure() {
+        assert_eq!(
+            repository(Some(0), b"not/absolute\n.git\n.git\nmain\n", b""),
+            ProbeOutcome::Failed
+        );
     }
 }

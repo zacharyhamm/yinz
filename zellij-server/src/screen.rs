@@ -527,6 +527,14 @@ pub enum ScreenInstruction {
     // status
     HoldPane(PaneId, Option<i32>, RunCommand),
     UpdatePaneName(Vec<u8>, ClientId, Option<NotificationEnd>),
+    /// Where a terminal pane's process is, as pty last saw it. `None` forgets
+    /// it, for a pane that has gone.
+    ///
+    /// Held here so every pane manifest carries it. `CwdChanged` announces the
+    /// move, but an announcement is only heard once: a plugin that was not
+    /// loaded yet, or that missed the event, had no second way to find out and
+    /// stayed wrong about the pane for as long as it lived.
+    UpdatePaneCwd(u32, Option<PathBuf>),
     UndoRenamePane(ClientId, Option<NotificationEnd>),
     NewTab(
         Option<PathBuf>,
@@ -1142,6 +1150,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::ClosePane(..) => ScreenContext::ClosePane,
             ScreenInstruction::HoldPane(..) => ScreenContext::HoldPane,
             ScreenInstruction::UpdatePaneName(..) => ScreenContext::UpdatePaneName,
+            ScreenInstruction::UpdatePaneCwd(..) => ScreenContext::UpdatePaneCwd,
             ScreenInstruction::UndoRenamePane(..) => ScreenContext::UndoRenamePane,
             ScreenInstruction::NewTab(..) => ScreenContext::NewTab,
             ScreenInstruction::ApplyLayout(..) => ScreenContext::ApplyLayout,
@@ -1589,6 +1598,10 @@ pub(crate) struct Screen {
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
     tabs: BTreeMap<usize, Tab>,
+    /// Where each terminal pane's process is, as pty last reported it. Stamped
+    /// onto every pane manifest so a plugin that missed the announcement — or
+    /// loaded after it — is put right by the next update rather than never.
+    terminal_cwds: HashMap<u32, PathBuf>,
     pub(crate) global_panes: GlobalPaneManager,
     last_single_pane_tab_names: HashMap<usize, Option<String>>,
     pixel_dimensions: PixelDimensions,
@@ -1827,6 +1840,7 @@ impl Screen {
             unowned_strip_fill: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
+            terminal_cwds: HashMap::new(),
             global_panes,
             last_single_pane_tab_names: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
@@ -5966,6 +5980,20 @@ impl Screen {
                 pane_info
             })
             .collect();
+        // One place, after both halves of the manifest are built. A plugin pane
+        // is not a process in a folder, so it is left without one.
+        for pane_info in pane_manifest
+            .panes
+            .values_mut()
+            .flatten()
+            .chain(pane_manifest.global_panes.iter_mut())
+            .filter(|pane_info| !pane_info.is_plugin)
+        {
+            pane_info.cwd = self
+                .terminal_cwds
+                .get(&pane_info.id)
+                .map(|cwd| cwd.to_string_lossy().into_owned());
+        }
         let mut plugin_updates = vec![];
         let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
         for client_id in client_ids {
@@ -11406,6 +11434,18 @@ pub(crate) fn screen_thread_main(
                     |tab: &mut Tab, client_id: ClientId| tab.update_active_pane_name(c, client_id), ?
                 );
                 screen.render(None)?;
+                screen.log_and_report_session_state()?;
+            },
+            ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {
+                // Only pty says a pane moved, and it only says so on a change,
+                // so there is nothing to compare against here. Pruning cannot be
+                // done from the manifest instead: pty reports the folder a pane
+                // starts in *before* the layout that puts the pane in a tab, so
+                // an unknown id is as likely to be arriving as departing.
+                match cwd {
+                    Some(cwd) => screen.terminal_cwds.insert(terminal_id, cwd),
+                    None => screen.terminal_cwds.remove(&terminal_id),
+                };
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UndoRenamePane(

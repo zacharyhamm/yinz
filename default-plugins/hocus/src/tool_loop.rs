@@ -2,6 +2,7 @@ use crate::message::{Job, Message, Status};
 use crate::worker::read_pane_text;
 use crate::*;
 use std::collections::BTreeMap;
+use std::path::Path;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -678,10 +679,31 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| {
-                let repository = self.repositories.get(pane.cwd.as_deref()?)?;
+                let repository = self.repository_for_cwd(pane.cwd.as_deref()?)?;
                 Some((pane.pane_id, repository.branch.clone()?))
             })
             .collect()
+    }
+
+    /// What Git said about an agent's folder, or about the nearest folder above
+    /// it that we have an answer for.
+    ///
+    /// The daemon probes each folder an agent is in, so an agent that `cd`s into
+    /// a subdirectory of its checkout has no answer of its own until a fresh
+    /// probe lands. It is in the same checkout it was in a moment ago, and on
+    /// screen the wait reads as the agent losing its project and getting it back.
+    /// The exact answer replaces this stand-in as soon as it arrives.
+    fn repository_for_cwd(&self, cwd: &str) -> Option<&projects::Repository> {
+        if let Some(repository) = self.repositories.get(cwd) {
+            return Some(repository);
+        }
+        self.repositories
+            .iter()
+            // Component-wise, the same rule `projects::contains` puts on a
+            // project root, so `/work/hocus-old` is not below `/work/hocus`.
+            .filter(|(probed, _)| Path::new(cwd).starts_with(probed))
+            .max_by_key(|(probed, _)| Path::new(probed).components().count())
+            .map(|(_, repository)| repository)
     }
 
     /// The project that owns an agent's folder, when Git claims that folder.
@@ -691,13 +713,20 @@ impl State {
     /// project. The daemon fills `repositories` from its Git probe, so an agent
     /// has no project for the moment between its pane appearing and that probe
     /// landing.
+    ///
+    /// Git identity is asked first and the folder second. What a project *is* is
+    /// a repository; containment is a proxy for that, and it misfires for a
+    /// checkout that happens to sit under an unrelated project's root. The
+    /// containment answer is still worth having second — `same_repository` only
+    /// matches when both sides carry Git metadata, so a project the user named
+    /// on a plain folder is found by nothing else, and two projects sharing a
+    /// remote fall through to the folder rather than to nothing at all.
     fn project_for_cwd(&self, cwd: &str) -> Option<&projects::Project> {
         let repository = self
-            .repositories
-            .get(cwd)
+            .repository_for_cwd(cwd)
             .filter(|repository| repository.is_checkout())?;
-        projects::for_cwd(&self.projects, cwd)
-            .or_else(|| projects::for_repository(&self.projects, repository))
+        projects::for_repository(&self.projects, repository)
+            .or_else(|| projects::for_cwd(&self.projects, cwd))
     }
 
     /// Point everything that names a project that went away at the project that

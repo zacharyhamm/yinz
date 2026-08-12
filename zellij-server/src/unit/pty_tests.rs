@@ -160,6 +160,35 @@ fn make_pty_with_plugin_receiver(
     (pty, plugin_rx)
 }
 
+fn make_pty_with_screen_receiver(
+    mock: MockOsApi,
+) -> (
+    Pty,
+    channels::Receiver<(PluginInstruction, ErrorContext)>,
+    channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) {
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    let (screen_tx, screen_rx) = channels::unbounded();
+    let mut bus: Bus<PtyInstruction> = Bus::empty().should_silently_fail();
+    bus.os_input = Some(Box::new(mock));
+    bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+    let pty = Pty::new(bus, false, None, None);
+    (pty, plugin_rx, screen_rx)
+}
+
+fn collect_pane_cwd_instructions(
+    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) -> Vec<(u32, Option<PathBuf>)> {
+    let mut updates = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) = instruction {
+            updates.push((terminal_id, cwd));
+        }
+    }
+    updates
+}
+
 fn set_active_terminal(pty: &mut Pty, terminal_id: u32, child_pid: u32) {
     let flag = Arc::new(AtomicBool::new(true));
     pty.id_to_child_pid.insert(terminal_id, child_pid);
@@ -411,6 +440,105 @@ fn no_cwd_event_when_unchanged() {
 
     let events = collect_cwd_changed_events(&rx);
     assert!(events.is_empty(), "no event expected when cwd unchanged");
+}
+
+// --- initial CWD capture ---
+
+/// The regression. The initial folder used to be recorded silently, and the
+/// ticker above only reports a folder that *differs* from the recorded one — so
+/// a pane whose process never left the folder it started in told nobody where it
+/// was, ever.
+#[test]
+fn a_pane_that_never_leaves_its_launch_folder_still_reports_it() {
+    let mock = MockOsApi::new();
+    let child_pid = 100;
+    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
+
+    pty.capture_initial_cwd(1, child_pid, None);
+
+    let events = collect_cwd_changed_events(&rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, PaneId::Terminal(1));
+    assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
+}
+
+/// Why it was a race rather than a certainty: with the child not yet forked far
+/// enough to be asked, nothing was recorded and the ticker reported it after
+/// all. The caller has already resolved the folder it asked for, so use it.
+#[test]
+fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
+    let (mut pty, rx) = make_pty_with_plugin_receiver(MockOsApi::new());
+
+    pty.capture_initial_cwd(1, 100, Some(PathBuf::from("/work/hocus")));
+
+    let events = collect_cwd_changed_events(&rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
+    assert_eq!(
+        pty.terminal_cwds.get(&1),
+        Some(&PathBuf::from("/work/hocus"))
+    );
+}
+
+#[test]
+fn an_initial_cwd_with_nothing_to_go_on_reports_nothing() {
+    let (mut pty, rx) = make_pty_with_plugin_receiver(MockOsApi::new());
+
+    pty.capture_initial_cwd(1, 100, None);
+
+    assert!(collect_cwd_changed_events(&rx).is_empty());
+    assert!(pty.terminal_cwds.is_empty());
+}
+
+/// Both writers go through one place, so the ticker must not say again what the
+/// capture already said.
+#[test]
+fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
+    let mock = MockOsApi::new();
+    let child_pid = 100;
+    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
+    set_active_terminal(&mut pty, 1, child_pid);
+
+    pty.capture_initial_cwd(1, child_pid, None);
+    pty.update_and_report_cwds();
+
+    assert_eq!(collect_cwd_changed_events(&rx).len(), 1);
+}
+
+/// Screen holds the folder too, so that every pane manifest can carry it and a
+/// plugin that missed the event above is put right by the next update.
+#[test]
+fn an_initial_cwd_reaches_screen() {
+    let mock = MockOsApi::new();
+    let child_pid = 100;
+    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.capture_initial_cwd(1, child_pid, None);
+
+    assert_eq!(
+        collect_pane_cwd_instructions(&screen_rx),
+        vec![(1, Some(PathBuf::from("/work/hocus")))]
+    );
+}
+
+/// A terminal id is handed out again after its pane closes, so a folder left
+/// behind on screen is the wrong answer for whichever pane inherits the id.
+#[test]
+fn a_closed_pane_takes_its_folder_with_it() {
+    let mock = MockOsApi::new();
+    let child_pid = 100;
+    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.capture_initial_cwd(1, child_pid, None);
+    let _ = collect_pane_cwd_instructions(&screen_rx);
+
+    pty.forget_terminal_cwd(1);
+
+    assert_eq!(collect_pane_cwd_instructions(&screen_rx), vec![(1, None)]);
+    assert!(pty.terminal_cwds.is_empty());
 }
 
 // --- OSC7 CWD notification ---
