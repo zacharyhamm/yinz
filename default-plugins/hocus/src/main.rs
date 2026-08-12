@@ -26,7 +26,7 @@ use zellij_tile::prelude::*;
 
 use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator};
 use text_input::{InputAction, TextInput};
-use tools::{Dispatch, ToolCall};
+use tools::ToolCall;
 
 /// How many times in a row the model may call tools before the tools are taken
 /// away and it has to answer from what it has. Without this a model that keeps
@@ -367,8 +367,9 @@ impl ZellijPlugin for State {
         request_permission(&[
             PermissionType::WebAccess,
             PermissionType::ReadSessionEnvironmentVariables,
-            // Tools: query the session, mutate it, open panes, run commands,
-            // read pane output, and send pane input, in that order.
+            // Tools: query the session, mutate it, open panes, shell out to
+            // dobbs for the Slack tools, read pane output, and send pane input,
+            // in that order.
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::OpenTerminalsOrPlugins,
@@ -908,7 +909,7 @@ mod tests {
         state.status = Status::AwaitingCommand;
         state.pending = vec![ToolCall {
             id: "mine".into(),
-            name: "run_command".into(),
+            name: "slack_read".into(),
             arguments: "{}".into(),
         }]
         .into();
@@ -931,7 +932,7 @@ mod tests {
         state.status = Status::AwaitingCommand;
         state.pending = vec![ToolCall {
             id: "mine".into(),
-            name: "run_command".into(),
+            name: "slack_read".into(),
             arguments: "{}".into(),
         }]
         .into();
@@ -1003,38 +1004,49 @@ mod tests {
         assert!(results[0].content.contains("dobbs_path"));
     }
 
-    /// The hint must not swallow a real exit-2 from a command that ran, nor fire
-    /// for `run_command`, whose argv the model wrote itself.
+    /// The hint must not swallow a real exit-2 from a dobbs that ran.
     #[test]
     fn the_dobbs_hint_is_limited_to_a_failure_to_spawn_a_slack_tool() {
-        for (name, stderr) in [
-            ("slack_search", &b"grep: no matches"[..]),
-            ("run_command", b"No such file or directory (os error 2)"),
-        ] {
-            let mut state = ready_state();
-            state.status = Status::AwaitingCommand;
-            state.pending = vec![ToolCall {
-                id: "mine".into(),
-                name: name.into(),
-                arguments: "{}".into(),
-            }]
-            .into();
+        let mut state = ready_state();
+        state.status = Status::AwaitingCommand;
+        state.pending = vec![ToolCall {
+            id: "mine".into(),
+            name: "slack_search".into(),
+            arguments: "{}".into(),
+        }]
+        .into();
 
-            state.on_command_result(
-                Some(2),
-                b"",
-                stderr,
-                &BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]),
-            );
+        state.on_command_result(
+            Some(2),
+            b"",
+            b"grep: no matches",
+            &BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]),
+        );
 
-            let results = tool_results(&state);
-            assert_eq!(results.len(), 1);
-            assert!(
-                results[0].content.starts_with("exit code: 2"),
-                "{name} got the hint: {}",
-                results[0].content
-            );
-        }
+        let results = tool_results(&state);
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].content.starts_with("exit code: 2"),
+            "got the hint: {}",
+            results[0].content
+        );
+    }
+
+    /// …nor fire for a head that is not a Slack tool. No non-Slack tool can reach
+    /// `AwaitingCommand` any more, so the guard is exercised where it lives.
+    #[test]
+    fn the_dobbs_hint_does_not_fire_for_a_head_that_is_not_a_slack_tool() {
+        let mut state = ready_state();
+        state.pending = vec![ToolCall {
+            id: "mine".into(),
+            name: "list_session".into(),
+            arguments: "{}".into(),
+        }]
+        .into();
+
+        assert!(state
+            .slack_exec_hint(Some(2), b"No such file or directory (os error 2)")
+            .is_none());
     }
 
     /// A changed KDL block is the only way a running plugin's config can move:
@@ -1252,29 +1264,29 @@ mod tests {
         state.status = Status::AwaitingCommand;
         state.pending = vec![ToolCall {
             id: "a".into(),
-            name: "run_command".into(),
-            arguments: r#"{"command":["git","status"]}"#.into(),
+            name: "slack_backfill".into(),
+            arguments: "{}".into(),
         }]
         .into();
 
         let loader = state.loader().expect("a loader while awaiting a command");
-        assert!(loader.contains("running: git status"), "{loader}");
+        assert!(loader.contains("running: slack_backfill"), "{loader}");
     }
 
     /// Unparseable arguments must not lose the indicator entirely.
     #[test]
-    fn a_command_we_cannot_parse_falls_back_to_a_phrase() {
+    fn a_search_we_cannot_parse_falls_back_to_a_phrase() {
         let mut state = ready_state();
-        state.status = Status::AwaitingCommand;
+        state.status = Status::AwaitingSearch;
         state.pending = vec![ToolCall {
             id: "a".into(),
-            name: "run_command".into(),
+            name: "web_search".into(),
             arguments: "{not json".into(),
         }]
         .into();
 
         let loader = state.loader().expect("still a loader");
-        assert!(!loader.contains("running:"), "{loader}");
+        assert!(!loader.contains("searching:"), "{loader}");
     }
 
     /// With no job, store write, or animation, there is no timer to keep alive.
@@ -1630,8 +1642,8 @@ mod tests {
         let mut state = ready_state();
         state.pending.push_back(ToolCall {
             id: "manual-0".into(),
-            name: "run_command".into(),
-            arguments: r#"{"command":["sleep","1"]}"#.into(),
+            name: "slack_read".into(),
+            arguments: r##"{"channel":"#general"}"##.into(),
         });
         state.status = Status::AwaitingCommand;
 

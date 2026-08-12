@@ -1656,7 +1656,7 @@ mod tests {
     /// assistant's tool-call summary, so the loader needs its own line.
     #[test]
     fn a_tool_call_summary_is_not_the_loaders_home() {
-        let lines = transcript_lines(&[Message::assistant("run_command {}")], 40);
+        let lines = transcript_lines(&[Message::assistant("list_session {}")], 40);
         assert!(!ends_with_empty_reply(&lines));
     }
 }

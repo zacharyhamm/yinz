@@ -624,8 +624,8 @@ impl State {
         ))
     }
 
-    /// The deferred half of `run_command`. The context map round-tripped through
-    /// the host, so it names the call this answers.
+    /// The deferred half of the Slack tools. The context map round-tripped
+    /// through the host, so it names the call this answers.
     ///
     /// Each stream is capped at `MAX_TOOL_OUTPUT`: a tool result stays in the
     /// transcript, so it is re-sent and re-billed on every later turn of the

@@ -87,21 +87,8 @@ impl State {
             self.finish_head(result);
             return true;
         }
-        match tools::dispatch(call) {
-            Dispatch::Done(result) => {
-                self.finish_head(result);
-                true
-            },
-            // ponytail: no timeout — a command that never exits waits forever
-            // and only Esc recovers. Add set_timeout + Event::Timer here if
-            // hanging commands turn out to be common in practice.
-            Dispatch::Deferred => {
-                self.status = Status::AwaitingCommand;
-                self.pin_to_bottom();
-                self.arm_timer(FRAME_SECONDS);
-                false
-            },
-        }
+        self.finish_head(tools::dispatch(call));
+        true
     }
 
     /// Run a tool the user typed as `/name key=value …`.
@@ -220,12 +207,12 @@ impl State {
         }
     }
 
-    /// Ask the configured SearxNG. Deferred like `run_command`: the answer
+    /// Ask the configured SearxNG. Deferred like the Slack tools: the answer
     /// arrives as the `WebRequestResult` carrying this call's id.
     ///
     /// ponytail: a plain `web_request` has no stream id, so there is nothing to
     /// cancel — `Esc` stops waiting and the late reply is dropped because the
-    /// head no longer matches, exactly as for an aborted `run_command`. Move to
+    /// head no longer matches, exactly as for an aborted Slack call. Move to
     /// `web_request_stream` + `cancel_web_request` if hung searches turn out to
     /// matter.
     pub(crate) fn start_search(&mut self, call: &ToolCall) -> bool {
@@ -261,12 +248,16 @@ impl State {
         false
     }
 
-    /// Run one of the Slack tools by shelling out to dobbs. Deferred exactly
-    /// like `run_command` — the result comes back as `RunCommandResult` carrying
-    /// this call's id, so `on_command_result` needs no Slack-specific path.
+    /// Run one of the Slack tools by shelling out to dobbs. The result comes back
+    /// as `RunCommandResult` carrying this call's id, which is the only deferred
+    /// path left through `on_command_result`.
     ///
     /// dobbs owns the Slack credentials and reaches its daemon over TCP, which a
     /// wasm plugin cannot do; the CLI is the whole integration.
+    ///
+    /// ponytail: no timeout — a dobbs call that never exits waits forever and
+    /// only Esc recovers. Add set_timeout + Event::Timer here if hanging calls
+    /// turn out to be common in practice.
     pub(crate) fn start_slack(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
             Ok(args) => args,
@@ -491,10 +482,7 @@ impl State {
             })
             .to_string(),
         };
-        let result = match tools::dispatch(&call) {
-            Dispatch::Done(result) => result,
-            Dispatch::Deferred => return "project opening cannot be deferred".to_owned(),
-        };
+        let result = tools::dispatch(&call);
         self.register_opened_project(&project.name, &result)
     }
 
@@ -797,10 +785,7 @@ impl State {
     /// that already does it. Nothing here talks to the host directly.
     pub(crate) fn agent_act(&mut self, call: &ToolCall, args: &tools::Args) -> String {
         match self.agent_host_call(call, args) {
-            Ok(host) => match tools::dispatch(&host) {
-                Dispatch::Done(result) => result,
-                Dispatch::Deferred => "agent action cannot be deferred".to_owned(),
-            },
+            Ok(host) => tools::dispatch(&host),
             Err(error) => error,
         }
     }
@@ -830,10 +815,8 @@ impl State {
             })
             .to_string(),
         };
-        match tools::dispatch(&host) {
-            Dispatch::Done(result) => self.register_spawned(args.kind.as_deref(), &result),
-            Dispatch::Deferred => "agent action cannot be deferred".to_owned(),
-        }
+        let result = tools::dispatch(&host);
+        self.register_spawned(args.kind.as_deref(), &result)
     }
 
     pub(crate) fn agent_cwd(&self, args: &tools::Args) -> Result<Option<String>, String> {
@@ -1094,7 +1077,7 @@ impl State {
     /// Give up on the whole run. Every outstanding call still gets an answer, so
     /// the transcript stays valid if the conversation continues.
     ///
-    /// This is also the escape hatch for a `run_command` that never returns,
+    /// This is also the escape hatch for a dobbs call that never returns,
     /// which is why there is no timer.
     pub(crate) fn abort_tools(&mut self) -> bool {
         self.status = Status::Idle;
