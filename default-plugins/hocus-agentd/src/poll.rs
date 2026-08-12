@@ -37,6 +37,27 @@ fn pane_cwd(pane_id: u32) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// What a pane is showing. Only hashed for activity; trailing empty rows are not
+/// content and must not reset the idle counter when the pane is resized.
+pub fn read_pane_text(pane_id: u32) -> String {
+    match get_pane_scrollback(PaneId::Terminal(pane_id), false) {
+        Ok(contents) => {
+            let mut lines = contents.lines_above_viewport;
+            lines.extend(contents.viewport);
+            lines.extend(contents.lines_below_viewport);
+            while lines.last().is_some_and(|line| line.trim().is_empty()) {
+                lines.pop();
+            }
+            if lines.is_empty() {
+                "(pane is empty)".to_owned()
+            } else {
+                lines.join("\n")
+            }
+        },
+        Err(error) => format!("could not read pane: {error}"),
+    }
+}
+
 /// One startup snapshot for panes that existed before this plugin loaded.
 ///
 /// Later changes come from `PaneUpdate`, `CommandChanged`, and `CwdChanged`; this
