@@ -164,19 +164,16 @@ impl State {
         }
         let spinner = ui::spinner(self.tick);
 
-        // A running command names itself: "running: cargo build" beats a joke
-        // when what you actually want to know is what you are waiting on.
-        let head = self
-            .pending
-            .front()
-            .and_then(|call| tools::Args::parse(&call.arguments).ok());
+        // A Slack call names itself: "running: slack_backfill" beats a joke when
+        // what you actually want to know is what you are waiting on.
+        let head = self.pending.front();
         if matches!(self.status, Status::AwaitingCommand) {
-            let words = head.map(|args| args.command_words()).unwrap_or_default();
-            if !words.is_empty() {
-                return Some(format!("{spinner} running: {}", words.join(" ")));
+            if let Some(call) = head {
+                return Some(format!("{spinner} running: {}", call.name));
             }
         } else if matches!(self.status, Status::AwaitingSearch) {
-            if let Some(query) = head.and_then(|args| args.query) {
+            let args = head.and_then(|call| tools::Args::parse(&call.arguments).ok());
+            if let Some(query) = args.and_then(|args| args.query) {
                 return Some(format!("{spinner} searching: {query}"));
             }
         }

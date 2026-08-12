@@ -91,8 +91,5 @@ pub(crate) fn read_pane_text(pane_id: u32) -> String {
         })
         .to_string(),
     };
-    match tools::dispatch(&call) {
-        Dispatch::Done(text) => text,
-        Dispatch::Deferred => "pane read cannot be deferred".to_owned(),
-    }
+    tools::dispatch(&call)
 }
