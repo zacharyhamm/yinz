@@ -55,6 +55,13 @@ pub struct Repository {
     pub worktree_status: Option<WorktreeStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub common_dir: Option<String>,
+    /// The branch this checkout has out. Unlike the fields above it goes stale —
+    /// a checkout in the folder changes it — so whoever shows it is responsible
+    /// for asking for a fresh probe.
+    ///
+    /// `None` on a detached HEAD, which names no branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 impl Repository {
@@ -68,6 +75,7 @@ impl Repository {
             remote: None,
             worktree_status: None,
             common_dir: None,
+            branch: None,
         }
     }
 
@@ -411,6 +419,7 @@ mod tests {
                 remote: None,
                 worktree_status: Some(WorktreeStatus::Primary),
                 common_dir: Some(format!("{root}/.git")),
+                branch: None,
             })
             .collect()
     }
@@ -599,6 +608,7 @@ mod tests {
             remote: remote.map(str::to_owned),
             worktree_status: Some(status),
             common_dir: Some("/repos/hocus/.git".to_owned()),
+            branch: None,
         }
     }
 

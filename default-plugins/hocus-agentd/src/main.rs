@@ -127,6 +127,12 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_REFRESH {
+            // No reply of its own: each probe that finishes publishes, so the
+            // asker gets the answer the same way it gets everything else.
+            self.refresh_repositories();
+            return false;
+        }
         if pipe_message.name == wire::AGENT_SUBSCRIBE {
             // A CLI pipe has no plugin id to reply to; it can still refresh the
             // overrides and publish the cached event-fed snapshot.
@@ -198,6 +204,8 @@ impl State {
         }
     }
 
+    /// Probe every agent folder we have not probed yet, and forget the ones no
+    /// agent is in any more.
     fn resolve_repositories(&mut self) {
         let active = self.agent_cwds();
         self.repositories.retain(|cwd, _| active.contains(cwd));
@@ -205,6 +213,12 @@ impl State {
         self.start_git_probes(self.repository_cwds(false));
     }
 
+    /// Probe every agent folder again, whatever we already know about it.
+    ///
+    /// The identity a probe finds — root, remote, common directory — cannot
+    /// change under a folder, but the branch can, and no host event says when.
+    /// The cached answer stays in place until the new one lands, so nothing
+    /// blinks while this runs.
     fn refresh_repositories(&mut self) {
         self.start_git_probes(self.repository_cwds(true));
     }
@@ -213,6 +227,8 @@ impl State {
         self.agent_cwds()
             .into_iter()
             .filter(|cwd| refresh || !self.repositories.contains_key(cwd))
+            // A probe already in flight answers for this folder either way, so
+            // even a forced refresh must not start a second one.
             .filter(|cwd| !self.git_probes.contains_key(cwd))
             .collect()
     }
