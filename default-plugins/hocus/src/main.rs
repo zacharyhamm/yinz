@@ -2248,6 +2248,10 @@ mod tests {
         );
         state.panes[0].cwd = Some("/work/hocus/src".to_owned());
         state.panes[1].cwd = Some("/work/other".to_owned());
+        state.repositories = ["/work/hocus/src", "/work/other"]
+            .into_iter()
+            .map(|cwd| (cwd.to_owned(), checkout(cwd)))
+            .collect();
         state.manual_kinds.insert(4, "reviewer".to_owned());
 
         let list = state
@@ -2306,16 +2310,44 @@ mod tests {
         state
     }
 
+    /// A folder Git does not claim, as the daemon's probe would report it.
+    fn folder(root: &str) -> projects::Repository {
+        projects::Repository::folder(root)
+    }
+
+    /// A folder Git claims, as the daemon's probe would report it.
+    fn checkout(root: &str) -> projects::Repository {
+        projects::Repository {
+            root: root.to_owned(),
+            remote: None,
+            worktree_status: Some(projects::WorktreeStatus::Primary),
+            common_dir: Some(format!("{root}/.git")),
+        }
+    }
+
     /// One turn of the whole loop: the daemon's snapshot reaches hocus *and*
     /// hocus-store, the store discovers projects from it and pushes the registry
     /// back. Discovery lives in the store now, so a test that only called
     /// `apply_poll` would be testing half a circuit.
+    ///
+    /// Every agent folder is a checkout here, which is what makes a project.
+    /// The tests about folders outside a repository build their own.
     fn poll(state: &mut State, panes: Vec<agents::AgentPane>) {
+        poll_with(state, panes, checkout)
+    }
+
+    /// The same turn, with the daemon's Git verdict for each agent folder
+    /// chosen by the caller.
+    fn poll_with(
+        state: &mut State,
+        panes: Vec<agents::AgentPane>,
+        probe: fn(&str) -> projects::Repository,
+    ) {
         state.apply_poll(panes.clone(), agents::Activity::new());
         let repositories: Vec<projects::Repository> = panes
             .iter()
             .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.as_deref().map(projects::Repository::folder))
+            .filter_map(|pane| pane.cwd.as_deref().map(probe))
             .collect();
         state.repositories = repositories
             .iter()
@@ -2351,6 +2383,36 @@ mod tests {
 
         assert_eq!(state.projects["hocus"].root, "/work/hocus");
         assert!(state.projects["hocus"].discovered);
+    }
+
+    /// A folder Git does not claim is not a project, and gets no tab.
+    #[test]
+    fn an_agent_outside_a_repository_becomes_no_project() {
+        let mut state = state_with_tab(9);
+        poll_with(&mut state, vec![agent_in(3, "/work/notes", 9)], folder);
+
+        assert!(state.projects.is_empty());
+        assert!(state.auto_tab_projects.is_empty());
+        assert!(state.active_project.is_none());
+    }
+
+    /// Nor does a project root above it lend it one: an agent that is not in a
+    /// checkout is not working on a project.
+    #[test]
+    fn an_agent_outside_a_repository_joins_no_project_it_sits_under() {
+        let mut state = state_with_tab(9);
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        poll_with(
+            &mut state,
+            vec![agent_in(3, "/work/hocus/notes", 9)],
+            folder,
+        );
+
+        assert!(state.pane_projects().is_empty());
+        assert!(state.auto_tab_projects.is_empty());
     }
 
     #[test]
@@ -2466,6 +2528,70 @@ mod tests {
         assert_eq!(state.projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
         assert_eq!(state.auto_tab_projects[&9], "hocus");
         assert_eq!(state.active_project.as_deref(), Some("hocus"));
+    }
+
+    #[test]
+    fn forgetting_a_project_clears_what_named_it() {
+        let mut state = state_with_tab(9);
+        state.run_local(&agent_call(
+            "project_assign",
+            r#"{"name":"hocus","root":"/work/hocus"}"#,
+        ));
+        assert_eq!(state.tab_projects[&9], "hocus");
+
+        let result = state.run_local(&agent_call("project_forget", r#"{"name":"hocus"}"#));
+
+        assert_eq!(result, Some("forgot hocus".to_owned()));
+        assert!(state.projects.is_empty());
+        assert!(state.tab_projects.is_empty(), "the tab named a project");
+        assert!(state.active_project.is_none());
+    }
+
+    #[test]
+    fn forgetting_an_unknown_project_says_what_to_call() {
+        let mut state = idle_state();
+        let result = state
+            .run_local(&agent_call("project_forget", r#"{"name":"nope"}"#))
+            .unwrap();
+
+        assert!(result.contains("project_list"), "got {result}");
+    }
+
+    /// Nothing remembers a project that was forgotten, so a poll that still
+    /// sees an agent in the checkout makes it again. The answer says so.
+    #[test]
+    fn forgetting_a_discovered_project_says_a_poll_makes_it_again() {
+        let mut state = state_with_tab(9);
+        poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+
+        let result = state
+            .run_local(&agent_call("project_forget", r#"{"name":"hocus"}"#))
+            .unwrap();
+        assert!(result.contains("/work/hocus"), "got {result}");
+        assert!(state.projects.is_empty());
+        assert!(state.auto_tab_projects.is_empty());
+
+        poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+        assert_eq!(state.projects["hocus"].root, "/work/hocus");
+    }
+
+    /// The only tool that removes something the user meant to keep, so it stops
+    /// for a y/n rather than running on the model's say-so.
+    #[test]
+    fn forgetting_a_project_waits_for_a_confirmation() {
+        let mut state = ready_state();
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        let frame = tool_call_frame("call_1", "project_forget", r#"{"name":"hocus"}"#);
+        state.on_chunk("hocus-1", &frame, false, None);
+        state.on_chunk("hocus-1", b"", true, None);
+
+        assert!(matches!(state.status, Status::ConfirmingTool));
+        assert!(state.projects.contains_key("hocus"), "nothing yet");
+        state.confirm_tool();
+        assert!(state.projects.is_empty());
     }
 
     #[test]

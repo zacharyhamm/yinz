@@ -46,6 +46,8 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "agent_send"
             | "agent_control"
             | "agent_spawn"
+            // The one tool that removes something the user meant to keep.
+            | "project_forget"
             | "slack_post"
     )
 }
@@ -485,7 +487,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "project_list",
-            "List remembered projects, their roots, Git remotes and worktree status, assigned tabs, and the active project. Includes the projects hocus found by itself from the folders agents run in: discovered marks these, and auto_tab_ids gives the tabs it worked out rather than the user. Prefer a name the user gave over one hocus made up.",
+            "List remembered projects, their roots, Git remotes and worktree status, assigned tabs, and the active project. Includes the projects hocus found by itself from the Git checkouts agents run in: discovered marks these, and auto_tab_ids gives the tabs it worked out rather than the user. Prefer a name the user gave over one hocus made up.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
@@ -497,6 +499,17 @@ pub fn specs() -> Value {
                     "name": { "type": "string", "description": "Exact project name." },
                     "root": { "type": "string", "description": "Absolute project root. Required for a new project." },
                     "tab_id": { "type": "integer", "description": "Stable tab id. Defaults to the active tab." },
+                },
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "project_forget",
+            "Forget a project. The todo list of its folder stays and comes back with the project. A project hocus discovered by itself is made again by the next poll while an agent is still running in its checkout, so forget one of those only once the agent is gone.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Exact project name from project_list." },
                 },
                 "required": ["name"],
             }),
@@ -1724,6 +1737,9 @@ mod tests {
             "send_input",
             "agent_send",
             "agent_control",
+            // Forgetting a project is the one project tool that takes
+            // something away.
+            "project_forget",
             "slack_post",
         ] {
             assert!(needs_confirmation(name), "{name} should be confirmed");
@@ -1883,9 +1899,9 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 41);
+        assert_eq!(names.len(), 42);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-        assert_eq!(confirmed, 8);
+        assert_eq!(confirmed, 9);
     }
 
     /// `agent_control` is the one tool whose argument is a verb rather than a target,
