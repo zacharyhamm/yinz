@@ -1299,6 +1299,10 @@ impl Pty {
                 }
             }
         });
+        // Taken before the action is spawned and consumed. `fill_cwd` has already
+        // resolved it, so it is what the pane is about to start in — and it is
+        // the answer when the child has not forked far enough to be asked.
+        let requested_cwd = Self::action_cwd(&terminal_action);
         let (terminal_id, reader, child_pid): (u32, Box<dyn AsyncReader>, Option<u32>) = self
             .bus
             .os_input
@@ -1328,7 +1332,7 @@ impl Pty {
         self.pane_activity_flags.insert(terminal_id, activity_flag);
         if let Some(child_pid) = child_pid {
             self.id_to_child_pid.insert(terminal_id, child_pid);
-            self.capture_initial_cwd(terminal_id, child_pid);
+            self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
         }
 
         let starts_held = false;
@@ -1863,7 +1867,11 @@ impl Pty {
                         Ok((terminal_id, reader, child_pid)) => {
                             if let Some(child_pid) = child_pid {
                                 self.id_to_child_pid.insert(terminal_id, child_pid);
-                                self.capture_initial_cwd(terminal_id, child_pid);
+                                self.capture_initial_cwd(
+                                    terminal_id,
+                                    child_pid,
+                                    command.cwd.clone(),
+                                );
                             }
                             Ok(Some((
                                 terminal_id,
@@ -1886,6 +1894,7 @@ impl Pty {
             Some(Run::Cwd(cwd)) => {
                 let starts_held = false; // we do not hold Cwd panes
                 let shell = self.get_default_terminal(Some(cwd), Some(default_shell.clone()));
+                let requested_cwd = Self::action_cwd(&shell);
                 match self
                     .bus
                     .os_input
@@ -1898,7 +1907,7 @@ impl Pty {
                     Ok((terminal_id, reader, child_pid)) => {
                         if let Some(child_pid) = child_pid {
                             self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(terminal_id, child_pid);
+                            self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
@@ -1922,7 +1931,7 @@ impl Pty {
                         TerminalAction::OpenFile(OpenFilePayload::new(
                             path_to_file,
                             line_number,
-                            cwd,
+                            cwd.clone(),
                         )),
                         quit_cb,
                         self.default_editor.clone(),
@@ -1932,7 +1941,7 @@ impl Pty {
                     Ok((terminal_id, reader, child_pid)) => {
                         if let Some(child_pid) = child_pid {
                             self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(terminal_id, child_pid);
+                            self.capture_initial_cwd(terminal_id, child_pid, cwd);
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
@@ -1958,7 +1967,11 @@ impl Pty {
                     Ok((terminal_id, reader, child_pid)) => {
                         if let Some(child_pid) = child_pid {
                             self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(terminal_id, child_pid);
+                            self.capture_initial_cwd(
+                                terminal_id,
+                                child_pid,
+                                Self::action_cwd(&default_shell),
+                            );
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
@@ -1993,7 +2006,7 @@ impl Pty {
                         .non_fatal();
                 }
                 self.pane_activity_flags.remove(&id);
-                self.terminal_cwds.remove(&id);
+                self.forget_terminal_cwd(id);
                 self.terminal_cmds.remove(&id);
                 self.terminal_foreground_cmds.remove(&id);
                 self.bus
@@ -2042,7 +2055,7 @@ impl Pty {
         // Removed, emphatically not killed: the process is the point.
         let _ = self.id_to_child_pid.remove(&terminal_id);
         self.pane_activity_flags.remove(&terminal_id);
-        self.terminal_cwds.remove(&terminal_id);
+        self.forget_terminal_cwd(terminal_id);
         self.terminal_cmds.remove(&terminal_id);
         self.terminal_foreground_cmds.remove(&terminal_id);
         // The plugin that spawned this pane lives in *this* session, so it does
@@ -2122,7 +2135,9 @@ impl Pty {
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
         self.id_to_child_pid.insert(terminal_id, child_pid);
-        self.capture_initial_cwd(terminal_id, child_pid);
+        // No requested cwd: an adopted pane asked for nothing, and its process
+        // has been running long enough that the OS answers reliably.
+        self.capture_initial_cwd(terminal_id, child_pid, None);
 
         Ok(AdoptedPane {
             terminal_id,
@@ -2186,6 +2201,7 @@ impl Pty {
                         }
                     }
                 });
+                let requested_cwd = run_command.cwd.clone();
                 let (reader, child_pid): (Box<dyn AsyncReader>, Option<u32>) = self
                     .bus
                     .os_input
@@ -2215,7 +2231,7 @@ impl Pty {
                 self.pane_activity_flags.insert(id, activity_flag);
                 if let Some(child_pid) = child_pid {
                     self.id_to_child_pid.insert(id, child_pid);
-                    self.capture_initial_cwd(id, child_pid);
+                    self.capture_initial_cwd(id, child_pid, requested_cwd);
                 }
                 if let Some(originating_plugin) = self.originating_plugins.get(&id) {
                     self.bus
@@ -2353,11 +2369,91 @@ impl Pty {
         ))?;
         Ok(())
     }
-    fn capture_initial_cwd(&mut self, terminal_id: u32, child_pid: u32) {
-        if let Some(os_input) = self.bus.os_input.as_ref() {
-            if let Some(cwd) = os_input.get_cwd(child_pid) {
-                self.terminal_cwds.insert(terminal_id, cwd);
-            }
+    /// The folder an action asks to start in, taken before it is spawned and
+    /// consumed.
+    fn action_cwd(terminal_action: &TerminalAction) -> Option<PathBuf> {
+        match terminal_action {
+            TerminalAction::RunCommand(run_command) => run_command.cwd.clone(),
+            TerminalAction::OpenFile(payload) => payload.cwd.clone(),
+        }
+    }
+
+    /// The clients this pane is the active one for, who a cwd change concerns.
+    fn focused_clients(&self, pane_id: PaneId) -> Vec<ClientId> {
+        self.active_panes
+            .iter()
+            .filter(|(_, active_pane)| *active_pane == &pane_id)
+            .map(|(client_id, _)| *client_id)
+            .collect()
+    }
+
+    /// Record where a pane is, and say so when it has moved.
+    ///
+    /// The single writer of `terminal_cwds`. Everything that learns a pane's
+    /// folder — the initial capture, the ticker, OSC 7 — goes through here, so
+    /// there is one place that decides a change has happened and one place that
+    /// announces it.
+    fn set_terminal_cwd(&mut self, terminal_id: u32, cwd: PathBuf) {
+        if self.terminal_cwds.get(&terminal_id) == Some(&cwd) {
+            return;
+        }
+        let pane_id = PaneId::Terminal(terminal_id);
+        let focused_client_ids = self.focused_clients(pane_id);
+        let _ = self
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                Event::CwdChanged(pane_id.into(), cwd.clone(), focused_client_ids),
+            )]));
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdatePaneCwd(
+                terminal_id,
+                Some(cwd.clone()),
+            ));
+        self.terminal_cwds.insert(terminal_id, cwd);
+    }
+
+    /// Drop what we knew about a pane that has gone.
+    ///
+    /// Terminal ids are handed out again after a pane closes, so a folder left
+    /// behind here is not merely wasted space — it is the wrong answer for
+    /// whichever pane inherits the id.
+    fn forget_terminal_cwd(&mut self, terminal_id: u32) {
+        if self.terminal_cwds.remove(&terminal_id).is_some() {
+            let _ = self
+                .bus
+                .senders
+                .send_to_screen(ScreenInstruction::UpdatePaneCwd(terminal_id, None));
+        }
+    }
+
+    /// The folder a pane starts in.
+    ///
+    /// This used to be recorded silently, and the ticker below only reports a
+    /// cwd that *differs* from the recorded one — so a pane whose process never
+    /// left the folder it started in announced its folder to nobody, ever. It
+    /// was a race, not a certainty: when the child had not forked yet there was
+    /// nothing to record, and the ticker then reported it after all. That is why
+    /// the requested cwd is a fallback here rather than an afterthought — the
+    /// caller has already resolved it, and it is better than nothing to go on.
+    fn capture_initial_cwd(
+        &mut self,
+        terminal_id: u32,
+        child_pid: u32,
+        requested_cwd: Option<PathBuf>,
+    ) {
+        let cwd = self
+            .bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.get_cwd(child_pid))
+            .or(requested_cwd);
+        if let Some(cwd) = cwd {
+            self.set_terminal_cwd(terminal_id, cwd);
         }
     }
 
@@ -2394,33 +2490,15 @@ impl Pty {
             .unwrap_or_default();
 
         for terminal_id in &active_terminal_ids {
-            let process_id = self.id_to_child_pid.get(terminal_id);
-            let cwd = process_id.and_then(|pid| pids_to_cwds.get(pid));
+            let process_id = self.id_to_child_pid.get(terminal_id).copied();
+            let cwd = process_id.and_then(|pid| pids_to_cwds.get(&pid).cloned());
+            let cmd = process_id.and_then(|pid| pids_to_cmds.get(&pid).cloned());
 
             if let Some(cwd) = cwd {
-                if self.terminal_cwds.get(terminal_id) != Some(cwd) {
-                    let pane_id = PaneId::Terminal(*terminal_id);
-                    let focused_client_ids: Vec<ClientId> = self
-                        .active_panes
-                        .iter()
-                        .filter(|(_, active_pane)| *active_pane == &pane_id)
-                        .map(|(client_id, _)| *client_id)
-                        .collect();
-                    let _ = self
-                        .bus
-                        .senders
-                        .send_to_plugin(PluginInstruction::Update(vec![(
-                            None,
-                            None,
-                            Event::CwdChanged(pane_id.into(), cwd.clone(), focused_client_ids),
-                        )]));
-                }
-                self.terminal_cwds.insert(*terminal_id, cwd.clone());
+                self.set_terminal_cwd(*terminal_id, cwd);
             }
-
-            let cmd = process_id.and_then(|pid| pids_to_cmds.get(pid));
             if let Some(cmd) = cmd {
-                self.terminal_cmds.insert(*terminal_id, cmd.clone());
+                self.terminal_cmds.insert(*terminal_id, cmd);
             }
         }
 
@@ -2490,24 +2568,7 @@ impl Pty {
     pub fn notify_cwd_from_osc7(&mut self, terminal_id: u32, path: PathBuf) {
         use std::sync::atomic::Ordering;
 
-        if self.terminal_cwds.get(&terminal_id) != Some(&path) {
-            let pane_id = PaneId::Terminal(terminal_id);
-            let focused_client_ids: Vec<ClientId> = self
-                .active_panes
-                .iter()
-                .filter(|(_, active_pane)| *active_pane == &pane_id)
-                .map(|(client_id, _)| *client_id)
-                .collect();
-            let _ = self
-                .bus
-                .senders
-                .send_to_plugin(PluginInstruction::Update(vec![(
-                    None,
-                    None,
-                    Event::CwdChanged(pane_id.into(), path.clone(), focused_client_ids),
-                )]));
-            self.terminal_cwds.insert(terminal_id, path);
-        }
+        self.set_terminal_cwd(terminal_id, path);
         if let Some(flag) = self.pane_activity_flags.get(&terminal_id) {
             flag.store(false, Ordering::Relaxed);
         }

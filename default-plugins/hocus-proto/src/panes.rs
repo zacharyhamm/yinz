@@ -1,10 +1,9 @@
 //! Turning a host pane manifest into the shape agent detection wants.
 //!
-//! Shared rather than copied into each plugin because hocus polls inline when
-//! the daemon is absent and the daemon polls otherwise, and the two feed one
-//! `activity` map. Two implementations that drifted would hash the same
-//! unchanged pane differently depending on who polled it, and every handover
-//! between them would read as activity.
+//! Only hocus-agentd builds panes from a manifest; hocus and hocus-store read
+//! the result off the wire. It lives here rather than in the daemon because the
+//! shape it produces is the shape all three agree on, and a type that crosses
+//! the wire belongs with the other wire types rather than inside one end of it.
 
 use crate::agents;
 use std::collections::BTreeMap;
@@ -33,7 +32,10 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
             pane_id: pane.id,
             title: pane.title.clone(),
             command: pane.terminal_command.clone(),
-            cwd: None,
+            // The manifest carries the folder now. It used to say nothing, so
+            // the only word on where a pane was came from `CwdChanged` — heard
+            // once, and never again by anyone who missed it.
+            cwd: pane.cwd.clone(),
             // Order matters: a held pane has also exited, and "waiting to be re-run"
             // is the more useful of the two things to say.
             status: if pane.is_held {
@@ -52,4 +54,35 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
     // agent_list is read by a model on every turn; give it the same order every time.
     panes.sort_by_key(|pane| pane.pane_id);
     panes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zellij_tile::prelude::PaneInfo;
+
+    #[test]
+    fn terminal_panes_carry_the_folder_the_host_reported() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![
+                PaneInfo {
+                    id: 3,
+                    cwd: Some("/work/hocus".to_owned()),
+                    ..PaneInfo::default()
+                },
+                PaneInfo {
+                    id: 4,
+                    cwd: None,
+                    ..PaneInfo::default()
+                },
+            ],
+        );
+
+        let panes = terminal_panes(&manifest, &[]);
+
+        assert_eq!(panes[0].cwd.as_deref(), Some("/work/hocus"));
+        assert_eq!(panes[1].cwd, None);
+    }
 }

@@ -46,6 +46,11 @@ pub struct FakeServerOsApi {
     // mirrors the resize caching of the real ServerOsInputOutput, so that tests see the same
     // resizes a real pane's pty would
     cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>,
+    /// The folder each fake pane was spawned in, keyed by its child pid, so that
+    /// `get_cwd` answers the way a real one does. Without it every pane looks
+    /// like it is nowhere, and anything that reads a pane's folder — project
+    /// detection above all — cannot be tested end to end.
+    cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
 }
 
 impl FakeServerOsApi {
@@ -107,6 +112,16 @@ impl ServerOsApi for FakeServerOsApi {
                 .cloned(),
             _ => None,
         };
+        let requested_cwd = match &terminal_action {
+            TerminalAction::RunCommand(run_command) => run_command.cwd.clone(),
+            TerminalAction::OpenFile(payload) => payload.cwd.clone(),
+        };
+        if let Some(cwd) = requested_cwd {
+            self.cwds
+                .lock()
+                .unwrap()
+                .insert(FAKE_PID_BASE + terminal_id, cwd);
+        }
         let fake_async_reader =
             self.shared_ptys
                 .register(terminal_id, Some(terminal_action), Some(quit_cb));
@@ -192,8 +207,18 @@ impl ServerOsApi for FakeServerOsApi {
     fn load_palette(&self) -> Palette {
         default_palette()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
-        None
+    fn get_cwd(&self, pid: u32) -> Option<PathBuf> {
+        self.cwds.lock().unwrap().get(&pid).cloned()
+    }
+    fn get_cwds(&self, pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+        let cwds = self.cwds.lock().unwrap();
+        let found = pids
+            .into_iter()
+            .filter_map(|pid| Some((pid, cwds.get(&pid)?.clone())))
+            .collect();
+        // A fake pane runs no process of its own, so there is no command to
+        // report alongside the folder.
+        (found, HashMap::new())
     }
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
         if let Some(file) = file {

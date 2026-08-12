@@ -6945,6 +6945,7 @@ impl PaneInfo {
                 }
             });
         let terminal_command = optional_string_node!("terminal_command");
+        let cwd = optional_string_node!("cwd");
         let plugin_url = optional_string_node!("plugin_url");
         let is_selectable = bool_node!("is_selectable");
         let global_placement = optional_string_node!("global_edge").and_then(|edge| {
@@ -7004,6 +7005,7 @@ impl PaneInfo {
             default_bg: None,
             global_placement,
             is_hidden,
+            cwd,
         };
         Ok((tab_position, pane_info))
     }
@@ -7059,6 +7061,9 @@ impl PaneInfo {
         }
         if let Some(terminal_command) = &self.terminal_command {
             string_node!("terminal_command", terminal_command.to_string());
+        }
+        if let Some(cwd) = &self.cwd {
+            string_node!("cwd", cwd.to_string());
         }
         if let Some(plugin_url) = &self.plugin_url {
             string_node!("plugin_url", plugin_url.to_string());
@@ -7373,6 +7378,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             default_bg: None,
             global_placement: None,
             is_hidden: false,
+            cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
             id: 1,
@@ -7402,6 +7408,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             default_bg: None,
             global_placement: None,
             is_hidden: false,
+            cwd: None,
         },
     ];
     let mut panes = HashMap::new();

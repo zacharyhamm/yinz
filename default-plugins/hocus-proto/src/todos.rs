@@ -13,7 +13,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path};
 
 const FILE: &str = "/cache/todos.json";
 
@@ -95,23 +94,11 @@ pub fn move_root(store: &mut Store, old: &str, new: &str) {
 /// An absolute path with no `.` or `..`, as the store keys it.
 ///
 /// The same rule `projects::validate` puts on a project root, so a root that
-/// the registry accepts always keys a list. The path is then built again from
-/// its parts, which takes off a last separator and joins repeated ones. One
-/// folder must give one key, or a list goes missing.
+/// the registry accepts always keys a list. One folder must give one key, or a
+/// list goes missing.
 pub fn normalize_root(root: &str) -> Result<String, String> {
-    let path = Path::new(root);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
-    {
-        return Err("project root must be an absolute path without . or ..".to_owned());
-    }
-    Ok(path
-        .components()
-        .collect::<std::path::PathBuf>()
-        .to_string_lossy()
-        .into_owned())
+    crate::paths::normalize(root)
+        .map_err(|_| "project root must be an absolute path without . or ..".to_owned())
 }
 
 /// The list a `project` selector means, as `(root, name)`.

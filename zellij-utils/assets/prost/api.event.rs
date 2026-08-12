@@ -640,6 +640,8 @@ pub struct PaneInfo {
     pub global_placement: ::core::option::Option<super::action::GlobalPanePlacement>,
     #[prost(bool, tag="27")]
     pub is_hidden: bool,
+    #[prost(string, optional, tag="28")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

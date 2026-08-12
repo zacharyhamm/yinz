@@ -177,6 +177,53 @@ pub fn write_config(session_name: &str, extra_config_kdl: &str) -> PathBuf {
     config_path
 }
 
+/// A real Git checkout on a branch, with one commit, for a pane to sit in.
+///
+/// Real because the daemon's probe runs a real `git`: it goes out through
+/// `BackgroundJob::RunCommand`, which is one of the few things the fake server
+/// does not stand in for. `HOME` is the test root's by then, so there is no user
+/// config to trip over.
+///
+/// Under `target/` rather than under the test root, which is the one thing here
+/// that is not about Git: a plugin's `run_command` has its cwd put through
+/// `translate_plugin_path`, which rewrites anything under `/tmp` into the
+/// plugin's own sandboxed tmp folder. The whole test root is under `/tmp`, so a
+/// checkout there would be probed at a path that does not exist.
+///
+/// The commit matters. `git rev-parse --abbrev-ref HEAD` cannot resolve an
+/// unborn branch, so a repository with none reports no branch at all.
+pub fn write_git_repository(name: &str, branch: &str) -> PathBuf {
+    init();
+    let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/test-git"))
+        .join(std::process::id().to_string())
+        .join(name);
+    // A rerun in the same process must not inherit the last one's history.
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
+        assert!(status.success(), "git {args:?} failed in {root:?}");
+    };
+    git(&["init", "-b", branch]);
+    git(&[
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    ]);
+    root
+}
+
 fn defaults_overridden_by(extra_config_kdl: &str) -> String {
     let overridden_keys: std::collections::HashSet<&str> = extra_config_kdl
         .lines()

@@ -1870,6 +1870,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
                 .map(TryInto::try_into)
                 .transpose()?,
             is_hidden: protobuf_pane_info.is_hidden,
+            cwd: protobuf_pane_info.cwd,
         })
     }
 }
@@ -1920,6 +1921,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
                 .map(ProtobufGlobalPanePlacement::try_from)
                 .transpose()?,
             is_hidden: pane_info.is_hidden,
+            cwd: pane_info.cwd,
         })
     }
 }
@@ -2907,6 +2909,7 @@ fn serialize_session_update_event_with_non_default_values() {
             default_bg: None,
             global_placement: None,
             is_hidden: false,
+            cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
             id: 1,
@@ -2936,6 +2939,7 @@ fn serialize_session_update_event_with_non_default_values() {
             default_bg: None,
             global_placement: None,
             is_hidden: false,
+            cwd: None,
         },
     ];
     panes.insert(0, panes_list);

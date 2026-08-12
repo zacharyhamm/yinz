@@ -15,6 +15,15 @@ use zellij_tile::prelude::*;
 
 const ACTIVITY_SECONDS: f64 = 5.0;
 const GIT_REFRESH_SECONDS: f64 = 60.0;
+/// How long to leave a folder alone after a probe that answered nothing.
+///
+/// `resolve_repositories` runs on nearly every host event and nothing is cached
+/// for a failure, so without a wait a missing `git` would be re-run forever.
+const GIT_RETRY_SECONDS: f64 = 30.0;
+/// How many folders one heartbeat will ask the host about. Each ask is a
+/// blocking round-trip, and a pane that has none now will still have none next
+/// tick, so there is no reason to pay for them all at once.
+const CWD_REPAIRS_PER_TICK: usize = 4;
 
 #[derive(Default)]
 struct State {
@@ -31,6 +40,8 @@ struct State {
     activity: agents::Activity,
     repositories: BTreeMap<String, projects::Repository>,
     git_probes: BTreeMap<String, GitProbe>,
+    /// Seconds left before a folder whose probe answered nothing is tried again.
+    probe_backoff: BTreeMap<String, f64>,
     git_probe_seq: u64,
     git_refresh_elapsed: f64,
     /// Who to push snapshots to — hocus, and hocus-store for its project
@@ -44,7 +55,10 @@ struct State {
 #[derive(Default)]
 struct GitProbe {
     id: u64,
-    metadata: Option<Vec<u8>>,
+    /// Stdout and exit code of the `rev-parse`. Both are kept: a checkout with
+    /// no commits writes its identity and then exits non-zero, so throwing the
+    /// output away on failure would lose a real repository.
+    metadata: Option<(Option<i32>, Vec<u8>)>,
     config: Option<Vec<u8>>,
 }
 
@@ -101,9 +115,8 @@ impl ZellijPlugin for State {
                 self.publish();
             },
             Event::CwdChanged(PaneId::Terminal(id), cwd, _) => {
-                let cwd = cwd.to_string_lossy().into_owned();
-                self.cwds.insert(id, cwd.clone());
-                self.update_pane(id, |pane| pane.cwd = Some(cwd));
+                self.record_cwd(id, &cwd.to_string_lossy());
+                self.rejoin_cwds();
                 self.resolve_repositories();
                 self.publish();
             },
@@ -111,7 +124,14 @@ impl ZellijPlugin for State {
                 self.finish_git_probe(exit_code, stdout, context);
             },
             Event::Timer(elapsed) => {
+                // A load that ran before the session was there left us with no
+                // panes at all and nothing to make us look again.
+                if self.needs_bootstrap() {
+                    self.bootstrap();
+                }
                 self.observe_activity();
+                self.repair_cwds();
+                self.expire_probe_backoff(elapsed);
                 self.git_refresh_elapsed += elapsed;
                 if self.git_refresh_elapsed >= GIT_REFRESH_SECONDS {
                     self.git_refresh_elapsed %= GIT_REFRESH_SECONDS;
@@ -162,6 +182,17 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// True while the startup scan has still not found the current session.
+    ///
+    /// `gather` answers nothing when the session list does not name a current
+    /// session, which a load early in session startup can see. That used to be
+    /// the end of it — the one scan never ran again, and every pane that
+    /// predated the daemon stayed without a folder, so without a project, for
+    /// the life of the session.
+    fn needs_bootstrap(&self) -> bool {
+        self.panes.is_none()
+    }
+
     fn bootstrap(&mut self) {
         let Some(panes) = poll::gather() else {
             return;
@@ -170,12 +201,37 @@ impl State {
             if let Some(command) = &pane.command {
                 self.commands.insert(pane.pane_id, command.clone());
             }
-            if let Some(cwd) = &pane.cwd {
-                self.cwds.insert(pane.pane_id, cwd.clone());
+            if let Some(cwd) = pane.cwd.clone() {
+                self.record_cwd(pane.pane_id, &cwd);
             }
         }
         self.panes = Some(panes);
+        self.rejoin_cwds();
         self.resolve_repositories();
+    }
+
+    /// Record where a pane is, whatever named it — the manifest, a `CwdChanged`,
+    /// the startup scan, or a direct ask.
+    ///
+    /// The one place a folder enters this plugin, and so the one place it is
+    /// normalized. Every key downstream — the probed repositories, the project
+    /// roots discovery makes out of them — is compared as a string, so one
+    /// folder has to give one spelling here or it gives two everywhere.
+    fn record_cwd(&mut self, pane_id: u32, cwd: &str) {
+        let cwd = hocus_proto::paths::normalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        self.cwds.insert(pane_id, cwd);
+    }
+
+    /// Put the folders we know onto the panes we hold.
+    fn rejoin_cwds(&mut self) {
+        let cwds = self.cwds.clone();
+        for pane in self.panes.iter_mut().flatten() {
+            // Only ever set, never cleared: a snapshot that does not mention a
+            // folder has not said the pane left it.
+            if let Some(cwd) = cwds.get(&pane.pane_id) {
+                pane.cwd = Some(cwd.clone());
+            }
+        }
     }
 
     fn rebuild_panes(&mut self) {
@@ -184,14 +240,67 @@ impl State {
             if let Some(command) = self.commands.get(&pane.pane_id) {
                 pane.command = Some(command.clone());
             }
-            pane.cwd = self.cwds.get(&pane.pane_id).cloned();
         }
         self.commands
             .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
         self.cwds
             .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
+        // Anything the manifest itself carries is news, and worth taking before
+        // the rejoin below writes what we already knew back over it.
+        let reported: Vec<(u32, String)> = panes
+            .iter()
+            .filter_map(|pane| Some((pane.pane_id, pane.cwd.clone()?)))
+            .collect();
         self.panes = Some(panes);
+        for (pane_id, cwd) in reported {
+            self.record_cwd(pane_id, &cwd);
+        }
+        self.rejoin_cwds();
         self.resolve_repositories();
+    }
+
+    /// Ask the host directly for the folder of any agent pane nothing has named.
+    ///
+    /// One blocking round-trip per pane, so this is capped and runs on the
+    /// heartbeat rather than on the manifest, which arrives far too often to
+    /// pay for. Normally there is nothing to do: this is the path that stops a
+    /// pane whose folder never arrived from being without one for good.
+    fn repair_cwds(&mut self) {
+        self.repair_cwds_with(poll::pane_cwd);
+    }
+
+    fn repair_cwds_with(&mut self, mut cwd_of: impl FnMut(u32) -> Option<String>) {
+        let unnamed: Vec<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| pane.cwd.is_none())
+            .filter(|pane| pane.status == agents::AgentStatus::Running)
+            .map(|pane| pane.pane_id)
+            .take(CWD_REPAIRS_PER_TICK)
+            .collect();
+        if unnamed.is_empty() {
+            return;
+        }
+        let mut found = false;
+        for pane_id in unnamed {
+            if let Some(cwd) = cwd_of(pane_id) {
+                self.record_cwd(pane_id, &cwd);
+                found = true;
+            }
+        }
+        if found {
+            self.rejoin_cwds();
+            self.resolve_repositories();
+        }
+    }
+
+    /// Count down the folders we are leaving alone, and let the expired ones go.
+    fn expire_probe_backoff(&mut self, elapsed: f64) {
+        self.probe_backoff.retain(|_, left| {
+            *left -= elapsed;
+            *left > 0.0
+        });
     }
 
     fn update_pane(&mut self, id: u32, update: impl FnOnce(&mut agents::AgentPane)) {
@@ -207,9 +316,17 @@ impl State {
     /// Probe every agent folder we have not probed yet, and forget the ones no
     /// agent is in any more.
     fn resolve_repositories(&mut self) {
-        let active = self.agent_cwds();
-        self.repositories.retain(|cwd, _| active.contains(cwd));
-        self.git_probes.retain(|cwd, _| active.contains(cwd));
+        // Retained on the folders live panes are in, not the folders *agents*
+        // are in. What a folder is — its root, its remote, its common directory
+        // — cannot change underneath us, but `classify` reads the foreground
+        // command and genuinely flickers. Keying eviction on it threw away a
+        // probed checkout on every flicker and cancelled the probe in flight
+        // with it, so the agent lost its project until two more round trips
+        // landed. One cwd per live pane still bounds both maps.
+        let live: BTreeSet<&String> = self.cwds.values().collect();
+        self.repositories.retain(|cwd, _| live.contains(cwd));
+        self.git_probes.retain(|cwd, _| live.contains(cwd));
+        self.probe_backoff.retain(|cwd, _| live.contains(cwd));
         self.start_git_probes(self.repository_cwds(false));
     }
 
@@ -230,6 +347,9 @@ impl State {
             // A probe already in flight answers for this folder either way, so
             // even a forced refresh must not start a second one.
             .filter(|cwd| !self.git_probes.contains_key(cwd))
+            // Nothing is cached for a probe that answered nothing, so without
+            // this the next event would run it again immediately.
+            .filter(|cwd| !self.probe_backoff.contains_key(cwd))
             .collect()
     }
 
@@ -329,14 +449,20 @@ impl State {
         let Some(probe) = self.git_probes.get_mut(cwd).filter(|probe| probe.id == id) else {
             return;
         };
-        let output = if exit_code == Some(0) {
-            stdout
-        } else {
-            Vec::new()
-        };
         match kind.as_str() {
-            "metadata" => probe.metadata = Some(output),
-            "config" => probe.config = Some(output),
+            // The exit code rides along: the parse needs it to tell "not a
+            // repository" from "the probe answered nothing", and stdout is worth
+            // reading either way.
+            "metadata" => probe.metadata = Some((exit_code, stdout)),
+            // Nothing but remotes comes out of this one, and a repository with
+            // none is ordinary, so a failure here is simply no remotes.
+            "config" => {
+                probe.config = Some(if exit_code == Some(0) {
+                    stdout
+                } else {
+                    Vec::new()
+                })
+            },
             _ => return,
         }
         if probe.metadata.is_none() || probe.config.is_none() {
@@ -345,14 +471,28 @@ impl State {
         let Some(probe) = self.git_probes.remove(cwd) else {
             return;
         };
-        self.repositories.insert(
-            cwd.clone(),
-            poll::repository(
-                cwd,
-                probe.metadata.as_deref().unwrap_or_default(),
-                probe.config.as_deref().unwrap_or_default(),
-            ),
-        );
+        let (exit_code, metadata) = probe.metadata.unwrap_or_default();
+        let cwd = cwd.clone();
+        match poll::repository(
+            exit_code,
+            &metadata,
+            probe.config.as_deref().unwrap_or_default(),
+        ) {
+            poll::ProbeOutcome::Checkout(repository) => {
+                self.repositories.insert(cwd, repository);
+            },
+            // Recorded, because "we looked here and Git said no" is what stops
+            // the next event probing it again.
+            poll::ProbeOutcome::NotARepository => {
+                self.repositories
+                    .insert(cwd.clone(), projects::Repository::folder(cwd));
+            },
+            // Deliberately not recorded. A guess here would outlive the reason
+            // for it and deny the pane a project for as long as the entry lives.
+            poll::ProbeOutcome::Failed => {
+                self.probe_backoff.insert(cwd, GIT_RETRY_SECONDS);
+            },
+        }
         self.publish();
     }
 
@@ -441,14 +581,22 @@ mod tests {
         assert!(state.activity.is_empty());
     }
 
+    /// A state holding one agent in one folder, with that folder recorded the
+    /// way an event would have recorded it.
+    fn agent_in(pane_id: u32, cwd: &str) -> State {
+        State {
+            panes: Some(vec![pane(pane_id, "codex", cwd)]),
+            cwds: BTreeMap::from([(pane_id, cwd.to_owned())]),
+            ..State::default()
+        }
+    }
+
     #[test]
     fn repository_refresh_reprobes_cached_cwds_without_overlapping() {
-        let cached = projects::Repository::folder("/work");
-        let mut state = State {
-            panes: Some(vec![pane(7, "codex", "/work")]),
-            repositories: BTreeMap::from([("/work".to_owned(), cached)]),
-            ..State::default()
-        };
+        let mut state = agent_in(7, "/work");
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
 
         assert!(state.repository_cwds(false).is_empty());
         assert_eq!(state.repository_cwds(true), vec!["/work"]);
@@ -456,11 +604,167 @@ mod tests {
             .git_probes
             .insert("/work".to_owned(), GitProbe::default());
         assert!(state.repository_cwds(true).is_empty());
+    }
 
-        state.panes = Some(vec![pane(8, "codex", "/elsewhere")]);
+    /// `classify` reads the foreground command, which flickers. It used to take
+    /// the probed checkout with it and cancel the probe in flight, so the agent
+    /// lost its project until two more round trips landed.
+    #[test]
+    fn a_cached_repository_survives_a_classification_flicker() {
+        let mut state = agent_in(7, "/work");
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+        state
+            .git_probes
+            .insert("/work".to_owned(), GitProbe::default());
+
+        let pane = &mut state.panes.as_mut().unwrap()[0];
+        pane.command = None;
+        pane.title = "shell".to_owned();
+        assert!(
+            agents::classify(&state.panes.as_ref().unwrap()[0], &state.manual_kinds).is_none(),
+            "the pane really has stopped looking like an agent"
+        );
         state.resolve_repositories();
+
+        assert!(state.repositories.contains_key("/work"));
+        assert!(state.git_probes.contains_key("/work"));
+    }
+
+    /// The folder is still forgotten — just on the pane going away rather than
+    /// on it momentarily not looking like an agent.
+    #[test]
+    fn a_repository_is_forgotten_when_its_pane_closes() {
+        let mut state = agent_in(7, "/work");
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+
+        state.panes = Some(vec![]);
+        state.cwds.clear();
+        state.resolve_repositories();
+
         assert!(!state.repositories.contains_key("/work"));
-        assert!(!state.git_probes.contains_key("/work"));
+    }
+
+    /// The regression: a snapshot that says nothing about a folder has not said
+    /// the pane left it. Clearing it here is what left a pane with no folder,
+    /// and so with no project, for good.
+    #[test]
+    fn a_manifest_without_a_cwd_does_not_clobber_a_known_one() {
+        let mut state = State::default();
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "codex".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.record_cwd(7, "/work/hocus");
+        state.rebuild_panes();
+
+        assert_eq!(
+            state.panes.as_ref().unwrap()[0].cwd.as_deref(),
+            Some("/work/hocus")
+        );
+    }
+
+    /// One folder must give one key, whichever way it arrived, or the probed
+    /// repositories and the project roots are keyed apart.
+    #[test]
+    fn a_folder_is_keyed_the_same_however_it_arrives() {
+        let mut state = State::default();
+        state.record_cwd(7, "/work/hocus/");
+        assert_eq!(state.cwds[&7], "/work/hocus");
+        state.record_cwd(8, "/work//hocus");
+        assert_eq!(state.cwds[&8], "/work/hocus");
+    }
+
+    #[test]
+    fn a_pane_with_no_folder_is_asked_directly() {
+        let mut state = State {
+            panes: Some(vec![agents::AgentPane {
+                cwd: None,
+                ..pane(7, "codex", "/unused")
+            }]),
+            ..State::default()
+        };
+
+        state.repair_cwds_with(|_| Some("/work/hocus/".to_owned()));
+
+        assert_eq!(state.cwds[&7], "/work/hocus");
+        assert_eq!(
+            state.panes.as_ref().unwrap()[0].cwd.as_deref(),
+            Some("/work/hocus")
+        );
+    }
+
+    /// Each ask is a blocking round-trip, and a pane without a folder now will
+    /// still be without one on the next heartbeat.
+    #[test]
+    fn only_so_many_folders_are_asked_for_on_one_heartbeat() {
+        let panes = (0..CWD_REPAIRS_PER_TICK as u32 + 3)
+            .map(|id| agents::AgentPane {
+                cwd: None,
+                ..pane(id, "codex", "/unused")
+            })
+            .collect();
+        let mut state = State {
+            panes: Some(panes),
+            ..State::default()
+        };
+
+        let mut asked = 0;
+        state.repair_cwds_with(|_| {
+            asked += 1;
+            Some("/work".to_owned())
+        });
+
+        assert_eq!(asked, CWD_REPAIRS_PER_TICK);
+    }
+
+    #[test]
+    fn bootstrap_is_retried_until_the_session_answers() {
+        let mut state = State::default();
+        assert!(state.needs_bootstrap());
+        state.panes = Some(vec![]);
+        assert!(!state.needs_bootstrap());
+    }
+
+    /// Nothing is cached for a probe that answered nothing, so only the wait
+    /// keeps `resolve_repositories` — which runs on nearly every event — from
+    /// re-running a missing `git` forever.
+    #[test]
+    fn a_probe_that_answered_nothing_is_left_alone_for_a_while() {
+        let mut state = agent_in(7, "/work");
+        let context = BTreeMap::from([
+            ("cwd".to_owned(), "/work".to_owned()),
+            ("git_probe_id".to_owned(), "1".to_owned()),
+        ]);
+        state.git_probes.insert(
+            "/work".to_owned(),
+            GitProbe {
+                id: 1,
+                ..GitProbe::default()
+            },
+        );
+        let mut metadata = context.clone();
+        metadata.insert("git_probe".to_owned(), "metadata".to_owned());
+        let mut config = context;
+        config.insert("git_probe".to_owned(), "config".to_owned());
+
+        state.finish_git_probe(Some(0), Vec::new(), config);
+        state.finish_git_probe(None, Vec::new(), metadata);
+
+        assert!(!state.repositories.contains_key("/work"), "no guess cached");
+        assert!(state.probe_backoff.contains_key("/work"));
+        assert!(state.repository_cwds(false).is_empty(), "not asked again");
+
+        state.expire_probe_backoff(GIT_RETRY_SECONDS);
+        assert!(state.probe_backoff.is_empty());
+        assert_eq!(state.repository_cwds(false), vec!["/work"]);
     }
 
     #[test]
