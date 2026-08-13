@@ -160,7 +160,8 @@ impl WatchRegistry {
         Ok(changes)
     }
 
-    /// How many watches are registered. For tests and diagnostics.
+    /// How many watches are registered.
+    #[cfg(test)]
     pub(super) fn count(&self) -> usize {
         self.watches.lock().map(|guard| guard.0.len()).unwrap_or(0)
     }

@@ -50,7 +50,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::data::ClientId;
 use crate::plugin_data::{
     ApplyReport, DataError, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, FetchRequest,
-    Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
+    Mutation, WatchMode,
 };
 
 use self::migrate::migrate_entity;
@@ -97,8 +97,13 @@ pub fn private_namespace(plugin_url: &str) -> String {
 }
 
 /// Whether a resolved namespace is one shared between plugins.
-pub fn is_shared_namespace(namespace: &str) -> bool {
-    namespace.starts_with(SHARED_NAMESPACE_PREFIX)
+///
+/// The `shared:` prefix itself is enforced by [`crate::plugin_data::validate_namespace`], and the
+/// permission that goes with it is checked in `resolve_data_namespace`, so nothing in the server
+/// asks this today.
+#[cfg(test)]
+pub(crate) fn is_shared_namespace(namespace: &str) -> bool {
+    namespace.starts_with(crate::plugin_data::SHARED_NAMESPACE_PREFIX)
 }
 
 /// The plugin data store: one SQLite file shared by every plugin, partitioned by namespace.
@@ -138,10 +143,6 @@ impl PluginDataStore {
             connection: Mutex::new(None),
             watches: WatchRegistry::new(),
         }
-    }
-
-    pub fn db_path(&self) -> &Path {
-        &self.db_path
     }
 
     /// Run `f` against the connection, opening it on first use.
@@ -201,7 +202,8 @@ impl PluginDataStore {
     }
 
     /// The definition currently stored for an entity, if it has been declared.
-    pub fn entity_definition(
+    #[cfg(test)]
+    pub(crate) fn entity_definition(
         &self,
         namespace: &str,
         entity: &str,
@@ -325,8 +327,9 @@ impl PluginDataStore {
         self.with_conn(|conn| self.watches.refresh(conn, namespace, touched_entities))
     }
 
-    /// How many watches are registered. For tests and diagnostics.
-    pub fn watch_count(&self) -> usize {
+    /// How many watches are registered.
+    #[cfg(test)]
+    pub(crate) fn watch_count(&self) -> usize {
         self.watches.count()
     }
 }
