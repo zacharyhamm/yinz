@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
-const FILE: &str = "/cache/projects.json";
+/// The file the registry lived in before the store. Read once, by the import.
+pub const FILE: &str = "/cache/projects.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {

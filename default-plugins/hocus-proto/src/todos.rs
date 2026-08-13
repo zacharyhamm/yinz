@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
-const FILE: &str = "/cache/todos.json";
+/// The file the lists lived in before the store. Read once, by the import.
+pub const FILE: &str = "/cache/todos.json";
 
 /// The most levels a list holds. A top item is level 1.
 pub const MAX_DEPTH: usize = 5;
@@ -609,6 +610,36 @@ fn int_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<u64> {
 
 fn bool_at(rows: &DataRows, row: &[DataValue], column: &str) -> bool {
     matches!(rows.get(row, column), Some(DataValue::Bool(true)))
+}
+
+/// The items these rows describe, flat, each with the root it belongs to.
+///
+/// For a set of rows that is not a whole list — search hits, say. Building a
+/// tree out of those would be wrong twice over: an item whose parent did not
+/// match would look top-level, and a matched parent and child would nest, hiding
+/// one of the two results inside the other.
+pub fn items_from_rows(rows: &DataRows) -> Vec<(String, Item)> {
+    rows.rows
+        .iter()
+        .filter_map(|row| {
+            let (Some(id), Some(root), Some(text)) = (
+                int_at(rows, row, "id"),
+                text_at(rows, row, "root"),
+                text_at(rows, row, "text"),
+            ) else {
+                return None;
+            };
+            Some((
+                root,
+                Item {
+                    id,
+                    text,
+                    done: bool_at(rows, row, "done"),
+                    children: Vec::new(),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Build the lists these rows describe, grouped by project root.
