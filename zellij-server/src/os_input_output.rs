@@ -11,8 +11,6 @@ use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tempfile::tempfile;
 use zellij_utils::{
-    channels,
-    channels::TrySendError,
     data::Palette,
     errors::prelude::*,
     input::command::{RunCommand, TerminalAction},
@@ -24,13 +22,13 @@ use zellij_utils::{
 };
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     env,
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 
 pub use async_trait::async_trait;
@@ -173,37 +171,164 @@ fn build_command(
     (cmd, failover_cmd)
 }
 
+// How many non-Render messages a client's send queue holds before the server
+// gives up on the client. Control messages are small and individually
+// meaningful, so a client that stops draining them for this long has genuinely
+// gone away; disconnecting beats buffering without bound (and possibly having
+// the whole session OOM-killed on its behalf).
+const SEND_QUEUE_CONTROL_CAPACITY: usize = 5000;
+
+/// A per-client send queue that keeps at most one pending `Render` and at most
+/// one pending `PaneRenderUpdate` per pane.
+///
+/// A `Render` is an idempotent full-screen repaint, so when the client is not
+/// draining fast enough (or at all - a stalled terminal, a suspended process),
+/// older pending renders are pure backlog: replacing the pending one with the
+/// newest keeps the queue flat during output floods, means render volume can
+/// never disconnect a client, and lets a recovering client paint current state
+/// immediately instead of replaying thousands of stale frames. The same holds
+/// per pane for non-initial `PaneRenderUpdate`s, which are full-viewport
+/// snapshots: only the newest per pane is kept. Initial snapshots and
+/// scrollback-carrying updates are one-off responses rather than a stream of
+/// repaints, so they stay - like every other message - in a bounded FIFO (see
+/// `SEND_QUEUE_CONTROL_CAPACITY`).
+///
+/// The writer thread delivers queued control messages first and coalesced
+/// renders last: control messages are order-sensitive among themselves, while
+/// a coalesced render is latest-state and correct whenever it lands. This also
+/// guarantees a pane's initial snapshot (FIFO) precedes its coalesced updates.
+/// A pending pane render may be delivered after a `SubscribedPaneClosed` for
+/// the same pane; clients must tolerate that race anyway, since pane closure
+/// always races in-flight updates.
+struct CoalescingSendQueue {
+    state: Mutex<SendQueueState>,
+    message_available: Condvar,
+}
+
+#[derive(Default)]
+struct SendQueueState {
+    control: VecDeque<ServerToClientMsg>,
+    pending_pane_renders: BTreeMap<zellij_utils::data::PaneId, ServerToClientMsg>,
+    pending_render: Option<ServerToClientMsg>,
+    closed: bool,
+}
+
+/// Which slot of the queue a message belongs in.
+enum SendQueueSlot {
+    FullRender,
+    PaneRender(zellij_utils::data::PaneId),
+    Control,
+}
+
+fn slot_for(msg: &ServerToClientMsg) -> SendQueueSlot {
+    match msg {
+        ServerToClientMsg::Render { .. } => SendQueueSlot::FullRender,
+        ServerToClientMsg::PaneRenderUpdate {
+            pane_id,
+            is_initial: false,
+            scrollback: None,
+            ..
+        } => SendQueueSlot::PaneRender(*pane_id),
+        _ => SendQueueSlot::Control,
+    }
+}
+
+/// What `CoalescingSendQueue::push` did with the message.
+enum SendQueuePush {
+    Queued,
+    /// The message was a render and replaced an older pending one.
+    CoalescedRender,
+    /// The message was dropped: the control FIFO is at capacity.
+    ControlQueueFull,
+}
+
+impl CoalescingSendQueue {
+    fn new() -> Self {
+        CoalescingSendQueue {
+            state: Mutex::new(SendQueueState::default()),
+            message_available: Condvar::new(),
+        }
+    }
+    fn push(&self, msg: ServerToClientMsg) -> SendQueuePush {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            // the writer is gone; pretend-queue so late senders don't error
+            return SendQueuePush::Queued;
+        }
+        let outcome = match slot_for(&msg) {
+            SendQueueSlot::FullRender => match state.pending_render.replace(msg) {
+                Some(_) => SendQueuePush::CoalescedRender,
+                None => SendQueuePush::Queued,
+            },
+            SendQueueSlot::PaneRender(pane_id) => {
+                match state.pending_pane_renders.insert(pane_id, msg) {
+                    Some(_) => SendQueuePush::CoalescedRender,
+                    None => SendQueuePush::Queued,
+                }
+            },
+            SendQueueSlot::Control => {
+                if state.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
+                    return SendQueuePush::ControlQueueFull;
+                }
+                state.control.push_back(msg);
+                SendQueuePush::Queued
+            },
+        };
+        self.message_available.notify_one();
+        outcome
+    }
+    /// Blocks until a message is available; `None` once closed and drained.
+    fn pop(&self) -> Option<ServerToClientMsg> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(msg) = state.control.pop_front() {
+                return Some(msg);
+            }
+            if let Some((_, msg)) = state.pending_pane_renders.pop_first() {
+                return Some(msg);
+            }
+            if let Some(msg) = state.pending_render.take() {
+                return Some(msg);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.message_available.wait(state).unwrap();
+        }
+    }
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.message_available.notify_all();
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.control.len()
+            + state.pending_pane_renders.len()
+            + usize::from(state.pending_render.is_some())
+    }
+}
+
 // The ClientSender is in charge of sending messages to the client on a special thread
 // This is done so that when the unix socket buffer is full, we won't block the entire router
-// thread
-// When the above happens, the ClientSender buffers messages in hopes that the congestion will be
-// freed until we runs out of buffer space.
-// If we run out of buffer space, we bubble up an error sot hat the router thread will give up on
-// this client and we'll stop sending messages to it.
-// If the client ever becomes responsive again, we'll send one final "Buffer full" message so it
+// thread.
+// Renders are coalesced rather than buffered (see CoalescingSendQueue); if the bounded
+// control-message FIFO fills up regardless, we bubble up an error so that the router thread
+// will give up on this client and we'll stop sending messages to it.
+// If the client ever becomes responsive again, we'll send one final Disconnect message so it
 // knows what happened.
-#[derive(Clone)]
 struct ClientSender {
     client_id: ClientId,
-    client_buffer_sender: channels::Sender<ServerToClientMsg>,
+    queue: Arc<CoalescingSendQueue>,
 }
 
 impl ClientSender {
     pub fn new(client_id: ClientId, mut sender: IpcSenderWithContext<ServerToClientMsg>) -> Self {
-        // FIXME(hartan): This queue is responsible for buffering messages between server and
-        // client. If it fills up, the client is disconnected with a "Buffer full" sort of error
-        // message. It was previously found to be too small (with depth 50), so it was increased to
-        // 5000 instead. This decision was made because it was found that a queue of depth 5000
-        // doesn't cause noticable increase in RAM usage, but there's no reason beyond that. If in
-        // the future this is found to fill up too quickly again, it may be worthwhile to increase
-        // the size even further (or better yet, implement a redraw-on-backpressure mechanism).
-        // We, the zellij maintainers, have decided against an unbounded
-        // queue for the time being because we want to prevent e.g. the whole session being killed
-        // (by OOM-killers or some other mechanism) just because a single client doesn't respond.
-        let (client_buffer_sender, client_buffer_receiver) = channels::bounded(5000);
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let writer_queue = queue.clone();
         std::thread::spawn(move || {
             let err_context = || format!("failed to send message to client {client_id}");
-            for msg in client_buffer_receiver.iter() {
+            while let Some(msg) = writer_queue.pop() {
                 sender
                     .send_server_msg(msg)
                     .with_context(err_context)
@@ -213,10 +338,7 @@ impl ClientSender {
                 exit_reason: ExitReason::Disconnect,
             });
         });
-        ClientSender {
-            client_id,
-            client_buffer_sender,
-        }
+        ClientSender { client_id, queue }
     }
     pub fn send_or_buffer(&self, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || {
@@ -226,18 +348,27 @@ impl ClientSender {
             )
         };
 
-        self.client_buffer_sender
-            .try_send(msg)
-            .map_err(|err| {
-                if let TrySendError::Full(_) = err {
-                    log::warn!(
-                        "client {} is processing server messages too slow",
-                        self.client_id
-                    );
-                }
-                err
-            })
-            .with_context(err_context)
+        match self.queue.push(msg) {
+            SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
+            SendQueuePush::ControlQueueFull => {
+                log::warn!(
+                    "client {} is processing server messages too slow",
+                    self.client_id
+                );
+                Err(ZellijError::ClientTooSlow {
+                    client_id: self.client_id,
+                })
+                .with_context(err_context)
+            },
+        }
+    }
+}
+
+impl Drop for ClientSender {
+    fn drop(&mut self) {
+        // lets the writer thread drain what's queued and send the final
+        // Disconnect message
+        self.queue.close();
     }
 }
 

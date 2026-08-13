@@ -121,7 +121,12 @@ impl<'a> UiComponentParser<'a> {
             let stringified_params = parse_text_params(params_iter)
                 .into_iter()
                 .next()
-                .with_context(|| format!("text must have, well, text..."))?;
+                .with_context(|| {
+                    format!(
+                        "text must have, well, text... (raw component: {:?})",
+                        String::from_utf8_lossy(&bytes)
+                    )
+                })?;
             let encoded_text = text(stringified_params, &self.style, component_coordinates);
             parse_vte_bytes!(self, encoded_text);
             Ok(())
