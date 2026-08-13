@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
 const FILE: &str = "/cache/todos.json";
 
@@ -23,6 +24,10 @@ pub const MAX_TEXT: usize = 500;
 /// The most open items in one list. An item that is crossed off does not count.
 pub const MAX_OPEN: usize = 200;
 /// The most items of any state in one list. This bounds the file.
+///
+/// It also bounds the fetch that materializes a list out of the store, which is
+/// why it is exactly `MAX_FETCH_ROWS`: a whole list is then always one fetch,
+/// and `from_rows` never has to page.
 ///
 /// ponytail: there is no tool that removes an item, so a list at this cap needs
 /// the file edited by hand.
@@ -63,7 +68,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 pub fn load() -> Store {
-    parse(&fs::read(FILE).unwrap_or_default())
+    parse_legacy(&fs::read(FILE).unwrap_or_default())
 }
 
 pub fn json(store: &Store) -> Option<String> {
@@ -136,7 +141,12 @@ pub fn resolve(
 /// into a good state rather than dropped, because the items are the user's
 /// work. A key that is not a clean absolute path is dropped: nothing can find
 /// that list again.
-fn parse(json: &[u8]) -> Store {
+///
+/// Named for what it is now: the reader of the file the lists used to live in,
+/// kept for the one-time import. All the repairs stay, because that file is the
+/// one that has been accumulating hand edits and half-writes, and the import is
+/// the last time anything will look at it.
+pub fn parse_legacy(json: &[u8]) -> Store {
     let saved: Store = serde_json::from_slice(json).unwrap_or_default();
     let mut store = Store::new();
     for (key, list) in saved {
@@ -552,6 +562,417 @@ fn cascade(items: &mut [Item], cascaded: &mut Vec<u64>) {
 }
 
 // ---------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------
+//
+// The store keeps one row per item and holds the tree as `parent_id` edges. The
+// nested `List` above survives as an in-memory materialization of one project's
+// rows, and every function that carries the open-above-done invariant keeps
+// working on it unchanged.
+//
+// That is affordable because a list is capped at `MAX_ITEMS`, which is also the
+// most rows one fetch returns — so a whole list is always exactly one fetch.
+// What used to bound a file now bounds that fetch.
+//
+// Writes go the other way: plan against the materialized list using the
+// existing tree functions, then translate what they did into mutations. The
+// cascade and the open-ancestors rule are not reimplemented against predicates,
+// because there would then be two copies of the invariant to keep in step.
+
+/// The columns a materialization needs. Ordering is `id` ascending, which is
+/// insertion order, which is sibling order.
+pub const ROW_COLUMNS: &[&str] = &["id", "root", "parent_id", "text", "done"];
+
+/// One item waiting to be inserted, still carrying the ids of the tree it came
+/// from. See [`levels_for_import`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub old_id: u64,
+    pub old_parent: Option<u64>,
+    pub text: String,
+    pub done: bool,
+}
+
+fn text_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<String> {
+    match rows.get(row, column) {
+        Some(DataValue::Text(text)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn int_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<u64> {
+    match rows.get(row, column) {
+        Some(DataValue::Int(value)) if *value >= 0 => Some(*value as u64),
+        _ => None,
+    }
+}
+
+fn bool_at(rows: &DataRows, row: &[DataValue], column: &str) -> bool {
+    matches!(rows.get(row, column), Some(DataValue::Bool(true)))
+}
+
+/// Build the lists these rows describe, grouped by project root.
+///
+/// An item whose `parent_id` names no row in the set becomes a top-level item
+/// rather than disappearing. Two reasons: a fetch scoped to one root sees a
+/// parent in another root as absent, and a row left behind by a future delete
+/// would otherwise take its subtree with it. Losing the nesting is recoverable;
+/// losing the user's item is not.
+pub fn from_rows(rows: &DataRows) -> Store {
+    let mut store = Store::new();
+    // Flat first, then linked, because a child can appear before its parent
+    // only if something reordered the fetch — but nothing here should depend on
+    // that not happening.
+    let mut roots: BTreeMap<u64, String> = BTreeMap::new();
+    let mut items: BTreeMap<u64, Item> = BTreeMap::new();
+    let mut parents: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut order: Vec<u64> = Vec::new();
+
+    for row in &rows.rows {
+        let (Some(id), Some(root), Some(text)) = (
+            int_at(rows, row, "id"),
+            text_at(rows, row, "root"),
+            text_at(rows, row, "text"),
+        ) else {
+            continue;
+        };
+        if let Some(parent) = int_at(rows, row, "parent_id") {
+            parents.insert(id, parent);
+        }
+        roots.insert(id, root);
+        items.insert(
+            id,
+            Item {
+                id,
+                text,
+                done: bool_at(rows, row, "done"),
+                children: Vec::new(),
+            },
+        );
+        order.push(id);
+    }
+
+    // A parent in another project is not a parent. Resolving this before the
+    // walk keeps the walk from having to know about roots at all.
+    parents.retain(|id, parent| roots.get(id) == roots.get(parent));
+
+    for id in &order {
+        if is_cyclic(*id, &parents) {
+            parents.remove(id);
+        }
+    }
+
+    // Deepest first, so a child is finished before it is moved into its parent.
+    let mut by_depth: Vec<u64> = order.clone();
+    by_depth.sort_by_key(|id| std::cmp::Reverse(depth_via(*id, &parents)));
+    for id in by_depth {
+        let Some(parent) = parents.get(&id).copied() else {
+            continue;
+        };
+        let Some(child) = items.remove(&id) else {
+            continue;
+        };
+        if let Some(parent) = items.get_mut(&parent) {
+            parent.children.push(child);
+        }
+    }
+
+    // Siblings were pushed deepest-first, which says nothing about their order
+    // among themselves; `id` does.
+    for id in &order {
+        if let Some(item) = items.get_mut(id) {
+            sort_children(item);
+        }
+    }
+
+    for id in order {
+        let (Some(item), Some(root)) = (items.remove(&id), roots.get(&id)) else {
+            continue;
+        };
+        store.entry(root.clone()).or_default().items.push(item);
+    }
+    store
+}
+
+fn sort_children(item: &mut Item) {
+    item.children.sort_by_key(|child| child.id);
+    for child in &mut item.children {
+        sort_children(child);
+    }
+}
+
+/// How far below a top-level item this one sits, for ordering the walk.
+fn depth_via(id: u64, parents: &BTreeMap<u64, u64>) -> usize {
+    let mut depth = 0;
+    let mut at = id;
+    // Bounded by the number of edges: `is_cyclic` has already run, but this must
+    // terminate even if it had not.
+    while let Some(parent) = parents.get(&at) {
+        depth += 1;
+        at = *parent;
+        if depth > parents.len() {
+            break;
+        }
+    }
+    depth
+}
+
+fn is_cyclic(id: u64, parents: &BTreeMap<u64, u64>) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut at = id;
+    while let Some(parent) = parents.get(&at) {
+        if !seen.insert(at) {
+            return true;
+        }
+        at = *parent;
+    }
+    false
+}
+
+/// The ancestors of `id` that are crossed off, closest first.
+///
+/// Adding an open item below a finished one has to reopen everything above it,
+/// or the invariant that a crossed-off item has no open work under it breaks.
+pub fn ancestors_to_open(items: &[Item], id: u64) -> Vec<u64> {
+    let mut trail = Vec::new();
+    if !collect_trail(items, id, &mut trail) {
+        return Vec::new();
+    }
+    // `collect_trail` includes the item itself, which is not an ancestor.
+    trail.pop();
+    trail
+        .into_iter()
+        .rev()
+        .filter(|(_, done)| *done)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Walk to `id`, recording `(id, done)` from the top down. Answers whether this
+/// branch held it.
+fn collect_trail(items: &[Item], id: u64, trail: &mut Vec<(u64, bool)>) -> bool {
+    for item in items {
+        trail.push((item.id, item.done));
+        if item.id == id || collect_trail(&item.children, id, trail) {
+            return true;
+        }
+        trail.pop();
+    }
+    false
+}
+
+/// The texts of the items above `id`, from the top down, `id` last.
+///
+/// This is what a search result carries. Rebuilt from a materialized list rather
+/// than stored, because a trail is a fact about the tree and would go stale the
+/// moment an item above was renamed.
+pub fn trail_of(items: &[Item], id: u64) -> Vec<String> {
+    let mut trail = Vec::new();
+    if !collect_text_trail(items, id, &mut trail) {
+        return Vec::new();
+    }
+    trail
+}
+
+fn collect_text_trail(items: &[Item], id: u64, trail: &mut Vec<String>) -> bool {
+    for item in items {
+        trail.push(item.text.clone());
+        if item.id == id || collect_text_trail(&item.children, id, trail) {
+            return true;
+        }
+        trail.pop();
+    }
+    false
+}
+
+/// Plan adding an item, answering with the writes that do it.
+///
+/// The checks are the ones [`add`] makes, against the same materialized list, so
+/// a call that fails writes nothing. The new item's id is not known here — the
+/// store allocates it, and `ApplyReport::ids` hands it back.
+pub fn plan_add(
+    list: &List,
+    root: &str,
+    text: &str,
+    parent_id: Option<u64>,
+) -> Result<Vec<Mutation>, String> {
+    let text = clean_text(text)?;
+    let (open, all) = counts(list);
+    if open >= MAX_OPEN {
+        return Err(format!(
+            "this project has {MAX_OPEN} open todo items; cross some off first"
+        ));
+    }
+    if all >= MAX_ITEMS {
+        return Err(format!(
+            "this project has {MAX_ITEMS} todo items, the most a list holds"
+        ));
+    }
+    if let Some(parent_id) = parent_id {
+        let Some(depth) = depth_of(&list.items, parent_id, 1) else {
+            return Err(format!(
+                "no todo item {parent_id} in this project; parent_id must name an item in the \
+                 same project — call todo_list"
+            ));
+        };
+        if depth >= MAX_DEPTH {
+            return Err(format!("todo items nest {MAX_DEPTH} levels deep at most"));
+        }
+    }
+
+    let mut put = Mutation::put("todo")
+        .set("root", root)
+        .set("text", text)
+        .set("done", false);
+    if let Some(parent_id) = parent_id {
+        put = put.set("parent_id", parent_id);
+    }
+    let mut mutations = vec![put.build()];
+
+    // The new item is open, so nothing above it may stay crossed off.
+    if let Some(parent_id) = parent_id {
+        let reopen = ancestors_to_open(&list.items, parent_id);
+        let reopen: Vec<u64> = std::iter::once(parent_id)
+            .filter(|_| is_done(&list.items, parent_id))
+            .chain(reopen)
+            .collect();
+        if !reopen.is_empty() {
+            mutations.push(open_mutation(&reopen));
+        }
+    }
+    Ok(mutations)
+}
+
+fn is_done(items: &[Item], id: u64) -> bool {
+    for item in items {
+        if item.id == id {
+            return item.done;
+        }
+        if is_done(&item.children, id) {
+            return true;
+        }
+    }
+    false
+}
+
+fn open_mutation(ids: &[u64]) -> Mutation {
+    Mutation::update("todo", Pred::is_in("id", ids.iter().copied()))
+        .set("done", false)
+        .build()
+}
+
+/// Plan crossing an item off, or opening it again.
+///
+/// [`set_done`] does the thinking, on a copy of the list, and what it reports
+/// having changed becomes the writes. One batch, so the item, the subtree it
+/// cascades to and the ancestors it reopens all move together or not at all.
+pub fn plan_set_done(
+    list: &List,
+    root: &str,
+    id: u64,
+    done: bool,
+) -> Result<(Vec<Mutation>, Change), String> {
+    let mut store = Store::new();
+    store.insert(root.to_owned(), list.clone());
+    let change = set_done(&mut store, root, id, done)?;
+
+    let mut mutations = Vec::new();
+    // The item itself and everything the cascade reached take the same value.
+    let mut same: Vec<u64> = vec![change.id];
+    same.extend(change.cascaded.iter().copied());
+    mutations.push(
+        Mutation::update("todo", Pred::is_in("id", same.iter().copied()))
+            .set("done", done)
+            .build(),
+    );
+    if !change.reopened.is_empty() {
+        mutations.push(open_mutation(&change.reopened));
+    }
+    Ok((mutations, change))
+}
+
+/// Plan moving a project's list to a new root.
+///
+/// One update over every row of the old root. The old file-backed version had to
+/// merge two lists and renumber the ids that collided; nothing collides now,
+/// because the ids belong to the store rather than to the list.
+pub fn plan_move_root(old: &str, new: &str) -> Result<Vec<Mutation>, String> {
+    let old = normalize_root(old)?;
+    let new = normalize_root(new)?;
+    if old == new {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Mutation::update("todo", Pred::eq("root", old))
+        .set("root", new)
+        .build()])
+}
+
+/// A whole list broken into the levels an import inserts it in, shallowest
+/// first.
+///
+/// A child's `parent_id` is the store id of its parent, which is only known once
+/// the parent has been written — so an import is one apply per level, threading
+/// the ids it gets back. Five levels at most, and only ever on the one-time
+/// import.
+pub fn levels_for_import(list: &List) -> Vec<Vec<Pending>> {
+    let mut levels: Vec<Vec<Pending>> = Vec::new();
+    collect_level(&list.items, None, 0, &mut levels);
+    levels
+}
+
+fn collect_level(
+    items: &[Item],
+    parent: Option<u64>,
+    depth: usize,
+    levels: &mut Vec<Vec<Pending>>,
+) {
+    if items.is_empty() {
+        return;
+    }
+    if levels.len() <= depth {
+        levels.push(Vec::new());
+    }
+    for item in items {
+        levels[depth].push(Pending {
+            old_id: item.id,
+            old_parent: parent,
+            text: item.text.clone(),
+            done: item.done,
+        });
+    }
+    // Breadth first, so every item of a level is recorded before any of the next
+    // — which is what makes one apply per level correct.
+    for item in items {
+        collect_level(&item.children, Some(item.id), depth + 1, levels);
+    }
+}
+
+/// The inserts for one level of an import, given the ids the levels above got.
+///
+/// An item whose parent is missing from `new_ids` is written as a top-level
+/// item. That cannot happen from [`levels_for_import`], which always yields
+/// parents first; it is the safe answer if it ever does.
+pub fn import_mutations(
+    root: &str,
+    level: &[Pending],
+    new_ids: &BTreeMap<u64, i64>,
+) -> Vec<Mutation> {
+    level
+        .iter()
+        .map(|pending| {
+            let mut put = Mutation::put("todo")
+                .set("root", root)
+                .set("text", pending.text.clone())
+                .set("done", pending.done);
+            if let Some(parent) = pending.old_parent.and_then(|old| new_ids.get(&old)) {
+                put = put.set("parent_id", *parent);
+            }
+            put.build()
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -577,6 +998,506 @@ mod tests {
 
     fn roots(roots: &[&str]) -> Vec<String> {
         roots.iter().map(|root| (*root).to_owned()).collect()
+    }
+
+    // ----------------------------------------------------------------- rows
+
+    use crate::store::{self, Backend};
+    use zellij_tile::prelude::{FetchRequest, SortDir};
+
+    /// Rows as the store would hand them back, without a store.
+    fn rows(columns: &[&str], values: Vec<Vec<DataValue>>) -> DataRows {
+        DataRows {
+            columns: columns.iter().map(|c| (*c).to_owned()).collect(),
+            rows: values,
+            truncated: false,
+            next_cursor: None,
+        }
+    }
+
+    fn row(id: i64, root: &str, parent: Option<i64>, text: &str, done: bool) -> Vec<DataValue> {
+        vec![
+            DataValue::Int(id),
+            DataValue::Text(root.to_owned()),
+            parent.map_or(DataValue::Null, DataValue::Int),
+            DataValue::Text(text.to_owned()),
+            DataValue::Bool(done),
+        ]
+    }
+
+    /// A backend with the todo entity declared, for the round trips below.
+    fn backend() -> store::Local {
+        let backend = store::Local::shared("hocus_store");
+        backend
+            .define_all(&store::shared_defs())
+            .expect("declared the shared entities");
+        backend
+    }
+
+    /// Read a whole project's list back out of the store.
+    fn materialize(backend: &impl Backend, root: &str) -> List {
+        let fetched = backend
+            .fetch(
+                &FetchRequest::entity("todo")
+                    .filter(Pred::eq("root", root))
+                    .sort_by("id", SortDir::Asc)
+                    .limit(store::LIST_FETCH_LIMIT),
+            )
+            .expect("fetched");
+        from_rows(&fetched).remove(root).unwrap_or_default()
+    }
+
+    /// Write a whole list in, level by level, as the import will.
+    fn import(backend: &impl Backend, root: &str, list: &List) {
+        let mut new_ids: BTreeMap<u64, i64> = BTreeMap::new();
+        for level in levels_for_import(list) {
+            let mutations = import_mutations(root, &level, &new_ids);
+            let report = backend.apply(mutations).expect("imported a level");
+            for (pending, id) in level.iter().zip(report.ids) {
+                new_ids.insert(pending.old_id, id);
+            }
+        }
+    }
+
+    /// Ignore the ids, which the store reassigns, and compare the shape.
+    fn shape(items: &[Item]) -> Vec<(String, bool, Vec<(String, bool, Vec<()>)>)> {
+        items
+            .iter()
+            .map(|item| {
+                (
+                    item.text.clone(),
+                    item.done,
+                    item.children
+                        .iter()
+                        .map(|child| {
+                            (
+                                child.text.clone(),
+                                child.done,
+                                child.children.iter().map(|_| ()).collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// `from_rows` never pages, which is only safe while a full list cannot
+    /// exceed one fetch. If either constant moves, materializing a long list
+    /// would silently lose its tail.
+    #[test]
+    fn a_full_list_still_fits_in_one_fetch() {
+        assert!(
+            MAX_ITEMS as u32 <= store::LIST_FETCH_LIMIT,
+            "a list of {MAX_ITEMS} items cannot be materialized by a fetch of {}",
+            store::LIST_FETCH_LIMIT
+        );
+    }
+
+    #[test]
+    fn rows_become_the_tree_their_edges_describe() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![
+                row(1, "/work", None, "top", false),
+                row(2, "/work", Some(1), "under top", false),
+                row(3, "/work", Some(2), "deeper", false),
+                row(4, "/work", None, "another top", false),
+            ],
+        ));
+        let list = built.get("/work").expect("the project's list");
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(list.items[0].text, "top");
+        assert_eq!(list.items[0].children[0].text, "under top");
+        assert_eq!(list.items[0].children[0].children[0].text, "deeper");
+        assert_eq!(list.items[1].text, "another top");
+    }
+
+    #[test]
+    fn rows_of_several_projects_become_several_lists() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![
+                row(1, "/work", None, "work item", false),
+                row(2, "/play", None, "play item", false),
+            ],
+        ));
+        assert_eq!(built.len(), 2);
+        assert_eq!(built["/work"].items[0].text, "work item");
+        assert_eq!(built["/play"].items[0].text, "play item");
+    }
+
+    /// Sibling order is `id` order, and nothing stores it separately — so a
+    /// fetch that came back in another order must still rebuild it.
+    #[test]
+    fn siblings_come_back_in_id_order_whatever_order_the_rows_arrived_in() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![
+                row(3, "/work", Some(1), "third", false),
+                row(1, "/work", None, "top", false),
+                row(2, "/work", Some(1), "second", false),
+            ],
+        ));
+        let children = &built["/work"].items[0].children;
+        assert_eq!(
+            children.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+            vec!["second", "third"]
+        );
+    }
+
+    /// A parent in another project is not a parent. A fetch scoped to one root
+    /// sees exactly this, and the item must still appear.
+    #[test]
+    fn an_item_whose_parent_is_absent_becomes_a_top_level_item() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![row(2, "/work", Some(99), "orphan", false)],
+        ));
+        assert_eq!(built["/work"].items.len(), 1);
+        assert_eq!(built["/work"].items[0].text, "orphan");
+    }
+
+    #[test]
+    fn a_parent_in_another_project_is_ignored() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![
+                row(1, "/work", None, "work top", false),
+                row(2, "/play", Some(1), "play item", false),
+            ],
+        ));
+        assert_eq!(built["/work"].items.len(), 1);
+        assert!(built["/work"].items[0].children.is_empty());
+        assert_eq!(built["/play"].items.len(), 1);
+    }
+
+    /// Nothing in the API can make a cycle, but a hand-edited database could,
+    /// and materializing one must terminate and keep every item.
+    ///
+    /// Where the cycle gets broken is not worth pinning down — one of the edges
+    /// survives and the items end up nested under each other. What matters is
+    /// that both are still there.
+    #[test]
+    fn a_cycle_does_not_hang_and_loses_no_items() {
+        let built = from_rows(&rows(
+            ROW_COLUMNS,
+            vec![
+                row(1, "/work", Some(2), "one", false),
+                row(2, "/work", Some(1), "two", false),
+            ],
+        ));
+        let (_, all) = counts(&built["/work"]);
+        assert_eq!(all, 2, "both items should survive a broken cycle");
+    }
+
+    #[test]
+    fn ancestors_to_open_names_only_the_finished_ones_closest_first() {
+        let items = vec![done(item(
+            1,
+            "top",
+            vec![item(2, "open middle", vec![done(item(3, "deep", vec![]))])],
+        ))];
+        assert_eq!(ancestors_to_open(&items, 3), vec![1]);
+    }
+
+    #[test]
+    fn a_trail_reads_from_the_top_down() {
+        let items = vec![item(
+            1,
+            "top",
+            vec![item(2, "middle", vec![item(3, "leaf", vec![])])],
+        )];
+        assert_eq!(trail_of(&items, 3), roots(&["top", "middle", "leaf"]));
+    }
+
+    // ------------------------------------------------------- write planning
+
+    #[test]
+    fn planning_an_add_writes_one_row() {
+        let list = List::default();
+        let mutations = plan_add(&list, "/work", "ship it", None).expect("planned");
+        assert_eq!(
+            mutations,
+            vec![Mutation::put("todo")
+                .set("root", "/work")
+                .set("text", "ship it")
+                .set("done", false)
+                .build()]
+        );
+    }
+
+    /// The invariant, as a write: an open item under a finished one reopens it
+    /// and everything above, in the same batch.
+    #[test]
+    fn planning_an_add_under_a_finished_item_reopens_the_items_above() {
+        let list = List {
+            next_id: 3,
+            items: vec![done(item(1, "top", vec![done(item(2, "middle", vec![]))]))],
+        };
+        let mutations = plan_add(&list, "/work", "more work", Some(2)).expect("planned");
+        assert_eq!(mutations.len(), 2);
+        assert_eq!(
+            mutations[1],
+            Mutation::update("todo", Pred::is_in("id", [2u64, 1]))
+                .set("done", false)
+                .build()
+        );
+    }
+
+    #[test]
+    fn planning_an_add_under_an_open_item_reopens_nothing() {
+        let list = List {
+            next_id: 2,
+            items: vec![item(1, "top", vec![])],
+        };
+        let mutations = plan_add(&list, "/work", "more", Some(1)).expect("planned");
+        assert_eq!(mutations.len(), 1);
+    }
+
+    #[test]
+    fn planning_an_add_rejects_a_parent_from_another_project() {
+        let list = List::default();
+        let error = plan_add(&list, "/work", "text", Some(7)).expect_err("no such parent");
+        assert!(error.contains("no todo item 7 in this project"), "{error}");
+    }
+
+    #[test]
+    fn planning_an_add_rejects_text_that_is_too_long() {
+        let list = List::default();
+        let long = "x".repeat(MAX_TEXT + 1);
+        assert!(plan_add(&list, "/work", &long, None).is_err());
+    }
+
+    #[test]
+    fn crossing_an_item_off_cascades_to_its_subtree_in_one_write() {
+        let list = List {
+            next_id: 4,
+            items: vec![item(
+                1,
+                "top",
+                vec![item(2, "middle", vec![item(3, "leaf", vec![])])],
+            )],
+        };
+        let (mutations, change) = plan_set_done(&list, "/work", 1, true).expect("planned");
+        assert_eq!(change.cascaded, vec![2, 3]);
+        assert_eq!(
+            mutations,
+            vec![Mutation::update("todo", Pred::is_in("id", [1u64, 2, 3]))
+                .set("done", true)
+                .build()]
+        );
+    }
+
+    #[test]
+    fn opening_an_item_again_opens_the_items_above_it() {
+        let list = List {
+            next_id: 3,
+            items: vec![done(item(1, "top", vec![done(item(2, "middle", vec![]))]))],
+        };
+        let (mutations, change) = plan_set_done(&list, "/work", 2, false).expect("planned");
+        assert_eq!(change.reopened, vec![1]);
+        assert_eq!(mutations.len(), 2);
+        assert_eq!(
+            mutations[1],
+            Mutation::update("todo", Pred::is_in("id", [1u64]))
+                .set("done", false)
+                .build()
+        );
+    }
+
+    #[test]
+    fn moving_a_root_is_one_update() {
+        let mutations = plan_move_root("/old", "/new").expect("planned");
+        assert_eq!(
+            mutations,
+            vec![Mutation::update("todo", Pred::eq("root", "/old"))
+                .set("root", "/new")
+                .build()]
+        );
+    }
+
+    #[test]
+    fn moving_a_root_to_itself_writes_nothing() {
+        assert!(plan_move_root("/same", "/same")
+            .expect("planned")
+            .is_empty());
+    }
+
+    // --------------------------------------------------- against the engine
+
+    /// The whole layer end to end: a tree goes in through the import, comes back
+    /// out through a fetch, and is the same tree.
+    #[test]
+    fn a_list_survives_a_round_trip_through_the_store() {
+        let backend = backend();
+        let original = List {
+            next_id: 6,
+            items: vec![
+                item(
+                    1,
+                    "first",
+                    vec![
+                        done(item(2, "done child", vec![])),
+                        item(3, "open child", vec![item(4, "grandchild", vec![])]),
+                    ],
+                ),
+                item(5, "second", vec![]),
+            ],
+        };
+        import(&backend, "/work", &original);
+        assert_eq!(
+            shape(&materialize(&backend, "/work").items),
+            shape(&original.items)
+        );
+    }
+
+    /// Adding through the planner and reading back agrees with what the old
+    /// in-memory `add` would have produced.
+    #[test]
+    fn adding_through_the_store_builds_the_same_tree_as_adding_in_memory() {
+        let backend = backend();
+        let mut expected = Store::new();
+
+        let mut parent = None;
+        for text in ["top", "under top", "deeper"] {
+            let list = materialize(&backend, "/work");
+            let mutations = plan_add(&list, "/work", text, parent).expect("planned");
+            let report = backend.apply(mutations).expect("applied");
+            parent = Some(report.ids[0] as u64);
+            let under = expected_parent(&expected);
+            add(&mut expected, "/work", text, under).expect("added");
+        }
+
+        assert_eq!(
+            shape(&materialize(&backend, "/work").items),
+            shape(&expected["/work"].items)
+        );
+    }
+
+    /// The id of the deepest item of the expected tree, to nest the next one
+    /// under — the in-memory twin of threading `ApplyReport::ids`.
+    fn expected_parent(store: &Store) -> Option<u64> {
+        let mut at = store.get("/work")?.items.first()?;
+        while let Some(child) = at.children.first() {
+            at = child;
+        }
+        Some(at.id)
+    }
+
+    #[test]
+    fn crossing_off_through_the_store_cascades_to_the_whole_subtree() {
+        let backend = backend();
+        import(
+            &backend,
+            "/work",
+            &List {
+                next_id: 4,
+                items: vec![item(
+                    1,
+                    "top",
+                    vec![item(2, "middle", vec![item(3, "leaf", vec![])])],
+                )],
+            },
+        );
+
+        let list = materialize(&backend, "/work");
+        let top = list.items[0].id;
+        let (mutations, _) = plan_set_done(&list, "/work", top, true).expect("planned");
+        backend.apply(mutations).expect("applied");
+
+        let after = materialize(&backend, "/work");
+        assert!(after.items[0].done);
+        assert!(after.items[0].children[0].done);
+        assert!(after.items[0].children[0].children[0].done);
+    }
+
+    /// The invariant survives a real write: reopening the leaf reopens the two
+    /// items above it.
+    #[test]
+    fn opening_a_leaf_through_the_store_opens_the_items_above_it() {
+        let backend = backend();
+        import(
+            &backend,
+            "/work",
+            &List {
+                next_id: 4,
+                items: vec![done(item(
+                    1,
+                    "top",
+                    vec![done(item(2, "middle", vec![done(item(3, "leaf", vec![]))]))],
+                ))],
+            },
+        );
+
+        let list = materialize(&backend, "/work");
+        let leaf = list.items[0].children[0].children[0].id;
+        let (mutations, _) = plan_set_done(&list, "/work", leaf, false).expect("planned");
+        backend.apply(mutations).expect("applied");
+
+        let after = materialize(&backend, "/work");
+        assert!(!after.items[0].done, "the top should have reopened");
+        assert!(
+            !after.items[0].children[0].done,
+            "the middle should have reopened"
+        );
+        assert!(!after.items[0].children[0].children[0].done);
+    }
+
+    #[test]
+    fn moving_a_root_through_the_store_carries_the_whole_list() {
+        let backend = backend();
+        import(
+            &backend,
+            "/old",
+            &List {
+                next_id: 3,
+                items: vec![item(1, "top", vec![item(2, "child", vec![])])],
+            },
+        );
+
+        let mutations = plan_move_root("/old", "/new").expect("planned");
+        backend.apply(mutations).expect("applied");
+
+        assert!(materialize(&backend, "/old").items.is_empty());
+        let moved = materialize(&backend, "/new");
+        assert_eq!(moved.items[0].text, "top");
+        assert_eq!(moved.items[0].children[0].text, "child");
+    }
+
+    /// Search is the store's, not a scan of ours. The fallback for a partial
+    /// word is what keeps the old substring behaviour.
+    #[test]
+    fn full_text_search_finds_a_whole_word_and_the_fallback_finds_a_fragment() {
+        let backend = backend();
+        import(
+            &backend,
+            "/work",
+            &List {
+                next_id: 3,
+                items: vec![
+                    item(1, "fixing a rebase conflict", vec![]),
+                    item(2, "writing the changelog", vec![]),
+                ],
+            },
+        );
+
+        let hits = backend
+            .fetch(&FetchRequest::entity("todo").search("rebase"))
+            .expect("searched");
+        assert_eq!(hits.len(), 1);
+
+        // FTS5 tokenizes, so a fragment matches nothing...
+        let fragment = backend
+            .fetch(&FetchRequest::entity("todo").search("reba"))
+            .expect("searched");
+        assert!(fragment.is_empty(), "a fragment should not match a token");
+
+        // ...which is why the substring fallback has to exist.
+        let fallback = backend
+            .fetch(&FetchRequest::entity("todo").filter(Pred::contains("text", "reba")))
+            .expect("searched");
+        assert_eq!(fallback.len(), 1);
     }
 
     #[test]
@@ -610,7 +1531,7 @@ mod tests {
 
     #[test]
     fn a_root_that_is_not_a_clean_absolute_path_is_dropped() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"work/hocus":{"items":[{"id":1,"text":"a"}]},
                  "/work/good":{"items":[{"id":1,"text":"b"}]}}"#,
         );
@@ -619,7 +1540,7 @@ mod tests {
 
     #[test]
     fn a_repeated_id_and_a_missing_one_each_get_a_fresh_id() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[
                 {"id":1,"text":"first"},{"id":1,"text":"second"},{"text":"third"}]}}"#,
         );
@@ -631,7 +1552,7 @@ mod tests {
     #[test]
     fn a_repair_never_gives_out_an_id_another_item_holds() {
         // The fresh id for the second item must clear id 7, which comes later.
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[
                 {"id":1,"text":"first"},{"id":1,"text":"second"},{"id":7,"text":"third"}]}}"#,
         );
@@ -642,13 +1563,14 @@ mod tests {
 
     #[test]
     fn next_id_ends_above_every_id_the_list_holds() {
-        let saved = parse(br#"{"/work/hocus":{"next_id":2,"items":[{"id":30,"text":"a"}]}}"#);
+        let saved =
+            parse_legacy(br#"{"/work/hocus":{"next_id":2,"items":[{"id":30,"text":"a"}]}}"#);
         assert_eq!(saved["/work/hocus"].next_id, 31);
     }
 
     #[test]
     fn an_item_with_bad_text_is_dropped_with_its_sub_items() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[
                 {"id":1,"text":"  ","children":[{"id":2,"text":"hidden"}]},
                 {"id":3,"text":"kept"}]}}"#,
@@ -663,7 +1585,7 @@ mod tests {
         for level in (1..=5).rev() {
             deep = item(level, &format!("level {level}"), vec![deep]);
         }
-        let saved = parse(json(&store("/work/hocus", vec![deep])).unwrap().as_bytes());
+        let saved = parse_legacy(json(&store("/work/hocus", vec![deep])).unwrap().as_bytes());
 
         let names = texts(&list_json(&saved, "/work/hocus", false));
         assert_eq!(
@@ -677,14 +1599,14 @@ mod tests {
         let items: Vec<Item> = (1..=MAX_ITEMS as u64 + 10)
             .map(|id| item(id, &format!("item {id}"), Vec::new()))
             .collect();
-        let saved = parse(json(&store("/work/hocus", items)).unwrap().as_bytes());
+        let saved = parse_legacy(json(&store("/work/hocus", items)).unwrap().as_bytes());
 
         assert_eq!(counts(&saved["/work/hocus"]).1, MAX_ITEMS);
     }
 
     #[test]
     fn a_parent_with_an_open_sub_item_is_opened() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[
                 {"id":1,"text":"parent","done":true,"children":[{"id":2,"text":"child"}]}]}}"#,
         );
@@ -693,7 +1615,7 @@ mod tests {
 
     #[test]
     fn a_done_parent_with_a_done_sub_item_stays_done() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[
                 {"id":1,"text":"parent","done":true,
                  "children":[{"id":2,"text":"child","done":true}]}]}}"#,
@@ -703,12 +1625,12 @@ mod tests {
 
     #[test]
     fn a_list_with_no_items_leaves_no_row() {
-        assert!(parse(br#"{"/work/hocus":{"next_id":9,"items":[]}}"#).is_empty());
+        assert!(parse_legacy(br#"{"/work/hocus":{"next_id":9,"items":[]}}"#).is_empty());
     }
 
     #[test]
     fn two_keys_that_name_one_folder_join_into_one_list() {
-        let saved = parse(
+        let saved = parse_legacy(
             br#"{"/work/hocus":{"items":[{"id":1,"text":"first"}]},
                  "/work/hocus/":{"items":[{"id":1,"text":"second"}]}}"#,
         );
@@ -729,13 +1651,13 @@ mod tests {
                 item(3, "answer the review", Vec::new()),
             ],
         );
-        assert_eq!(parse(json(&saved).unwrap().as_bytes()), saved);
+        assert_eq!(parse_legacy(json(&saved).unwrap().as_bytes()), saved);
     }
 
     #[test]
     fn nothing_saved_is_an_empty_store() {
-        assert!(parse(b"").is_empty());
-        assert!(parse(b"not json").is_empty());
+        assert!(parse_legacy(b"").is_empty());
+        assert!(parse_legacy(b"not json").is_empty());
     }
 
     // -- adding -------------------------------------------------------------
