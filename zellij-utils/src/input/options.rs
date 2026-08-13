@@ -477,6 +477,10 @@ pub struct Options {
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]
     #[serde(default)]
     pub nested_session_handling: Option<NestedSessionHandling>,
+
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub dangerously_enable_paste_buffer_read: Option<bool>,
 }
 
 #[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -597,6 +601,9 @@ impl Options {
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
+        let dangerously_enable_paste_buffer_read = other
+            .dangerously_enable_paste_buffer_read
+            .or(self.dangerously_enable_paste_buffer_read);
 
         Options {
             simplified_ui,
@@ -659,6 +666,7 @@ impl Options {
             post_command_discovery_hook,
             client_async_worker_tasks,
             nested_session_handling,
+            dangerously_enable_paste_buffer_read,
         }
     }
 
@@ -767,6 +775,9 @@ impl Options {
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
+        let dangerously_enable_paste_buffer_read = other
+            .dangerously_enable_paste_buffer_read
+            .or(self.dangerously_enable_paste_buffer_read);
 
         Options {
             simplified_ui,
@@ -829,6 +840,7 @@ impl Options {
             post_command_discovery_hook,
             client_async_worker_tasks,
             nested_session_handling,
+            dangerously_enable_paste_buffer_read,
         }
     }
 

@@ -1332,6 +1332,7 @@ message Options {
   optional uint64 notification_timeout = 60;
   optional bool osc133_command_selection = 61;
   optional string word_separators = 62;
+  optional bool dangerously_enable_paste_buffer_read = 63;
 }
 
 enum OnForceClose {
