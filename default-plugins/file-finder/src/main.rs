@@ -85,8 +85,9 @@ impl ZellijPlugin for State {
         // Map /host to the real filesystem root so the selection file can be read back.
         change_host_folder(PathBuf::from("/"));
 
-        self.plugin_id = get_plugin_ids().plugin_id;
-        self.out_path = PathBuf::from(format!("/tmp/zellij-file-finder-{}.sel", self.plugin_id));
+        let plugin_ids = get_plugin_ids();
+        self.plugin_id = plugin_ids.plugin_id;
+        self.out_path = selection_path(plugin_ids.zellij_pid, self.plugin_id);
 
         subscribe(&[
             EventType::CommandPaneExited,
@@ -292,6 +293,26 @@ impl State {
     }
 }
 
+/// Where the finder script leaves the path the user picked.
+///
+/// Both halves of the name are load-bearing. `plugin_id` alone is not unique: it comes
+/// from a counter that restarts at 0 in every server, and the default layout loads
+/// tab-bar and status-bar ahead of us, so this plugin is `2` in more or less every
+/// session there has ever been. Two Zellij sessions open on one machine would then read
+/// and unlink one another's selection file, and an unlink that lands between the script
+/// writing a pick and this plugin reading it is indistinguishable from a cancel: the
+/// overlay just closes and the file never opens.
+///
+/// `zellij_pid` is the server's own pid, so it separates sessions the way the name needs.
+/// It also separates the integration tests, which are separate processes and were losing
+/// each other's selections exactly this way.
+fn selection_path(zellij_pid: u32, plugin_id: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/tmp/zellij-file-finder-{}-{}.sel",
+        zellij_pid, plugin_id
+    ))
+}
+
 /// The overlay's position and size, as the strings `FloatingPaneCoordinates` parses.
 #[derive(Debug, PartialEq, Eq)]
 struct Geometry {
@@ -353,6 +374,19 @@ mod tests {
             state.host_out_path(),
             PathBuf::from("/host/tmp/zellij-file-finder-4.sel")
         );
+    }
+
+    /// The whole point of the name: `plugin_id` is very nearly always 2, so the pid is
+    /// the only thing keeping two sessions off each other's selection file.
+    #[test]
+    fn two_sessions_do_not_share_a_selection_file() {
+        assert_ne!(selection_path(1000, 2), selection_path(1001, 2));
+    }
+
+    /// And the plugin id still separates two finders within one session.
+    #[test]
+    fn two_finders_in_one_session_do_not_share_a_selection_file() {
+        assert_ne!(selection_path(1000, 2), selection_path(1000, 5));
     }
 
     #[test]

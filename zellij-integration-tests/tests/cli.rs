@@ -117,11 +117,17 @@ fn watcher_client_functionality() {
         },
     );
 
+    // `tab_bar_appears()` in both predicates below is not decoration. A re-attaching
+    // client gets a *new* client id, and plugin panes keep one grid per client, so the
+    // tab bar starts blank for it and draws nothing at all until its first `TabUpdate`.
+    // Without this clause the status bar alone can satisfy the wait, and the snapshot
+    // catches a blank top row — which also makes the `Tab #2` guards below vacuous.
     let main = zellij.attach_client(TERMINAL_SIZE);
     let main_snapshot = main.wait_until(
         "re-attached main converges on the same state",
         |grid_snapshot| {
-            grid_snapshot.status_bar_appears()
+            grid_snapshot.tab_bar_appears()
+                && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("WATCHER_DONE")
                 && grid_snapshot.contains("│")
         },
@@ -130,7 +136,8 @@ fn watcher_client_functionality() {
 
     let watcher_snapshot =
         watcher.wait_until("watcher mirrors the re-attached session", |grid_snapshot| {
-            grid_snapshot.status_bar_appears()
+            grid_snapshot.tab_bar_appears()
+                && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("WATCHER_DONE")
                 && grid_snapshot.contains("│")
                 && !grid_snapshot.contains("Tab #2")

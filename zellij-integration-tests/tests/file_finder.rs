@@ -83,6 +83,22 @@ fn open_finder(zellij: &TestSession) -> (FakePtyHandle, PathBuf) {
     (finder, selection_file(script))
 }
 
+/// Wait for the plugin to have unlinked its selection file.
+///
+/// Not a bare `assert!`: every wait before this one watches the *screen*, and the plugin
+/// unlinks after an async `close_pane_with_id`, so the repaint that satisfies those waits
+/// can beat the unlink. Poll on the same bounded-loop pattern the re-trigger test below
+/// uses for the same reason.
+fn assert_cleaned_up(selection_file: &PathBuf, what: &str) {
+    for _ in 0..50 {
+        if !selection_file.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("{what}: {} is still there", selection_file.display());
+}
+
 /// Play fzf: leave a chosen path behind and exit successfully.
 fn choose(finder: &FakePtyHandle, selection_file: &PathBuf, chosen: &str) {
     std::fs::write(selection_file, format!("{}\n", chosen)).expect("selection file written");
@@ -127,9 +143,9 @@ fn a_chosen_file_opens_in_the_finder_pane_and_closes_with_the_viewer() {
         |grid_snapshot| !grid_snapshot.contains("my-viewer") && grid_snapshot.status_bar_appears(),
     );
 
-    assert!(
-        !selection_file.exists(),
-        "the plugin should clean up its selection file"
+    assert_cleaned_up(
+        &selection_file,
+        "the plugin should clean up its selection file",
     );
     zellij.quit();
 }
@@ -145,10 +161,7 @@ fn cancelling_the_finder_dismisses_the_overlay() {
     zellij.wait_until("the overlay is dismissed", |grid_snapshot| {
         !grid_snapshot.contains(FINDER_TITLE) && grid_snapshot.status_bar_appears()
     });
-    assert!(
-        !selection_file.exists(),
-        "a cancel should leave no selection file"
-    );
+    assert_cleaned_up(&selection_file, "a cancel should leave no selection file");
     zellij.quit();
 }
 

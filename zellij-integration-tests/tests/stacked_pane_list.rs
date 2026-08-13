@@ -308,9 +308,16 @@ fn breaking_the_visible_member_out_promotes_and_moves_it_to_a_new_tab() {
             && !grid_snapshot.contains("Pane #1")
     });
 
+    // Both tab labels, because the snapshot below covers the tab-bar row and nothing else
+    // in this predicate constrains it. Each tab has its own tab-bar plugin instance, so
+    // the `Tab #2` seen above was tab 2's bar; tab 1's still says `Tab #1  +` until its
+    // own re-render lands, and the stack region converges first. `tab_bar_appears()` is
+    // no help here — it is defined as `contains("Tab #1")`, which the stale row satisfies.
     zellij.send_stdin(&keys::alt('h'));
     let grid_snapshot = zellij.wait_until("stack shrank to two members", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("Tab #1")
+            && grid_snapshot.contains("Tab #2")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains(&selected_entry("Pane #2"))
             && !grid_snapshot.contains("Pane #3")
