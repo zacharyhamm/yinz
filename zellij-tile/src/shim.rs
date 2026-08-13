@@ -1938,7 +1938,10 @@ where
 /// Pass `None` for `namespace` to use the plugin's own private one, which is the usual case. A
 /// `shared:`-prefixed namespace is shared with other plugins and needs an extra permission.
 ///
-/// ```rust,ignore
+/// ```no_run
+/// use zellij_tile::prelude::*;
+///
+/// fn main() -> Result<(), String> {
 /// data_define_entity(
 ///     None,
 ///     &EntityDef::new("agent", 1)
@@ -1947,6 +1950,8 @@ where
 ///         .attr(AttrDef::int("updated_at_ms").indexed()),
 ///     false,
 /// )?;
+/// Ok(())
+/// }
 /// ```
 ///
 /// # Permissions Required
@@ -1976,11 +1981,17 @@ pub fn data_define_entity(
 
 /// Apply a batch of writes in one transaction, all or nothing.
 ///
-/// ```rust,ignore
+/// ```no_run
+/// use zellij_tile::prelude::*;
+///
+/// fn main() -> Result<(), String> {
+/// let cutoff = 0_i64;
 /// data_apply(None, vec![
 ///     Mutation::put("agent").uid("a1").set("project", "zellij").build(),
 ///     Mutation::delete("agent", Pred::lt("updated_at_ms", cutoff)),
 /// ])?;
+/// Ok(())
+/// }
 /// ```
 ///
 /// # Permissions Required
@@ -2099,13 +2110,18 @@ pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
 /// An extension trait rather than inherent methods because `FetchRequest` is defined in
 /// `zellij-utils`, which cannot reach the host-call shims here.
 ///
-/// ```rust,ignore
+/// ```no_run
+/// use zellij_tile::prelude::*;
+///
+/// fn main() -> Result<(), String> {
 /// let rows = FetchRequest::entity("agent")
 ///     .filter(Pred::eq("project", "zellij"))
 ///     .search("rebase conflict")
 ///     .sort_by("updated_at_ms", SortDir::Desc)
 ///     .limit(50)
 ///     .fetch()?;
+/// Ok(())
+/// }
 /// ```
 pub trait FetchRequestExt {
     /// Run this fetch. See [`data_fetch`].
