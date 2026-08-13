@@ -10,7 +10,10 @@ use super::sql::storage_err;
 
 /// Check the values of a mutation against the schema, rejecting undeclared attributes, wrong kinds
 /// and malformed JSON.
-pub(super) fn check_values(schema: &EntitySchema, values: &[(String, DataValue)]) -> Result<(), DataError> {
+pub(super) fn check_values(
+    schema: &EntitySchema,
+    values: &[(String, DataValue)],
+) -> Result<(), DataError> {
     for (attr, value) in values {
         let Some(declared) = schema.attr(attr) else {
             return Err(DataError::InvalidQuery(format!(

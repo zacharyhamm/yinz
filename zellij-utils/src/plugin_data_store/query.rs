@@ -2,9 +2,7 @@
 
 use rusqlite::Connection;
 
-use crate::plugin_data::{
-    AttrKind, DataError, DataRows, DataValue, FetchRequest, MAX_FETCH_BYTES,
-};
+use crate::plugin_data::{AttrKind, DataError, DataRows, DataValue, FetchRequest, MAX_FETCH_BYTES};
 use crate::session_recording::fts_phrase;
 
 use super::predicate::compile_pred;
@@ -13,7 +11,10 @@ use super::sql::storage_err;
 use super::value::read_value;
 
 /// The columns a fetch returns, in order.
-pub(super) fn output_columns(schema: &EntitySchema, request: &FetchRequest) -> Result<Vec<String>, DataError> {
+pub(super) fn output_columns(
+    schema: &EntitySchema,
+    request: &FetchRequest,
+) -> Result<Vec<String>, DataError> {
     if request.select.is_empty() {
         let mut columns: Vec<String> = STORE_COLUMNS.iter().map(|c| (*c).to_owned()).collect();
         columns.extend(schema.def.attrs.iter().map(|a| a.name.clone()));

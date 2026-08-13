@@ -147,7 +147,11 @@ pub(super) fn require_text_column(schema: &EntitySchema, attr: &str) -> Result<(
 ///
 /// SQLite would happily compare a string to an integer column and simply never match, which reads
 /// as "no results" rather than as the mistake it is.
-pub(super) fn check_value_kind(schema: &EntitySchema, attr: &str, value: &DataValue) -> Result<(), DataError> {
+pub(super) fn check_value_kind(
+    schema: &EntitySchema,
+    attr: &str,
+    value: &DataValue,
+) -> Result<(), DataError> {
     let Some(kind) = schema.column_kind(attr) else {
         // One of the store's own columns: `id`, `created_at` and `updated_at` are integers, `uid`
         // is text.

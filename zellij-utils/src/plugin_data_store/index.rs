@@ -79,7 +79,10 @@ pub(super) fn drop_full_text(conn: &Connection, schema: &EntitySchema) -> Result
 /// Drop and recreate the entity's full-text index and its triggers, then backfill it.
 ///
 /// Returns whether the entity has a full-text index at all.
-pub(super) fn rebuild_full_text(conn: &Connection, schema: &EntitySchema) -> Result<bool, DataError> {
+pub(super) fn rebuild_full_text(
+    conn: &Connection,
+    schema: &EntitySchema,
+) -> Result<bool, DataError> {
     let table = schema.table();
     let fts = schema.fts_table();
     drop_full_text(conn, schema)?;
