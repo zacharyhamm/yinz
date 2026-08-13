@@ -199,6 +199,17 @@ keybinds {
                 move_to_focused_tab true
             }
         }
+        // Ask the running hocus a question without leaving the pane you are in.
+        // A small popup takes one line; on Enter it closes and focus returns to
+        // where it came from. hocus itself is not revealed — open it when you
+        // want to read the answer. Does nothing useful if hocus is not running,
+        // and says so.
+        bind "Alt a" {
+            LaunchOrFocusPlugin "hocus-ask" {
+                floating true
+                move_to_focused_tab true
+            }
+        }
         bind "Alt i" { MoveTab "Left"; }
         bind "Alt o" { MoveTab "Right"; }
         bind "Alt h" "Alt Left" { MoveFocusOrTab "Left"; }
@@ -275,6 +286,10 @@ plugins {
     hocus location="zellij:hocus" {
         shared true
     }
+    // The one-line "ask hocus" popup, bound to Alt a above. Deliberately not
+    // shared: each attached client gets its own prompt buffer. `x`/`y`/`width`/
+    // `height` size it.
+    hocus-ask location="zellij:hocus-ask"
     // Shared for the same reason hocus is: one instance owns the event-fed
     // agent snapshot for the whole session.
     hocus-agentd location="zellij:hocus-agentd" {

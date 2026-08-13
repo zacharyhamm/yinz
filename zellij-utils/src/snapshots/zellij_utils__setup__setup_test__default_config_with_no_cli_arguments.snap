@@ -106,6 +106,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -604,6 +634,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -1056,6 +1116,36 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1805,6 +1895,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {},
@@ -2319,6 +2439,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -2787,6 +2937,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -3203,6 +3383,36 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3696,6 +3906,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -4077,6 +4317,36 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4515,6 +4785,36 @@ Config {
                 },
                 SwitchToMode {
                     input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -5108,6 +5408,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -5550,6 +5880,36 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6029,6 +6389,36 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-ask",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6594,6 +6984,18 @@ Config {
                     {
                         "shared": "true",
                     },
+                ),
+                initial_cwd: None,
+            },
+            "hocus-ask": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-ask",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
                 ),
                 initial_cwd: None,
             },

@@ -244,6 +244,18 @@ Config {
                 ),
                 initial_cwd: None,
             },
+            "hocus-ask": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-ask",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+            },
             "hocus-store": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(
