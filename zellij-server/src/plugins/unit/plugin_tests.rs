@@ -10645,6 +10645,102 @@ pub fn dump_layout_success_plugin_command() {
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
+/// The data store round trip across the wasm boundary: declare an entity, write to it, read it
+/// back, full-text search it, count it and watch it.
+///
+/// The engine itself is covered by unit tests in `zellij-utils`; what this covers is the hop those
+/// cannot reach — protobuf encode, the JSON-wrapped pipe, dispatch, and decode back in the guest.
+#[test]
+#[ignore]
+pub fn data_store_plugin_commands() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder.clone()), None);
+
+    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        2,
+        &PermissionType::PluginData,
+        cache_path,
+        plugin_thread_sender,
+        1
+    );
+
+    let plugin_should_float = Some(false);
+    let plugin_title = Some("test_plugin".to_owned());
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
+        configuration: Default::default(),
+        ..Default::default()
+    });
+    let tab_index = 1;
+    let client_id = 1;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        plugin_should_float,
+        false,
+        false, // close_replaced_pane
+        plugin_title,
+        run_plugin,
+        Some(tab_index),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Ctrl+Shift+D runs the whole data store round trip in the fixture plugin
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(
+            KeyWithModifier::new(BareKey::Char('d'))
+                .with_ctrl_modifier()
+                .with_shift_modifier(),
+        ),
+    )]));
+
+    screen_thread.join().unwrap();
+    teardown();
+
+    let plugin_bytes_event = received_screen_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|i| {
+            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+                for plugin_render_asset in plugin_render_assets {
+                    let plugin_bytes = plugin_render_asset.bytes.clone();
+                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                    if plugin_bytes.contains("Data store") {
+                        return Some(plugin_bytes);
+                    }
+                }
+            }
+            None
+        });
+    assert_snapshot!(format!("{:#?}", plugin_bytes_event));
+}
+
 #[test]
 #[ignore]
 pub fn dump_layout_not_found_plugin_command() {

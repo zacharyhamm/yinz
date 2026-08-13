@@ -7,6 +7,10 @@ use crate::input::layout::{
 };
 pub use crate::input::options::PaneFrameStyle;
 use crate::pane_size::PaneGeom;
+// The data store's types are part of the plugin API, so they belong in the prelude alongside
+// everything else here. They live in their own module because the engine behind them cannot build
+// for wasm and these types must.
+pub use crate::plugin_data::*;
 use crate::position::Position;
 use crate::shared::{colors as default_colors, eightbit_to_rgb};
 use clap::ValueEnum;
@@ -1055,6 +1059,15 @@ pub enum Event {
     SoftKeyboardVisibilityChanged(bool),
     HintText(BTreeMap<usize, StyledText>),
     ActivePaneScroll(Option<(usize, usize)>),
+    /// The results of a watch registered with `data_watch` have changed.
+    ///
+    /// Sent only when the result set actually differs, so an idempotent write is silent. The rows
+    /// are subject to the same limits as a fetch, and `truncated` says when they hit one.
+    PluginDataChanged {
+        watch_id: u64,
+        rows: DataRows,
+        truncated: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1105,6 +1118,8 @@ pub enum Permission {
     RunActionsAsUser,
     WriteToClipboard,
     ReadSessionEnvironmentVariables,
+    PluginData,
+    SharedPluginData,
 }
 
 impl PermissionType {
@@ -1138,6 +1153,10 @@ impl PermissionType {
             PermissionType::WriteToClipboard => "Write to clipboard".to_owned(),
             PermissionType::ReadSessionEnvironmentVariables => {
                 "Read environment variables present upon session creation".to_owned()
+            },
+            PermissionType::PluginData => "Store and query its own structured data".to_owned(),
+            PermissionType::SharedPluginData => {
+                "Store and query data shared with other plugins".to_owned()
             },
         }
     }
@@ -3796,6 +3815,78 @@ pub enum PluginCommand {
         host_id: String,
         placement: WarpPlacement,
     },
+    /// Declare an entity in the data store, creating or migrating its storage to match. Sends a
+    /// response back.
+    DataDefineEntity {
+        namespace: Option<String>,
+        def: EntityDef,
+        allow_destructive: bool,
+    },
+    /// Apply a batch of writes in one transaction, all or nothing. Sends a response back.
+    DataApply {
+        namespace: Option<String>,
+        mutations: Vec<Mutation>,
+    },
+    /// Read rows from the data store. Sends a response back.
+    DataFetch {
+        request: FetchRequest,
+    },
+    /// Count the rows a fetch would match. Sends a response back.
+    DataCount {
+        request: FetchRequest,
+    },
+    /// Register a standing fetch, and be sent an [`Event::PluginDataChanged`] whenever its results
+    /// change. Sends the initial rows back.
+    DataWatch {
+        request: FetchRequest,
+        mode: WatchMode,
+    },
+    /// Stop a watch registered with `DataWatch`. Sends a response back.
+    DataUnwatch {
+        watch_id: u64,
+    },
+}
+
+/// The outcome of declaring an entity in the data store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataDefineResponse {
+    Ok(DataSchemaInfo),
+    Err(String),
+}
+
+/// The outcome of a batch of writes to the data store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataApplyResponse {
+    Ok(ApplyReport),
+    Err(String),
+}
+
+/// Rows read from the data store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DataFetchResponse {
+    Ok(DataRows),
+    Err(String),
+}
+
+/// How many rows a fetch matched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataCountResponse {
+    Ok(u64),
+    Err(String),
+}
+
+/// A registered watch, and the rows at the moment it was registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DataWatchResponse {
+    Ok(DataWatchHandle),
+    Err(String),
+}
+
+/// The outcome of cancelling a watch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataUnwatchResponse {
+    Ok,
+    Err(String),
 }
 
 // Response type for plugin API methods that open a pane in a new tab

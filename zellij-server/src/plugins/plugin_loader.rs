@@ -24,6 +24,7 @@ use crate::{
 };
 
 use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
+use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
     consts::ZELLIJ_TMP_DIR, data::InputMode, errors::prelude::*, input::command::TerminalAction,
     input::keybinds::Keybinds, input::plugins::PluginConfig, pane_size::Size,
@@ -77,6 +78,7 @@ pub struct PluginLoader<'a> {
     keybinds: Keybinds,
     plugin_dir: PathBuf,
     zellij_data_dir: PathBuf,
+    plugin_data_store: Arc<PluginDataStore>,
     size: Size,
     loading_indication: LoadingIndication,
     senders: ThreadSenders,
@@ -120,6 +122,7 @@ impl<'a> PluginLoader<'a> {
             keybinds: loading_context.keybinds,
             plugin_dir: loading_context.plugin_dir,
             zellij_data_dir: loading_context.zellij_data_dir,
+            plugin_data_store: loading_context.plugin_data_store,
             size: loading_context.size,
 
             skip_cache,
@@ -281,6 +284,7 @@ impl<'a> PluginLoader<'a> {
             wasi_ctx,
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             zellij_data_dir: self.zellij_data_dir.clone(),
+            plugin_data_store: self.plugin_data_store.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
             path_to_default_shell: self.path_to_default_shell.clone(),
@@ -403,6 +407,7 @@ impl<'a> PluginLoader<'a> {
             wasi_ctx,
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             zellij_data_dir: self.zellij_data_dir.clone(),
+            plugin_data_store: self.plugin_data_store.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
             path_to_default_shell: self.path_to_default_shell.clone(),

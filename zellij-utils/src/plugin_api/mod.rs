@@ -8,6 +8,7 @@ pub mod message;
 pub mod pane_frame_style;
 pub mod pipe_message;
 pub mod plugin_command;
+pub mod plugin_data;
 pub mod plugin_ids;
 pub mod plugin_permission;
 pub mod resize;

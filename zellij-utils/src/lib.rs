@@ -14,6 +14,7 @@ pub mod kdl;
 pub mod nested_session_contract;
 pub mod pane_size;
 pub mod plugin_api;
+pub mod plugin_data;
 pub mod position;
 pub mod session_serialization;
 pub mod setup;
@@ -32,6 +33,8 @@ pub mod ipc; // Requires interprocess
 pub mod logging; // Requires log4rs
 #[cfg(not(target_family = "wasm"))]
 pub mod nested_session;
+#[cfg(not(target_family = "wasm"))]
+pub mod plugin_data_store; // Requires rusqlite
 #[cfg(all(not(target_family = "wasm"), feature = "web_server_capability"))]
 pub mod remote_session_tokens;
 #[cfg(not(target_family = "wasm"))]
