@@ -3,8 +3,8 @@
 use insta::assert_snapshot;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
-    split_down_and_wait_for_prompt, split_right_and_wait_for_prompt, FakePtyHandle, Size,
-    TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
+    split_down_and_wait_for_prompt, split_right_and_wait_for_prompt, FakePtyHandle, GridSnapshot,
+    Size, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
 
 const FOCUS_KEYS_CONFIG: &str = r#"
@@ -87,6 +87,27 @@ fn focus_last_pane_refills_after_cycling_focus() {
     zellij.quit();
 }
 
+/// Whether the focused pane's prompt has been drawn and the cursor has come to rest
+/// after it.
+///
+/// Opening a pane and the pane's first output are two separate renders, coalesced by a
+/// 10ms debounce on an idle machine and not coalesced at all on a loaded one. So there is
+/// a frame in which the new pane's frame and title exist but its `$ ` does not, and the
+/// cursor sits at the content origin — a position it leaves and never returns to. A wait
+/// that stops on that frame reads a cursor which is about to become wrong.
+///
+/// `render_bytes` paints the cursor cell as `█`, so "the prompt is there and the cursor
+/// is after it" is `"$ █"` ending at the cursor. That keeps this free of any hardcoded
+/// geometry, which matters because floating panes are staggered.
+fn prompt_cursor_settled(grid: &GridSnapshot) -> bool {
+    grid.cursor.map_or(false, |cursor| {
+        cursor.x >= 2
+            && grid.lines().get(cursor.y).map_or(false, |line| {
+                line.chars().skip(cursor.x - 2).take(3).eq("$ █".chars())
+            })
+    })
+}
+
 fn open_floating_pane_below(
     zellij: &TestSession,
     previous_cursor_row: usize,
@@ -95,8 +116,10 @@ fn open_floating_pane_below(
     let terminal = zellij.expect_pty_spawn();
     terminal.output(PROMPT);
     let grid = zellij.wait_until("new floating pane focused below the previous one", |grid| {
-        grid.cursor
-            .map_or(false, |cursor| cursor.y > previous_cursor_row)
+        prompt_cursor_settled(grid)
+            && grid
+                .cursor
+                .map_or(false, |cursor| cursor.y > previous_cursor_row)
     });
     (terminal, grid.cursor.unwrap().y)
 }
@@ -110,9 +133,15 @@ fn focus_last_floating_pane_returns_to_earlier_pane_after_closing_focused_pane()
     zellij.send_stdin(&keys::key('w'));
     let first_floating = zellij.expect_pty_spawn();
     first_floating.output(PROMPT);
+    // This cursor is compared for exact equality at the end of the test, so it has to be
+    // read from a settled frame. `cursor.is_some()` was no guard at all — the tiled
+    // prompt already satisfies it — so the wait could stop the moment the `Pane #2` frame
+    // was drawn and record a position the cursor was still on its way out of.
     let first_floating_cursor = zellij
-        .wait_until("first floating pane focused", |grid| {
-            grid.contains("Pane #2") && grid.cursor.is_some()
+        .wait_until("first floating pane focused with its prompt", |grid| {
+            grid.contains("Pane #2")
+                && !grid.cursor_is_at(col(2).row(1))
+                && prompt_cursor_settled(grid)
         })
         .cursor
         .unwrap();
@@ -149,8 +178,10 @@ fn focus_last_pane_with_floating_visible_leaves_tiled_focus_untouched() {
     zellij.send_stdin(&keys::key('w'));
     let floating_terminal = zellij.expect_pty_spawn();
     floating_terminal.output(PROMPT);
+    // Same settling requirement as above: the `Alt m` below is answered against whatever
+    // focus state exists when it lands, and the assertion after it is an exact position.
     zellij.wait_until("floating pane focused over the tiled panes", |grid| {
-        grid.contains("Pane #3") && grid.cursor.is_some()
+        grid.contains("Pane #3") && prompt_cursor_settled(grid)
     });
 
     zellij.send_stdin(&keys::alt('m'));
