@@ -150,9 +150,8 @@ pub struct Job {
     pub auto_confirm: bool,
 }
 
-/// The chat archive, the model list or the agent list, open over the top half of
-/// the pane. Modal: while it is open it owns every key, because a keystroke
-/// leaking into the input box below it would be invisible.
+/// A list with a selected row. History and models use one modal instance; the
+/// agent strip keeps another visible above the conversation.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Picker {
     /// What is shown, one row per entry.
@@ -196,7 +195,7 @@ impl PickerRow {
     }
 }
 
-/// Which list the picker is showing. `Tab` cycles between them.
+/// Which list the picker is showing.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum PickerKind {
     /// `entries` are chat titles; the ids are parallel to them.

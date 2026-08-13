@@ -150,7 +150,8 @@ pub use super::generated_api::api::{
         SwitchTabToPayload, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
         TogglePaneEmbedOrEjectForPaneIdPayload, TogglePaneIdFullscreenPayload, UnsubscribePayload,
         WarpPaneFromSessionPayload, WarpPaneResponse as ProtobufWarpPaneResponse,
-        WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement, WebRequestPayload,
+        WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement,
+        WarpTabFromSessionPayload, WarpTabToSessionPayload, WebRequestPayload,
         WriteCharsToPaneIdPayload, WriteToPaneIdPayload,
     },
     plugin_permission::PermissionType as ProtobufPermissionType,
@@ -2885,6 +2886,24 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for WarpPaneFromSession"),
             },
+            Some(CommandName::WarpTabToSession) => match protobuf_plugin_command.payload {
+                Some(Payload::WarpTabToSessionPayload(payload)) => {
+                    Ok(PluginCommand::WarpTabToSession {
+                        tab_index: payload.tab_index as usize,
+                        to_session: payload.to_session,
+                    })
+                },
+                _ => Err("Mismatched payload for WarpTabToSession"),
+            },
+            Some(CommandName::WarpTabFromSession) => match protobuf_plugin_command.payload {
+                Some(Payload::WarpTabFromSessionPayload(payload)) => {
+                    Ok(PluginCommand::WarpTabFromSession {
+                        tab_index: payload.tab_index as usize,
+                        from_session: payload.from_session,
+                    })
+                },
+                _ => Err("Mismatched payload for WarpTabFromSession"),
+            },
             Some(CommandName::ListOrphanedPanes) => match protobuf_plugin_command.payload {
                 Some(_) => Err("ListOrphanedPanes should have no payload"),
                 None => Ok(PluginCommand::ListOrphanedPanes),
@@ -4798,6 +4817,28 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         pane_id: Some(pane_id.try_into()?),
                         from_session,
                         placement: ProtobufWarpPlacement::from(placement) as i32,
+                    },
+                )),
+            }),
+            PluginCommand::WarpTabToSession {
+                tab_index,
+                to_session,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::WarpTabToSession as i32,
+                payload: Some(Payload::WarpTabToSessionPayload(WarpTabToSessionPayload {
+                    tab_index: tab_index as u32,
+                    to_session,
+                })),
+            }),
+            PluginCommand::WarpTabFromSession {
+                tab_index,
+                from_session,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::WarpTabFromSession as i32,
+                payload: Some(Payload::WarpTabFromSessionPayload(
+                    WarpTabFromSessionPayload {
+                        tab_index: tab_index as u32,
+                        from_session,
                     },
                 )),
             }),

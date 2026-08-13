@@ -21,7 +21,7 @@ pub const DEFAULT_DOBBS: &str = "dobbs";
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are running inside Hocus, a Zellij plugin. For Zellij operations, call the one native tool that matches. If pane or tab IDs are not fresh from the immediately preceding tool result, call `list_session` once. For \"swap A and B\", call `swap_panes`; for \"move A left/right/up/down\", call `move_pane`; for floating pane position changes, call `set_floating_pane_geometry`. After a successful mutation, stop: do not call `list_session` merely to verify it. If `move_pane` or `swap_panes` returns an error, report the limitation instead of trying variants. When interacting with a program already running in a pane, use `send_input` rather than starting another copy of it. Pane ids are per-session: to move a pane between sessions, call `list_other_sessions` for the other side's ids, never `list_session`. You have no shell: no tool runs a command you supply. To look at the active project's code, call `find_files` to locate a file by name, `search_files` to find a line by its contents, and `read_file` to read one; they read only inside the active project, and without one they fail rather than reading elsewhere. Prefer them to asking a pane to run `cat` or `grep` for you. Call `agent_list` before you act on an agent pane. Use agent tools only for panes in that result; `agent_spawn` opens a new agent pane. Issue independent tool calls together in one response rather than one per turn.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together.";
 /// Sent in place of the tool set on the last round of the tool budget, so the
 /// model answers from what it has instead of insisting it needs another call.
 const BUDGET_SPENT_PROMPT: &str =
@@ -1167,10 +1167,15 @@ mod tests {
         let body = body_value(&cfg, &[Message::user("move pane 3 left")]);
         assert_eq!(
             body["messages"][0],
-            json!({
-                "role": "system",
-                "content": "You are running inside Hocus, a Zellij plugin. For Zellij operations, call the one native tool that matches. If pane or tab IDs are not fresh from the immediately preceding tool result, call `list_session` once. For \"swap A and B\", call `swap_panes`; for \"move A left/right/up/down\", call `move_pane`; for floating pane position changes, call `set_floating_pane_geometry`. After a successful mutation, stop: do not call `list_session` merely to verify it. If `move_pane` or `swap_panes` returns an error, report the limitation instead of trying variants. When interacting with a program already running in a pane, use `send_input` rather than starting another copy of it. Pane ids are per-session: to move a pane between sessions, call `list_other_sessions` for the other side's ids, never `list_session`. You have no shell: no tool runs a command you supply. To look at the active project's code, call `find_files` to locate a file by name, `search_files` to find a line by its contents, and `read_file` to read one; they read only inside the active project, and without one they fail rather than reading elsewhere. Prefer them to asking a pane to run `cat` or `grep` for you. Call `agent_list` before you act on an agent pane. Use agent tools only for panes in that result; `agent_spawn` opens a new agent pane. Issue independent tool calls together in one response rather than one per turn."
-            })
+            json!({"role": "system", "content": TOOL_FIRST_PROMPT})
+        );
+    }
+
+    #[test]
+    fn hocus_prompt_contract_keeps_global_routing_rules() {
+        assert_eq!(
+            TOOL_FIRST_PROMPT,
+            "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together."
         );
     }
 
@@ -1182,7 +1187,7 @@ mod tests {
         let body = body_value(&cfg, &[Message::user("hi")]);
         assert_eq!(
             body["messages"][0]["content"],
-            json!("You are running inside Hocus, a Zellij plugin. For Zellij operations, call the one native tool that matches. If pane or tab IDs are not fresh from the immediately preceding tool result, call `list_session` once. For \"swap A and B\", call `swap_panes`; for \"move A left/right/up/down\", call `move_pane`; for floating pane position changes, call `set_floating_pane_geometry`. After a successful mutation, stop: do not call `list_session` merely to verify it. If `move_pane` or `swap_panes` returns an error, report the limitation instead of trying variants. When interacting with a program already running in a pane, use `send_input` rather than starting another copy of it. Pane ids are per-session: to move a pane between sessions, call `list_other_sessions` for the other side's ids, never `list_session`. You have no shell: no tool runs a command you supply. To look at the active project's code, call `find_files` to locate a file by name, `search_files` to find a line by its contents, and `read_file` to read one; they read only inside the active project, and without one they fail rather than reading elsewhere. Prefer them to asking a pane to run `cat` or `grep` for you. Call `agent_list` before you act on an agent pane. Use agent tools only for panes in that result; `agent_spawn` opens a new agent pane. Issue independent tool calls together in one response rather than one per turn.\n\nbe terse")
+            json!(format!("{TOOL_FIRST_PROMPT}\n\nbe terse"))
         );
         assert_eq!(
             body["messages"].as_array().unwrap().len(),
@@ -1233,6 +1238,18 @@ mod tests {
         cfg.tools = true;
         let body = body_value(&cfg, &[Message::user("hi")]);
         assert_eq!(body["tools"].as_array().unwrap().len(), 49);
+    }
+
+    #[test]
+    fn hocus_prompt_contract_keeps_the_tool_payload_under_20_kb() {
+        let mut cfg = test_config();
+        cfg.tools = true;
+        let body = request_body(&cfg, &[Message::user("hi")], true);
+        assert!(
+            body.len() < 20_000,
+            "tool payload grew to {} bytes",
+            body.len()
+        );
     }
 
     #[test]

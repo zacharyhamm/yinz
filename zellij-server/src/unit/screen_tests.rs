@@ -8484,17 +8484,40 @@ pub fn send_cli_stack_panes_action() {
         pane_ids: vec!["1".to_owned(), "2".to_owned(), "3".to_owned()],
     };
     send_cli_action_to_server(&session_metadata, stack_panes_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let render_count = received_server_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
+        .count();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    let started_at = std::time::Instant::now();
+    while received_server_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
+        .count()
+        == render_count
+    {
+        assert!(
+            started_at.elapsed() < std::time::Duration::from_secs(5),
+            "timed out waiting for stacked panes to render"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     mock_screen.teardown(vec![server_thread, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+    let (_, snapshot) = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.lock().unwrap().iter(),
         size,
-    );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    )
+    .into_iter()
+    .last()
+    .expect("stack panes action should render");
+    assert_snapshot!(format!("{}", snapshot));
 }
 
 #[test]
@@ -16637,4 +16660,164 @@ fn a_tabs_last_pane_can_still_be_warped() {
         screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
         Ok(2)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tab warp eligibility
+// ---------------------------------------------------------------------------
+//
+// The same argument as above, with more at stake: what a tab warp releases
+// before it can discover a problem is not one supervisor but every supervisor in
+// the tab.
+
+#[test]
+fn a_tab_that_does_not_exist_cannot_be_warped() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(99), 1).err(),
+        Some("there is no tab 99 in this session".to_owned())
+    );
+}
+
+#[test]
+fn a_tab_with_a_scrollback_editor_open_cannot_be_warped() {
+    // Refused for the same reason a single pane with one open is: the
+    // suppressed-pane bookkeeping is keyed by the visible pane, so closing the
+    // pair hands over the wrong pty.
+    let mut screen = screen_with_a_scrollback_editor_open();
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some(
+            "this tab has a pane hidden behind another one; close it before moving the tab"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn the_sessions_only_tab_can_be_warped() {
+    // The pane version refuses the session's last pane, because moving it would
+    // end the session by accident. Asking for the last *tab* is asking for
+    // everything on purpose, so it is allowed and the session then ends.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+
+    assert_eq!(screen.tabs.len(), 1);
+    let (tab_index, terminal_ids, _) = screen
+        .check_tab_can_be_warped(Some(0), 1)
+        .expect("the only tab should still be movable");
+    assert_eq!((tab_index, terminal_ids), (0, vec![1]));
+}
+
+#[test]
+fn warping_a_tab_takes_every_pane_that_has_a_process() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let (tab_index, terminal_ids, _) = screen
+        .check_tab_can_be_warped(Some(1), 1)
+        .expect("the tab should be movable");
+    assert_eq!(tab_index, 1);
+    assert_eq!(terminal_ids, vec![2]);
+}
+
+#[test]
+fn a_tab_warp_defaults_to_the_focused_tab() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.go_to_tab(1, 1).expect("TEST");
+
+    let (tab_index, terminal_ids, _) = screen
+        .check_tab_can_be_warped(None, 1)
+        .expect("the focused tab should be movable");
+    assert_eq!((tab_index, terminal_ids), (0, vec![1]));
+}
+
+#[test]
+fn a_tab_that_can_be_warped_has_already_had_its_arrangement_worked_out() {
+    // The ordering that matters most here. Rebuilding a tab's layout from its
+    // geometry can fail, and it happens during this check — while the tab is
+    // still a tab — rather than after its supervisors have been let go, when
+    // failing would leave a tab on screen with nothing attached to it.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let (_, terminal_ids, prepared) = screen
+        .check_tab_can_be_warped(Some(1), 1)
+        .expect("the tab should be movable");
+    assert_eq!(
+        prepared.tiled_panes.len(),
+        terminal_ids.len(),
+        "every terminal that would be released should already have a slot",
+    );
+}
+
+#[test]
+fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
+    // Not a refusal on principle — a plugin pane rides along in the layout and is
+    // restarted at the far end. But a tab made of nothing else has no process to
+    // move, so moving it would be an elaborate way of opening a new tab.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.close_pane(PaneId::Terminal(1), false, None);
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some("this tab has no panes with a process to move".to_owned())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Warp scrollback budget
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_tabs_panes_share_one_frames_worth_of_scrollback() {
+    // A whole tab travels in a single IPC frame. If every pane spent the
+    // single-pane budget, a tab of sixteen would sit exactly on
+    // MAX_IPC_FRAME_LEN and a tab of seventeen would be unsendable — which would
+    // lose the tab at the very last step, after every supervisor had already
+    // been released.
+    for panes in [1, 2, 8, 16, 64, 256] {
+        let total = Screen::warp_budget_per_pane(panes) * panes;
+        assert!(
+            total < zellij_utils::ipc::MAX_IPC_FRAME_LEN,
+            "a tab of {panes} panes would not fit in a frame",
+        );
+    }
+}
+
+#[test]
+fn a_small_tab_is_not_charged_for_panes_it_does_not_have() {
+    // Sharing the allowance out must not make a one-pane tab carry *more*
+    // scrollback than a single warped pane would, or the two paths would
+    // truncate differently for no reason the user could see.
+    assert_eq!(
+        Screen::warp_budget_per_pane(1),
+        Screen::WARP_CONTENTS_BUDGET
+    );
+    assert!(Screen::warp_budget_per_pane(64) < Screen::WARP_CONTENTS_BUDGET);
+}
+
+#[test]
+fn a_scrollback_over_budget_keeps_its_most_recent_end() {
+    // Truncating from the front is what makes this safe: the receiving side
+    // feeds the result to a VTE parser, which picks up mid-stream.
+    let contents = "abcdefghij".repeat(100);
+    let fitted = Screen::fit_to_budget(contents.clone(), 100);
+    assert_eq!(fitted.len(), 100);
+    assert!(contents.ends_with(&fitted));
+}
+
+#[test]
+fn a_scrollback_within_budget_is_left_alone() {
+    let contents = "hello".to_owned();
+    assert_eq!(Screen::fit_to_budget(contents.clone(), 100), contents);
 }

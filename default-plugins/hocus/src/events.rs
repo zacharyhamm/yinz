@@ -124,11 +124,6 @@ impl State {
             return false;
         }
 
-        // The archive is modal, so it takes every key before anything else can.
-        if self.picker.is_some() {
-            return self.picker_key(key);
-        }
-
         // These must be caught before TextInput sees them. Its bare-key arm
         // doesn't check for modifiers, so it would take Ctrl-l as a literal 'l'
         // and Alt-Enter as a submit.
@@ -137,6 +132,13 @@ impl State {
         }
         if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             return self.open_agent_picker();
+        }
+        // The temporary lists and permanent agent strip are modal while focused.
+        if self.picker.is_some() {
+            return self.picker_key(key);
+        }
+        if self.agents_focused {
+            return self.agent_key(key);
         }
         // The confirmation prompt owns y/n outright, for the same reason: they
         // would otherwise be typed into the input box.
@@ -192,7 +194,10 @@ impl State {
     pub(crate) fn on_paste(&mut self, text: String) -> bool {
         // The states that already take every key before the input box sees it
         // refuse a paste for the same reason.
-        if self.picker.is_some() || matches!(self.status, Status::ConfirmingTool) {
+        if self.picker.is_some()
+            || self.agents_focused
+            || matches!(self.status, Status::ConfirmingTool)
+        {
             return false;
         }
         self.input.insert_text(&text);
