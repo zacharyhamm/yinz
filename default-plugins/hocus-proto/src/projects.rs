@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
 const FILE: &str = "/cache/projects.json";
 
@@ -88,10 +89,17 @@ impl Repository {
 pub type Registry = BTreeMap<String, Project>;
 
 pub fn load() -> Registry {
-    parse(&fs::read(FILE).unwrap_or_default())
+    parse_legacy(&fs::read(FILE).unwrap_or_default())
 }
 
-fn parse(json: &[u8]) -> Registry {
+/// Read the JSON file the registry used to live in, for the one-time import.
+///
+/// The revalidation stays here rather than moving to the row layer, and this is
+/// the reason: it exists because a file could hold anything, and after the
+/// import nothing does. Rows are written through [`validate`], so a row is valid
+/// by construction and re-checking it on every read would be work that can only
+/// ever succeed.
+pub fn parse_legacy(json: &[u8]) -> Registry {
     let projects: Registry = serde_json::from_slice(json).unwrap_or_default();
     projects
         .into_values()
@@ -137,6 +145,132 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
         common_dir: None,
         discovered: false,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------
+//
+// A project is one row keyed by name, because the registry is keyed by name and
+// every caller looks one up that way. Neither the name nor the root is stable —
+// `adopt` renames and discovery moves roots — so there is no stabler choice to
+// make instead.
+
+/// The columns a registry needs. `name` is the uid as well as a column: a uid
+/// cannot be selected or sorted on.
+pub const ROW_COLUMNS: &[&str] = &[
+    "name",
+    "root",
+    "remote",
+    "worktree_status",
+    "common_dir",
+    "discovered",
+];
+
+impl WorktreeStatus {
+    /// The same snake_case spelling serde writes, so the column reads the way
+    /// the old file did and can be understood without a mapping table.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorktreeStatus::Primary => "primary",
+            WorktreeStatus::Linked => "linked",
+        }
+    }
+
+    pub fn from_str(text: &str) -> Option<Self> {
+        match text {
+            "primary" => Some(WorktreeStatus::Primary),
+            "linked" => Some(WorktreeStatus::Linked),
+            _ => None,
+        }
+    }
+}
+
+fn text_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<String> {
+    match rows.get(row, column) {
+        Some(DataValue::Text(text)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// Build the registry these rows describe.
+///
+/// A row missing a name or a root is skipped rather than guessed at. That should
+/// be impossible — both are `required` — but the alternative is a project with
+/// an empty name that nothing can address and nothing can remove.
+pub fn from_rows(rows: &DataRows) -> Registry {
+    rows.rows
+        .iter()
+        .filter_map(|row| {
+            let (Some(name), Some(root)) = (text_at(rows, row, "name"), text_at(rows, row, "root"))
+            else {
+                return None;
+            };
+            Some((
+                name.clone(),
+                Project {
+                    name,
+                    root,
+                    remote: text_at(rows, row, "remote"),
+                    worktree_status: text_at(rows, row, "worktree_status")
+                        .as_deref()
+                        .and_then(WorktreeStatus::from_str),
+                    common_dir: text_at(rows, row, "common_dir"),
+                    discovered: matches!(rows.get(row, "discovered"), Some(DataValue::Bool(true))),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The write that stores one project.
+///
+/// Every attribute is set on every put, including the absent ones. An upsert
+/// only writes the attributes it names, so a project that loses its remote would
+/// otherwise keep the old value forever.
+pub fn to_mutation(project: &Project) -> Mutation {
+    Mutation::put("project")
+        .uid(project.name.clone())
+        .set("name", project.name.clone())
+        .set("root", project.root.clone())
+        .set("remote", project.remote.clone())
+        .set(
+            "worktree_status",
+            project.worktree_status.map(|s| s.as_str().to_owned()),
+        )
+        .set("common_dir", project.common_dir.clone())
+        .set("discovered", project.discovered)
+        .build()
+}
+
+/// The writes that turn `before` into `after`.
+///
+/// Discovery works on a whole registry and reports what it changed, so the
+/// simplest correct thing is to hand it a materialized copy and diff the result.
+/// Untouched projects produce no mutation at all, which matters more than it
+/// looks: a watch only fires when the rows actually differ, so a discovery pass
+/// that changes nothing wakes nobody.
+pub fn diff_mutations(before: &Registry, after: &Registry) -> Vec<Mutation> {
+    let mut mutations = Vec::new();
+    for (name, project) in after {
+        if before.get(name) != Some(project) {
+            mutations.push(to_mutation(project));
+        }
+    }
+    let gone: Vec<String> = before
+        .keys()
+        .filter(|name| !after.contains_key(*name))
+        .cloned()
+        .collect();
+    if !gone.is_empty() {
+        mutations.push(Mutation::delete("project", Pred::is_in("name", gone)));
+    }
+    mutations
+}
+
+/// The write that forgets one project by name.
+pub fn delete_mutation(name: &str) -> Mutation {
+    Mutation::delete("project", Pred::eq("name", name))
 }
 
 pub fn contains(project: &Project, cwd: &str) -> bool {
@@ -366,6 +500,201 @@ pub fn forgotten(project: &Project) -> String {
 mod tests {
     use super::*;
 
+    // ----------------------------------------------------------------- rows
+
+    use crate::store::{self, Backend};
+    use zellij_tile::prelude::FetchRequest;
+
+    fn backend() -> store::Local {
+        let backend = store::Local::shared("hocus_store");
+        backend
+            .define_all(&store::shared_defs())
+            .expect("declared the shared entities");
+        backend
+    }
+
+    fn read_back(backend: &impl Backend) -> Registry {
+        from_rows(
+            &backend
+                .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+                .expect("fetched"),
+        )
+    }
+
+    fn checkout(name: &str, root: &str) -> Project {
+        Project {
+            remote: Some("git@example.com:me/repo".to_owned()),
+            worktree_status: Some(WorktreeStatus::Linked),
+            common_dir: Some("/work/repo/.git".to_owned()),
+            discovered: true,
+            ..validate(name, root).unwrap()
+        }
+    }
+
+    #[test]
+    fn a_project_survives_a_round_trip_through_the_store() {
+        let backend = backend();
+        let project = checkout("hocus", "/work/hocus");
+        backend.apply(vec![to_mutation(&project)]).expect("written");
+        assert_eq!(
+            read_back(&backend),
+            Registry::from([("hocus".to_owned(), project)])
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_git_identity_survives_a_round_trip() {
+        let backend = backend();
+        let project = validate("notes", "/home/me/notes").unwrap();
+        backend.apply(vec![to_mutation(&project)]).expect("written");
+        assert_eq!(read_back(&backend)["notes"], project);
+    }
+
+    #[test]
+    fn both_worktree_statuses_survive_the_text_column() {
+        for status in [WorktreeStatus::Primary, WorktreeStatus::Linked] {
+            assert_eq!(WorktreeStatus::from_str(status.as_str()), Some(status));
+        }
+        assert_eq!(WorktreeStatus::from_str("something else"), None);
+    }
+
+    /// An upsert writes only the attributes it names, so a put that skipped the
+    /// absent ones would leave a stale remote behind forever.
+    #[test]
+    fn a_project_that_loses_its_remote_does_not_keep_the_old_one() {
+        let backend = backend();
+        backend
+            .apply(vec![to_mutation(&checkout("hocus", "/work/hocus"))])
+            .expect("written");
+
+        let plain = validate("hocus", "/work/hocus").unwrap();
+        backend.apply(vec![to_mutation(&plain)]).expect("written");
+
+        let stored = &read_back(&backend)["hocus"];
+        assert_eq!(stored.remote, None);
+        assert_eq!(stored.worktree_status, None);
+        assert_eq!(stored.common_dir, None);
+        assert!(!stored.discovered);
+    }
+
+    #[test]
+    fn a_diff_that_changes_nothing_writes_nothing() {
+        let registry = Registry::from([("hocus".to_owned(), checkout("hocus", "/work/hocus"))]);
+        assert!(diff_mutations(&registry, &registry).is_empty());
+    }
+
+    #[test]
+    fn a_diff_writes_only_the_projects_that_changed() {
+        let before = Registry::from([
+            (
+                "hocus".to_owned(),
+                validate("hocus", "/work/hocus").unwrap(),
+            ),
+            (
+                "notes".to_owned(),
+                validate("notes", "/work/notes").unwrap(),
+            ),
+        ]);
+        let mut after = before.clone();
+        after.get_mut("notes").unwrap().root = "/work/notes2".to_owned();
+
+        let mutations = diff_mutations(&before, &after);
+        assert_eq!(mutations, vec![to_mutation(&after["notes"])]);
+    }
+
+    #[test]
+    fn a_diff_deletes_the_projects_that_went_away() {
+        let before = Registry::from([
+            (
+                "hocus".to_owned(),
+                validate("hocus", "/work/hocus").unwrap(),
+            ),
+            (
+                "notes".to_owned(),
+                validate("notes", "/work/notes").unwrap(),
+            ),
+        ]);
+        let after = Registry::from([("hocus".to_owned(), before["hocus"].clone())]);
+
+        assert_eq!(
+            diff_mutations(&before, &after),
+            vec![Mutation::delete(
+                "project",
+                Pred::is_in("name", vec!["notes".to_owned()])
+            )]
+        );
+    }
+
+    /// The shape every caller will use: materialize, run the existing registry
+    /// logic against it, diff, apply.
+    #[test]
+    fn a_diff_applied_to_the_store_reaches_the_registry_it_described() {
+        let backend = backend();
+        let before = read_back(&backend);
+
+        let mut after = Registry::new();
+        for (name, root) in [("hocus", "/work/hocus"), ("notes", "/work/notes")] {
+            after.insert(name.to_owned(), validate(name, root).unwrap());
+        }
+        backend
+            .apply(diff_mutations(&before, &after))
+            .expect("applied");
+        assert_eq!(read_back(&backend), after);
+
+        // And the removal half, against rows that are really there.
+        let before = read_back(&backend);
+        let after = Registry::from([("hocus".to_owned(), before["hocus"].clone())]);
+        backend
+            .apply(diff_mutations(&before, &after))
+            .expect("applied");
+        assert_eq!(read_back(&backend), after);
+    }
+
+    /// Renaming is a delete and a put, and both have to land in one batch or a
+    /// reader between them sees the project twice or not at all.
+    #[test]
+    fn renaming_a_project_leaves_exactly_one_row() {
+        let backend = backend();
+        let old = validate("hocus", "/work/hocus").unwrap();
+        backend.apply(vec![to_mutation(&old)]).expect("written");
+
+        let new = validate("hocus-again", "/work/hocus").unwrap();
+        backend
+            .apply(vec![delete_mutation("hocus"), to_mutation(&new)])
+            .expect("renamed");
+
+        let stored = read_back(&backend);
+        assert_eq!(stored.len(), 1);
+        assert!(stored.contains_key("hocus-again"));
+    }
+
+    /// Discovery is unchanged: it still takes a `&mut Registry`, and the rows
+    /// are reached by materializing before and diffing after.
+    #[test]
+    fn discovery_runs_against_a_materialized_registry() {
+        let backend = backend();
+        let repositories = [Repository {
+            root: "/work/hocus".to_owned(),
+            remote: Some("git@example.com:me/hocus".to_owned()),
+            worktree_status: Some(WorktreeStatus::Primary),
+            common_dir: Some("/work/hocus/.git".to_owned()),
+            branch: None,
+        }];
+
+        let mut registry = read_back(&backend);
+        let found = discover(&mut registry, &repositories);
+        assert!(found.changed(), "a checkout should have made a project");
+        backend
+            .apply(diff_mutations(&read_back(&backend), &registry))
+            .expect("applied");
+
+        let stored = read_back(&backend);
+        assert_eq!(stored.len(), 1);
+        assert!(stored.values().next().unwrap().discovered);
+    }
+
+    // --------------------------------------------------------------- legacy
+
     #[test]
     fn validation_requires_a_name_and_a_clean_absolute_root() {
         assert!(validate("hocus", "/work/hocus").is_ok());
@@ -411,7 +740,7 @@ mod tests {
 
     #[test]
     fn invalid_saved_projects_are_dropped() {
-        let projects = parse(
+        let projects = parse_legacy(
             br#"{"bad":{"name":"bad","root":"relative"},"good":{"name":"good","root":"/work/good"}}"#,
         );
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["good"]);
@@ -566,7 +895,7 @@ mod tests {
 
     #[test]
     fn saved_projects_without_the_flag_load_as_user_projects() {
-        let projects = parse(br#"{"hocus":{"name":"hocus","root":"/work/hocus"}}"#);
+        let projects = parse_legacy(br#"{"hocus":{"name":"hocus","root":"/work/hocus"}}"#);
         assert!(!projects["hocus"].discovered);
     }
 
@@ -574,7 +903,7 @@ mod tests {
     /// go away on load; the ones the user named stay, repository or not.
     #[test]
     fn a_saved_folder_project_from_discovery_is_dropped_on_load() {
-        let projects = parse(
+        let projects = parse_legacy(
             br#"{
                 "notes":{"name":"notes","root":"/work/notes","discovered":true},
                 "hocus":{"name":"hocus","root":"/work/hocus","discovered":true,"common_dir":"/work/hocus/.git"},
@@ -593,7 +922,7 @@ mod tests {
     fn the_discovered_flag_survives_a_save_and_a_load() {
         let mut projects = Registry::new();
         discover(&mut projects, &checkouts(&["/work/hocus"]));
-        let saved = parse(json(&projects).unwrap().as_bytes());
+        let saved = parse_legacy(json(&projects).unwrap().as_bytes());
 
         assert_eq!(saved, projects);
         assert!(saved["hocus"].discovered);
