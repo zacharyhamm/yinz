@@ -281,7 +281,11 @@ fn a_socket_nobody_is_listening_on_is_garbage_collected() {
     // useless: it names a pane that no longer exists.
     let dir = tempfile::tempdir().expect("TEST");
     let stale = dir.path().join("deadbeef.sock");
-    std::fs::write(&stale, b"").expect("TEST");
+    // A real bound socket with nobody listening, not a plain file standing in for
+    // one: `UnixListener` leaves the node behind on drop, and only an actual
+    // socket refuses the connect. Connecting to a regular file is ECONNREFUSED on
+    // Linux but ENOTSOCK on macOS, which the scan would rightly not collect.
+    drop(std::os::unix::net::UnixListener::bind(&stale).expect("TEST"));
 
     let entries = collect_from(dir.path()).expect("TEST");
 

@@ -22,6 +22,11 @@ use zellij_utils::errors::prelude::*;
 /// at least one byte for the ancillary data to have somewhere to attach.
 const FD_SENTINEL: u8 = b'F';
 
+/// How many descriptors a single handoff is willing to receive. Only the first is
+/// kept; the rest are closed. A peer that attaches more than this fails the
+/// receive outright on macOS, which is a reported error rather than a leak.
+const MAX_HANDOFF_FDS: usize = 4;
+
 pub fn send_fd(sock: &UnixStream, fd: RawFd) -> Result<()> {
     let err_context = || "failed to hand off pty descriptor".to_string();
     let fds = [fd];
@@ -64,7 +69,11 @@ pub fn recv_fd(sock: &UnixStream) -> Result<OwnedFd> {
     loop {
         let mut buf = [0u8; 1];
         let mut iov = [IoSliceMut::new(&mut buf)];
-        let mut cmsg_buffer = nix::cmsg_space!([RawFd; 1]);
+        // Room for more than the one descriptor a correct peer sends: Linux
+        // truncates an oversized set of rights and closes the excess, but macOS
+        // refuses the whole `recvmsg` with ENOBUFS and strands them. Receiving the
+        // extras is what lets the loop below close them.
+        let mut cmsg_buffer = nix::cmsg_space!([RawFd; MAX_HANDOFF_FDS]);
         let msg = match recvmsg::<()>(
             sock.as_raw_fd(),
             &mut iov,
