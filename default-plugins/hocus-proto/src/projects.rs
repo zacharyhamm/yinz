@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
@@ -89,10 +88,6 @@ impl Repository {
 
 pub type Registry = BTreeMap<String, Project>;
 
-pub fn load() -> Registry {
-    parse_legacy(&fs::read(FILE).unwrap_or_default())
-}
-
 /// Read the JSON file the registry used to live in, for the one-time import.
 ///
 /// The revalidation stays here rather than moving to the row layer, and this is
@@ -118,14 +113,6 @@ pub fn parse_legacy(json: &[u8]) -> Registry {
         })
         .map(|project| (project.name.clone(), project))
         .collect()
-}
-
-pub fn json(projects: &Registry) -> Option<String> {
-    serde_json::to_string(projects).ok()
-}
-
-pub fn write(json: &[u8]) {
-    let _ = fs::write(FILE, json);
 }
 
 pub fn validate(name: &str, root: &str) -> Result<Project, String> {
@@ -554,6 +541,13 @@ mod tests {
                 .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
                 .expect("fetched"),
         )
+    }
+
+    /// Serialize a registry the way the old file did, so `parse_legacy` can be
+    /// tested against input in the shape it will actually meet. Only the tests
+    /// write this format now.
+    fn json(projects: &Registry) -> Option<String> {
+        serde_json::to_string(projects).ok()
     }
 
     fn checkout(name: &str, root: &str) -> Project {

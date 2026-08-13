@@ -436,20 +436,27 @@ impl ZellijPlugin for State {
             PermissionType::RunCommands,
             PermissionType::ReadPaneContents,
             PermissionType::WriteToStdin,
-            // Deliberately *not* MessageAndLaunchOtherPlugins, though talking to
-            // hocus-agentd would nominally need it. A builtin is granted every
-            // gated call regardless (see `check_command_permission`), so adding
-            // it buys nothing — while `check_permissions` demands an exact match
-            // against the cached grant, so a longer list re-prompts every
-            // existing user for a permission that was never enforced. A hocus
-            // loaded from a `file:` path is not a builtin and so loses every
-            // pipe. There is no inline fallback for any of it any more: the
-            // daemon's snapshot is the only source of panes and folders, and
-            // the store's is the only source of projects and todos, so agents
-            // and projects both simply go missing and writes time out.
-            // Not worth re-prompting everyone over — hot-reloading a builtin
+            // Deliberately *not* MessageAndLaunchOtherPlugins, and deliberately
+            // not PluginData or SharedPluginData either, though talking to
+            // hocus-agentd and reading the store would nominally need them. A
+            // builtin is granted every gated call regardless (see
+            // `check_command_permission`, and `resolve_data_namespace` for the
+            // shared namespace), so adding them buys nothing — while
+            // `check_permissions` demands an exact match against the cached
+            // grant, so a longer list re-prompts every existing user for
+            // permissions that were never enforced.
+            //
+            // A hocus loaded from a `file:` path is not a builtin and so loses
+            // all of it, with no inline fallback: the daemon's snapshot is the
+            // only source of panes and folders, and the store is the only source
+            // of projects, todos, the archive and the up-arrow history. Agents
+            // and projects go missing, writes fail, and the archive is empty —
+            // that last one is new, and is the reason to mention it here.
+            //
+            // Not worth re-prompting everyone over: hot-reloading a builtin
             // keeps the `zellij:` location and resolves to the freshly built
-            // wasm anyway (see `BUILTIN_PLUGIN_DEV_DIRS`).
+            // wasm anyway (see `BUILTIN_PLUGIN_DEV_DIRS`), so a `file:` load is
+            // a thing you have to go out of your way to do.
         ]);
     }
 
