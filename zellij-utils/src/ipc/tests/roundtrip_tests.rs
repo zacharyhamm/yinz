@@ -3,7 +3,7 @@ use crate::data::{
     BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates, GlobalPaneEdge,
     GlobalPanePlacement, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
     LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag, Resize,
-    WarpPlacement, WarpedPane, WebSharing,
+    WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -894,6 +894,114 @@ fn test_client_messages() {
                 borderless: true,
             }),
             placement: WarpPlacement::Floating,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    // Moving a whole tab. The two directions are small, but the tab itself
+    // carries a nested layout and a pane list whose *order* is what places the
+    // panes, so this is the one warp payload where a conversion that dropped or
+    // reordered a repeated field would be silently wrong rather than obviously so.
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::WarpTab {
+            tab_index: None,
+            to_session: "other".to_owned(),
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::WarpTab {
+            tab_index: Some(2),
+            to_session: "other".to_owned(),
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::WarpTabFrom {
+            from_session: "other".to_owned(),
+            tab_index: 2,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::AdoptTab {
+            payload: Box::new(WarpedTab::default()),
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::AdoptTab {
+            payload: Box::new(WarpedTab {
+                name: Some("build".to_owned()),
+                tiled_layout: TiledPaneLayout {
+                    children_split_direction: SplitDirection::Vertical,
+                    children: vec![
+                        TiledPaneLayout {
+                            run: Some(Run::Command(RunCommand {
+                                command: PathBuf::from("vim"),
+                                args: vec!["src/main.rs".to_owned()],
+                                ..Default::default()
+                            })),
+                            split_size: Some(SplitSize::Percent(60)),
+                            ..Default::default()
+                        },
+                        TiledPaneLayout {
+                            run: Some(Run::Command(RunCommand {
+                                command: PathBuf::from("cargo"),
+                                args: vec!["watch".to_owned()],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+                floating_layout: vec![FloatingPaneLayout {
+                    name: Some("notes".to_owned()),
+                    x: Some(PercentOrFixed::Percent(10)),
+                    y: Some(PercentOrFixed::Percent(20)),
+                    width: Some(PercentOrFixed::Percent(30)),
+                    height: Some(PercentOrFixed::Percent(40)),
+                    ..Default::default()
+                }],
+                tiled_panes: vec![
+                    WarpedPane {
+                        host_id: "a3f1c2d4e5b6".to_owned(),
+                        control_socket: PathBuf::from(
+                            "/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"
+                        ),
+                        title: Some("vim src/main.rs".to_owned()),
+                        contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(100_000)),
+                        borderless: false,
+                    },
+                    WarpedPane {
+                        host_id: "b4e2d3c5f6a7".to_owned(),
+                        control_socket: PathBuf::from(
+                            "/run/user/1000/zellij/pty/b4e2d3c5f6a7.sock"
+                        ),
+                        title: Some("cargo watch".to_owned()),
+                        contents: None,
+                        borderless: true,
+                    },
+                ],
+                floating_panes: vec![WarpedPane {
+                    host_id: "c5f3e4d6a7b8".to_owned(),
+                    control_socket: PathBuf::from("/run/user/1000/zellij/pty/c5f3e4d6a7b8.sock"),
+                    title: Some("notes".to_owned()),
+                    contents: None,
+                    borderless: false,
+                }],
+                hide_floating_panes: true,
+            }),
         },
         terminal_id: None,
         client_id: None,

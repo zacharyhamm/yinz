@@ -873,36 +873,65 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         return;
     }
 
-    // A list you move around in, drawn over the top half of the pane. The
-    // conversation stays put underneath: the picker is modal, so the input box
-    // below it is visible but inert, and hiding the transcript to pick an agent
-    // would take away the very thing you are picking one about.
-    if let Some(picker) = &state.picker {
-        // Must precede any print_*, same as `place_cursor` below: the host reads
-        // the cursor out of the render output stream in order.
-        show_cursor(None);
-        render_title(state, cols);
+    // The agent strip permanently owns the top third of the pane.
+    let agent_rows = (rows / 3).saturating_sub(1).max(1);
+    let agent_ruled = agent_rows > 1;
+    let body_y = 1 + agent_rows;
+    let body_rows = rows.saturating_sub(body_y + 1);
+    let layout = state
+        .picker
+        .is_none()
+        .then(|| chat_layout(state, body_rows, cols));
 
-        // Always half the pane, whatever the list holds. A region that grew and
-        // shrank with the agent count would shift the conversation under it on
-        // every snapshot.
-        let picker_rows = (rows / 2).saturating_sub(1).max(1);
+    if state.picker.is_some() || state.agents_focused {
+        show_cursor(None);
+    } else if let Some(layout) = &layout {
+        // Must precede any print_*: the host reads the cursor position out of
+        // the render output stream in order.
+        place_cursor(
+            state,
+            cols,
+            layout.input_y(body_y),
+            layout.skipped_input_rows,
+        );
+    }
+    render_title(state, cols);
+    render_picker(
+        &state.agent_picker,
+        1,
+        agent_rows - usize::from(agent_ruled),
+        cols,
+        state.agents_focused,
+    );
+    if agent_ruled {
+        print_text_with_coordinates(
+            Text::new("─".repeat(cols)).dim_range(..),
+            0,
+            agent_rows,
+            Some(cols),
+            None,
+        );
+    }
+
+    // History and models stay below agents and leave the conversation visible.
+    if let Some(picker) = &state.picker {
+        let picker_rows = (body_rows / 2).max(1);
         let ruled = picker_rows > 1;
-        render_picker(picker, 1, picker_rows - usize::from(ruled), cols);
+        render_picker(picker, body_y, picker_rows - usize::from(ruled), cols, true);
         if ruled {
             print_text_with_coordinates(
                 Text::new("─".repeat(cols)).dim_range(..),
                 0,
-                picker_rows,
+                body_y + picker_rows - 1,
                 Some(cols),
                 None,
             );
         }
 
-        let body_y = 1 + picker_rows;
-        let layout = chat_layout(state, rows.saturating_sub(body_y + 1), cols);
+        let chat_y = body_y + picker_rows;
+        let layout = chat_layout(state, body_rows.saturating_sub(picker_rows), cols);
         state.transcript_rows = layout.transcript_rows;
-        render_chat(state, body_y, cols, &layout);
+        render_chat(state, chat_y, cols, &layout);
 
         print_text_with_coordinates(
             Text::new(help_line(state)).dim_range(..),
@@ -914,15 +943,10 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         return;
     }
 
-    let layout = chat_layout(state, rows.saturating_sub(1), cols);
+    let layout = layout.expect("non-picker layout");
     state.transcript_rows = layout.transcript_rows;
 
-    // Must precede any print_*: the host reads the cursor position out of the
-    // render output stream in order.
-    place_cursor(state, cols, layout.input_y(1), layout.skipped_input_rows);
-
-    render_title(state, cols);
-    render_chat(state, 1, cols, &layout);
+    render_chat(state, body_y, cols, &layout);
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
@@ -982,14 +1006,15 @@ fn render_title(state: &State, cols: usize) {
         Ok(cfg) => cfg.model.clone(),
         Err(error) => error.model.clone(),
     };
-    let title = format!("hocus — {model}");
-    print_text_with_coordinates(
-        Text::new(&title).color_range(0, ..title.chars().count().min(5)),
-        0,
-        0,
-        Some(cols),
-        None,
-    );
+    let title = format!("hocus — {model}  agents");
+    let agents = title.chars().count().saturating_sub(6)..title.chars().count();
+    let text = Text::new(&title).color_range(0, ..title.chars().count().min(5));
+    let text = if state.agents_focused {
+        text.color_range(2, agents)
+    } else {
+        text.dim_range(agents)
+    };
+    print_text_with_coordinates(text, 0, 0, Some(cols), None);
 
     // One slot at the right edge: what is happening now beats what is pending.
     // A count rides along when other chats are working too, so a background
@@ -1199,7 +1224,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
 /// The archive (one chat per row, titled by its opening question), the model
 /// list (one id per row), or the agent list (agents under the project and
 /// branch headers that group them).
-fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize) {
+fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: bool) {
     if picker.entries.is_empty() {
         // An empty model list is the fetch still being in flight — `finish_models`
         // either fills it or closes the picker.
@@ -1223,7 +1248,7 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize) {
     for (index, entry) in picker.entries.iter().skip(start).take(height).enumerate() {
         // Titles are already stripped of control characters by `history::title`,
         // and the host clips to `cols`, so neither is repeated here.
-        let selected = start + index == picker.selected;
+        let selected = active && start + index == picker.selected;
         let text = match entry.kind {
             // A header takes no marker column: nothing can land on it, and the
             // indentation it carries is what shows the nesting.
@@ -1270,6 +1295,9 @@ fn help_line(state: &State) -> &'static str {
         Some(PickerKind::Agents(_)) => return "<↑↓> choose  <Enter> focus  <Esc> back",
         None => {},
     }
+    if state.agents_focused {
+        return "<↑↓> choose  <Enter> focus  <Esc> chat";
+    }
     // Tools before the stream, matching what Esc actually does when both are
     // outstanding.
     match state.status {
@@ -1278,7 +1306,7 @@ fn help_line(state: &State) -> &'static str {
         Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
         Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
-        Status::Idle => "<Ctrl l> new chat  <Ctrl r> agents  <Esc> hide",
+        Status::Idle => "<Ctrl l> new chat  <Ctrl r> focus agents  <Esc> hide",
     }
 }
 

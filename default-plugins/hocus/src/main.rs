@@ -6,7 +6,6 @@ mod events;
 mod history;
 mod log;
 mod message;
-mod text_input;
 mod tool_loop;
 mod tools;
 mod transitions;
@@ -21,6 +20,7 @@ use worker::post_log;
 use hocus_proto::store::{self, Backend};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
+use hocus_proto::text_input::{InputAction, TextInput};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects, todos};
 
@@ -28,7 +28,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use zellij_tile::prelude::*;
 
 use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator};
-use text_input::{InputAction, TextInput};
 use tools::ToolCall;
 
 /// How many times in a row the model may call tools before the tools are taken
@@ -58,6 +57,11 @@ const JOB_SECONDS: f64 = 1.0;
 /// second bills the user sixty times a minute for a pane that hasn't changed.
 const MIN_JOB_SECONDS: f64 = 5.0;
 
+/// How many questions from the ask popup may wait for a busy hocus at once.
+/// Deep enough that nobody hits it typing at human speed, shallow enough that
+/// a stream which never settles cannot bury the conversation.
+const MAX_QUEUED_ASKS: usize = 8;
+
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
 const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
@@ -67,7 +71,7 @@ const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
 Ctrl+l        new chat
-Ctrl+r        agent picker
+Ctrl+r        focus agents
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
@@ -75,10 +79,15 @@ PageUp / PageDown        scroll the transcript
 Esc           cancel a stream or tool, or hide hocus
 y / n         confirm or decline a pending tool call
 
-In a picker (history, models, agents):
+In history or models:
 Up / Down     choose
 Enter         select
-Esc           back";
+Esc           back
+
+With agents focused:
+Up / Down     choose
+Enter         focus pane
+Esc           return to chat";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
@@ -241,10 +250,27 @@ pub struct State {
     /// still running. A chat that settles is archived and dropped from here —
     /// `/history` loads it back from the file if you want it again.
     parked: Vec<Chat>,
-    /// The archive browser, when it is open.
+    /// The archive or model browser, when it is open.
     pub picker: Option<Picker>,
+    /// The agent strip that is always drawn above the conversation.
+    pub agent_picker: Picker,
+    /// Whether keys belong to the agent strip rather than the conversation.
+    pub agents_focused: bool,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
+    /// Questions from the `hocus-ask` popup that arrived while hocus was busy,
+    /// oldest first. Drained one per tick by `drain_asks`.
+    ///
+    /// A queue rather than a single slot because the popup *tells the user*
+    /// their question was taken: last-wins would silently drop something
+    /// already acknowledged as queued, and first-wins would drop the newer
+    /// question with no acknowledgement to match. Answering both in the order
+    /// they were asked is the only behaviour that matches what was promised.
+    ///
+    /// Capped by `MAX_QUEUED_ASKS`. Past the cap the popup is refused, which is
+    /// an answer the user can see, rather than an unbounded pile of questions
+    /// stacking up behind one wedged stream.
+    pub asks: VecDeque<String>,
     job_seq: u64,
     /// Authority for the scheduled run that currently owns the conversation.
     job_auto_confirm: bool,
@@ -352,7 +378,14 @@ impl Default for State {
             saved: (0, 0),
             parked: Vec::new(),
             picker: None,
+            agent_picker: Picker {
+                entries: Vec::new(),
+                selected: 0,
+                kind: PickerKind::Agents(Vec::new()),
+            },
+            agents_focused: false,
             jobs: Vec::new(),
+            asks: VecDeque::new(),
             job_seq: 0,
             job_auto_confirm: false,
             panes: Vec::new(),
@@ -492,6 +525,7 @@ impl ZellijPlugin for State {
                 self.subscribe_to_agentd();
                 return false;
             },
+            wire::ASK => return self.on_ask(&pipe_message),
             wire::AGENT_SNAPSHOT => {},
             _ => return false,
         }
@@ -522,9 +556,8 @@ impl ZellijPlugin for State {
             // No current session. A quiet reply, not a dead daemon.
             None => false,
         };
-        // This is also the answer to the branch refresh an open agent picker
-        // asked for, so the list has to take it rather than go on showing the
-        // rows it was built from.
+        // This also answers the branch refresh requested when the permanent
+        // agent strip gains focus.
         let refreshed = self.refresh_agent_picker();
         applied || refreshed
     }
@@ -586,6 +619,14 @@ impl State {
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::BeforeClose => {
                 self.cancel_in_flight();
+                // A question the popup was told had been queued must not simply
+                // vanish. As a notice it survives into the archive and shows up
+                // in /history, and — being a notice — it never reaches the
+                // model, so reopening the chat does not answer it by surprise.
+                for text in std::mem::take(&mut self.asks) {
+                    self.messages
+                        .push(Message::notice(format!("unsent question: {text}")));
+                }
                 // Nothing left to flush but the transcripts. Projects and todos
                 // are written as each change lands, and so is every prompt.
                 //
@@ -1882,6 +1923,15 @@ mod tests {
             .collect()
     }
 
+    fn agent_entry_texts(state: &State) -> Vec<&str> {
+        state
+            .agent_picker
+            .entries
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect()
+    }
+
     /// The point of the archive: starting over must not destroy what came
     /// before. Ctrl-l detaches from the file rather than deleting it.
     #[test]
@@ -2120,13 +2170,13 @@ mod tests {
         assert!(state.parked.is_empty(), "nothing outstanding, nothing held");
     }
 
-    /// A picker drives the session, not the conversation, so an arriving reply
-    /// is no reason to refuse it — and the reply keeps arriving behind it.
+    /// Agent focus drives the session, not the conversation, so an arriving
+    /// reply is no reason to refuse it — and the reply keeps arriving behind it.
     #[test]
-    fn the_picker_opens_over_an_arriving_reply() {
+    fn the_agent_strip_focuses_over_an_arriving_reply() {
         let mut state = ready_state();
         assert!(state.open_agent_picker());
-        assert!(state.picker.is_some());
+        assert!(state.agents_focused);
 
         state.on_chunk(
             "hocus-1",
@@ -2212,36 +2262,47 @@ mod tests {
 
         state.picker_key(KeyWithModifier::new(BareKey::Tab));
         assert!(matches!(picker(&state).kind, PickerKind::Chats(_)));
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+        assert!(
+            state.picker.is_none(),
+            "agent focus dismisses the temporary list"
+        );
+        assert!(state.agents_focused);
     }
 
-    /// The agent picker opens on its own key, lists the same rows the agent tools
-    /// would act on under the headers that group them, stands outside any cycle,
-    /// and Enter hands the pane to the focus tool — stubbed off wasm, so what is
-    /// checked is that it closes.
+    /// The strip is present before Ctrl-r; the key only focuses it. While
+    /// focused it swallows text, and Esc hands input back to the conversation.
     #[test]
-    fn ctrl_r_opens_the_agent_picker_and_enter_closes_it() {
+    fn ctrl_r_focuses_the_permanent_agent_strip() {
         let mut state = state_with_panes();
         settle(&mut state);
-        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             ["no project", "  no branch", "  3  codex  running"]
         );
         assert!(
-            matches!(picker(&state).kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
+            matches!(state.agent_picker.kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
         );
         // Past the two headers, which nothing can land on.
-        assert_eq!(picker(&state).selected, 2);
+        assert_eq!(state.agent_picker.selected, 2);
+        assert!(!state.agents_focused);
 
-        state.picker_key(KeyWithModifier::new(BareKey::Tab));
-        assert!(
-            matches!(picker(&state).kind, PickerKind::Agents(_)),
-            "no cycle"
-        );
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+        assert!(state.agents_focused);
 
-        state.picker_key(KeyWithModifier::new(BareKey::Enter));
+        state.on_key(KeyWithModifier::new(BareKey::Char('x')));
+        assert_eq!(state.input.get_text(), "", "focused strip swallows text");
+        assert!(!state.on_paste("pasted".to_owned()));
+
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
         assert!(state.picker.is_none());
+        assert!(state.agents_focused, "focus survives leaving for the pane");
+
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert!(!state.agents_focused);
+        assert_eq!(agent_entry_texts(&state).len(), 3, "strip stays visible");
     }
 
     /// Two agents in two worktrees of one repository — the case the branch
@@ -2260,13 +2321,14 @@ mod tests {
                 on_branch("/work/trees/topic", "topic"),
             ),
         ]);
+        state.refresh_agent_picker();
         state
     }
 
-    /// The pane the open agent picker would focus.
+    /// The pane the focused agent strip would open.
     fn selected_pane(state: &State) -> Option<u32> {
-        match &picker(state).kind {
-            PickerKind::Agents(ids) => ids.get(picker(state).selected).copied().flatten(),
+        match &state.agent_picker.kind {
+            PickerKind::Agents(ids) => ids.get(state.agent_picker.selected).copied().flatten(),
             _ => None,
         }
     }
@@ -2280,7 +2342,7 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             [
                 "no project",
                 "  main",
@@ -2291,13 +2353,13 @@ mod tests {
         );
         assert_eq!(selected_pane(&state), Some(3), "opens on the first agent");
 
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5), "over the branch header");
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5), "and stops at the last");
-        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        state.agent_key(KeyWithModifier::new(BareKey::Up));
         assert_eq!(selected_pane(&state), Some(3));
-        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        state.agent_key(KeyWithModifier::new(BareKey::Up));
         assert_eq!(
             selected_pane(&state),
             Some(3),
@@ -2342,14 +2404,14 @@ mod tests {
         let mut state = state_with_worktrees();
         settle(&mut state);
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5));
 
         // Pane 3 turns out to be on `zzz`, which sorts it below pane 5.
         assert!(state.pipe(worktree_snapshot(7, "zzz")), "asks to redraw");
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             [
                 "no project",
                 "  topic",
@@ -3620,6 +3682,7 @@ mod tests {
             ]),
             &[],
         ));
+        state.refresh_agent_picker();
         state
     }
 
@@ -4097,5 +4160,200 @@ mod tests {
         }));
         assert!(!state.panes.is_empty());
         assert_eq!(state.agent_seq, 0, "an unrelated message merges nothing");
+    }
+
+    // -----------------------------------------------------------------------
+    // Questions from the ask popup
+    // -----------------------------------------------------------------------
+
+    /// As the popup sends one: a plugin-sourced pipe carrying a `wire::Ask`.
+    fn ask(text: &str) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Plugin(7),
+            name: wire::ASK.to_owned(),
+            payload: Some(
+                serde_json::to_string(&wire::Ask {
+                    text: text.to_owned(),
+                })
+                .expect("encoded"),
+            ),
+            args: BTreeMap::new(),
+            is_private: true,
+        }
+    }
+
+    fn user_messages(state: &State) -> Vec<&str> {
+        state
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .map(|message| message.content.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_question_asked_of_an_idle_hocus_goes_out_at_once() {
+        let mut state = idle_state();
+
+        assert!(state.pipe(ask("why is the build red?")));
+        assert_eq!(user_messages(&state), vec!["why is the build red?"]);
+        assert!(state.is_receiving(), "and it sent");
+        assert!(state.asks.is_empty(), "nothing left waiting");
+    }
+
+    /// A job's prefix exists because the model is handed words nobody typed. An
+    /// ask *is* the user's words, so marking them up would change what the model
+    /// reads — and someone tidying the two paths together is exactly how that
+    /// would happen by accident.
+    #[test]
+    fn a_question_reaches_the_model_exactly_as_it_was_typed() {
+        let mut state = idle_state();
+        state.pipe(ask("check the tests"));
+
+        assert_eq!(user_messages(&state), vec!["check the tests"]);
+    }
+
+    #[test]
+    fn a_question_asked_mid_reply_waits_its_turn() {
+        let mut state = idle_state();
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+
+        assert!(!state.pipe(ask("why is the build red?")));
+        assert!(state.messages.is_empty(), "one stream slot, so it holds");
+        assert_eq!(state.asks.len(), 1);
+
+        state.stream = None;
+        assert!(
+            state.on_timer(FRAME_SECONDS),
+            "and goes out on the next tick"
+        );
+        assert_eq!(user_messages(&state), vec!["why is the build red?"]);
+        assert!(state.asks.is_empty());
+    }
+
+    /// The popup was told each of these had been taken, so both have to be
+    /// answered, and in the order they were promised.
+    #[test]
+    fn queued_questions_go_out_in_the_order_they_were_asked() {
+        let mut state = idle_state();
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+        state.pipe(ask("first"));
+        state.pipe(ask("second"));
+        assert_eq!(state.asks.len(), 2);
+
+        state.stream = None;
+        state.on_timer(FRAME_SECONDS);
+        assert_eq!(user_messages(&state), vec!["first"]);
+
+        state.stream = None;
+        state.on_timer(FRAME_SECONDS);
+        assert_eq!(user_messages(&state), vec!["first", "second"]);
+    }
+
+    /// Someone is sitting in front of the popup waiting on this; a job that
+    /// comes due on the same tick is not.
+    #[test]
+    fn a_waiting_question_goes_ahead_of_a_job_that_is_also_due() {
+        let mut state = idle_state();
+        state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"check pane 3"}"#));
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+        state.pipe(ask("why is the build red?"));
+
+        state.stream = None;
+        assert!(state.on_timer(90.0));
+        assert_eq!(
+            user_messages(&state),
+            vec!["why is the build red?"],
+            "the ask went first and the job's own guard held it back"
+        );
+        assert!(state.jobs[0].due_in <= 0.0, "the job is still due");
+    }
+
+    /// Queueing would be a promise nothing can keep: with no configuration
+    /// there is no request to make, now or on any later tick.
+    #[test]
+    fn a_question_is_refused_outright_when_there_is_no_configuration() {
+        let mut state = idle_state();
+        state.cfg = Err(ConfigError {
+            message: "no api key".to_owned(),
+            base_url: api::DEFAULT_BASE_URL.to_owned(),
+            model: api::DEFAULT_MODEL.to_owned(),
+            api_key_env: api::DEFAULT_API_KEY_ENV.to_owned(),
+        });
+
+        assert!(!state.pipe(ask("why is the build red?")));
+        assert!(state.asks.is_empty(), "refused, not held");
+        assert!(state.messages.is_empty());
+    }
+
+    #[test]
+    fn an_empty_question_is_refused() {
+        let mut state = idle_state();
+
+        assert!(!state.pipe(ask("   ")));
+        assert!(state.asks.is_empty());
+        assert!(state.messages.is_empty());
+    }
+
+    #[test]
+    fn questions_stop_being_taken_at_the_cap() {
+        let mut state = idle_state();
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+        for n in 0..MAX_QUEUED_ASKS {
+            state.pipe(ask(&format!("question {n}")));
+        }
+        assert_eq!(state.asks.len(), MAX_QUEUED_ASKS);
+
+        state.pipe(ask("one too many"));
+        assert_eq!(state.asks.len(), MAX_QUEUED_ASKS, "refused, not dropped in");
+        assert!(!state.asks.iter().any(|text| text == "one too many"));
+    }
+
+    /// Mentions resolve when the question goes out, not when it was typed —
+    /// same as a scheduled job's. A question queued behind a long reply should
+    /// read the agent as it is by the time it is asked.
+    #[test]
+    fn a_mention_in_a_queued_question_resolves_when_it_goes_out() {
+        let mut state = idle_state();
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+        state.pipe(ask("is @codex done?"));
+
+        // The agent only shows up after the question was queued.
+        state.set_panes(vec![agent_in(3, "/work/hocus", 1)]);
+        state.manual_kinds.insert(3, "codex".to_owned());
+
+        state.stream = None;
+        state.on_timer(FRAME_SECONDS);
+
+        let sent = user_messages(&state);
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].contains("agent pane 3"),
+            "resolved against the panes as they are now: {:?}",
+            sent[0]
+        );
+    }
+
+    /// The popup was told it had been queued. Losing it silently on exit would
+    /// make that a lie; a notice never reaches the model, so the archived chat
+    /// records it without answering it on reload.
+    #[test]
+    fn a_question_still_waiting_at_shutdown_is_recorded_in_the_transcript() {
+        let mut state = idle_state();
+        state.stream = state_streaming(Vec::new(), "hocus-9").stream;
+        state.pipe(ask("why is the build red?"));
+
+        state.handle(Event::BeforeClose);
+
+        assert!(state.asks.is_empty());
+        assert!(
+            state
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Notice
+                    && message.content == "unsent question: why is the build red?"),
+            "the lost question is in the transcript: {:?}",
+            state.messages
+        );
     }
 }

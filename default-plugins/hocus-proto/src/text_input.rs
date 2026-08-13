@@ -1,16 +1,19 @@
-// Vendored verbatim from zellij's default-plugins/layout-manager/src/text_input.rs.
-//
-// Upstream's own header explains why this file gets copied rather than shared:
-//
-//   This is a duplicate of the same file in the sequence (and possibly other) plugins
-//   Right now there's no good place to put them for shared logic except the zellij-tile-utils crate
-//   (which I'd rather eliminate), hence the duplication.
-//
-// hocus lives outside the zellij workspace entirely, so copying is the only
-// option on offer. Re-sync from upstream if it picks up fixes worth having.
-//
-// Known limitation: cursor arithmetic counts chars, so a wide CJK or emoji
-// character desyncs the visual cursor from the text cursor by a column.
+//! A reusable prompt editor, shared by `hocus` and `hocus-ask`.
+//!
+//! Vendored from `default-plugins/layout-manager/src/text_input.rs`, whose own
+//! header explains why that copy exists rather than a shared one:
+//!
+//!   This is a duplicate of the same file in the sequence (and possibly other) plugins
+//!   Right now there's no good place to put them for shared logic except the zellij-tile-utils crate
+//!   (which I'd rather eliminate), hence the duplication.
+//!
+//! It lives here rather than in `hocus` because the ask popup edits the same
+//! kind of prompt hocus does, and two copies would drift — a key that works in
+//! the sidebar and not in the popup is the sort of difference nobody reports.
+//! Re-sync from layout-manager if it picks up fixes worth having.
+//!
+//! Known limitation: cursor arithmetic counts chars, so a wide CJK or emoji
+//! character desyncs the visual cursor from the text cursor by a column.
 use zellij_tile::prelude::*;
 
 const MAX_UNDO_STACK_SIZE: usize = 100;
@@ -32,7 +35,7 @@ pub enum InputAction {
 }
 
 /// A reusable text input component with cursor support and standard editing keybindings
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TextInput {
     buffer: String,
     cursor_position: usize, // Character position (0-based), NOT byte position
