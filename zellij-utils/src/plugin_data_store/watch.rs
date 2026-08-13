@@ -1,20 +1,169 @@
 //! Standing fetches, and telling a real change from the same rows written again.
 
+use std::collections::BTreeSet;
+use std::sync::{Mutex, MutexGuard};
+
+use rusqlite::Connection;
+
 use crate::data::ClientId;
-use crate::plugin_data::{DataRows, DataValue, FetchRequest, WatchMode};
+use crate::plugin_data::{
+    DataError, DataRows, DataValue, DataWatchHandle, FetchRequest, WatchMode,
+};
+
+use super::query::run_fetch_with_search_fallback;
+use super::registry::require_entity;
 
 /// A standing fetch, and what its results looked like the last time anyone checked.
 #[derive(Debug, Clone)]
-pub(super) struct Watch {
-    pub(super) watch_id: u64,
+struct Watch {
+    watch_id: u64,
     /// The server's `PluginId`, kept as its underlying type so that this module needs nothing from
     /// `zellij-server`.
-    pub(super) plugin_id: u32,
-    pub(super) client_id: ClientId,
-    pub(super) namespace: String,
-    pub(super) entity: String,
-    pub(super) request: FetchRequest,
-    pub(super) last_digest: u64,
+    plugin_id: u32,
+    client_id: ClientId,
+    namespace: String,
+    entity: String,
+    request: FetchRequest,
+    last_digest: u64,
+}
+
+/// Every watch registered in this process, and the id to hand the next one.
+///
+/// Not persisted: a watch belongs to a running plugin instance, and a plugin that has been
+/// reloaded has to register again anyway.
+///
+/// The lock inside is always taken *within* the store's connection lock, so the two are taken in
+/// the same order everywhere and cannot deadlock against each other. That is why [`Self::refresh`]
+/// and [`Self::register`] take a `&Connection` rather than reaching for one: the caller can only
+/// have got one by holding the connection lock already.
+#[derive(Debug, Default)]
+pub(super) struct WatchRegistry {
+    watches: Mutex<(Vec<Watch>, u64)>,
+}
+
+impl WatchRegistry {
+    pub(super) fn new() -> Self {
+        WatchRegistry {
+            watches: Mutex::new((Vec::new(), 1)),
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, (Vec<Watch>, u64)>, DataError> {
+        self.watches.lock().map_err(|_| {
+            DataError::Storage("the plugin data store watch lock is poisoned".to_owned())
+        })
+    }
+
+    /// Register a standing fetch and return its current results.
+    pub(super) fn register(
+        &self,
+        conn: &Connection,
+        namespace: &str,
+        plugin_id: u32,
+        client_id: ClientId,
+        request: FetchRequest,
+    ) -> Result<DataWatchHandle, DataError> {
+        let schema = require_entity(conn, namespace, &request.entity)?;
+        let rows = run_fetch_with_search_fallback(conn, &schema, &request)?;
+        let mut guard = self.lock()?;
+        let (watches, next_id) = &mut *guard;
+        let watch_id = *next_id;
+        *next_id += 1;
+        watches.push(Watch {
+            watch_id,
+            plugin_id,
+            client_id,
+            namespace: namespace.to_owned(),
+            entity: request.entity.clone(),
+            request,
+            last_digest: digest_rows(&rows),
+        });
+        Ok(DataWatchHandle { watch_id, rows })
+    }
+
+    /// Cancel a watch. A plugin may only cancel its own.
+    pub(super) fn unregister(&self, plugin_id: u32, watch_id: u64) -> Result<(), DataError> {
+        let mut guard = self.lock()?;
+        let (watches, _) = &mut *guard;
+        let before = watches.len();
+        watches.retain(|w| !(w.watch_id == watch_id && w.plugin_id == plugin_id));
+        if watches.len() == before {
+            return Err(DataError::InvalidQuery(format!(
+                "watch {} is not registered by this plugin",
+                watch_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Drop every watch belonging to a plugin, for when it unloads.
+    pub(super) fn drop_for_plugin(&self, plugin_id: u32) {
+        if let Ok(mut guard) = self.watches.lock() {
+            guard.0.retain(|w| w.plugin_id != plugin_id);
+        }
+    }
+
+    /// Whether any watch could care about a write to these entities.
+    ///
+    /// Lets the store skip taking the connection lock at all in the common case of a write nobody
+    /// is watching.
+    pub(super) fn any_watching(
+        &self,
+        namespace: &str,
+        touched_entities: &BTreeSet<String>,
+    ) -> Result<bool, DataError> {
+        Ok(self
+            .lock()?
+            .0
+            .iter()
+            .any(|w| w.namespace == namespace && touched_entities.contains(&w.entity)))
+    }
+
+    /// Re-run every watch a write to these entities could have affected, and report the ones whose
+    /// results actually changed.
+    ///
+    /// Comparing a digest rather than reporting unconditionally is what makes an idempotent write
+    /// silent — a plugin that re-puts the same row does not wake every watcher.
+    pub(super) fn refresh(
+        &self,
+        conn: &Connection,
+        namespace: &str,
+        touched_entities: &BTreeSet<String>,
+    ) -> Result<Vec<WatchChange>, DataError> {
+        let mut guard = self.lock()?;
+        let (watches, _) = &mut *guard;
+        let mut changes = Vec::new();
+        for watch in watches.iter_mut() {
+            if watch.namespace != namespace || !touched_entities.contains(&watch.entity) {
+                continue;
+            }
+            // A watch whose entity has since been dropped, or whose fetch has become invalid, is
+            // skipped rather than failing the write that triggered this.
+            let Ok(schema) = require_entity(conn, &watch.namespace, &watch.entity) else {
+                continue;
+            };
+            let Ok(rows) = run_fetch_with_search_fallback(conn, &schema, &watch.request) else {
+                continue;
+            };
+            let digest = digest_rows(&rows);
+            if digest == watch.last_digest {
+                continue;
+            }
+            watch.last_digest = digest;
+            changes.push(WatchChange {
+                watch_id: watch.watch_id,
+                plugin_id: watch.plugin_id,
+                client_id: watch.client_id,
+                rows,
+            });
+        }
+        Ok(changes)
+    }
+
+    /// How many watches are registered. For tests and diagnostics.
+    pub(super) fn count(&self) -> usize {
+        self.watches.lock().map(|guard| guard.0.len()).unwrap_or(0)
+    }
 }
 
 /// A watch whose results have changed, and the rows to send it.
