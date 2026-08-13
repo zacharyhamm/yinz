@@ -969,6 +969,16 @@ impl ZellijPlugin for State {
                 {
                     focus_last_pane()
                 },
+                BareKey::Char('m')
+                    if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Alt]) =>
+                {
+                    let should_change_focus_to_target_tab = true;
+                    break_panes_to_tab_with_id(
+                        &[PaneId::Terminal(1), PaneId::Plugin(2)],
+                        2,
+                        should_change_focus_to_target_tab,
+                    );
+                },
                 _ => {},
             },
             Event::CustomMessage(message, payload) => {

@@ -84,8 +84,8 @@ use zellij_utils::{
     input::{
         command::TerminalAction,
         layout::{
-            FloatingPaneLayout, Run, RunPluginOrAlias, SplitDirection, SwapFloatingLayout,
-            SwapTiledLayout, TiledPaneLayout,
+            FloatingPaneLayout, PercentOrFixed, Run, RunPluginOrAlias, SplitDirection,
+            SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
         },
         options::PaneFrameStyle,
         parse_keys,
@@ -190,6 +190,20 @@ enum StackListRemoval {
     NotRemoved,
     DissolvedInPlace,
     Removed(Option<Box<dyn Pane>>),
+}
+
+/// What [`Tab::accept_extracted_pane`] did with a pane moved in from another tab.
+///
+/// `NoRoom` carries the pane back out so the caller can put it where it came from -
+/// dropping it would destroy it silently. See `accept_extracted_pane` for why.
+pub(crate) enum AcceptedPane {
+    /// The pane is in this tab.
+    Accepted,
+    /// This tab has no room; the pane is handed back, still intact.
+    NoRoom(Box<dyn Pane>),
+    /// The pane was consumed by the add and then lost inside it - it no longer exists
+    /// and cannot be handed back. Only reachable when the pty thread is already gone.
+    LostInAdd,
 }
 
 enum BufferedTabInstruction {
@@ -7494,6 +7508,59 @@ impl Tab {
             self.relayout_tiled_panes(false)?;
         }
         Ok(())
+    }
+    /// Take a pane extracted from another tab, or hand it back if there is no room.
+    ///
+    /// `add_tiled_pane`/`add_floating_pane` take the box by value and return `Ok(())`
+    /// having *dropped* it when the tab has no room. For a pane being created that is
+    /// merely a failed insert; for a pane being **moved** it is destruction - the pane
+    /// has already left its old tab, and dropping the box emits no `PaneClosed`, sends
+    /// no `PtyInstruction::ClosePane` and registers no orphan. The pane simply ceases
+    /// to exist while its child process leaks.
+    ///
+    /// So check for room *before* giving up ownership, and hand the pane back if there
+    /// is none, letting the caller put it where it came from.
+    /// The pane is deliberately not focused, in either arm: moving a pane into a tab
+    /// should not steal focus from whatever the tab was already showing.
+    pub fn accept_extracted_pane(
+        &mut self,
+        mut pane: Box<dyn Pane>,
+        was_floating: bool,
+    ) -> AcceptedPane {
+        let pane_id = pane.pid();
+        if was_floating {
+            if self.floating_panes.find_room_for_new_pane().is_none() {
+                return AcceptedPane::NoRoom(pane);
+            }
+            let floating_pane_coordinates = FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(pane.x())),
+                y: Some(PercentOrFixed::Fixed(pane.y())),
+                width: Some(PercentOrFixed::Fixed(pane.cols())),
+                height: Some(PercentOrFixed::Fixed(pane.rows())),
+                pinned: Some(pane.current_geom().is_pinned),
+                borderless: Some(pane.borderless()),
+            };
+            // non_fatal rather than `?`: the only error here comes from `relayout`, which
+            // runs after the pane is already in the tab, and the caller must not abort a
+            // multi-pane move part-way through
+            self.add_floating_pane(pane, pane_id, Some(floating_pane_coordinates), false, None)
+                .non_fatal();
+        } else {
+            if !self.tiled_panes.has_room_for_new_pane() {
+                return AcceptedPane::NoRoom(pane);
+            }
+            let new_geom = PaneGeom::from(&self.size);
+            pane.set_geom(new_geom);
+            self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
+        }
+        if self.has_pane_with_pid(&pane_id) {
+            AcceptedPane::Accepted
+        } else {
+            // `add_floating_pane` also drops the pane when `resize_pty!` fails, which
+            // only happens when the pty thread is already gone. The box is consumed, so
+            // it cannot be handed back - say so rather than claim the pane moved.
+            AcceptedPane::LostInAdd
+        }
     }
     pub fn add_stacked_pane_to_pane_id(
         &mut self,
