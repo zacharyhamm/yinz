@@ -5,9 +5,9 @@ use rusqlite::Connection;
 use crate::plugin_data::{AttrDef, DataError, DataSchemaInfo, EntityDef};
 
 use super::index::{create_attr_indexes, drop_attr_indexes, drop_full_text, rebuild_full_text};
-use super::registry::column_definition;
+use super::registry::{column_definition, schema_info};
 use super::schema::EntitySchema;
-use super::sql::{storage_err, SqlContext};
+use super::sql::{quote_ident, storage_err, SqlContext};
 
 pub(super) fn migrate_entity(
     conn: &Connection,
@@ -29,15 +29,7 @@ pub(super) fn migrate_entity(
         )));
     }
 
-    let mut info = DataSchemaInfo {
-        namespace: namespace.to_owned(),
-        entity: def.name.clone(),
-        version: def.version,
-        created: false,
-        attrs_added: Vec::new(),
-        indexes_created: Vec::new(),
-        full_text_rebuilt: false,
-    };
+    let mut info = schema_info(namespace, def, false);
 
     // Work out everything that is about to change, and refuse the whole migration, before
     // performing any of it — a half-applied schema change is worse than a rejected one.
@@ -119,8 +111,8 @@ pub(super) fn migrate_entity(
                     )));
                 }
                 conn.execute_batch(&format!(
-                    "ALTER TABLE \"{}\" ADD COLUMN {};",
-                    existing.table(),
+                    "ALTER TABLE {} ADD COLUMN {};",
+                    quote_ident(&existing.table()),
                     column_definition(attr)?
                 ))
                 .with_ctx(|| format!("failed to add `{}`", attr.name))?;
@@ -135,9 +127,9 @@ pub(super) fn migrate_entity(
     for attr in removed {
         drop_attr_indexes(conn, existing, &attr.name)?;
         conn.execute_batch(&format!(
-            "ALTER TABLE \"{}\" DROP COLUMN \"{}\";",
-            existing.table(),
-            attr.name
+            "ALTER TABLE {} DROP COLUMN {};",
+            quote_ident(&existing.table()),
+            quote_ident(&attr.name)
         ))
         .with_ctx(|| format!("failed to drop `{}`", attr.name))?;
     }
