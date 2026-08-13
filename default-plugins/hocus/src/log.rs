@@ -30,9 +30,14 @@ pub fn line(
 /// never waits on the disk.
 pub fn write_line(chat_id: Option<u64>, line: &str) {
     // Per-chat file when id is known.
+    //
+    // `chat-` prefixed since the archive moved into the store: chat ids are
+    // allocated by SQLite now and the import renumbered them, so a new chat can
+    // be handed an id an old `<id>.jsonl` already used. The old logs stay where
+    // they are, unread, as the transcripts they belong to do.
     if let Some(id) = chat_id {
         let _ = fs::create_dir_all(DIR);
-        let path = format!("{DIR}/{id}.jsonl");
+        let path = format!("{DIR}/chat-{id}.jsonl");
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
             let _ = writeln!(f, "{line}");
         }

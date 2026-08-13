@@ -31,59 +31,96 @@ impl State {
         self.messages.get(at).map_or(0, |m| m.content.len())
     }
 
-    /// Write the transcript out once it has settled.
+    /// Write the transcript out.
     ///
-    /// In-flight is skipped so a stream saves once at the end rather than on
-    /// every socket read, and an empty transcript is skipped so a pane you only
-    /// opened leaves nothing behind.
-    pub(crate) fn autosave(&mut self) {
-        if self.is_in_flight() || self.messages.is_empty() {
+    /// `force` writes mid-reply. Without it a stream saves once at the end
+    /// rather than on every socket read; with it, the two places a later write
+    /// is no use — `show_chats`, which reads the archive straight back, and
+    /// `BeforeClose`, which has no later. A partial reply archived beats one
+    /// lost.
+    ///
+    /// An empty transcript is never written, so a pane you only opened leaves
+    /// nothing behind.
+    ///
+    /// This used to be two functions, one queueing the write on the io worker
+    /// and one writing the file inline. There is one now because a store write
+    /// is a host call rather than a blocking file write, and because the worker
+    /// could not do it anyway: the id of a new chat comes back from the apply,
+    /// and the worker's mailbox has no replies.
+    pub(crate) fn save_now(&mut self, force: bool) {
+        if self.messages.is_empty() || (!force && self.is_in_flight()) {
             return;
         }
         let key = self.fingerprint();
-        if self.saved == key {
+        if !force && self.saved == key {
             return;
         }
+        let saved_len = self.saved.0;
         self.saved = key;
-        if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-            post_save(id, json);
+        let mut id = self.chat_id.take();
+        let written = history::save(
+            &self.private_store(),
+            &mut id,
+            &self.messages,
+            saved_len,
+            self.reply_at,
+        );
+        self.chat_id = id;
+        if written.is_err() {
+            // Nothing to say it to, and nothing to do about it. Retried on the
+            // next change, because the fingerprint moved but the rows did not —
+            // which is the wrong way round, so put it back.
+            self.saved = (saved_len, self.saved.1);
         }
     }
 
-    /// Autosave, but write here and now instead of on the worker, and without
-    /// waiting for the reply to settle. For the two places a queued write is not
-    /// good enough: `show_chats` reads the archive right back, and `BeforeClose`
-    /// has no later.
+    /// Write every parked chat out.
     ///
-    /// Unlike `autosave` this writes mid-stream. It is called once per switch or
-    /// once per close, not once per socket read, so the reason for that guard
-    /// doesn't apply — and a partial reply on disk beats losing it.
+    /// Taken out of `self` and put back rather than borrowed in place: the write
+    /// needs the store, which is borrowed from `self` too.
+    pub(crate) fn save_parked(&mut self) {
+        let mut parked = std::mem::take(&mut self.parked);
+        for chat in &mut parked {
+            let mut id = chat.chat_id.take();
+            let written = history::save(
+                &self.private_store(),
+                &mut id,
+                &chat.messages,
+                chat.saved.0,
+                chat.reply_at,
+            );
+            chat.chat_id = id;
+            if written.is_ok() {
+                chat.saved = (chat.messages.len(), chat.saved.1);
+            }
+        }
+        self.parked = parked;
+    }
+
+    /// Write the transcript out once it has settled.
+    pub(crate) fn autosave(&mut self) {
+        self.save_now(false);
+    }
+
+    /// Write it now, mid-reply and all.
     pub(crate) fn flush_save(&mut self) {
-        if self.messages.is_empty() {
-            return;
-        }
-        self.saved = self.fingerprint();
-        if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-            history::write(id, json.as_bytes());
-        }
+        self.save_now(true);
     }
 
     /// The archive list, newest first, behind `/history`. Opens mid-reply: the
     /// chat you leave keeps streaming in the background, so switching costs it
     /// nothing.
     pub(crate) fn show_chats(&mut self) {
-        // So the chat you are in is in the list, and current. Synchronous —
-        // list() below would race a write queued on the worker. Every parked
-        // chat is written too, or one that has never been saved would have no
-        // id and no row to switch back to.
+        // So the chat you are in is in the list, and current. Every parked chat
+        // is written too, or one that has never been saved would have no id and
+        // no row to switch back to.
+        //
+        // There is no race to avoid here any more: a write used to be queued on
+        // the io worker, and `list` would read the directory before it landed.
         self.flush_save();
-        for chat in &mut self.parked {
-            if let Some((id, json)) = history::save(&mut chat.chat_id, &chat.messages) {
-                history::write(id, json.as_bytes());
-            }
-        }
+        self.save_parked();
         let live: Vec<u64> = self.live_chat_ids();
-        let (ids, titles): (Vec<u64>, Vec<PickerRow>) = history::list()
+        let (ids, titles): (Vec<u64>, Vec<PickerRow>) = history::list(&self.private_store())
             .into_iter()
             .map(|entry| {
                 // A dot marks the ones still working, so a background reply is
@@ -375,7 +412,7 @@ impl State {
         let incoming = match parked {
             Some(index) => self.parked.remove(index),
             None => {
-                let Some(messages) = history::load(id) else {
+                let Some(messages) = history::load(&self.private_store(), id) else {
                     return;
                 };
                 Chat {

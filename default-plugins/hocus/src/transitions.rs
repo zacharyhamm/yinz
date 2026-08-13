@@ -23,6 +23,21 @@ impl State {
         &self.store
     }
 
+    /// hocus's own namespace: the archive and the up-arrow history.
+    ///
+    /// Private because nothing else reads them, which also means nothing has to
+    /// agree with anyone about their schema. Same database as [`State::store`],
+    /// different partition of it.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn private_store(&self) -> impl Backend + '_ {
+        hocus_proto::store::Host::private()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn private_store(&self) -> impl Backend + '_ {
+        self.store.joined("plugin:hocus", "hocus")
+    }
+
     pub(crate) fn active_stream_id(&self) -> Option<String> {
         self.stream.as_ref().map(|stream| stream.id.clone())
     }
@@ -263,6 +278,15 @@ impl State {
     /// is no conversation on screen yet to say so in. Every read that follows
     /// simply answers empty, and every write says why it failed.
     pub(crate) fn open_store(&mut self) {
+        // The archive and the up-arrow history, in hocus's own namespace: only
+        // this plugin reads them, so nothing has to be coordinated. This is also
+        // where the old JSON files are read in, once.
+        let prompts = history::open(&self.private_store())
+            .is_ok()
+            .then(|| history::load_prompts(&self.private_store()));
+        if let Some(prompts) = prompts {
+            self.input.set_history(prompts);
+        }
         // Declared here as well as in hocus-store, because either may start
         // first and a fetch against an undeclared entity is an error.
         if self.store().define_all(&store::shared_defs()).is_err() {
@@ -537,11 +561,10 @@ impl State {
     }
 
     pub(crate) fn log(&mut self, kind: &str, payload: serde_json::Value) {
+        // A log line is filed under a chat id, so an unsaved chat needs one
+        // before it can be logged against. Saving is what allocates it.
         if self.chat_id.is_none() && !self.messages.is_empty() {
-            if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-                self.saved = self.fingerprint();
-                post_save(id, json);
-            }
+            self.save_now(true);
         }
         self.log_seq = self.log_seq.wrapping_add(1);
         post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);

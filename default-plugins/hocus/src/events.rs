@@ -324,7 +324,11 @@ impl State {
         let old_len = self.input.history().len();
         let text = self.input.drain_text();
         if self.input.history().len() != old_len {
-            post_prompt_history(self.input.history());
+            // One row, not the whole history: this used to re-serialize the
+            // entire vector and rewrite the file on every submit.
+            if let Some(line) = self.input.history().last().cloned() {
+                history::add_prompt(&self.private_store(), &line);
+            }
         }
         text
     }
