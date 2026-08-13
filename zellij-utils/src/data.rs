@@ -3,7 +3,8 @@ use crate::input::actions::{Action, RunCommandAction};
 use crate::input::config::{ConversionError, KdlError};
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
-    Layout, PercentOrFixed, Run, RunPlugin, RunPluginLocation, RunPluginOrAlias,
+    FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPlugin, RunPluginLocation,
+    RunPluginOrAlias, TiledPaneLayout,
 };
 pub use crate::input::options::PaneFrameStyle;
 use crate::pane_size::PaneGeom;
@@ -3198,6 +3199,39 @@ pub struct WarpedPane {
     pub borderless: bool,
 }
 
+/// Everything that has to travel with a whole tab moving between sessions.
+///
+/// The arrangement travels as a layout rather than as pane geometry, which is
+/// what lets a tab land in a session of a different size: a layout is
+/// proportional, and the receiving session positions it against its own
+/// viewport. This is the same representation session resurrection uses to
+/// survive a resize.
+///
+/// The panes are split into two lists for the same reason `apply_layout` takes
+/// two: tiled and floating slots are filled from separate queues, in separate
+/// orders.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct WarpedTab {
+    /// The tab's name, so it does not arrive renamed.
+    pub name: Option<String>,
+    pub tiled_layout: TiledPaneLayout,
+    pub floating_layout: Vec<FloatingPaneLayout>,
+    /// One per released supervisor, ordered to match the layout's terminal slots
+    /// — that is, `tiled_layout.extract_run_instructions()` order, which is what
+    /// the receiving side's `position_new_panes` consumes ids in. Plugin panes
+    /// are not here: they have no process, and are recreated from their
+    /// `Run::Plugin` node instead.
+    ///
+    /// Only the parts of a `WarpedPane` the layout cannot express are filled in:
+    /// which supervisor to attach to, and the pane's screen. Titles and borders
+    /// travel as layout nodes, because that is where the receiving session looks
+    /// for them when it builds the tab.
+    pub tiled_panes: Vec<WarpedPane>,
+    /// Ordered to match `floating_layout`, minus its plugin panes.
+    pub floating_panes: Vec<WarpedPane>,
+    pub hide_floating_panes: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct FloatingPaneCoordinates {
     pub x: Option<PercentOrFixed>,
@@ -3806,6 +3840,18 @@ pub enum PluginCommand {
         pane_id: PaneId,
         from_session: String,
         placement: WarpPlacement,
+    },
+    /// Move a whole tab out of this session and into another one. Sends a
+    /// response back, and blocks until the tab has landed or the move has been
+    /// undone.
+    WarpTabToSession {
+        tab_index: usize,
+        to_session: String,
+    },
+    /// Ask another session for one of its tabs. Sends a response back.
+    WarpTabFromSession {
+        tab_index: usize,
+        from_session: String,
     },
     /// Panes whose session died but whose process is still running. Sends a
     /// response back.

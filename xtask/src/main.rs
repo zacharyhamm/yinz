@@ -98,6 +98,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 crate_name: "default-plugins/hocus",
                 build: true,
             },
+            WorkspaceMember {
+                crate_name: "default-plugins/hocus-ask",
+                build: true,
+            },
             // Pure logic and wire types shared by the hocus plugins. A library,
             // so there is no wasm to build — but it still wants the plugin test
             // invocation, which selects on the path rather than on `build`.

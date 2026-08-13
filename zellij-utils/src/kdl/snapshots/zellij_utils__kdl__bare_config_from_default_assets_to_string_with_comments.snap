@@ -158,6 +158,12 @@ keybinds clear-defaults=true {
         bind "Alt =" { Resize "Increase"; }
         bind "Alt [" { PreviousSwapLayout; }
         bind "Alt ]" { NextSwapLayout; }
+        bind "Alt a" {
+            LaunchOrFocusPlugin "hocus-ask" {
+                floating true
+                move_to_focused_tab true
+            }
+        }
         bind "Alt e" {
             LaunchOrFocusPlugin "file-finder" {
                 floating true
@@ -281,6 +287,7 @@ plugins {
     hocus-agentd location="zellij:hocus-agentd" {
         shared true
     }
+    hocus-ask location="zellij:hocus-ask"
     hocus-store location="zellij:hocus-store" {
         shared true
     }

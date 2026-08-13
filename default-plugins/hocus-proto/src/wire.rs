@@ -31,6 +31,16 @@ pub const AGENT_REFRESH: &str = "agent_refresh";
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
 pub const STORE_QUERY: &str = "store_query";
+/// hocus-ask → hocus: a question typed in the popup.
+pub const ASK: &str = "hocus_ask";
+/// hocus → hocus-ask: what became of it.
+///
+/// Addressed by `destination_plugin_id`, taken from the `PipeSource::Plugin` of
+/// the ask, rather than broadcast like everything else here. It is also the only
+/// thing that tells the popup "hocus took it" apart from "there is no hocus" — a
+/// broadcast to nobody is silent, and the popup closes on this reply rather than
+/// on the keypress so that silence is visible.
+pub const ASK_ACK: &str = "hocus_ask_ack";
 
 /// One agent poll: what goes out and what comes back. The activity map rides
 /// along both ways so the caller's copy stays the only truth — the poller keeps
@@ -81,6 +91,35 @@ pub struct Query {
     pub args: serde_json::Value,
 }
 
+/// One question from the ask popup.
+///
+/// A struct rather than a bare string so a later version can carry context —
+/// the asking pane, a project hint — without needing a second message name and
+/// a second handler on the hocus side.
+#[derive(Serialize, Deserialize)]
+pub struct Ask {
+    pub text: String,
+}
+
+/// What hocus did with a question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AskOutcome {
+    /// Sent to the model straight away.
+    Sent,
+    /// hocus was busy; held, and will go out as soon as it is idle.
+    Queued,
+    /// Not taken at all. `detail` says why, and is what the popup shows.
+    Refused,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AskAck {
+    pub outcome: AskOutcome,
+    /// Empty on the two accepting outcomes, which have nothing to explain.
+    #[serde(default)]
+    pub detail: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +148,33 @@ mod tests {
             serde_json::from_str(r#"{"request_id":"call_7","op":"todo_list","args":{}}"#)
                 .expect("parsed");
         assert_eq!(from_plugin.request_id, "call_7");
+    }
+
+    #[test]
+    fn an_ask_and_its_acknowledgement_round_trip() {
+        let json = serde_json::to_string(&Ask {
+            text: "why is the build red?".to_owned(),
+        })
+        .expect("encoded");
+        let ask: Ask = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(ask.text, "why is the build red?");
+
+        let json = serde_json::to_string(&AskAck {
+            outcome: AskOutcome::Refused,
+            detail: "hocus has no working API configuration".to_owned(),
+        })
+        .expect("encoded");
+        let ack: AskAck = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(ack.outcome, AskOutcome::Refused);
+        assert_eq!(ack.detail, "hocus has no working API configuration");
+    }
+
+    /// The accepting outcomes have nothing to explain, so the popup must not
+    /// need a `detail` on the wire to read them.
+    #[test]
+    fn an_acknowledgement_parses_without_a_detail() {
+        let ack: AskAck = serde_json::from_str(r#"{"outcome":"Queued"}"#).expect("parsed");
+        assert_eq!(ack.outcome, AskOutcome::Queued);
+        assert!(ack.detail.is_empty());
     }
 }

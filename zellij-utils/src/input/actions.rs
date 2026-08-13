@@ -9,7 +9,7 @@ use crate::cli::CliAction;
 use crate::data::{
     CommandOrPlugin, Direction, GlobalPaneEdge, GlobalPanePlacement, KeyWithModifier, LayoutInfo,
     NewPanePlacement, OriginatingPlugin, PaneId, Resize, UnblockCondition, WarpPlacement,
-    WarpedPane,
+    WarpedPane, WarpedTab,
 };
 use crate::data::{FloatingPaneCoordinates, InputMode};
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -411,6 +411,37 @@ pub enum Action {
     AdoptPane {
         payload: Box<WarpedPane>,
         placement: WarpPlacement,
+    },
+    /// Move a whole tab, arrangement and running processes and all, to another
+    /// session.
+    ///
+    /// The tab analogue of `WarpPane`, and handled the same way: by the session
+    /// the tab is *leaving*, which releases every supervisor in it and sends the
+    /// other session an `AdoptTab`.
+    WarpTab {
+        /// `None` means whichever tab is focused. This is a tab *id* rather than
+        /// a position, matching `Screen::tabs`.
+        tab_index: Option<usize>,
+        to_session: String,
+    },
+    /// Take a whole tab over from a session warping it here.
+    ///
+    /// Handled by the session the tab is *arriving in*. There is no placement to
+    /// choose: a tab arrives as a tab.
+    AdoptTab {
+        payload: Box<WarpedTab>,
+    },
+    /// Ask another session to send us one of its tabs.
+    ///
+    /// Handled by the session the tab is *arriving in*, which turns straight
+    /// around and sends the source a `WarpTab` naming itself — so every check,
+    /// the release and the rollback happen on the side that owns the tab. There
+    /// is no `AdoptPane` equivalent of this because the pane feature only offers
+    /// the pull to plugins, which can name their own session; a CLI client
+    /// cannot, so it needs the receiving server to do it.
+    WarpTabFrom {
+        from_session: String,
+        tab_index: usize,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
     LaunchOrFocusPlugin {
@@ -932,6 +963,35 @@ impl Action {
                     to_session,
                     placement: warp_placement(focused_tab, floating),
                 }])
+            },
+            CliAction::WarpTab {
+                to_session,
+                from_session,
+                tab_index,
+            } => match (to_session, from_session) {
+                (Some(to_session), None) => {
+                    if to_session.trim().is_empty() {
+                        return Err("--to-session cannot be empty".to_owned());
+                    }
+                    Ok(vec![Action::WarpTab {
+                        tab_index,
+                        to_session,
+                    }])
+                },
+                (None, Some(from_session)) => {
+                    if from_session.trim().is_empty() {
+                        return Err("--from-session cannot be empty".to_owned());
+                    }
+                    // Unlike the push, there is no focused tab to fall back on:
+                    // the tab being named lives in a session that is not ours.
+                    let tab_index = tab_index
+                        .ok_or_else(|| "--from-session also needs --tab-index".to_owned())?;
+                    Ok(vec![Action::WarpTabFrom {
+                        from_session,
+                        tab_index,
+                    }])
+                },
+                _ => Err("warp-tab needs exactly one of --to-session or --from-session".to_owned()),
             },
             CliAction::FocusLastPane => Ok(vec![Action::FocusLastPane]),
             CliAction::MoveFocus { direction } => Ok(vec![Action::MoveFocus { direction }]),
