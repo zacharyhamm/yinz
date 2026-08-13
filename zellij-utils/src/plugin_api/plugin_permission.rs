@@ -34,6 +34,8 @@ impl TryFrom<ProtobufPermissionType> for PermissionType {
             ProtobufPermissionType::ReadSessionEnvironmentVariables => {
                 Ok(PermissionType::ReadSessionEnvironmentVariables)
             },
+            ProtobufPermissionType::PluginData => Ok(PermissionType::PluginData),
+            ProtobufPermissionType::SharedPluginData => Ok(PermissionType::SharedPluginData),
         }
     }
 }
@@ -69,6 +71,8 @@ impl TryFrom<PermissionType> for ProtobufPermissionType {
             PermissionType::ReadSessionEnvironmentVariables => {
                 Ok(ProtobufPermissionType::ReadSessionEnvironmentVariables)
             },
+            PermissionType::PluginData => Ok(ProtobufPermissionType::PluginData),
+            PermissionType::SharedPluginData => Ok(ProtobufPermissionType::SharedPluginData),
         }
     }
 }

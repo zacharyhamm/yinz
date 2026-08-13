@@ -30,6 +30,7 @@ pub use super::generated_api::api::{
         PaneRenderReportPayload as ProtobufPaneRenderReportPayload,
         PaneScrollbackResponse as ProtobufPaneScrollbackResponse, PaneType as ProtobufPaneType,
         PluginConfigurationChangedPayload as ProtobufPluginConfigurationChangedPayload,
+        PluginDataChangedPayload as ProtobufPluginDataChangedPayload,
         PluginInfo as ProtobufPluginInfo, ResurrectableSession as ProtobufResurrectableSession,
         SelectedText as ProtobufSelectedText, SessionManifest as ProtobufSessionManifest,
         SoftKeyboardVisibilityChangedPayload as ProtobufSoftKeyboardVisibilityChangedPayload,
@@ -45,12 +46,13 @@ pub use super::generated_api::api::{
 };
 #[allow(hidden_glob_reexports)]
 use crate::data::{
-    ClientId, ClientInfo, CopyDestination, Event, EventType, FileMetadata, HostTerminalThemeMode,
-    InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId,
-    PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse, PermissionStatus,
-    PluginCapabilities, PluginInfo, SelectedText, SessionInfo, Style, StyledText, TabInfo,
-    TabMetadata, WebServerStatus, WebSharing,
+    ClientId, ClientInfo, CopyDestination, DataRows, Event, EventType, FileMetadata,
+    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
+    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
+    PermissionStatus, PluginCapabilities, PluginInfo, SelectedText, SessionInfo, Style, StyledText,
+    TabInfo, TabMetadata, WebServerStatus, WebSharing,
 };
+use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
@@ -631,6 +633,18 @@ impl TryFrom<ProtobufEvent> for Event {
                     Ok(Event::ActivePaneScroll(scroll))
                 },
                 _ => Err("Malformed payload for ActivePaneScroll Event"),
+            },
+            Ok(ProtobufEventType::PluginDataChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::PluginDataChangedPayload(p)) => {
+                    Ok(Event::PluginDataChanged {
+                        watch_id: p.watch_id,
+                        // An absent `rows` is an empty result set, which is a legitimate thing for a
+                        // watch to be told about — its last matching row having been deleted.
+                        rows: p.rows.map(DataRows::from).unwrap_or_default(),
+                        truncated: p.truncated,
+                    })
+                },
+                _ => Err("Malformed payload for PluginDataChanged Event"),
             },
             Err(_) => Err("Unknown Protobuf Event"),
         }
@@ -1227,6 +1241,20 @@ impl TryFrom<Event> for ProtobufEvent {
                     payload: Some(event::Payload::ActivePaneScrollPayload(payload)),
                 })
             },
+            Event::PluginDataChanged {
+                watch_id,
+                rows,
+                truncated,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::PluginDataChanged as i32,
+                payload: Some(event::Payload::PluginDataChangedPayload(
+                    ProtobufPluginDataChangedPayload {
+                        watch_id,
+                        rows: Some(ProtobufDataRows::from(rows)),
+                        truncated,
+                    },
+                )),
+            }),
             Event::InitialKeybinds(keybinds) => {
                 let mut protobuf_keybinds: Vec<ProtobufInputModeKeybinds> = vec![];
                 for (input_mode, input_mode_keybinds) in keybinds {
@@ -2278,6 +2306,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             },
             ProtobufEventType::HintText => EventType::HintText,
             ProtobufEventType::ActivePaneScroll => EventType::ActivePaneScroll,
+            ProtobufEventType::PluginDataChanged => EventType::PluginDataChanged,
             ProtobufEventType::WebRequestStreamChunk => EventType::WebRequestStreamChunk,
         })
     }
@@ -2337,6 +2366,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             },
             EventType::HintText => ProtobufEventType::HintText,
             EventType::ActivePaneScroll => ProtobufEventType::ActivePaneScroll,
+            EventType::PluginDataChanged => ProtobufEventType::PluginDataChanged,
             EventType::WebRequestStreamChunk => ProtobufEventType::WebRequestStreamChunk,
         })
     }

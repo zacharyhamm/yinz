@@ -19,6 +19,8 @@ pub enum PermissionType {
     RunActionsAsUser = 14,
     WriteToClipboard = 15,
     ReadSessionEnvironmentVariables = 16,
+    PluginData = 17,
+    SharedPluginData = 18,
 }
 impl PermissionType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -44,6 +46,8 @@ impl PermissionType {
             PermissionType::RunActionsAsUser => "RunActionsAsUser",
             PermissionType::WriteToClipboard => "WriteToClipboard",
             PermissionType::ReadSessionEnvironmentVariables => "ReadSessionEnvironmentVariables",
+            PermissionType::PluginData => "PluginData",
+            PermissionType::SharedPluginData => "SharedPluginData",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -66,6 +70,8 @@ impl PermissionType {
             "RunActionsAsUser" => Some(Self::RunActionsAsUser),
             "WriteToClipboard" => Some(Self::WriteToClipboard),
             "ReadSessionEnvironmentVariables" => Some(Self::ReadSessionEnvironmentVariables),
+            "PluginData" => Some(Self::PluginData),
+            "SharedPluginData" => Some(Self::SharedPluginData),
             _ => None,
         }
     }
