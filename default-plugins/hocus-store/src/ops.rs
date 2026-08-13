@@ -23,8 +23,7 @@
 use hocus_proto::store::Backend;
 use hocus_proto::{projects, store, todos};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use zellij_tile::prelude::{ApplyReport, FetchRequest, Mutation, Pred, SortDir};
+use zellij_tile::prelude::{ApplyReport, FetchRequest, Mutation};
 
 /// What a mutation did, or why it did nothing. The `Err` text goes straight
 /// back to the model, so it says what to call next wherever it can.
@@ -261,22 +260,11 @@ fn load_view(backend: &impl Backend, op: &str, args: &Value) -> Result<StoreView
         // A selector that names nothing is the op's error to report, not this
         // one's — planning it produces the message that says what to call.
         if let Ok((root, _)) = todo_root(&view.projects, args) {
-            let list = fetch_list(backend, &root)?;
+            let list = todos::fetch_list(backend, &root)?;
             view.list = Some((root, list));
         }
     }
     Ok(view)
-}
-
-/// One project's whole todo list, in one fetch.
-fn fetch_list(backend: &impl Backend, root: &str) -> Result<todos::List, String> {
-    let rows = backend.fetch(
-        &FetchRequest::entity("todo")
-            .filter(Pred::eq("root", root))
-            .sort_by("id", SortDir::Asc)
-            .limit(store::LIST_FETCH_LIMIT),
-    )?;
-    Ok(todos::from_rows(&rows).remove(root).unwrap_or_default())
 }
 
 /// Load, plan, apply.
@@ -317,48 +305,18 @@ fn run_search(backend: &impl Backend, args: &Value) -> OpResult {
         None => None,
     };
 
-    let scoped = |request: FetchRequest| match scope.as_deref() {
-        Some(root) => request.filter(Pred::eq("root", root)),
-        None => request,
-    };
-    let limit = todos::MAX_MATCHES as u32;
-    let mut hits = backend.fetch(&scoped(
-        FetchRequest::entity("todo").search(query).limit(limit),
-    ))?;
-    if hits.is_empty() {
-        hits = backend.fetch(&scoped(
-            FetchRequest::entity("todo")
-                .filter(Pred::contains("text", query))
-                .limit(limit),
-        ))?;
-    }
-    // Flat, not a tree: a matched parent and child are two results, and nesting
-    // one inside the other would report only the parent.
-    let found = todos::items_from_rows(&hits);
-
-    // A trail is the texts of the items above a match, which the rows do not
-    // carry — so the lists the matches actually landed in get materialized, and
-    // only those. Usually one, and never more than there were matches.
-    let mut lists: BTreeMap<String, todos::List> = BTreeMap::new();
-    for (root, _) in &found {
-        if !lists.contains_key(root) {
-            lists.insert(root.clone(), fetch_list(backend, root)?);
-        }
-    }
-
-    let matches: Vec<Value> = found
-        .iter()
-        .map(|(root, item)| {
-            let whole = lists.get(root).cloned().unwrap_or_default();
+    let matches: Vec<Value> = todos::search(backend, scope.as_deref(), query)?
+        .into_iter()
+        .map(|found| {
             json!({
                 "project": projects
                     .values()
-                    .find(|project| todos::normalize_root(&project.root).ok().as_deref() == Some(root.as_str()))
+                    .find(|project| todos::normalize_root(&project.root).ok().as_deref() == Some(found.root.as_str()))
                     .map(|project| project.name.clone()),
-                "id": item.id,
-                "text": item.text,
-                "done": item.done,
-                "trail": todos::trail_of(&whole.items, item.id),
+                "id": found.id,
+                "text": found.text,
+                "done": found.done,
+                "trail": found.trail,
             })
         })
         .collect();

@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
 
 /// The file the lists lived in before the store. Read once, by the import.
 pub const FILE: &str = "/cache/todos.json";
@@ -340,48 +340,93 @@ pub struct Match {
     pub trail: Vec<String>,
 }
 
-/// The items of the given lists whose text holds the query.
+/// One project's whole todo list, in one fetch.
 ///
-/// The match ignores case. An item that is crossed off matches as well: a user
-/// who asks whether the list already holds an item about a subject wants to
-/// hear about a finished one too, and each match says which it is.
-pub fn search(store: &Store, roots: &[String], query: &str) -> Vec<Match> {
-    let needle = query.trim().to_lowercase();
-    let mut matches = Vec::new();
-    if needle.is_empty() {
-        return matches;
+/// One fetch and not a page loop, because [`MAX_ITEMS`] is also the most rows a
+/// fetch returns. A list that came back truncated would mean those two constants
+/// had drifted apart, so it is worth saying rather than silently losing a tail.
+pub fn fetch_list(backend: &impl crate::store::Backend, root: &str) -> Result<List, String> {
+    let rows = backend.fetch(
+        &FetchRequest::entity("todo")
+            .filter(Pred::eq("root", root))
+            .sort_by("id", SortDir::Asc)
+            .limit(crate::store::LIST_FETCH_LIMIT),
+    )?;
+    if rows.truncated {
+        return Err(format!(
+            "the todo list of {root} is longer than one fetch, which should be impossible"
+        ));
     }
-    for root in roots {
-        let Some(list) = store.get(root) else {
-            continue;
-        };
-        search_into(&list.items, root, &needle, &mut Vec::new(), &mut matches);
-    }
-    matches.truncate(MAX_MATCHES);
-    matches
+    Ok(from_rows(&rows).remove(root).unwrap_or_default())
 }
 
-fn search_into(
-    items: &[Item],
-    root: &str,
-    needle: &str,
-    trail: &mut Vec<String>,
-    matches: &mut Vec<Match>,
-) {
-    for item in items {
-        trail.push(item.text.clone());
-        if item.text.to_lowercase().contains(needle) {
-            matches.push(Match {
-                root: root.to_owned(),
-                id: item.id,
-                text: item.text.clone(),
-                done: item.done,
-                trail: trail.clone(),
-            });
-        }
-        search_into(&item.children, root, needle, trail, matches);
-        trail.pop();
+/// The items whose text matches the query, newest-relevant first.
+///
+/// Two passes, because they mean different things. Full-text matches whole words
+/// and ranks by relevance, which is what someone typing a word wants. But the
+/// scan this replaced matched substrings, so `reba` used to find `rebase` — and
+/// would silently stop. Hence the fallback, which is only paid for when the
+/// index found nothing at all.
+///
+/// An item that is crossed off matches too: someone asking whether a list
+/// already holds an item about a subject wants to hear about a finished one,
+/// and each match says which it is.
+///
+/// `scope` of `None` searches every project.
+pub fn search(
+    backend: &impl crate::store::Backend,
+    scope: Option<&str>,
+    query: &str,
+) -> Result<Vec<Match>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
     }
+    let scoped = |request: FetchRequest| match scope {
+        Some(root) => request.filter(Pred::eq("root", root)),
+        None => request,
+    };
+    let limit = MAX_MATCHES as u32;
+    let mut hits = backend.fetch(&scoped(
+        FetchRequest::entity("todo").search(query).limit(limit),
+    ))?;
+    if hits.is_empty() {
+        hits = backend.fetch(&scoped(
+            FetchRequest::entity("todo")
+                .filter(Pred::contains("text", query))
+                .limit(limit),
+        ))?;
+    }
+    // Flat, not a tree: a matched parent and child are two results, and nesting
+    // one inside the other would report only the parent.
+    let found = items_from_rows(&hits);
+
+    // A trail is the texts of the items above a match, which the rows do not
+    // carry. So the lists the matches landed in are materialized — only those,
+    // and never more of them than there were matches. Usually one.
+    let mut lists: BTreeMap<String, List> = BTreeMap::new();
+    for (root, _) in &found {
+        if !lists.contains_key(root) {
+            lists.insert(root.clone(), fetch_list(backend, root)?);
+        }
+    }
+
+    Ok(found
+        .into_iter()
+        .map(|(root, item)| {
+            let trail = lists
+                .get(&root)
+                .map(|list| trail_of(&list.items, item.id))
+                .unwrap_or_default();
+            Match {
+                root,
+                id: item.id,
+                text: item.text,
+                done: item.done,
+                trail,
+            }
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,68 +1893,142 @@ mod tests {
 
     // -- searching ----------------------------------------------------------
 
+    /// Whole words go through the index; a fragment falls back to a substring
+    /// match, which is what the recursive scan used to do for everything.
     #[test]
     fn a_search_ignores_case_and_matches_part_of_the_text() {
-        let saved = store("/work/hocus", vec![item(1, "Ship the Parser", Vec::new())]);
-        assert_eq!(search(&saved, &roots(&["/work/hocus"]), "parse").len(), 1);
-        assert!(search(&saved, &roots(&["/work/hocus"]), "compiler").is_empty());
+        let backend = backend();
+        import(
+            &backend,
+            "/work/hocus",
+            &List {
+                next_id: 2,
+                items: vec![item(1, "Ship the Parser", Vec::new())],
+            },
+        );
+        assert_eq!(search(&backend, None, "parse").expect("searched").len(), 1);
+        assert_eq!(search(&backend, None, "PARSER").expect("searched").len(), 1);
+        assert!(search(&backend, None, "compiler")
+            .expect("searched")
+            .is_empty());
     }
 
     #[test]
     fn a_search_gives_the_items_above_the_match() {
-        let saved = store(
+        let backend = backend();
+        import(
+            &backend,
             "/work/hocus",
-            vec![item(
-                1,
-                "release 2",
-                vec![item(2, "ship the parser", Vec::new())],
-            )],
+            &List {
+                next_id: 3,
+                items: vec![item(
+                    1,
+                    "release 2",
+                    vec![item(2, "ship the parser", Vec::new())],
+                )],
+            },
         );
-        let found = search(&saved, &roots(&["/work/hocus"]), "parser");
+        let found = search(&backend, None, "parser").expect("searched");
 
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].id, 2);
         assert_eq!(found[0].root, "/work/hocus");
         assert_eq!(found[0].trail, vec!["release 2", "ship the parser"]);
     }
 
     #[test]
     fn a_search_finds_an_item_that_is_crossed_off() {
-        let saved = store("/work/hocus", vec![done(item(1, "ship it", Vec::new()))]);
-        let found = search(&saved, &roots(&["/work/hocus"]), "ship");
+        let backend = backend();
+        import(
+            &backend,
+            "/work/hocus",
+            &List {
+                next_id: 2,
+                items: vec![done(item(1, "ship it", Vec::new()))],
+            },
+        );
+        let found = search(&backend, None, "ship").expect("searched");
 
         assert_eq!(found.len(), 1);
         assert!(found[0].done);
     }
 
+    /// An unscoped search covers every project.
+    ///
+    /// It no longer answers in folder order — the index ranks by relevance, and
+    /// for two equally good matches that order is the index's to choose. Nothing
+    /// depended on the old order; both matches being present is the property.
     #[test]
-    fn a_search_over_every_list_answers_in_folder_order() {
-        let mut saved = Store::new();
-        add(&mut saved, "/work/pocus", "ship it", None).unwrap();
-        add(&mut saved, "/work/hocus", "ship it", None).unwrap();
-        let found = search(&saved, &roots(&["/work/hocus", "/work/pocus"]), "ship");
+    fn a_search_over_every_list_covers_every_project() {
+        let backend = backend();
+        for root in ["/work/pocus", "/work/hocus"] {
+            import(
+                &backend,
+                root,
+                &List {
+                    next_id: 2,
+                    items: vec![item(1, "ship it", Vec::new())],
+                },
+            );
+        }
+        let found = search(&backend, None, "ship").expect("searched");
 
-        let where_found: Vec<&str> = found.iter().map(|found| found.root.as_str()).collect();
+        let mut where_found: Vec<&str> = found.iter().map(|found| found.root.as_str()).collect();
+        where_found.sort_unstable();
         assert_eq!(where_found, vec!["/work/hocus", "/work/pocus"]);
     }
 
     #[test]
+    fn a_search_can_be_scoped_to_one_project() {
+        let backend = backend();
+        for root in ["/work/pocus", "/work/hocus"] {
+            import(
+                &backend,
+                root,
+                &List {
+                    next_id: 2,
+                    items: vec![item(1, "ship it", Vec::new())],
+                },
+            );
+        }
+        let found = search(&backend, Some("/work/hocus"), "ship").expect("searched");
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].root, "/work/hocus");
+    }
+
+    #[test]
     fn a_search_is_cut_at_the_match_cap() {
+        let backend = backend();
         let items: Vec<Item> = (1..=MAX_MATCHES as u64 + 5)
             .map(|id| item(id, &format!("ship {id}"), Vec::new()))
             .collect();
-        let saved = store("/work/hocus", items);
+        import(
+            &backend,
+            "/work/hocus",
+            &List {
+                next_id: MAX_MATCHES as u64 + 6,
+                items,
+            },
+        );
 
         assert_eq!(
-            search(&saved, &roots(&["/work/hocus"]), "ship").len(),
+            search(&backend, None, "ship").expect("searched").len(),
             MAX_MATCHES
         );
     }
 
     #[test]
     fn an_empty_query_finds_nothing() {
-        let saved = store("/work/hocus", vec![item(1, "ship it", Vec::new())]);
-        assert!(search(&saved, &roots(&["/work/hocus"]), "  ").is_empty());
+        let backend = backend();
+        import(
+            &backend,
+            "/work/hocus",
+            &List {
+                next_id: 2,
+                items: vec![item(1, "ship it", Vec::new())],
+            },
+        );
+        assert!(search(&backend, None, "  ").expect("searched").is_empty());
     }
 
     // -- crossing off -------------------------------------------------------

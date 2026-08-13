@@ -166,6 +166,12 @@ pub trait Backend {
     fn count(&self, request: &FetchRequest) -> Result<u64, String>;
     fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String>;
 
+    /// Watch a query, and take its current results while registering.
+    ///
+    /// The initial rows come back with the handle so a caller cannot miss a
+    /// change in the gap between fetching and watching.
+    fn watch(&self, request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHandle, String>;
+
     /// Declare a group of entities, stopping at the first refusal.
     ///
     /// The error names the entity, because the likely cause is two plugins
@@ -177,6 +183,30 @@ pub trait Backend {
                 .map_err(|error| format!("could not declare `{}`: {error}", def.name))?;
         }
         Ok(())
+    }
+}
+
+/// A reference to a backend is a backend, so a caller can hold one without
+/// owning it — which is what lets a plugin keep its store in a field.
+impl<T: Backend + ?Sized> Backend for &T {
+    fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String> {
+        (**self).define(def)
+    }
+
+    fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
+        (**self).fetch(request)
+    }
+
+    fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+        (**self).count(request)
+    }
+
+    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+        (**self).apply(mutations)
+    }
+
+    fn watch(&self, request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHandle, String> {
+        (**self).watch(request, mode)
     }
 }
 
@@ -232,6 +262,14 @@ mod host {
         fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
             data_apply(self.namespace.as_deref(), mutations)
         }
+
+        fn watch(
+            &self,
+            request: &FetchRequest,
+            mode: WatchMode,
+        ) -> Result<DataWatchHandle, String> {
+            data_watch(&stamped(self.namespace.as_deref(), request), mode)
+        }
     }
 }
 
@@ -285,6 +323,14 @@ mod host_stub {
         fn apply(&self, _mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
             unavailable()
         }
+
+        fn watch(
+            &self,
+            _request: &FetchRequest,
+            _mode: WatchMode,
+        ) -> Result<DataWatchHandle, String> {
+            unavailable()
+        }
     }
 }
 
@@ -297,6 +343,10 @@ pub use host_stub::Host;
 mod local {
     use super::*;
     use zellij_utils::plugin_data_store::PluginDataStore;
+
+    /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
+    /// storing "no watch" as zero can still tell the two apart.
+    pub const LOCAL_WATCH_ID: u64 = 1;
 
     /// The real store over a temporary file, for tests and for anything that
     /// wants to exercise this crate without a running zellij.
@@ -393,6 +443,24 @@ mod local {
                         .map(|outcome| outcome.report)
                         .map_err(|e| e.to_string())
                 }
+
+                /// Takes the rows, but never notifies.
+                ///
+                /// Watch delivery is the plugin thread's job — the host queues
+                /// the event rather than dispatching it inline — so there is
+                /// nothing here to deliver it *to*. A test drives the change
+                /// handler directly instead, which is also the only way to test
+                /// what it does with rows it did not expect.
+                fn watch(
+                    &self,
+                    request: &FetchRequest,
+                    _mode: WatchMode,
+                ) -> Result<DataWatchHandle, String> {
+                    Ok(DataWatchHandle {
+                        watch_id: LOCAL_WATCH_ID,
+                        rows: self.fetch(request)?,
+                    })
+                }
             }
         };
     }
@@ -402,7 +470,7 @@ mod local {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub use local::{Joined, Local};
+pub use local::{Joined, Local, LOCAL_WATCH_ID};
 
 // ---------------------------------------------------------------------------
 

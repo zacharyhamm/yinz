@@ -76,8 +76,6 @@ impl State {
     pub(crate) fn on_permissions(&mut self, status: PermissionStatus) -> bool {
         // Either way we stop saying "waiting": this is the only answer we get.
         self.perms = true;
-        // Store-backed slash commands do not need API permissions.
-        self.subscribe_to_store();
         self.cfg = match status {
             // Safe now — gated calls will actually be answered.
             PermissionStatus::Granted => {

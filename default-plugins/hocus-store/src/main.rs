@@ -24,9 +24,6 @@
 //! Two jobs are left. Answering the pipes above, and running project discovery
 //! off the pane snapshots hocus-agentd sends — which stays here because it has
 //! to happen whether or not a hocus pane is open.
-//!
-//! Everything marked TEMPORARY below is the snapshot push hocus still depends
-//! on, and goes in the commit that moves hocus onto the store.
 
 mod ops;
 
@@ -36,18 +33,8 @@ use hocus_proto::{agents, projects, store, todos};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
-/// TEMPORARY, and deleted in the commit that moves hocus onto the store.
-///
-/// hocus still learns about projects and todos from a pushed snapshot, so until
-/// it reads the shared namespace itself the snapshot has to keep arriving. It is
-/// now assembled by *reading back* what was just written rather than from a copy
-/// held here, which is slower and pointless and exists only so that this commit
-/// leaves a working tree.
 #[derive(Default)]
-struct State {
-    subscribers: Vec<u32>,
-    seq: u64,
-}
+struct State;
 
 register_plugin!(State);
 
@@ -73,9 +60,6 @@ impl ZellijPlugin for State {
         // (location, configuration). Deliberately no payload: the daemon reads
         // manual kind overrides out of one, and this plugin has none to give.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
-        // TEMPORARY, with `publish`: a reloaded store has no subscribers, and
-        // hocus cannot tell a quiet store from one with nothing to say.
-        pipe_message_to_plugin(MessageToPlugin::new(wire::STORE_HELLO));
     }
 
     fn update(&mut self, _event: Event) -> bool {
@@ -88,19 +72,7 @@ impl ZellijPlugin for State {
             wire::AGENT_HELLO => {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
             },
-            // TEMPORARY, with `publish`.
-            wire::STORE_SUBSCRIBE => {
-                if let PipeSource::Plugin(id) = pipe_message.source {
-                    if !self.subscribers.contains(&id) {
-                        self.subscribers.push(id);
-                    }
-                }
-                self.publish();
-            },
-            wire::AGENT_SNAPSHOT => {
-                discover_from(&Host::shared(), &payload);
-                self.publish();
-            },
+            wire::AGENT_SNAPSHOT => discover_from(&Host::shared(), &payload),
             wire::STORE_MUTATE => self.handle_mutate(pipe_message.source, &payload),
             wire::STORE_QUERY => self.handle_query(pipe_message.source, &payload),
             _ => {},
@@ -121,44 +93,6 @@ impl State {
             Err(_) => (String::new(), Err("could not parse mutation".to_owned())),
         };
         answer(source, outcome.0, outcome.1);
-        self.publish();
-    }
-
-    /// TEMPORARY. Push the whole store to everyone watching, read back out of
-    /// the store rather than held here. Deleted with the snapshot protocol.
-    fn publish(&mut self) {
-        if self.subscribers.is_empty() {
-            return;
-        }
-        let backend = Host::shared();
-        let (Ok(project_rows), Ok(todo_rows)) = (
-            backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT)),
-            backend.fetch(
-                &FetchRequest::entity("todo")
-                    .sort_by("id", SortDir::Asc)
-                    .limit(store::LIST_FETCH_LIMIT),
-            ),
-        ) else {
-            return;
-        };
-        self.seq += 1;
-        let snapshot = wire::StoreSnapshot {
-            projects: projects::from_rows(&project_rows),
-            todos: todos::from_rows(&todo_rows),
-            seq: self.seq,
-        };
-        let Ok(payload) = serde_json::to_string(&snapshot) else {
-            return;
-        };
-        // By id, never by url: a url would *launch* a subscriber that had since
-        // closed, which is the last thing a background store should do.
-        for id in &self.subscribers {
-            pipe_message_to_plugin(
-                MessageToPlugin::new(wire::STORE_SNAPSHOT)
-                    .with_destination_plugin_id(*id)
-                    .with_payload(payload.clone()),
-            );
-        }
     }
 
     fn handle_query(&mut self, source: PipeSource, payload: &str) {
@@ -291,37 +225,19 @@ fn legacy_bytes(_path: &str) -> Vec<u8> {
 /// A CLI pipe is a blocked process waiting on stdout, not a plugin with an id —
 /// answering it the other way would hang the terminal it was typed in.
 ///
-/// An empty `request_id` is not a reason to stay silent: a caller that sent none
-/// matches nothing when the reply lands, which is what a fire-and-forget write
-/// already relies on.
-///
-/// The `Plugin` arm is TEMPORARY. hocus still parks a tool call waiting on a
-/// `STORE_RESULT`, and goes on to time out after five seconds without one. It
-/// goes when hocus writes the store itself and stops asking.
-fn answer(source: PipeSource, request_id: String, outcome: ops::OpResult) {
-    let (ok, message) = match outcome {
-        Ok(message) => (true, message),
-        Err(message) => (false, message),
+/// A plugin gets nothing. Nothing pipes a change here from a plugin now that
+/// hocus writes the shared namespace itself, and a reply nobody waits for is a
+/// message name kept working for no reader.
+fn answer(source: PipeSource, _request_id: String, outcome: ops::OpResult) {
+    let message = match outcome {
+        Ok(message) => message,
+        Err(message) => message,
     };
     match source {
         PipeSource::Cli(pipe_id) => {
             cli_pipe_output(&pipe_id, &format!("{message}\n"));
             unblock_cli_pipe_input(&pipe_id);
         },
-        PipeSource::Plugin(id) => {
-            let result = wire::StoreResult {
-                request_id,
-                ok,
-                message,
-            };
-            if let Ok(payload) = serde_json::to_string(&result) {
-                pipe_message_to_plugin(
-                    MessageToPlugin::new(wire::STORE_RESULT)
-                        .with_destination_plugin_id(id)
-                        .with_payload(payload),
-                );
-            }
-        },
-        PipeSource::Keybind => {},
+        PipeSource::Plugin(_) | PipeSource::Keybind => {},
     }
 }
