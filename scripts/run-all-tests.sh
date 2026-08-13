@@ -51,7 +51,7 @@ gates+=(
   "format-check	cargo x format --check"
   "xtask	cargo test -p xtask"
 )
-[[ $with_e2e -eq 1 ]] && gates+=("e2e	cargo x ci e2e")
+[[ $with_e2e -eq 1 ]] && gates+=("e2e	cargo x ci e2e --test")
 
 failed=()
 printf 'Test run: %s\n\n' "$(date)" | tee "$summary"

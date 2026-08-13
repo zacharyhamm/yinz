@@ -4084,7 +4084,10 @@ mod tests {
         assert_eq!(state.agent_seq, 0, "a restarted daemon starts at one again");
         state.set_panes(panes_with_agent());
         state.pipe(agent_snapshot(1));
-        assert_eq!(state.agent_seq, 1, "the restarted daemon is heard once more");
+        assert_eq!(
+            state.agent_seq, 1,
+            "the restarted daemon is heard once more"
+        );
         assert!(state.panes.is_empty());
     }
 
