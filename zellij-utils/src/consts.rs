@@ -116,6 +116,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "multiple-select",
     "layout-manager",
     "link",
+    "file-finder",
     "shared-test",
     "hocus",
     "hocus-agentd",

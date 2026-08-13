@@ -1,0 +1,10 @@
+[package]
+name = "file-finder"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+zellij-tile = { path = "../../zellij-tile" }
+
+[dev-dependencies]
+hegeltest = "0.29.3"
