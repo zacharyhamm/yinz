@@ -8,6 +8,36 @@ use zellij_tile::prelude::*;
 // ---------------------------------------------------------------------------
 
 impl State {
+    /// The data store.
+    ///
+    /// The shims inside a plugin; the real engine over a temporary directory
+    /// everywhere else, so that a test exercises the same SQLite a session does
+    /// rather than a fake. Nothing outside this pair of methods names either.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn store(&self) -> impl Backend + '_ {
+        hocus_proto::store::Host::shared()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn store(&self) -> impl Backend + '_ {
+        &self.store
+    }
+
+    /// hocus's own namespace: the archive and the up-arrow history.
+    ///
+    /// Private because nothing else reads them, which also means nothing has to
+    /// agree with anyone about their schema. Same database as [`State::store`],
+    /// different partition of it.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn private_store(&self) -> impl Backend + '_ {
+        hocus_proto::store::Host::private()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn private_store(&self) -> impl Backend + '_ {
+        self.store.joined("plugin:hocus", "hocus")
+    }
+
     pub(crate) fn active_stream_id(&self) -> Option<String> {
         self.stream.as_ref().map(|stream| stream.id.clone())
     }
@@ -138,7 +168,7 @@ impl State {
     /// predicate the whole waiting indicator keys off.
     pub(crate) fn is_loading(&self) -> bool {
         match self.status {
-            Status::AwaitingCommand | Status::AwaitingSearch | Status::AwaitingStore => true,
+            Status::AwaitingCommand | Status::AwaitingSearch => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply. Once its
             // first token lands the arriving text is its own proof of life; a
@@ -237,77 +267,60 @@ impl State {
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_REFRESH));
     }
 
-    /// Ask `hocus-store` for the project registry and the todo lists, and to
-    /// keep sending them. Broadcast for the same reason the agent subscribe is.
-    pub(crate) fn subscribe_to_store(&mut self) {
-        // Forget the watermark, same as the agent subscribe: a reloaded store
-        // restarts its `seq` at one, and holding the old high-water mark would
-        // drop every snapshot it ever sends again.
-        self.store_seq = 0;
-        pipe_message_to_plugin(MessageToPlugin::new(wire::STORE_SUBSCRIBE));
-    }
-
-    /// Send a change to `hocus-store` without waiting for it.
+    /// Declare the shared entities and start watching the project rows.
     ///
-    /// For changes whose outcome the caller already knows — the store is being
-    /// told, not asked. The reply, if any, matches no pending write and is
-    /// dropped.
-    pub(crate) fn send_store_write(&mut self, op: &str, args: serde_json::Value) {
-        let mutation = wire::Mutation {
-            request_id: String::new(),
-            op: op.to_owned(),
-            args,
-        };
-        if let Ok(payload) = serde_json::to_string(&mutation) {
-            pipe_message_to_plugin(MessageToPlugin::new(wire::STORE_MUTATE).with_payload(payload));
+    /// The watch hands back the rows it matched at the moment it was registered,
+    /// so the registry is in hand here rather than after a round trip — hocus
+    /// used to start empty and wait for the store's first push.
+    ///
+    /// A failure is not fatal and not reported: it means the data store is
+    /// unreachable, which for a builtin means something is very wrong, and there
+    /// is no conversation on screen yet to say so in. Every read that follows
+    /// simply answers empty, and every write says why it failed.
+    pub(crate) fn open_store(&mut self) {
+        // The archive and the up-arrow history, in hocus's own namespace: only
+        // this plugin reads them, so nothing has to be coordinated. This is also
+        // where the old JSON files are read in, once.
+        let prompts = history::open(&self.private_store())
+            .is_ok()
+            .then(|| history::load_prompts(&self.private_store()));
+        if let Some(prompts) = prompts {
+            self.input.set_history(prompts);
         }
-    }
-
-    /// Send a change to `hocus-store` and leave the tool call waiting on it.
-    ///
-    /// The call's own id is the correlation key, which is enough because the
-    /// queue runs one call at a time — the reply can only ever be for the head.
-    pub(crate) fn start_store_write(&mut self, call: &ToolCall, op: &str, args: serde_json::Value) {
-        let mutation = wire::Mutation {
-            request_id: call.id.clone(),
-            op: op.to_owned(),
-            args,
-        };
-        let Ok(payload) = serde_json::to_string(&mutation) else {
-            self.finish_head("could not encode the change");
+        // Declared here as well as in hocus-store, because either may start
+        // first and a fetch against an undeclared entity is an error.
+        if self.store().define_all(&store::shared_defs()).is_err() {
+            return;
+        }
+        // `Rows` rather than `Ids`: the registry is small, and paging for the
+        // rows after every change would be a second call for nothing. The limit
+        // is explicit because the default hundred would silently lose the rest.
+        let handle = self.store().watch(
+            &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
+            WatchMode::Rows,
+        );
+        let Ok(handle) = handle else {
             return;
         };
-        // The store may be absent — an old config with no `hocus-store` in
-        // `load_plugins` — and a broadcast to nobody is silent. This is what
-        // makes that a failed tool call rather than a tool loop that never
-        // moves again.
-        self.pending_write = Some((call.id.clone(), STORE_TIMEOUT_SECONDS));
-        pipe_message_to_plugin(MessageToPlugin::new(wire::STORE_MUTATE).with_payload(payload));
-        self.status = Status::AwaitingStore;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
+        self.project_watch = handle.watch_id;
+        self.take_projects(projects::from_rows(&handle.rows));
     }
 
-    /// Take a new copy of the project registry and the todo lists.
+    /// Take a new copy of the project registry.
     ///
-    /// Read-only here: everything downstream — `todo_list`, `agent_list`, the
-    /// project named in each request's system message — answers out of this copy
-    /// rather than paying a round trip, which is what keeps those tools instant.
-    pub(crate) fn on_store_snapshot(&mut self, message: &PipeMessage) -> bool {
-        let Some(snapshot) = message
-            .payload
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<wire::StoreSnapshot>(json).ok())
-        else {
-            return false;
-        };
-        // Same watermark rule as the agent snapshot: never go backwards.
-        if snapshot.seq <= self.store_seq {
+    /// Nothing here compares versions. The store re-runs a watch on every write
+    /// and reports only when the rows actually differ, so an idempotent write is
+    /// silent — which is what the snapshot watermark was approximating.
+    pub(crate) fn on_projects_changed(&mut self, watch_id: u64, rows: &DataRows) -> bool {
+        if watch_id != self.project_watch {
             return false;
         }
-        self.store_seq = snapshot.seq;
-        self.projects = snapshot.projects;
-        self.todos = snapshot.todos;
+        self.take_projects(projects::from_rows(rows));
+        true
+    }
+
+    fn take_projects(&mut self, projects: projects::Registry) {
+        self.projects = projects;
         // A project can be renamed or dropped out from under the tab maps —
         // discovery replaces a project when a shallower folder takes its
         // folders. Anything naming a project that no longer exists is dropped,
@@ -322,50 +335,15 @@ impl State {
             }
         }
         self.refresh_tab_projects();
-        true
     }
 
-    /// Finish the tool call that was waiting on a change.
-    pub(crate) fn on_store_result(&mut self, message: &PipeMessage) -> bool {
-        let Some(result) = message
-            .payload
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<wire::StoreResult>(json).ok())
-        else {
-            return false;
-        };
-        // Only the call we are actually waiting on. A late reply to a write
-        // that already timed out would otherwise answer whatever call happens
-        // to be at the head now.
-        if self.pending_write.as_ref().map(|(id, _)| id.as_str())
-            != Some(result.request_id.as_str())
-        {
-            return false;
-        }
-        self.pending_write = None;
-        self.status = Status::Idle;
-        self.finish_head(result.message);
-        self.pump_tools();
-        true
-    }
-
-    /// Give up on a store write that was never answered.
+    /// Apply a batch of writes to the shared namespace.
     ///
-    /// Without this a store that is missing or wedged leaves the tool queue
-    /// parked forever, which looks exactly like a hung model.
-    pub(crate) fn tick_store(&mut self, elapsed: f64) -> bool {
-        let Some((_, remaining)) = &mut self.pending_write else {
-            return false;
-        };
-        *remaining -= elapsed;
-        if *remaining > 0.0 {
-            return false;
-        }
-        self.pending_write = None;
-        self.status = Status::Idle;
-        self.finish_head("the project and todo store did not answer; nothing was changed");
-        self.pump_tools();
-        true
+    /// hocus writes the store itself now. There is no reply to wait for and no
+    /// tool call to park: an apply is one transaction that has either happened
+    /// or returned an error by the time this returns.
+    pub(crate) fn write_store(&mut self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+        self.store().apply(mutations)
     }
 
     pub(crate) fn on_timer(&mut self, elapsed: f64) -> bool {
@@ -377,14 +355,12 @@ impl State {
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
-        let gave_up = self.tick_store(elapsed);
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
         }
-        let fired = asked || fired || gave_up;
-        if frames || !self.jobs.is_empty() || self.pending_write.is_some() || !self.asks.is_empty()
-        {
+        let fired = asked || fired;
+        if frames || !self.jobs.is_empty() || !self.asks.is_empty() {
             self.arm_timer(if frames { FRAME_SECONDS } else { JOB_SECONDS });
         }
         // A quiet tick changed nothing on screen; asking for a render would
@@ -726,11 +702,10 @@ impl State {
     }
 
     pub(crate) fn log(&mut self, kind: &str, payload: serde_json::Value) {
+        // A log line is filed under a chat id, so an unsaved chat needs one
+        // before it can be logged against. Saving is what allocates it.
         if self.chat_id.is_none() && !self.messages.is_empty() {
-            if let Some((id, json)) = history::save(&mut self.chat_id, &self.messages) {
-                self.saved = self.fingerprint();
-                post_save(id, json);
-            }
+            self.save_now(true);
         }
         self.log_seq = self.log_seq.wrapping_add(1);
         post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);

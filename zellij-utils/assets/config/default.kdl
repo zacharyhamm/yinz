@@ -295,9 +295,10 @@ plugins {
     hocus-agentd location="zellij:hocus-agentd" {
         shared true
     }
-    // Owns the project registry and the todo lists. Shared for the same reason,
-    // and more pressingly: two instances would each hold the whole store in
-    // memory and write the same files from under each other.
+    // Answers `zellij pipe` for the project registry and the todo lists, and
+    // discovers projects from the agent snapshot. The data itself lives in the
+    // plugin data store, which hocus reads directly. Shared for the same reason
+    // as the others: two instances would both answer the same broadcast.
     hocus-store location="zellij:hocus-store" {
         shared true
     }

@@ -126,8 +126,6 @@ pub enum Status {
     AwaitingCommand,
     /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
     AwaitingSearch,
-    /// The head of `pending` is a todo change waiting on `hocus-store`.
-    AwaitingStore,
 }
 
 /// A prompt the plugin re-asks itself on an interval. Firing one is exactly

@@ -2,8 +2,10 @@ use super::*;
 
 use nix::pty::openpty;
 use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+use nix::sys::stat::fstat;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, IntoRawFd};
+use std::time::{Duration, Instant};
 
 fn stream_pair() -> (UnixStream, UnixStream) {
     let (a, b) = socketpair(
@@ -147,7 +149,15 @@ fn send_two_fds(sock: &UnixStream, first: RawFd, second: RawFd) {
 /// files: `/proc/self/fd` is process-wide, and the rest of the suite is opening
 /// and closing descriptors on other threads throughout. Here the second
 /// descriptor is one end of a socketpair whose only other copy we drop, so the
-/// probe reads EOF if it was closed and blocks if it survived.
+/// probe reads EOF once the descriptor is gone.
+///
+/// Retried against a deadline rather than read once: other tests in this binary
+/// fork, and a child that has forked but not yet exec'd holds a dup of every
+/// descriptor open in this process, this handoff's extra one included. That keeps
+/// the probe's peer alive for the microseconds until the exec, which has nothing
+/// to do with the rule under test. A descriptor `recv_fd` really leaked is held
+/// for the life of the test process and never reports EOF, so the deadline still
+/// fails the case this test is for.
 #[test]
 fn only_the_first_descriptor_of_a_handoff_is_kept() {
     let (sender, receiver) = stream_pair();
@@ -165,17 +175,39 @@ fn only_the_first_descriptor_of_a_handoff_is_kept() {
     let received = recv_fd(&receiver).expect("recv_fd failed");
     assert!(
         is_cloexec(received.as_raw_fd()),
-        "the descriptor that was kept should still be the first one, marked cloexec"
+        "the descriptor that was kept must not be inheritable across exec"
     );
 
+    // Which of the two was kept, not merely that one was: both arrive marked
+    // cloexec, so the flag alone would be just as happy if `recv_fd` had kept the
+    // socket that followed the master. A descriptor the kernel installs from
+    // `SCM_RIGHTS` shares its open file description with the one that was sent, so
+    // device and inode match the master exactly and match nothing else.
+    let sent = fstat(pty.master.as_fd()).expect("fstat on the sent master failed");
+    let kept = fstat(received.as_fd()).expect("fstat on the received descriptor failed");
+    assert_eq!(
+        (kept.st_dev, kept.st_ino),
+        (sent.st_dev, sent.st_ino),
+        "the kept descriptor should be the pty master, the first of the two sent"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut buf = [0u8; 1];
-    match (&probe).read(&mut buf) {
-        Ok(0) => {},
-        Ok(n) => panic!("the probe unexpectedly carried {n} bytes"),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => panic!(
-            "the second descriptor of the handoff is still open — recv_fd leaked it, \
-             and a supervisor could hold a pane's pty open forever"
-        ),
-        Err(e) => panic!("reading the probe failed: {e}"),
+    loop {
+        match (&probe).read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => panic!("the probe unexpectedly carried {n} bytes"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    panic!(
+                        "the second descriptor of the handoff was still open for the whole \
+                         deadline — recv_fd leaked it, and a supervisor could hold a pane's \
+                         pty open forever"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            },
+            Err(e) => panic!("reading the probe failed: {e}"),
+        }
     }
 }

@@ -7,8 +7,13 @@ use zellij_tile::prelude::*;
 // post_message_to. They share the /cache preopen but no memory with the plugin.
 // ---------------------------------------------------------------------------
 
-/// Fire-and-forget file writes, off the plugin's `update()` path. One worker
-/// with a FIFO mailbox, so log lines and saves land in post order. No replies.
+/// Fire-and-forget JSONL appends, off the plugin's `update()` path. One worker
+/// with a FIFO mailbox, so log lines land in post order. No replies.
+///
+/// The transcript and the prompt history used to come through here too. They go
+/// to the data store now, which is a host call rather than a blocking write —
+/// and could not come through here anyway: a new chat's id comes back from the
+/// apply, and this mailbox has no way to hand anything back.
 #[derive(Default, Serialize, Deserialize)]
 struct IoWorker;
 
@@ -22,16 +27,6 @@ impl ZellijWorker<'_> for IoWorker {
                 v["chat_id"].as_u64(),
                 v["line"].as_str().unwrap_or_default(),
             ),
-            "save" => {
-                if let (Some(id), Some(json)) = (v["id"].as_u64(), v["json"].as_str()) {
-                    history::write(id, json.as_bytes());
-                }
-            },
-            "prompt_history" => {
-                if let Some(json) = v["json"].as_str() {
-                    history::write_prompt_history(json.as_bytes());
-                }
-            },
             _ => {},
         }
     }
@@ -39,28 +34,8 @@ impl ZellijWorker<'_> for IoWorker {
 
 register_worker!(IoWorker, io_worker, IO_WORKER);
 
-/// Queue a transcript write on the io worker (addressed as "io" — the host owns
-/// the `_worker` suffix).
-pub(crate) fn post_save(id: u64, json: String) {
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "save",
-        &serde_json::json!({ "id": id, "json": json }).to_string(),
-    ));
-}
-
-pub(crate) fn post_prompt_history(entries: &[String]) {
-    let Some(json) = history::prompt_history_json(entries) else {
-        return;
-    };
-    post_message_to(PluginMessage::new_to_worker(
-        "io",
-        "prompt_history",
-        &serde_json::json!({ "json": json }).to_string(),
-    ));
-}
-
-/// Queue a JSONL append on the io worker.
+/// Queue a JSONL append on the io worker (addressed as "io" — the host owns the
+/// `_worker` suffix).
 pub(crate) fn post_log(
     chat_id: Option<u64>,
     mono_ms: u64,

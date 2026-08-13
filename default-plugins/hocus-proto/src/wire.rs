@@ -4,16 +4,16 @@
 //! because a typo in a pipe name is silent — the host delivers it, the target
 //! matches nothing, and the sender waits forever.
 //!
-//! Mutations and queries carry a `request_id`. Snapshots are whole-state
-//! pushes, so a stale one is simply superseded by the next and there is nothing
-//! to correlate.
+//! What is left here is the agent daemon's protocol and the shell-facing store
+//! pipes. The store's own snapshot push is gone: projects and todos live in a
+//! shared data-store namespace that every hocus plugin reads directly, so there
+//! is nothing to replicate and nothing to keep in step.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::agents;
 use crate::projects;
-use crate::todos;
 
 /// hocus → agentd: "keep me posted, and here are the manual overrides".
 pub const AGENT_SUBSCRIBE: &str = "agent_subscribe";
@@ -27,21 +27,10 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 /// already probed changes the branch and nothing says so. Whoever shows a branch
 /// asks for this; the answer arrives as an ordinary snapshot.
 pub const AGENT_REFRESH: &str = "agent_refresh";
-/// hocus → store: "keep me posted".
-pub const STORE_SUBSCRIBE: &str = "store_subscribe";
-/// store → everyone: "I just started; subscribe again if you were watching".
-/// A reloaded store has an empty subscriber list and no way to rebuild it, so
-/// it has to ask — nothing on the other side can tell a quiet store from a
-/// store with nothing to say.
-pub const STORE_HELLO: &str = "store_hello";
-/// store → hocus: the whole registry and every todo list.
-pub const STORE_SNAPSHOT: &str = "store_snapshot";
-/// hocus/CLI → store: change something.
+/// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
 pub const STORE_QUERY: &str = "store_query";
-/// store → hocus: how a mutation or a query turned out.
-pub const STORE_RESULT: &str = "store_result";
 /// hocus-ask → hocus: a question typed in the popup.
 pub const ASK: &str = "hocus_ask";
 /// hocus → hocus-ask: what became of it.
@@ -77,27 +66,13 @@ pub struct PollReply {
     pub repositories: BTreeMap<String, projects::Repository>,
 }
 
-/// Everything the store owns, pushed whole on every change.
-///
-/// Whole-state rather than deltas because the store is small (a project
-/// registry and a few todo lists) and a dropped delta is an invisible
-/// divergence, whereas a dropped snapshot is corrected by the next one.
-#[derive(Default, Serialize, Deserialize)]
-pub struct StoreSnapshot {
-    pub projects: projects::Registry,
-    pub todos: todos::Store,
-    /// Increases on every push. A subscriber that sees a lower value than it
-    /// already holds is looking at a reordered delivery and should drop it.
-    pub seq: u64,
-}
-
 /// A change to the store. `args` stays loosely typed so the CLI can drive the
 /// same path the plugin does without a second schema to keep in step.
 #[derive(Serialize, Deserialize)]
 pub struct Mutation {
-    /// Echoed back in the `StoreResult` so the caller can finish the tool
-    /// call that asked for it. Absent from a hand-typed CLI mutation, which is
-    /// answered on its own pipe and has nothing to correlate.
+    /// Unused by the CLI, which is answered on its own pipe and has nothing to
+    /// correlate. Kept so that a caller with several calls in flight could tell
+    /// the answers apart.
     #[serde(default)]
     pub request_id: String,
     pub op: String,
@@ -105,24 +80,10 @@ pub struct Mutation {
     pub args: serde_json::Value,
 }
 
-/// How a mutation or a query turned out. Both sides of the store run the same
-/// `OpResult`, so one reply shape covers reads and writes alike.
-#[derive(Serialize, Deserialize)]
-pub struct StoreResult {
-    pub request_id: String,
-    pub ok: bool,
-    /// What to show the model: the new state on success, why not on failure.
-    pub message: String,
-}
-
-/// A read that does not go through a subscription. Only the CLI and other
-/// plugins use this — hocus answers its own read tools from its cached
-/// snapshot rather than paying a round trip.
+/// A read from a shell. hocus reads the rows itself and never sends one.
 #[derive(Serialize, Deserialize)]
 pub struct Query {
-    /// Echoed back in the `StoreResult` so a plugin caller can match the answer
-    /// to the question it asked. Absent from a hand-typed CLI query, which is
-    /// answered on its own pipe and has nothing to correlate.
+    /// Unused, for the reason given on `Mutation`.
     #[serde(default)]
     pub request_id: String,
     pub op: String,
