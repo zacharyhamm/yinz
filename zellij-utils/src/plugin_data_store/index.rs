@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use crate::plugin_data::{AttrDef, DataError};
 
 use super::schema::EntitySchema;
-use super::sql::storage_err;
+use super::sql::{join_idents, SqlContext};
 
 /// Create whatever indexes `attr` declares. Returns whether anything was created.
 pub(super) fn create_attr_indexes(
@@ -22,7 +22,7 @@ pub(super) fn create_attr_indexes(
             table,
             attr.name
         ))
-        .map_err(|e| storage_err(&format!("failed to index `{}`", attr.name), e))?;
+        .with_ctx(|| format!("failed to index `{}`", attr.name))?;
         created = true;
     }
     if attr.unique {
@@ -32,13 +32,10 @@ pub(super) fn create_attr_indexes(
             table,
             attr.name
         ))
-        .map_err(|e| {
-            storage_err(
-                &format!(
-                    "failed to make `{}` unique (existing rows may already hold duplicates)",
-                    attr.name
-                ),
-                e,
+        .with_ctx(|| {
+            format!(
+                "failed to make `{}` unique (existing rows may already hold duplicates)",
+                attr.name
             )
         })?;
         created = true;
@@ -56,7 +53,7 @@ pub(super) fn drop_attr_indexes(
         schema.attr_index(attr),
         schema.unique_index(attr)
     ))
-    .map_err(|e| storage_err(&format!("failed to drop the indexes on `{}`", attr), e))
+    .with_ctx(|| format!("failed to drop the indexes on `{}`", attr))
 }
 
 /// Remove the entity's full-text table and the triggers that maintain it.
@@ -73,7 +70,7 @@ pub(super) fn drop_full_text(conn: &Connection, schema: &EntitySchema) -> Result
          DROP TRIGGER IF EXISTS \"{table}_fts_au\";
          DROP TABLE IF EXISTS \"{fts}\";"
     ))
-    .map_err(|e| storage_err("failed to clear the full-text index", e))
+    .ctx("failed to clear the full-text index")
 }
 
 /// Drop and recreate the entity's full-text index and its triggers, then backfill it.
@@ -96,21 +93,11 @@ pub(super) fn rebuild_full_text(
     if ft_attrs.is_empty() {
         return Ok(false);
     }
-    let quoted = ft_attrs
-        .iter()
-        .map(|a| format!("\"{}\"", a))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let new_values = ft_attrs
-        .iter()
-        .map(|a| format!("new.\"{}\"", a))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let old_values = ft_attrs
-        .iter()
-        .map(|a| format!("old.\"{}\"", a))
-        .collect::<Vec<_>>()
-        .join(", ");
+    // The same column list three times over: bare for the table and the trigger targets, and
+    // behind `new.`/`old.` for the values the triggers read out of the row.
+    let quoted = join_idents("", &ft_attrs);
+    let new_values = join_idents("new.", &ft_attrs);
+    let old_values = join_idents("old.", &ft_attrs);
     // External content: the FTS table holds only the index and reads the columns back from the
     // entity table, so the text is not stored twice. The triggers are what keep it exact.
     conn.execute_batch(&format!(
@@ -131,6 +118,6 @@ pub(super) fn rebuild_full_text(
          END;
          INSERT INTO \"{fts}\"(\"{fts}\") VALUES('rebuild');"
     ))
-    .map_err(|e| storage_err("failed to build the full-text index", e))?;
+    .ctx("failed to build the full-text index")?;
     Ok(true)
 }

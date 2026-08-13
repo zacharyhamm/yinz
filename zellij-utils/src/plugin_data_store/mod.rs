@@ -58,7 +58,7 @@ use self::migrate::migrate_entity;
 use self::query::{build_count_sql, run_fetch_with_search_fallback};
 use self::registry::{create_entity, load_entity, open_db, require_entity};
 use self::schema::EntitySchema;
-use self::sql::storage_err;
+use self::sql::SqlContext;
 use self::value::now_ms;
 use self::watch::{apply_watch_mode, digest_rows, Watch};
 use self::write::apply_one;
@@ -191,7 +191,7 @@ impl PluginDataStore {
         self.with_conn(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|e| storage_err("failed to begin a schema transaction", e))?;
+                .ctx("failed to begin a schema transaction")?;
             let info = match load_entity(&tx, namespace, &def.name)? {
                 Some(existing) => migrate_entity(
                     &tx,
@@ -203,8 +203,7 @@ impl PluginDataStore {
                 )?,
                 None => create_entity(&tx, namespace, owner_plugin, def)?,
             };
-            tx.commit()
-                .map_err(|e| storage_err("failed to commit the schema change", e))?;
+            tx.commit().ctx("failed to commit the schema change")?;
             Ok(info)
         })
     }
@@ -245,7 +244,7 @@ impl PluginDataStore {
                     .query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
                         row.get::<_, i64>(0)
                     })
-                    .map_err(|e| storage_err("failed to count rows", e));
+                    .ctx("failed to count rows");
                 match result {
                     Ok(count) => return Ok(count.max(0) as u64),
                     Err(e) => first_error = Some(first_error.unwrap_or(e)),
@@ -273,7 +272,7 @@ impl PluginDataStore {
         self.with_conn(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|e| storage_err("failed to begin a write transaction", e))?;
+                .ctx("failed to begin a write transaction")?;
             let now = now_ms();
             let mut outcome = ApplyOutcome::default();
             // Schemas are looked up once per entity per batch. Not cached across calls: another
@@ -289,8 +288,7 @@ impl PluginDataStore {
                 apply_one(&tx, schema, mutation, now, &mut outcome.report)?;
                 outcome.touched_entities.insert(entity.to_owned());
             }
-            tx.commit()
-                .map_err(|e| storage_err("failed to commit the write", e))?;
+            tx.commit().ctx("failed to commit the write")?;
             Ok(outcome)
         })
     }

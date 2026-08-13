@@ -6,7 +6,7 @@ use crate::plugin_data::{ApplyReport, AttrKind, DataError, DataValue, Mutation};
 
 use super::predicate::compile_pred;
 use super::schema::{EntitySchema, STORE_COLUMNS};
-use super::sql::storage_err;
+use super::sql::{placeholders, quote_ident, SqlContext};
 
 /// Check the values of a mutation against the schema, rejecting undeclared attributes, wrong kinds
 /// and malformed JSON.
@@ -79,16 +79,19 @@ pub(super) fn apply_one(
             }
             let quoted = columns
                 .iter()
-                .map(|c| format!("\"{}\"", c))
+                .map(|c| quote_ident(c))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let placeholders = vec!["?"; columns.len()].join(", ");
+            let placeholders = placeholders(columns.len());
             // With a uid this is an upsert. `created_at` is deliberately left out of the update:
             // the row is the same row, and when it was first written is still true.
             let conflict = if uid.is_some() {
                 let assignments = values
                     .iter()
-                    .map(|(attr, _)| format!("\"{attr}\" = excluded.\"{attr}\""))
+                    .map(|(attr, _)| {
+                        let col = quote_ident(attr);
+                        format!("{col} = excluded.{col}")
+                    })
                     .chain(std::iter::once(
                         "\"updated_at\" = excluded.\"updated_at\"".to_owned(),
                     ))
@@ -106,12 +109,7 @@ pub(super) fn apply_one(
                 .query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
                     row.get(0)
                 })
-                .map_err(|e| {
-                    storage_err(
-                        &format!("failed to write a row of `{}`", schema.def.name),
-                        e,
-                    )
-                })?;
+                .with_ctx(|| format!("failed to write a row of `{}`", schema.def.name))?;
             report.rows_written += 1;
             report.ids.push(id);
         },
@@ -120,7 +118,7 @@ pub(super) fn apply_one(
             let mut params: Vec<DataValue> = Vec::new();
             let mut assignments: Vec<String> = Vec::new();
             for (attr, value) in values {
-                assignments.push(format!("\"{}\" = ?", attr));
+                assignments.push(format!("{} = ?", quote_ident(attr)));
                 params.push(value.clone());
             }
             assignments.push("\"updated_at\" = ?".to_owned());
@@ -135,12 +133,7 @@ pub(super) fn apply_one(
             );
             let changed = conn
                 .execute(&sql, rusqlite::params_from_iter(params.iter()))
-                .map_err(|e| {
-                    storage_err(
-                        &format!("failed to update rows of `{}`", schema.def.name),
-                        e,
-                    )
-                })?;
+                .with_ctx(|| format!("failed to update rows of `{}`", schema.def.name))?;
             report.rows_written += changed as u64;
         },
         Mutation::Delete { filter, .. } => {
@@ -150,12 +143,7 @@ pub(super) fn apply_one(
             let sql = format!("DELETE FROM \"{}\" WHERE {}", table, where_sql);
             let changed = conn
                 .execute(&sql, rusqlite::params_from_iter(params.iter()))
-                .map_err(|e| {
-                    storage_err(
-                        &format!("failed to delete rows of `{}`", schema.def.name),
-                        e,
-                    )
-                })?;
+                .with_ctx(|| format!("failed to delete rows of `{}`", schema.def.name))?;
             report.rows_deleted += changed as u64;
         },
     }

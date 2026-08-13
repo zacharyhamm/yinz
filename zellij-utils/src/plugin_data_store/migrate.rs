@@ -7,7 +7,7 @@ use crate::plugin_data::{AttrDef, DataError, DataSchemaInfo, EntityDef};
 use super::index::{create_attr_indexes, drop_attr_indexes, drop_full_text, rebuild_full_text};
 use super::registry::column_definition;
 use super::schema::EntitySchema;
-use super::sql::storage_err;
+use super::sql::{storage_err, SqlContext};
 
 pub(super) fn migrate_entity(
     conn: &Connection,
@@ -123,7 +123,7 @@ pub(super) fn migrate_entity(
                     existing.table(),
                     column_definition(attr)?
                 ))
-                .map_err(|e| storage_err(&format!("failed to add `{}`", attr.name), e))?;
+                .with_ctx(|| format!("failed to add `{}`", attr.name))?;
                 info.attrs_added.push(attr.name.clone());
                 if create_attr_indexes(conn, existing, attr)? {
                     info.indexes_created.push(attr.name.clone());
@@ -139,7 +139,7 @@ pub(super) fn migrate_entity(
             existing.table(),
             attr.name
         ))
-        .map_err(|e| storage_err(&format!("failed to drop `{}`", attr.name), e))?;
+        .with_ctx(|| format!("failed to drop `{}`", attr.name))?;
     }
 
     let updated = EntitySchema {
@@ -157,6 +157,6 @@ pub(super) fn migrate_entity(
         "UPDATE store_entities SET version = ?1, definition = ?2 WHERE id = ?3",
         rusqlite::params![def.version, definition, existing.row_id],
     )
-    .map_err(|e| storage_err("failed to record the new definition", e))?;
+    .ctx("failed to record the new definition")?;
     Ok(info)
 }

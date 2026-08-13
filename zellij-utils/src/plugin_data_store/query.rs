@@ -7,7 +7,7 @@ use crate::session_recording::fts_phrase;
 
 use super::predicate::compile_pred;
 use super::schema::{EntitySchema, STORE_COLUMNS};
-use super::sql::storage_err;
+use super::sql::{qualify, quote_ident, SqlContext};
 use super::value::read_value;
 
 /// The columns a fetch returns, in order.
@@ -46,9 +46,9 @@ pub(super) fn build_fetch_sql(
     let columns = output_columns(schema, request)?;
     // `id` is always selected first, whether or not it was asked for, so that a truncated fetch
     // can hand back a cursor even when the plugin only wanted some other column.
-    let mut selected = vec![format!("\"{}\".\"id\"", table)];
+    let mut selected = vec![qualify(&table, "id")];
     for column in &columns {
-        selected.push(format!("\"{}\".\"{}\"", table, column));
+        selected.push(qualify(&table, column));
     }
     let (where_clause, params, join) = build_where(schema, request, search)?;
     let order = build_order(schema, request, search)?;
@@ -107,7 +107,7 @@ pub(super) fn build_where(
             fts = fts,
             table = table
         );
-        conditions.push(format!("\"{}\" MATCH ?", fts));
+        conditions.push(format!("{} MATCH ?", quote_ident(&fts)));
         params.push(DataValue::Text(search.to_owned()));
     }
 
@@ -125,7 +125,7 @@ pub(super) fn build_where(
                     .to_owned(),
             ));
         }
-        conditions.push(format!("\"{}\".\"id\" > ?", table));
+        conditions.push(format!("{} > ?", qualify(&table, "id")));
         params.push(DataValue::Int(after_id));
     }
 
@@ -152,12 +152,12 @@ pub(super) fn build_order(
     } else {
         for (attr, dir) in &request.sort {
             schema.require_column(attr)?;
-            terms.push(format!("\"{}\".\"{}\" {}", table, attr, dir.sql()));
+            terms.push(format!("{} {}", qualify(&table, attr), dir.sql()));
         }
     }
     // Always break ties on `id`, so that paging through a set sorted on a column with duplicates
     // returns each row once instead of reshuffling between pages.
-    terms.push(format!("\"{}\".\"id\" ASC", table));
+    terms.push(format!("{} ASC", qualify(&table, "id")));
     Ok(terms.join(", "))
 }
 
@@ -202,28 +202,21 @@ pub(super) fn run_fetch(
         .map(|c| schema.column_kind(c))
         .collect();
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| storage_err("failed to prepare the fetch", e))?;
+    let mut stmt = conn.prepare(&sql).ctx("failed to prepare the fetch")?;
     let mut sqlite_rows = stmt
         .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(|e| storage_err("failed to run the fetch", e))?;
+        .ctx("failed to run the fetch")?;
 
     let mut rows: Vec<Vec<DataValue>> = Vec::new();
     let mut truncated = false;
     let mut last_id: Option<i64> = None;
     let mut bytes = 0usize;
-    while let Some(row) = sqlite_rows
-        .next()
-        .map_err(|e| storage_err("failed to read a row", e))?
-    {
+    while let Some(row) = sqlite_rows.next().ctx("failed to read a row")? {
         if rows.len() as u32 >= limit {
             truncated = true;
             break;
         }
-        let id: i64 = row
-            .get(0)
-            .map_err(|e| storage_err("failed to read a row id", e))?;
+        let id: i64 = row.get(0).ctx("failed to read a row id")?;
         let mut values = Vec::with_capacity(output_columns.len());
         let mut row_bytes = 0usize;
         for (offset, kind) in kinds.iter().enumerate() {
