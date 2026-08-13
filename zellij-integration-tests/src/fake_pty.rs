@@ -238,9 +238,10 @@ impl SharedPtys {
             let now = Instant::now();
             if now >= deadline {
                 panic!(
-                    "timed out waiting for: {}\n{}\n=== zellij log tail ({}) ===\n{}",
+                    "timed out waiting for: {}\n{}{}\n=== zellij log tail ({}) ===\n{}",
                     what,
                     fake_pty_registry.describe_all(),
+                    crate::test_env::panics_so_far(),
                     crate::test_env::log_file_path().display(),
                     crate::test_env::log_tail(40),
                 );

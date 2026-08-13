@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const TEMP_PARENT: &str = "/tmp/zellij-test";
@@ -12,16 +12,58 @@ const TEST_ROOT_SUBDIRS: [&str; 8] = [
 static TEST_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static OWN_PROCESS_LOCK: OnceLock<File> = OnceLock::new();
 static SESSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static BACKGROUND_PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() -> &'static Path {
     TEST_ROOT
         .get_or_init(|| {
             let test_root = create_test_root();
             isolate_process_environment(&test_root);
+            record_background_thread_panics();
             zellij_utils::logging::configure_logger();
             test_root
         })
         .as_path()
+}
+
+/// The server threads are started with zellij's own panic hook disabled (it would take the test
+/// process with it), so a `screen` or `pty` thread that dies leaves the session frozen and the
+/// test that was driving it fails as a bare `wait_until` timeout with no hint of why. The default
+/// hook still prints the panic, but under a runner that captures per-test output it lands in
+/// whichever test happened to be capturing - not necessarily the one that then timed out.
+///
+/// Keep our own copy, named by thread, so every timeout message can say what died. This only
+/// records: a panic is not made to fail the test that notices it, because under `cargo test` -
+/// where one process runs many tests - that test may be a bystander to another test's session.
+fn record_background_thread_panics() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>").to_string();
+        if let Ok(mut background_panics) = BACKGROUND_PANICS.lock() {
+            // `panic_info` renders as "panicked at <location>:\n<message>"
+            background_panics.push(format!("thread '{}' {}", name, panic_info));
+        }
+        default_hook(panic_info);
+    }));
+}
+
+/// Every panic recorded so far, formatted for a timeout message. Empty when nothing has panicked,
+/// so it costs a passing run nothing to include. A harness timeout reads this before raising its
+/// own panic, so it never contains the timeout being reported.
+pub fn panics_so_far() -> String {
+    let background_panics = match BACKGROUND_PANICS.lock() {
+        Ok(background_panics) => background_panics,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if background_panics.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n=== threads that panicked before this timeout (a dead server thread leaves the session \
+         frozen, and every wait after it times out) ===\n{}\n",
+        background_panics.join("\n")
+    )
 }
 
 fn create_test_root() -> PathBuf {

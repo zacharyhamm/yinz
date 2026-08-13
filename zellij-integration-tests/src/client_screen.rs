@@ -27,6 +27,13 @@ struct ReceivedBytesWithChangeSignal {
 pub struct ClientScreen {
     inner: Arc<ReceivedBytesWithChangeSignal>,
     size: Arc<Mutex<Size>>,
+    /// The names of the `ServerToClientMsg`s the client has taken off the socket, in order.
+    /// Shared with `FakeClientOsApi`, which is what appends to it.
+    ///
+    /// A wait that times out has three ways to have got there: the keystroke never reached the
+    /// server, the server never re-rendered, or the render never reached the client. The grid alone
+    /// cannot tell them apart - this trail can, so the timeout message carries its tail.
+    server_messages: Arc<Mutex<Vec<String>>>,
 }
 
 impl ClientScreen {
@@ -34,7 +41,28 @@ impl ClientScreen {
         ClientScreen {
             inner: Arc::new(ReceivedBytesWithChangeSignal::default()),
             size,
+            server_messages: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// The shared trail, for `FakeClientOsApi` to append to and hand back out.
+    pub fn server_messages(&self) -> Arc<Mutex<Vec<String>>> {
+        self.server_messages.clone()
+    }
+
+    fn server_message_tail(&self) -> String {
+        const TAIL: usize = 30;
+        let server_messages = match self.server_messages.lock() {
+            Ok(server_messages) => server_messages,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let skipped = server_messages.len().saturating_sub(TAIL);
+        format!(
+            "=== last {} of {} server messages ===\n{}",
+            server_messages.len() - skipped,
+            server_messages.len(),
+            server_messages[skipped..].join(", ")
+        )
     }
 
     pub fn writer(&self) -> Box<dyn std::io::Write> {
@@ -69,11 +97,13 @@ impl ClientScreen {
                 let size = *self.size.lock().unwrap();
                 let grid_snapshot = render_bytes(&received_bytes.bytes, size);
                 panic!(
-                    "timed out waiting for: {}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n=== zellij log tail ({}) ===\n{}",
+                    "timed out waiting for: {}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n{}{}\n=== zellij log tail ({}) ===\n{}",
                     what,
                     grid_snapshot.text,
                     received_bytes.bytes.len(),
                     received_bytes.generation,
+                    self.server_message_tail(),
+                    crate::test_env::panics_so_far(),
                     crate::test_env::log_file_path().display(),
                     crate::test_env::log_tail(40),
                 );
@@ -107,12 +137,14 @@ impl ClientScreen {
             let now = Instant::now();
             if now >= deadline {
                 panic!(
-                    "timed out waiting for: {}\ncursor: {:?}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n=== zellij log tail ({}) ===\n{}",
+                    "timed out waiting for: {}\ncursor: {:?}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n{}{}\n=== zellij log tail ({}) ===\n{}",
                     what,
                     grid_snapshot.cursor,
                     grid_snapshot.text,
                     received_bytes.bytes.len(),
                     received_bytes.generation,
+                    self.server_message_tail(),
+                    crate::test_env::panics_so_far(),
                     crate::test_env::log_file_path().display(),
                     crate::test_env::log_tail(40),
                 );
