@@ -248,8 +248,9 @@ impl State {
     /// Two things that look like they would work here do not, and each cost a debugging
     /// session, so they are worth naming:
     ///
-    /// - `Event::Visible` reports *tab* visibility and is only sent to plugins in
-    ///   `tiled_panes`. A hidden plugin is not one of those, so it never arrives.
+    /// - `Event::Visible` reports *tab* visibility, and only to plugins in `tiled_panes`
+    ///   or `floating_panes`. `hide_self()` extracts us into `suppressed_panes`, which
+    ///   is neither, so it never arrives.
     /// - The `PaneManifest` cannot answer it either: `Tab::pane_infos` hardcodes
     ///   `is_focused = false` for every suppressed pane, and `hide_self()` suppresses
     ///   us — so we always look unfocused there, wherever focus actually is.
