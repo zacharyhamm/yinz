@@ -13,10 +13,12 @@ pub use super::generated_api::api::{
     pane_frame_style::PaneFrameStyle as ProtobufPaneFrameStyle,
     plugin_command::{
         break_panes_to_new_tab_response, break_panes_to_tab_with_id_response,
-        break_panes_to_tab_with_index_response, delete_layout_response, dump_layout_response,
-        dump_session_layout_response, edit_layout_response, focus_or_create_tab_response,
-        get_focused_pane_info_response, get_pane_cwd_response, get_pane_pid_response,
-        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
+        break_panes_to_tab_with_index_response, data_apply_response, data_count_response,
+        data_define_response, data_fetch_response, data_unwatch_response, data_watch_response,
+        delete_layout_response, dump_layout_response, dump_session_layout_response,
+        edit_layout_response, focus_or_create_tab_response, get_focused_pane_info_response,
+        get_pane_cwd_response, get_pane_pid_response, get_pane_running_command_response,
+        get_session_list_response, hide_floating_panes_response,
         highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
         new_tab_response, new_tab_unfocused_response, parse_layout_response,
         plugin_command::Payload, rename_layout_response, save_layout_response,
@@ -34,7 +36,13 @@ pub use super::generated_api::api::{
         CreateTokenResponse, CurrentSessionLastSavedTimePayload,
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
-        CustomRgbHighlight as ProtobufCustomRgbHighlight,
+        CustomRgbHighlight as ProtobufCustomRgbHighlight, DataApplyPayload,
+        DataApplyResponse as ProtobufDataApplyResponse,
+        DataCountResponse as ProtobufDataCountResponse, DataDefineEntityPayload,
+        DataDefineResponse as ProtobufDataDefineResponse, DataFetchPayload,
+        DataFetchResponse as ProtobufDataFetchResponse, DataUnwatchPayload,
+        DataUnwatchResponse as ProtobufDataUnwatchResponse, DataWatchPayload,
+        DataWatchResponse as ProtobufDataWatchResponse,
         DeleteAllDeadSessionsResponse as ProtobufDeleteAllDeadSessionsResponse,
         DeleteDeadSessionResponse as ProtobufDeleteDeadSessionResponse, DeleteLayoutPayload,
         DeleteLayoutResponse as ProtobufDeleteLayoutResponse, DumpLayoutPayload,
@@ -149,15 +157,18 @@ pub use super::generated_api::api::{
     resize::ResizeAction as ProtobufResizeAction,
 };
 
+use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, ProtobufWatchMode};
+
 use crate::data::{
-    ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
-    DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
-    GetPaneCwdResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GetSessionListResponse,
-    HighlightLayer, HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    ListOrphanedPanesResponse, MessageToPlugin, NewPluginArgs, OrphanedPane, PaneId,
-    PermissionType, PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
-    WarpPlacement,
+    ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse, DataFetchResponse,
+    DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
+    DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates,
+    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
+    GetPaneRunningCommandResponse, GetSessionListResponse, HighlightLayer, HighlightStyle,
+    HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse, ListOrphanedPanesResponse,
+    MessageToPlugin, Mutation, NewPluginArgs, OrphanedPane, PaneId, PermissionType, PluginCommand,
+    RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit,
+    SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -2887,6 +2898,64 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for AdoptOrphanedPane"),
             },
+            Some(CommandName::DataDefineEntity) => match protobuf_plugin_command.payload {
+                Some(Payload::DataDefineEntityPayload(payload)) => {
+                    Ok(PluginCommand::DataDefineEntity {
+                        namespace: payload.namespace,
+                        def: payload
+                            .def
+                            .ok_or("Missing def for DataDefineEntity")?
+                            .try_into()?,
+                        allow_destructive: payload.allow_destructive,
+                    })
+                },
+                _ => Err("Mismatched payload for DataDefineEntity"),
+            },
+            Some(CommandName::DataApply) => match protobuf_plugin_command.payload {
+                Some(Payload::DataApplyPayload(payload)) => Ok(PluginCommand::DataApply {
+                    namespace: payload.namespace,
+                    mutations: payload
+                        .mutations
+                        .into_iter()
+                        .map(Mutation::try_from)
+                        .collect::<Result<Vec<_>, _>>()?,
+                }),
+                _ => Err("Mismatched payload for DataApply"),
+            },
+            Some(CommandName::DataFetch) => match protobuf_plugin_command.payload {
+                Some(Payload::DataFetchPayload(payload)) => Ok(PluginCommand::DataFetch {
+                    request: payload
+                        .request
+                        .ok_or("Missing request for DataFetch")?
+                        .try_into()?,
+                }),
+                _ => Err("Mismatched payload for DataFetch"),
+            },
+            Some(CommandName::DataCount) => match protobuf_plugin_command.payload {
+                Some(Payload::DataCountPayload(payload)) => Ok(PluginCommand::DataCount {
+                    request: payload
+                        .request
+                        .ok_or("Missing request for DataCount")?
+                        .try_into()?,
+                }),
+                _ => Err("Mismatched payload for DataCount"),
+            },
+            Some(CommandName::DataWatch) => match protobuf_plugin_command.payload {
+                Some(Payload::DataWatchPayload(payload)) => Ok(PluginCommand::DataWatch {
+                    request: payload
+                        .request
+                        .ok_or("Missing request for DataWatch")?
+                        .try_into()?,
+                    mode: watch_mode_from_i32(payload.mode)?,
+                }),
+                _ => Err("Mismatched payload for DataWatch"),
+            },
+            Some(CommandName::DataUnwatch) => match protobuf_plugin_command.payload {
+                Some(Payload::DataUnwatchPayload(payload)) => Ok(PluginCommand::DataUnwatch {
+                    watch_id: payload.watch_id,
+                }),
+                _ => Err("Mismatched payload for DataUnwatch"),
+            },
             None => Err("Unrecognized plugin command"),
         }
     }
@@ -4745,6 +4814,56 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::DataDefineEntity {
+                namespace,
+                def,
+                allow_destructive,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataDefineEntity as i32,
+                payload: Some(Payload::DataDefineEntityPayload(DataDefineEntityPayload {
+                    namespace,
+                    def: Some(def.into()),
+                    allow_destructive,
+                })),
+            }),
+            PluginCommand::DataApply {
+                namespace,
+                mutations,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataApply as i32,
+                payload: Some(Payload::DataApplyPayload(DataApplyPayload {
+                    namespace,
+                    mutations: mutations
+                        .into_iter()
+                        .map(ProtobufMutation::try_from)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })),
+            }),
+            PluginCommand::DataFetch { request } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataFetch as i32,
+                payload: Some(Payload::DataFetchPayload(DataFetchPayload {
+                    request: Some(request.try_into()?),
+                })),
+            }),
+            // `DataCount` reuses `DataFetchPayload`, since a count is a fetch whose rows are
+            // discarded; the command name is what distinguishes them.
+            PluginCommand::DataCount { request } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataCount as i32,
+                payload: Some(Payload::DataCountPayload(DataFetchPayload {
+                    request: Some(request.try_into()?),
+                })),
+            }),
+            PluginCommand::DataWatch { request, mode } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataWatch as i32,
+                payload: Some(Payload::DataWatchPayload(DataWatchPayload {
+                    request: Some(request.try_into()?),
+                    mode: ProtobufWatchMode::from(mode) as i32,
+                })),
+            }),
+            PluginCommand::DataUnwatch { watch_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataUnwatch as i32,
+                payload: Some(Payload::DataUnwatchPayload(DataUnwatchPayload { watch_id })),
+            }),
         }
     }
 }
@@ -4844,6 +4963,148 @@ impl TryFrom<ProtobufListOrphanedPanesResponse> for ListOrphanedPanesResponse {
                 Ok(ListOrphanedPanesResponse::Err(error))
             },
             None => Err("ListOrphanedPanesResponse without a result"),
+        }
+    }
+}
+
+// -------------------------------------------------------- data store responses
+
+impl From<DataDefineResponse> for ProtobufDataDefineResponse {
+    fn from(response: DataDefineResponse) -> Self {
+        ProtobufDataDefineResponse {
+            result: Some(match response {
+                DataDefineResponse::Ok(info) => data_define_response::Result::Info(info.into()),
+                DataDefineResponse::Err(error) => data_define_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataDefineResponse> for DataDefineResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataDefineResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_define_response::Result::Info(info)) => {
+                Ok(DataDefineResponse::Ok(info.into()))
+            },
+            Some(data_define_response::Result::Error(error)) => Ok(DataDefineResponse::Err(error)),
+            None => Err("DataDefineResponse without a result"),
+        }
+    }
+}
+
+impl From<DataApplyResponse> for ProtobufDataApplyResponse {
+    fn from(response: DataApplyResponse) -> Self {
+        ProtobufDataApplyResponse {
+            result: Some(match response {
+                DataApplyResponse::Ok(report) => data_apply_response::Result::Report(report.into()),
+                DataApplyResponse::Err(error) => data_apply_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataApplyResponse> for DataApplyResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataApplyResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_apply_response::Result::Report(report)) => {
+                Ok(DataApplyResponse::Ok(report.into()))
+            },
+            Some(data_apply_response::Result::Error(error)) => Ok(DataApplyResponse::Err(error)),
+            None => Err("DataApplyResponse without a result"),
+        }
+    }
+}
+
+impl From<DataFetchResponse> for ProtobufDataFetchResponse {
+    fn from(response: DataFetchResponse) -> Self {
+        ProtobufDataFetchResponse {
+            result: Some(match response {
+                DataFetchResponse::Ok(rows) => data_fetch_response::Result::Rows(rows.into()),
+                DataFetchResponse::Err(error) => data_fetch_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataFetchResponse> for DataFetchResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataFetchResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_fetch_response::Result::Rows(rows)) => Ok(DataFetchResponse::Ok(rows.into())),
+            Some(data_fetch_response::Result::Error(error)) => Ok(DataFetchResponse::Err(error)),
+            None => Err("DataFetchResponse without a result"),
+        }
+    }
+}
+
+impl From<DataCountResponse> for ProtobufDataCountResponse {
+    fn from(response: DataCountResponse) -> Self {
+        ProtobufDataCountResponse {
+            result: Some(match response {
+                DataCountResponse::Ok(count) => data_count_response::Result::Count(count),
+                DataCountResponse::Err(error) => data_count_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataCountResponse> for DataCountResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataCountResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_count_response::Result::Count(count)) => Ok(DataCountResponse::Ok(count)),
+            Some(data_count_response::Result::Error(error)) => Ok(DataCountResponse::Err(error)),
+            None => Err("DataCountResponse without a result"),
+        }
+    }
+}
+
+impl From<DataWatchResponse> for ProtobufDataWatchResponse {
+    fn from(response: DataWatchResponse) -> Self {
+        ProtobufDataWatchResponse {
+            result: Some(match response {
+                DataWatchResponse::Ok(handle) => data_watch_response::Result::Handle(handle.into()),
+                DataWatchResponse::Err(error) => data_watch_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataWatchResponse> for DataWatchResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataWatchResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_watch_response::Result::Handle(handle)) => {
+                Ok(DataWatchResponse::Ok(handle.into()))
+            },
+            Some(data_watch_response::Result::Error(error)) => Ok(DataWatchResponse::Err(error)),
+            None => Err("DataWatchResponse without a result"),
+        }
+    }
+}
+
+impl From<DataUnwatchResponse> for ProtobufDataUnwatchResponse {
+    fn from(response: DataUnwatchResponse) -> Self {
+        ProtobufDataUnwatchResponse {
+            result: Some(match response {
+                DataUnwatchResponse::Ok => data_unwatch_response::Result::Ok(true),
+                DataUnwatchResponse::Err(error) => data_unwatch_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataUnwatchResponse> for DataUnwatchResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataUnwatchResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_unwatch_response::Result::Ok(_)) => Ok(DataUnwatchResponse::Ok),
+            Some(data_unwatch_response::Result::Error(error)) => {
+                Ok(DataUnwatchResponse::Err(error))
+            },
+            None => Err("DataUnwatchResponse without a result"),
         }
     }
 }

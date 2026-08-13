@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+// The plugin data store's wire types.
+//
+// These live in their own file because both `plugin_command.proto` (which carries
+// the requests and responses) and `event.proto` (which carries the change
+// notification, and so needs `Rows`) refer to them — and `plugin_command.proto`
+// already imports `event.proto`, so putting them in either one would make the
+// imports circular.
+//
+// Enum values are prefixed with their type name. proto3 scopes enum values to the
+// package rather than to the enum, so `Text` and `Rows` would otherwise collide
+// with each other and with the messages here.
+
+package api.plugin_data;
+
+enum AttrKind {
+  AttrKindText = 0;
+  AttrKindInt = 1;
+  AttrKindReal = 2;
+  AttrKindBool = 3;
+  AttrKindBlob = 4;
+  AttrKindJson = 5;
+}
+
+enum SortDir {
+  SortDirAsc = 0;
+  SortDirDesc = 1;
+}
+
+enum WatchMode {
+  WatchModeRows = 0;
+  WatchModeIds = 1;
+}
+
+// One value.
+//
+// Null is the absence of every branch rather than a branch of its own, so that an
+// unset `oneof` decodes as null instead of failing. That also makes null the
+// default, which is what an absent value should be.
+message Value {
+  oneof value {
+    int64 int_value = 1;
+    double real_value = 2;
+    string text_value = 3;
+    bool bool_value = 4;
+    bytes blob_value = 5;
+  }
+}
+
+message AttrDef {
+  string name = 1;
+  AttrKind kind = 2;
+  bool indexed = 3;
+  bool full_text = 4;
+  bool unique = 5;
+  bool required = 6;
+  optional Value default = 7;
+}
+
+message EntityDef {
+  string name = 1;
+  uint32 version = 2;
+  repeated AttrDef attrs = 3;
+}
+
+// A oneof cannot hold a repeated field, so the branches needing one wrap it.
+message PredList {
+  repeated Pred preds = 1;
+}
+
+message AttrValue {
+  string attr = 1;
+  Value value = 2;
+}
+
+message AttrValues {
+  string attr = 1;
+  repeated Value values = 2;
+}
+
+message AttrPattern {
+  string attr = 1;
+  string pattern = 2;
+}
+
+// Recursive: proto3 permits the self-reference, and the conversions cap the depth
+// so that a deeply nested tree cannot exhaust the stack while being decoded.
+message Pred {
+  oneof pred {
+    AttrValue eq = 1;
+    AttrValue ne = 2;
+    AttrValue gt = 3;
+    AttrValue gte = 4;
+    AttrValue lt = 5;
+    AttrValue lte = 6;
+    AttrValues in_list = 7;
+    string is_null = 8;
+    string not_null = 9;
+    AttrPattern prefix = 10;
+    AttrPattern contains = 11;
+    PredList and = 12;
+    PredList or = 13;
+    Pred not = 14;
+  }
+}
+
+message Sort {
+  string attr = 1;
+  SortDir dir = 2;
+}
+
+message FetchRequest {
+  optional string namespace = 1;
+  string entity = 2;
+  optional Pred filter = 3;
+  optional string search = 4;
+  repeated Sort sort = 5;
+  repeated string select = 6;
+  uint32 limit = 7;
+  uint32 offset = 8;
+  optional int64 after_id = 9;
+}
+
+message Put {
+  string entity = 1;
+  optional string uid = 2;
+  repeated AttrValue values = 3;
+}
+
+message Update {
+  string entity = 1;
+  Pred filter = 2;
+  repeated AttrValue values = 3;
+}
+
+message Delete {
+  string entity = 1;
+  Pred filter = 2;
+}
+
+message Mutation {
+  oneof mutation {
+    Put put = 1;
+    Update update = 2;
+    Delete delete = 3;
+  }
+}
+
+message Row {
+  repeated Value values = 1;
+}
+
+// `columns` is carried once for the whole result set rather than per row: the
+// transport wraps protobuf in JSON, so every byte is amplified, and a column name
+// repeated per row is the easiest thing not to send.
+message Rows {
+  repeated string columns = 1;
+  repeated Row rows = 2;
+  bool truncated = 3;
+  optional int64 next_cursor = 4;
+}
+
+message SchemaInfo {
+  string namespace = 1;
+  string entity = 2;
+  uint32 version = 3;
+  bool created = 4;
+  repeated string attrs_added = 5;
+  repeated string indexes_created = 6;
+  bool full_text_rebuilt = 7;
+}
+
+message ApplyReport {
+  uint64 rows_written = 1;
+  uint64 rows_deleted = 2;
+  repeated int64 ids = 3;
+}
+
+message WatchHandle {
+  uint64 watch_id = 1;
+  Rows rows = 2;
+}

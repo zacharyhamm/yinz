@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -102,6 +102,8 @@ pub mod event {
         ActivePaneScrollPayload(super::ActivePaneScrollPayload),
         #[prost(message, tag="44")]
         WebRequestStreamChunkPayload(super::WebRequestStreamChunkPayload),
+        #[prost(message, tag="45")]
+        PluginDataChangedPayload(super::PluginDataChangedPayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -109,6 +111,16 @@ pub mod event {
 pub struct HintTextPayload {
     #[prost(map="uint32, message", tag="1")]
     pub hint_text: ::std::collections::HashMap<u32, StyledText>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PluginDataChangedPayload {
+    #[prost(uint64, tag="1")]
+    pub watch_id: u64,
+    #[prost(message, optional, tag="2")]
+    pub rows: ::core::option::Option<super::plugin_data::Rows>,
+    #[prost(bool, tag="3")]
+    pub truncated: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -921,6 +933,8 @@ pub enum EventType {
     HintText = 48,
     ActivePaneScroll = 49,
     WebRequestStreamChunk = 50,
+    /// / The results of a watch registered with `data_watch` changed
+    PluginDataChanged = 51,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -978,6 +992,7 @@ impl EventType {
             EventType::HintText => "HintText",
             EventType::ActivePaneScroll => "ActivePaneScroll",
             EventType::WebRequestStreamChunk => "WebRequestStreamChunk",
+            EventType::PluginDataChanged => "PluginDataChanged",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1032,6 +1047,7 @@ impl EventType {
             "HintText" => Some(Self::HintText),
             "ActivePaneScroll" => Some(Self::ActivePaneScroll),
             "WebRequestStreamChunk" => Some(Self::WebRequestStreamChunk),
+            "PluginDataChanged" => Some(Self::PluginDataChanged),
             _ => None,
         }
     }
