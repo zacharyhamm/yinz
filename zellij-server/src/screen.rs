@@ -1721,6 +1721,12 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
+    /// The size the session was built with, and the only size there is until the first client
+    /// reports its own. Upstream's `Screen::size` was seeded here and so was always available to
+    /// lay out against; `client_sizes` starts empty, and a render tick that lands before the first
+    /// `RecomputeTabSize` would otherwise have `surface_size` fall back to a zero size - which
+    /// `allocate_global_panes` rejects, killing the screen thread on a frame nobody could see.
+    initial_size: Size,
     /// The `unowned_strip_rows` last painted for each client. `Output` re-emits every chunk it is
     /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
     /// on every render tick (and force every watcher into a full repaint) - this is the diff.
@@ -1956,6 +1962,7 @@ impl Screen {
             connected_clients: Rc::new(RefCell::new(HashMap::new())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
+            initial_size: client_attributes.size,
             unowned_strip_fill: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
@@ -3270,7 +3277,9 @@ impl Screen {
                     cols: area.cols,
                 })
             })
-            .unwrap_or_default()
+            // and before the first client has reported one, the size the session was built with -
+            // never a zero size, which is not a layout anything can be laid out against
+            .unwrap_or(self.initial_size)
     }
 
     fn size_of_tab_of_client(&self, client_id: ClientId) -> Size {
@@ -5005,11 +5014,26 @@ impl Screen {
         // Global panes and every tab share the same session surface. Re-derive each tab's center
         // from that surface so a render tick cannot restore stale geometry.
         let surface = self.surface_size();
-        self.resize_global_panes_to(surface)?;
+        // A surface the global panes cannot be laid out over is a frame to drop, not a session to
+        // end. This runs on a debounced background tick, so it sees whatever transient geometry the
+        // instruction stream happens to be between - and `?` here reaches `screen_thread_main`'s
+        // `.fatal()`, taking the whole session down over one unpaintable frame. The next tick
+        // repaints from the state that follows.
+        if let Err(error) = self.resize_global_panes_to(surface) {
+            Err::<(), _>(error).context(err_context).non_fatal();
+            return Ok(());
+        }
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
             // With no contributing client, fall back to the last known shared surface.
             let tab_size = self.tab_surface_size(tab_id).unwrap_or(surface);
-            let layout = self.global_layout_for(tab_size)?;
+            let layout = match self.global_layout_for(tab_size) {
+                Ok(layout) => layout,
+                // as above, but only this tab is unpaintable - the others still get their frame
+                Err(error) => {
+                    Err::<(), _>(error).context(err_context).non_fatal();
+                    continue;
+                },
+            };
             let center = layout.center;
             let center_size = Size {
                 cols: center.cols,
@@ -5123,7 +5147,14 @@ impl Screen {
                 let tab_size = tab_id
                     .and_then(|tab_id| self.tab_surface_size(tab_id))
                     .unwrap_or(surface);
-                let layout = self.global_layout_for(tab_size)?;
+                let layout = match self.global_layout_for(tab_size) {
+                    Ok(layout) => layout,
+                    // as above: this render group goes unpainted, the session lives on
+                    Err(error) => {
+                        Err::<(), _>(error).context(err_context).non_fatal();
+                        continue;
+                    },
+                };
                 self.global_panes.set_positions(&layout);
                 if repaint_per_group {
                     self.global_panes.set_force_render();
@@ -12728,8 +12759,10 @@ pub(crate) fn screen_thread_main(
                 screen.set_client_size(client_id, client_size);
                 screen.add_client(client_id, is_web_client)?;
                 // the new client can shrink the shared surface, so every tab is reflowed - but
-                // only the reflow: this handler reports and renders on its own way out
-                screen.reflow_global_panes()?;
+                // only the reflow: this handler reports and renders on its own way out.
+                // A client whose size leaves nothing to lay out keeps the previous layout and
+                // attaches to it; ending the session would take every other client with it.
+                screen.reflow_global_panes().non_fatal();
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
                     if is_plugin {
                         PaneId::Plugin(pane_id)

@@ -107,7 +107,8 @@ impl FakeClientOsApi {
         let client_screen = ClientScreen::new(size.clone());
         let (stdin_tx, stdin_rx) = crossbeam::channel::unbounded();
         let (signal_tx, signal_rx) = crossbeam::channel::unbounded();
-        let received_server_messages = Arc::new(Mutex::new(Vec::new()));
+        // the screen owns this so that a `wait_until` that times out can print the tail of it
+        let received_server_messages = client_screen.server_messages();
         let fake_client_os_api = FakeClientOsApi {
             client_screen: client_screen.clone(),
             size: size.clone(),

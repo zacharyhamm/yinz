@@ -879,6 +879,34 @@ fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
         .expect("TEST");
 }
 
+/// A render tick can land before any client has reported a size: the screen thread is up as
+/// soon as the session is built, and the debounced render job fires on its own thread while the
+/// first `RecomputeTabSize` is still in flight. `surface_size` used to bottom out in
+/// `Size::default()` there, and `allocate_global_panes` rejects a zero-size area even for a
+/// session that declares no global panes at all - so that one tick killed the screen thread with
+/// `global panes leave no usable tab area`, and every test sharing the process failed as an
+/// unrelated timeout.
+#[test]
+fn rendering_before_any_client_size_is_known_uses_the_session_size() {
+    let size = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(size, false, false);
+    // undo the helper's seeding: this is the state between the screen thread starting and the
+    // first client size reaching it
+    screen.client_sizes.clear();
+
+    assert_eq!(
+        screen.surface_size(),
+        size,
+        "the size the session was built with stands in until a client reports one"
+    );
+    screen
+        .reflow_global_panes()
+        .expect("reflow with no client size");
+    screen
+        .render_to_clients()
+        .expect("render with no client size");
+}
+
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
 #[test]
