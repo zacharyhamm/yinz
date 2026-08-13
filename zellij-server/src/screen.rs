@@ -98,8 +98,8 @@ use zellij_utils::{
     envs::set_session_name,
     input::command::TerminalAction,
     input::layout::{
-        FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPluginOrAlias, SwapFloatingLayout,
-        SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+        FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
+        TabLayoutInfo, TiledPaneLayout,
     },
     input::parse_keys,
     position::Position,
@@ -133,7 +133,10 @@ use crate::{
         ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction, VteBytes,
     },
     pty_writer::PtyWriteInstruction,
-    tab::{pane_info_for_pane, AdjustedInput, GuestChoiceIndicator, Pane, SuppressedPanes, Tab},
+    tab::{
+        pane_info_for_pane, AcceptedPane, AdjustedInput, GuestChoiceIndicator, Pane,
+        SuppressedPanes, Tab,
+    },
     thread_bus::Bus,
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
@@ -332,7 +335,7 @@ macro_rules! active_tab_and_connected_client_id_with_first_tab_fallback {
                         Err(err) => Err::<(), _>(err).non_fatal(),
                     }
                 } else {
-                    match $screen.get_indexed_tab_mut(0) {
+                    match $screen.first_tab_mut() {
                         Some(first_tab) => {
                             $closure(first_tab, None);
                         },
@@ -359,7 +362,7 @@ macro_rules! active_tab_and_connected_client_id_with_first_tab_fallback {
                         Err(err) => Err::<(), _>(err).non_fatal(),
                     }
                 } else {
-                    match $screen.get_indexed_tab_mut(0) {
+                    match $screen.first_tab_mut() {
                         Some(first_tab) => {
                             $closure(first_tab, None)?;
                         },
@@ -1641,6 +1644,54 @@ pub(crate) struct PreparedTabWarp {
     hide_floating_panes: bool,
 }
 
+/// What [`Screen::break_multiple_panes_to_tab_with_id`] actually did.
+///
+/// The plugin API reports a move as `Some(tab_id)` and a failure as `None`, and it must
+/// not lie in either direction: a silent no-op reported as success is what makes an
+/// agent reason about a session state that never happened. Callers get enough detail
+/// here to log something actionable, and [`Self::affected_tab_id`] gives them the one
+/// value the wire format can carry.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct BreakPanesToTabOutcome {
+    /// `None` when there is no tab with the requested id. Nothing was extracted and the
+    /// session is unchanged.
+    pub destination_tab_id: Option<usize>,
+    /// Panes extracted from another tab and now in the destination.
+    pub moved: Vec<PaneId>,
+    /// Panes that were already in the destination and were left alone.
+    pub already_in_destination: Vec<PaneId>,
+    /// Requested panes that are in no tab in this session.
+    pub not_found: Vec<PaneId>,
+    /// Panes the destination had no room for; each was put back in its source tab.
+    pub returned_to_source: Vec<PaneId>,
+    /// Panes that could be re-homed nowhere and were torn down properly rather than
+    /// dropped. Should always be empty; non-empty means a bug, but not a leaked process.
+    pub closed: Vec<PaneId>,
+}
+
+impl BreakPanesToTabOutcome {
+    /// Whether every requested pane is now in the destination tab.
+    ///
+    /// A partial move counts as a failure. The panes that did move stay where they
+    /// landed, but the caller is told "no", so it re-reads the session rather than
+    /// trusting a half-applied result.
+    pub fn succeeded(&self) -> bool {
+        self.destination_tab_id.is_some()
+            && self.not_found.is_empty()
+            && self.returned_to_source.is_empty()
+            && self.closed.is_empty()
+            && !(self.moved.is_empty() && self.already_in_destination.is_empty())
+    }
+    /// The value the plugin API reports back: `Some(tab_id)` only on a real move.
+    pub fn affected_tab_id(&self) -> Option<usize> {
+        if self.succeeded() {
+            self.destination_tab_id
+        } else {
+            None
+        }
+    }
+}
+
 pub(crate) struct Screen {
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -2018,6 +2069,14 @@ impl Screen {
         self.tabs.values_mut().find(|t| t.position == position)
     }
 
+    /// Gets any one tab, for operations that need *a* tab rather than a specific one.
+    ///
+    /// This is the lowest-id tab, which is not necessarily the leftmost one. Callers
+    /// that want the leftmost tab want `get_tab_by_position_mut(0)`.
+    pub fn first_tab_mut(&mut self) -> Option<&mut Tab> {
+        self.tabs.values_mut().next()
+    }
+
     /// Gets the stable ID of the tab at the given display position.
     ///
     /// Use this to convert position → ID for BTreeMap lookups.
@@ -2114,12 +2173,12 @@ impl Screen {
 
         // None ==> move all clients
         let drained_clients = self
-            .get_indexed_tab_mut(source_tab_index)
+            .get_tab_by_id_mut(source_tab_index)
             .map(|t| t.drain_connected_clients(clients_to_move));
 
         if let Some(client_mode_info_in_source_tab) = drained_clients {
             let destination_tab = self
-                .get_indexed_tab_mut(destination_tab_index)
+                .get_tab_by_id_mut(destination_tab_index)
                 .context("failed to get destination tab by index")
                 .with_context(err_context)?;
             destination_tab
@@ -2211,7 +2270,7 @@ impl Screen {
                             self.update_client_tab_focus(client_id, new_tab_index);
                             match (
                                 should_change_pane_focus,
-                                self.get_indexed_tab_mut(new_tab_index),
+                                self.get_tab_by_id_mut(new_tab_index),
                             ) {
                                 (Some(direction), Some(new_tab)) => {
                                     new_tab.focus_pane_on_edge(direction, client_id);
@@ -2229,7 +2288,7 @@ impl Screen {
                         .with_context(err_context)?;
                         match (
                             should_change_pane_focus,
-                            self.get_indexed_tab_mut(new_tab_index),
+                            self.get_tab_by_id_mut(new_tab_index),
                         ) {
                             (Some(direction), Some(new_tab)) => {
                                 new_tab.focus_pane_on_edge(direction, client_id);
@@ -2239,7 +2298,7 @@ impl Screen {
                         self.update_client_tab_focus(client_id, new_tab_index);
                     }
 
-                    if let Some(current_tab) = self.get_indexed_tab_mut(current_tab_index) {
+                    if let Some(current_tab) = self.get_tab_by_id_mut(current_tab_index) {
                         if current_tab.has_no_connected_clients() {
                             current_tab.visible(false).with_context(err_context)?;
                         }
@@ -5317,11 +5376,6 @@ impl Screen {
         }
     }
 
-    /// Returns a mutable reference to this [`Screen`]'s indexed [`Tab`].
-    pub fn get_indexed_tab_mut(&mut self, tab_index: usize) -> Option<&mut Tab> {
-        self.get_tabs_mut().get_mut(&tab_index)
-    }
-
     /// Clear bell notification for the currently focused pane of the given client.
     /// Also cancels any running flash jobs if applicable.
     pub fn clear_bell_for_focused_pane(&mut self, client_id: ClientId) {
@@ -8253,80 +8307,159 @@ impl Screen {
         self.render(None)?;
         Ok(())
     }
-    pub fn break_multiple_panes_to_tab_with_index(
+    /// Tear down a pane that belongs to no tab.
+    ///
+    /// Only reachable from [`Screen::break_multiple_panes_to_tab_with_id`], when a pane
+    /// extracted for a move fits in neither the destination nor the tab it came from.
+    /// The alternative is dropping the `Box<dyn Pane>`, which destroys the pane while
+    /// leaving its child process running with nothing attached to it - the failure mode
+    /// this whole path exists to prevent. Mirrors the teardown `close_tab_by_id` does
+    /// for the panes of a tab it removes.
+    fn close_homeless_pane(&mut self, pane_id: PaneId) {
+        let _ = self
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                Event::PaneClosed(pane_id.into()),
+            )]));
+        self.notify_pane_closed_to_subscribers(pane_id.into());
+        // not checking the result: this may be happening while the app is closing, at
+        // which point the pty thread is already gone
+        let _ = self
+            .bus
+            .senders
+            .send_to_pty(PtyInstruction::ClosePane(pane_id, None));
+    }
+    /// Move `pane_ids` into the tab with the given **stable id**.
+    ///
+    /// `tab_id` is an ID - the `Screen::tabs` BTreeMap key - and never a display
+    /// position. Callers holding a position must convert first with
+    /// [`Screen::get_tab_id_at_position`]; see the `BreakPanesToTabWithIndex` handler,
+    /// and `CloseTabWithIndex` for the same pattern. The module header documents the
+    /// id/position/index convention.
+    ///
+    /// The ordering here is load-bearing. The destination is confirmed to exist
+    /// *before* anything is extracted, and any pane the destination refuses is put back
+    /// in the tab it came from. Dropping a `Box<dyn Pane>` destroys the pane with no
+    /// `PaneClosed` event, no `PtyInstruction::ClosePane` and no orphan registration:
+    /// the pane ceases to exist while its child process leaks. So **no `?` and no early
+    /// return may appear between the first `extract_pane` and the last re-home**.
+    pub fn break_multiple_panes_to_tab_with_id(
         &mut self,
         pane_ids: Vec<PaneId>,
-        tab_index: usize,
-        should_change_focus_to_new_tab: bool,
+        tab_id: usize,
+        should_change_focus_to_target_tab: bool,
         client_id: ClientId,
-    ) -> Result<()> {
-        let all_tabs = self.get_tabs_mut();
-        let has_tab_with_index = all_tabs
-            .values()
-            .find(|t| t.position == tab_index)
-            .is_some();
-        if !has_tab_with_index {
-            log::error!("Cannot find tab with index: {tab_index}");
-            return Ok(());
-        }
-        let mut extracted_panes = vec![];
+    ) -> Result<BreakPanesToTabOutcome> {
+        let err_context = || format!("failed to move panes to tab with id {tab_id}");
+        let mut outcome = BreakPanesToTabOutcome::default();
+
+        // the destination first: if it does not exist, nothing is touched
+        let Some(destination) = self.get_tab_by_id(tab_id) else {
+            log::error!("Cannot find tab with id: {tab_id}");
+            return Ok(outcome);
+        };
+        outcome.destination_tab_id = Some(tab_id);
+
+        // panes already in the destination are left exactly where they are
+        let mut to_extract = Vec::with_capacity(pane_ids.len());
         for pane_id in pane_ids {
-            for tab in all_tabs.values_mut() {
-                if tab.position == tab_index {
-                    continue;
-                }
-                // here we pass None instead of the client_id we have because we do not need to
-                // necessarily trigger a relayout for this tab
-                let pane_was_floating = tab.pane_id_is_floating(&pane_id);
-                if let Some(pane) = tab.extract_pane(pane_id, true).take() {
-                    extracted_panes.push((pane_was_floating, pane));
-                    break;
-                }
+            if destination.has_pane_with_pid(&pane_id) {
+                outcome.already_in_destination.push(pane_id);
+            } else {
+                to_extract.push(pane_id);
             }
         }
 
-        if should_change_focus_to_new_tab {
-            self.go_to_tab(tab_index + 1, client_id)?;
-        }
-        if extracted_panes.is_empty() {
-            // nothing to do here...
-            return Ok(());
-        }
-        if let Some(new_active_tab) = self.get_indexed_tab_mut(tab_index) {
-            let tab_size = new_active_tab.size;
-            for (pane_was_floating, mut pane) in extracted_panes {
-                let pane_id = pane.pid();
-                if pane_was_floating {
-                    let floating_pane_coordinates = FloatingPaneCoordinates {
-                        x: Some(PercentOrFixed::Fixed(pane.x())),
-                        y: Some(PercentOrFixed::Fixed(pane.y())),
-                        width: Some(PercentOrFixed::Fixed(pane.cols())),
-                        height: Some(PercentOrFixed::Fixed(pane.rows())),
-                        pinned: Some(pane.current_geom().is_pinned),
-                        borderless: Some(pane.borderless()),
-                    };
-                    new_active_tab.add_floating_pane(
-                        pane,
-                        pane_id,
-                        Some(floating_pane_coordinates),
-                        false,
-                        Some(client_id),
-                    )?;
-                } else {
-                    // here we pass None instead of the ClientId, because we do not want this pane to be
-                    // necessarily focused
-
-                    let new_geom = PaneGeom::from(&tab_size);
-                    pane.set_geom(new_geom);
-
-                    new_active_tab.add_tiled_pane(pane, pane_id, false, None)?;
+        // remember where each pane came from, so that a destination that refuses it can
+        // be recovered from rather than losing the pane
+        let mut extracted: Vec<(usize, bool, Box<dyn Pane>)> = Vec::with_capacity(to_extract.len());
+        {
+            let all_tabs = self.get_tabs_mut();
+            'panes: for pane_id in to_extract {
+                for tab in all_tabs.values_mut() {
+                    if tab.id == tab_id || !tab.has_pane_with_pid(&pane_id) {
+                        continue;
+                    }
+                    let source_tab_id = tab.id;
+                    let was_floating = tab.pane_id_is_floating(&pane_id);
+                    // dont_swap_if_suppressed, and no client_id: we do not need to
+                    // necessarily trigger a relayout for the source tab
+                    if let Some(pane) = tab.extract_pane(pane_id, true) {
+                        extracted.push((source_tab_id, was_floating, pane));
+                        continue 'panes;
+                    }
                 }
+                outcome.not_found.push(pane_id);
             }
-        } else {
-            log::error!("Could not find tab with index: {:?}", tab_index);
+        }
+
+        let mut refused: Vec<(usize, bool, Box<dyn Pane>)> = vec![];
+        match self.get_tab_by_id_mut(tab_id) {
+            Some(destination) => {
+                for (source_tab_id, was_floating, pane) in extracted {
+                    let pane_id = pane.pid();
+                    match destination.accept_extracted_pane(pane, was_floating) {
+                        AcceptedPane::Accepted => outcome.moved.push(pane_id),
+                        AcceptedPane::NoRoom(pane) => {
+                            refused.push((source_tab_id, was_floating, pane))
+                        },
+                        AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
+                    }
+                }
+            },
+            // Unreachable: the destination was found by this same key above, and
+            // nothing since has removed a tab. Handled as a refusal anyway rather than
+            // with `?`, because an early return here would drop every pane already
+            // extracted - which is precisely how this function used to lose them.
+            None => {
+                log::error!("Tab {tab_id} vanished mid-move");
+                refused = extracted;
+            },
+        }
+
+        // put back anything the destination would not take
+        for (source_tab_id, was_floating, pane) in refused {
+            let pane_id = pane.pid();
+            let put_back = match self.get_tab_by_id_mut(source_tab_id) {
+                Some(source) => source.accept_extracted_pane(pane, was_floating),
+                None => AcceptedPane::NoRoom(pane),
+            };
+            match put_back {
+                AcceptedPane::Accepted => {
+                    log::error!(
+                        "Tab {tab_id} had no room for pane {pane_id:?}; returned it to tab {source_tab_id}"
+                    );
+                    outcome.returned_to_source.push(pane_id);
+                },
+                AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
+                    // Last resort: the pane fits nowhere. Dropping the box here is only
+                    // safe because `close_homeless_pane` below tears the pane down
+                    // first - the same order `close_tab_by_id` uses for the panes of a
+                    // tab it removes. Dropping it *without* that is the bug this
+                    // function exists to fix.
+                    log::error!(
+                        "Pane {pane_id:?} fits in neither tab {tab_id} nor tab {source_tab_id}; closing it"
+                    );
+                    outcome.closed.push(pane_id);
+                },
+            }
+        }
+        for pane_id in outcome.closed.clone() {
+            self.close_homeless_pane(pane_id);
+        }
+
+        // focus last, so the destination renders with the panes already in it
+        if should_change_focus_to_target_tab {
+            if let Some(position) = self.get_tab_position_by_id(tab_id) {
+                self.switch_active_tab(position, None, true, client_id)
+                    .with_context(err_context)?;
+            }
         }
         self.log_and_report_session_state()?;
-        Ok(())
+        Ok(outcome)
     }
     pub fn replace_pane(
         &mut self,
@@ -13728,32 +13861,33 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                // Verify tab exists
-                if screen.get_tab_by_id(tab_id).is_none() {
-                    log::error!("Tab with ID {} not found", tab_id);
-                    // Don't set affected_tab_id, it will remain None to signal failure
-                } else {
-                    // break_multiple_panes_to_tab_with_index uses tab ID
-                    screen.break_multiple_panes_to_tab_with_index(
-                        pane_ids,
-                        tab_id,
-                        should_change_focus_to_target_tab,
-                        client_id,
-                    )?;
-                    // Set affected tab ID (tab_id is the ID here)
-                    completion_tx
-                        .as_mut()
-                        .map(|c| c.set_affected_tab_id(tab_id));
-                    let pane_group = screen.get_client_pane_group(&client_id);
-                    if !pane_group.is_empty() {
-                        let _ = screen.bus.senders.send_to_background_jobs(
-                            BackgroundJob::HighlightPanesWithMessage(
-                                pane_group.iter().copied().collect(),
-                                "BROKEN OUT".to_owned(),
-                            ),
-                        );
-                    }
-                    screen.clear_pane_group(&client_id);
+                // tab_id is a stable id and the callee is id-space, so nothing to convert
+                let outcome = screen.break_multiple_panes_to_tab_with_id(
+                    pane_ids,
+                    tab_id,
+                    should_change_focus_to_target_tab,
+                    client_id,
+                )?;
+                match outcome.affected_tab_id() {
+                    Some(affected_tab_id) => {
+                        completion_tx
+                            .as_mut()
+                            .map(|c| c.set_affected_tab_id(affected_tab_id));
+                        let pane_group = screen.get_client_pane_group(&client_id);
+                        if !pane_group.is_empty() {
+                            let _ = screen.bus.senders.send_to_background_jobs(
+                                BackgroundJob::HighlightPanesWithMessage(
+                                    pane_group.iter().copied().collect(),
+                                    "BROKEN OUT".to_owned(),
+                                ),
+                            );
+                        }
+                        screen.clear_pane_group(&client_id);
+                    },
+                    // leaving affected_tab_id None is what signals failure to the plugin
+                    None => {
+                        log::error!("Failed to move panes to tab with id {tab_id}: {outcome:?}")
+                    },
                 }
             },
             ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
@@ -14607,27 +14741,39 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                // tab_index is the target tab ID
-                screen.break_multiple_panes_to_tab_with_index(
+                // tab_index here means display position (0-based) per API convention,
+                // and the callee is id-space, so it must be mapped to a stable ID -
+                // the same conversion CloseTabWithIndex does
+                let Some(tab_id) = screen.get_tab_id_at_position(tab_index) else {
+                    log::error!("Failed to find tab at position: {}", tab_index);
+                    continue; // affected_tab_id stays None, signalling failure
+                };
+                let outcome = screen.break_multiple_panes_to_tab_with_id(
                     pane_ids,
-                    tab_index,
+                    tab_id,
                     should_change_focus_to_new_tab,
                     client_id,
                 )?;
-                // Set affected tab ID (tab_index is the ID here)
-                completion_tx
-                    .as_mut()
-                    .map(|c| c.set_affected_tab_id(tab_index));
-                let pane_group = screen.get_client_pane_group(&client_id);
-                if !pane_group.is_empty() {
-                    let _ = screen.bus.senders.send_to_background_jobs(
-                        BackgroundJob::HighlightPanesWithMessage(
-                            pane_group.iter().copied().collect(),
-                            "BROKEN OUT".to_owned(),
-                        ),
-                    );
+                match outcome.affected_tab_id() {
+                    Some(affected_tab_id) => {
+                        completion_tx
+                            .as_mut()
+                            .map(|c| c.set_affected_tab_id(affected_tab_id));
+                        let pane_group = screen.get_client_pane_group(&client_id);
+                        if !pane_group.is_empty() {
+                            let _ = screen.bus.senders.send_to_background_jobs(
+                                BackgroundJob::HighlightPanesWithMessage(
+                                    pane_group.iter().copied().collect(),
+                                    "BROKEN OUT".to_owned(),
+                                ),
+                            );
+                        }
+                        screen.clear_pane_group(&client_id);
+                    },
+                    None => log::error!(
+                        "Failed to move panes to tab at position {tab_index} (id {tab_id}): {outcome:?}"
+                    ),
                 }
-                screen.clear_pane_group(&client_id);
             },
             ScreenInstruction::TogglePanePinned(client_id, mut completion_tx) => {
                 if screen.reject_focused_global_for_tab_operation_with_completion(
