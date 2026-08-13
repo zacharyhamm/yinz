@@ -486,10 +486,8 @@ impl ZellijPlugin for State {
 
     /// Snapshots pushed by `hocus-agentd`.
     ///
-    /// Every snapshot ends up in `apply_poll`, which is idempotent — applying
-    /// the same one twice changes nothing, and a transition is only reported
-    /// against the map we last held. There is no second path into it any more;
-    /// the daemon is the only source of panes and folders.
+    /// Every snapshot ends up in `apply_poll`. There is no second path into it
+    /// any more; the daemon is the only source of panes and folders.
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         match pipe_message.name.as_str() {
             wire::STORE_SNAPSHOT => return self.on_store_snapshot(&pipe_message),
@@ -530,15 +528,12 @@ impl ZellijPlugin for State {
         };
         self.agent_seq = seq;
         self.repositories = reply.repositories;
-        let applied = match reply.panes {
-            Some(panes) => self.apply_poll(panes, reply.activity),
-            // No current session. A quiet reply, not a dead daemon.
-            None => false,
-        };
+        if let Some(panes) = reply.panes {
+            self.apply_poll(panes, reply.activity);
+        }
         // This also answers the branch refresh requested when the permanent
         // agent strip gains focus.
-        let refreshed = self.refresh_agent_picker();
-        applied || refreshed
+        self.refresh_agent_picker()
     }
 }
 
@@ -3960,6 +3955,18 @@ mod tests {
         assert!(state.is_agent(3));
         state.set_panes(Vec::new());
         assert!(!state.is_agent(3));
+    }
+
+    #[test]
+    fn agent_changes_do_not_post_to_chat() {
+        let mut state = state_with_panes();
+        let mut panes = panes_with_agent();
+        panes[0].status = agents::AgentStatus::Exited;
+
+        state.apply_poll(panes, agents::Activity::new());
+        state.apply_poll(Vec::new(), agents::Activity::new());
+
+        assert!(state.messages.is_empty());
     }
 
     #[test]

@@ -1060,36 +1060,17 @@ impl State {
         })
     }
 
-    /// Merge an event-fed daemon snapshot and note agent transitions.
-    pub(crate) fn apply_poll(
-        &mut self,
-        panes: Vec<agents::AgentPane>,
-        activity: agents::Activity,
-    ) -> bool {
-        // Taken before `set_panes` prunes `manual_kinds`, so a manual agent that
-        // closed still has its kind in the notice.
-        let before = agents::agent_map(&self.panes, &self.manual_kinds);
+    /// Merge an event-fed daemon snapshot.
+    pub(crate) fn apply_poll(&mut self, panes: Vec<agents::AgentPane>, activity: agents::Activity) {
         self.activity = activity;
         let kinds_pruned = self.set_panes(panes);
         // Project discovery used to run here off the same snapshot. It lives in
         // hocus-store now, which receives that snapshot directly and pushes the
         // registry back; `refresh_tab_projects` still runs against our copy.
         self.refresh_tab_projects();
-        let notices = agents::transition_notices(
-            &before,
-            &agents::agent_map(&self.panes, &self.manual_kinds),
-        );
-        for notice in &notices {
-            self.messages.push(Message::notice(notice.clone()));
-            self.log(
-                "notice",
-                serde_json::json!({"content": log::truncate(notice)}),
-            );
-        }
         if kinds_pruned {
             self.subscribe_to_agentd();
         }
-        !notices.is_empty()
     }
 
     /// A worker reply. Only the poll worker sends any.
