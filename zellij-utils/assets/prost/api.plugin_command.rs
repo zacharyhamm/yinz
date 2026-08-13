@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -346,6 +346,10 @@ pub mod plugin_command {
         DataWatchPayload(super::DataWatchPayload),
         #[prost(message, tag="184")]
         DataUnwatchPayload(super::DataUnwatchPayload),
+        #[prost(message, tag="185")]
+        WarpTabToSessionPayload(super::WarpTabToSessionPayload),
+        #[prost(message, tag="186")]
+        WarpTabFromSessionPayload(super::WarpTabFromSessionPayload),
     }
 }
 // ---------------------------------------------------------------- data store
@@ -513,6 +517,23 @@ pub struct WarpPaneFromSessionPayload {
     pub from_session: ::prost::alloc::string::String,
     #[prost(enumeration="WarpPlacement", tag="3")]
     pub placement: i32,
+}
+/// A tab has no placement to choose: it arrives as a tab.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpTabToSessionPayload {
+    #[prost(uint32, tag="1")]
+    pub tab_index: u32,
+    #[prost(string, tag="2")]
+    pub to_session: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpTabFromSessionPayload {
+    #[prost(uint32, tag="1")]
+    pub tab_index: u32,
+    #[prost(string, tag="2")]
+    pub from_session: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2590,6 +2611,8 @@ pub enum CommandName {
     DataCount = 241,
     DataWatch = 242,
     DataUnwatch = 243,
+    WarpTabToSession = 244,
+    WarpTabFromSession = 245,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2815,6 +2838,8 @@ impl CommandName {
             CommandName::DataCount => "DataCount",
             CommandName::DataWatch => "DataWatch",
             CommandName::DataUnwatch => "DataUnwatch",
+            CommandName::WarpTabToSession => "WarpTabToSession",
+            CommandName::WarpTabFromSession => "WarpTabFromSession",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3037,6 +3062,8 @@ impl CommandName {
             "DataCount" => Some(Self::DataCount),
             "DataWatch" => Some(Self::DataWatch),
             "DataUnwatch" => Some(Self::DataUnwatch),
+            "WarpTabToSession" => Some(Self::WarpTabToSession),
+            "WarpTabFromSession" => Some(Self::WarpTabFromSession),
             _ => None,
         }
     }

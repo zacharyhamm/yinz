@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use zellij_utils::{
-    data::{WarpPlacement, WarpedPane},
+    data::{WarpPlacement, WarpedPane, WarpedTab},
     envs,
     errors::prelude::*,
     input::actions::Action,
@@ -81,6 +81,22 @@ fn bound_reply_time(stream: &interprocess::local_socket::Stream, timeout: Durati
     }
 }
 
+/// The far session answered by shutting down.
+///
+/// Its own error type so that the one caller which can expect it —
+/// [`warp_tab_from_session`], asking for a session's last tab — can tell it apart
+/// from a session that simply said something unexpected.
+#[derive(Debug)]
+struct SessionEnded;
+
+impl std::fmt::Display for SessionEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the other session ended")
+    }
+}
+
+impl std::error::Error for SessionEnded {}
+
 /// Read the one reply a cli-client request gets.
 ///
 /// `Log` is success and `LogError` is the reason it failed — the same protocol
@@ -90,6 +106,7 @@ fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Resul
     match receiver.recv_server_msg() {
         Some((ServerToClientMsg::Log { lines }, _)) => Ok(lines.join(" ")),
         Some((ServerToClientMsg::LogError { lines }, _)) => Err(anyhow!("{}", lines.join(" "))),
+        Some((ServerToClientMsg::Exit { .. }, _)) => Err(SessionEnded.into()),
         Some((other, _)) => Err(anyhow!(
             "unexpected reply from the other session: {other:?}"
         )),
@@ -97,6 +114,23 @@ fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Resul
             "the other session closed the connection without answering"
         )),
     }
+}
+
+/// Hand a tab to another session and wait to hear that it landed.
+fn send_tab_to_session(
+    sender: &mut IpcSenderWithContext<ClientToServerMsg>,
+    payload: Box<WarpedTab>,
+) -> Result<()> {
+    sender
+        .send_client_msg(ClientToServerMsg::Action {
+            action: Action::AdoptTab { payload },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        })
+        .context("failed to send the tab to the other session")?;
+
+    read_cli_reply(sender).map(|_| ())
 }
 
 /// Hand a pane to another session and wait to hear that it landed.
@@ -267,6 +301,149 @@ pub fn warp_pane_from_session(
     let brought = read_cli_reply(&mut sender).map_err(|e| format!("{e:#}"));
     log_if_slow("bringing the pane over", started_at);
     brought.map(|_| format!("Brought pane from session '{from_session}'"))
+}
+
+/// Move a tab out of this session and into another one.
+///
+/// The tab-sized twin of [`warp_pane_to_session`], and the ordering is the same
+/// design for the same reason, only with more at stake: between the release and
+/// the adoption a whole tab's worth of processes belong to nobody, so nothing is
+/// released until the far session has answered.
+pub fn warp_tab_to_session(
+    senders: &ThreadSenders,
+    client_id: ClientId,
+    tab_index: Option<usize>,
+    current_session: &str,
+    to_session: &str,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    let started_at = std::time::Instant::now();
+    if to_session == current_session {
+        return Err(format!("this tab is already in session '{to_session}'"));
+    }
+
+    let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
+
+    let (response_sender, response_receiver) = crossbeam::channel::unbounded();
+    senders
+        .send_to_screen(ScreenInstruction::WarpTab {
+            tab_index,
+            client_id,
+            response_channel: response_sender,
+        })
+        .map_err(|e| format!("{e:#}"))?;
+
+    let payload = match response_receiver.recv_timeout(timeout) {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(reason)) => return Err(reason),
+        Err(_) => return Err("timed out preparing the tab to be moved".to_owned()),
+    };
+    log_if_slow("releasing the tab", started_at);
+
+    // From here every pane in the tab belongs to nobody until someone adopts it.
+    let host_ids: Vec<String> = payload
+        .tiled_panes
+        .iter()
+        .chain(payload.floating_panes.iter())
+        .map(|pane| pane.host_id.clone())
+        .collect();
+    let handed_off_at = std::time::Instant::now();
+    match send_tab_to_session(&mut sender, payload.clone()) {
+        Ok(()) => {
+            log_if_slow("handing the tab over", handed_off_at);
+            Ok(format!("Moved tab to session '{to_session}'"))
+        },
+        Err(e) => {
+            // Take it back. As with a pane, adopting is the same operation from
+            // this side, so the rollback is the feature's own primitive.
+            let rollback = adopt_tab_here(senders, client_id, payload, timeout);
+            Err(match rollback {
+                Ok(_) => format!(
+                    "Could not move the tab to '{to_session}' ({e:#}); it is back in this session"
+                ),
+                Err(rollback_error) => format!(
+                    "Could not move the tab to '{to_session}' ({e:#}), and could not take it \
+                     back either ({rollback_error}). The processes are still running — recover \
+                     them with `zellij pty-host adopt <id>`: {}",
+                    host_ids.join(", ")
+                ),
+            })
+        },
+    }
+}
+
+/// Take a released tab into this session.
+///
+/// Both the receiving half of a tab warp and the rollback when the far side of
+/// one refuses, for the same reason [`adopt_pane_here`] is both.
+pub fn adopt_tab_here(
+    senders: &ThreadSenders,
+    client_id: ClientId,
+    payload: Box<WarpedTab>,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    let started_at = std::time::Instant::now();
+    let (response_sender, response_receiver) = crossbeam::channel::unbounded();
+    senders
+        .send_to_pty(PtyInstruction::AdoptTab {
+            payload,
+            client_id,
+            response_channel: response_sender,
+        })
+        .map_err(|e| format!("{e:#}"))?;
+
+    let adopted = match response_receiver.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok("Adopted tab".to_owned()),
+        Ok(Err(e)) => Err(format!("{e:#}")),
+        Err(_) => Err("timed out adopting the tab".to_owned()),
+    };
+    log_if_slow("adopting the tab", started_at);
+    adopted
+}
+
+/// Ask another session to send us one of its tabs.
+///
+/// The mirror of the push, exactly as [`warp_pane_from_session`] is: this hands
+/// the source session a `WarpTab` naming *us*, so every check, the release, the
+/// rollback and the recovery wording happen on the side that owns the tab.
+pub fn warp_tab_from_session(
+    current_session: &str,
+    from_session: &str,
+    tab_index: usize,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    let started_at = std::time::Instant::now();
+    if current_session.is_empty() {
+        return Err("this session has no name to bring the tab to".to_owned());
+    }
+    if from_session == current_session {
+        return Err(format!("'{from_session}' is this session"));
+    }
+
+    let mut sender = connect_to_session(from_session, timeout).map_err(|e| format!("{e:#}"))?;
+    sender
+        .send_client_msg(ClientToServerMsg::Action {
+            action: Action::WarpTab {
+                tab_index: Some(tab_index),
+                to_session: current_session.to_owned(),
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        })
+        .map_err(|e| format!("failed to ask '{from_session}' for the tab: {e:#}"))?;
+
+    // A source that has just given away its only tab is a source with nothing
+    // left, and it shuts down — so the reply to the last tab a session owns is
+    // its orderly goodbye rather than a line of prose. That only happens *after*
+    // the tab has been delivered, which is why it reads as success here and not
+    // as the missing answer it looks like.
+    let brought = match read_cli_reply(&mut sender) {
+        Err(e) if e.downcast_ref::<SessionEnded>().is_some() => Ok(String::new()),
+        other => other.map_err(|e| format!("{e:#}")),
+    };
+    log_if_slow("bringing the tab over", started_at);
+    brought.map(|_| format!("Brought tab from session '{from_session}'"))
 }
 
 fn log_if_slow(what: &str, started_at: std::time::Instant) {

@@ -1810,6 +1810,43 @@ pub fn warp_pane_from_session(
     })
 }
 
+/// Move a whole tab, and everything running in it, into another session.
+///
+/// The tab arrives as a tab, arranged the way it was here. None of its processes
+/// are restarted. If the other session's terminal is a different size, the
+/// arrangement is scaled to fit rather than clipped, because what travels is a
+/// layout rather than a set of pane sizes.
+///
+/// Plugin panes are the exception to "nothing is restarted": they have no
+/// process to hand over, so the receiving session starts them afresh in the same
+/// slots. A plugin's own state does not survive the trip.
+///
+/// Blocks on the same terms as [`warp_pane_to_session`], and for longer — a tab's
+/// worth of supervisors have to be released here and re-attached there.
+///
+/// # Permissions Required
+/// * `ChangeApplicationState`
+pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String, String> {
+    warp_request(PluginCommand::WarpTabToSession {
+        tab_index,
+        to_session: to_session.to_owned(),
+    })
+}
+
+/// Bring a tab from another session into this one.
+///
+/// The mirror of [`warp_tab_to_session`]: the source session does the work, so
+/// `tab_index` is an id in *that* session's numbering, not this one's.
+///
+/// # Permissions Required
+/// * `ChangeApplicationState`
+pub fn warp_tab_from_session(tab_index: usize, from_session: &str) -> Result<String, String> {
+    warp_request(PluginCommand::WarpTabFromSession {
+        tab_index,
+        from_session: from_session.to_owned(),
+    })
+}
+
 /// Take an orphaned pane over into this session, reconnecting it to its
 /// still-running process. `host_id` comes from [`list_orphaned_panes`].
 ///

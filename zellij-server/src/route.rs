@@ -1281,6 +1281,59 @@ pub(crate) fn route_action(
                 Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
             }
         },
+        Action::WarpTab {
+            tab_index,
+            to_session,
+        } => {
+            drop(completion_tx);
+            match crate::warp::warp_tab_to_session(
+                &senders,
+                client_id,
+                tab_index,
+                &crate::warp::current_session_name(),
+                &to_session,
+                crate::warp::WARP_TIMEOUT,
+            ) {
+                Ok(message) => {
+                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                },
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+            }
+        },
+        Action::AdoptTab { payload } => {
+            drop(completion_tx);
+            match crate::warp::adopt_tab_here(
+                &senders,
+                client_id,
+                payload,
+                crate::warp::WARP_TIMEOUT,
+            ) {
+                Ok(message) => {
+                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                },
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+            }
+        },
+        Action::WarpTabFrom {
+            from_session,
+            tab_index,
+        } => {
+            drop(completion_tx);
+            // Handed straight on to the source session, which does all of it —
+            // including connecting back into this server to deliver the tab,
+            // which our own route and pty threads then handle.
+            match crate::warp::warp_tab_from_session(
+                &crate::warp::current_session_name(),
+                &from_session,
+                tab_index,
+                crate::warp::WARP_TIMEOUT,
+            ) {
+                Ok(message) => {
+                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                },
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+            }
+        },
         Action::SwitchSession {
             name,
             tab_position,

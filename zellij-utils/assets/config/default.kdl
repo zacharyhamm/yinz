@@ -461,7 +461,8 @@ load_plugins {
 // crashes. List survivors with `zellij pty-host list`, put one back on screen
 // with `zellij pty-host adopt <id>`, or give up on it with `zellij pty-host
 // kill <id>`. This is also what lets `zellij action warp-pane` move a running
-// pane from one session to another.
+// pane from one session to another, and `zellij action warp-tab` move a whole
+// tab.
 // Read once when the session is created; attaching later will not change it.
 // (Requires restart)
 // Options:
