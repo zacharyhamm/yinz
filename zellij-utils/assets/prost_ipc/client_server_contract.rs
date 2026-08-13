@@ -120,7 +120,7 @@ pub struct RgbColor {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
-    #[prost(oneof="action::ActionType", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151")]
+    #[prost(oneof="action::ActionType", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154")]
     pub action_type: ::core::option::Option<action::ActionType>,
 }
 /// Nested message and enum types in `Action`.
@@ -430,6 +430,12 @@ pub mod action {
         WarpPane(super::WarpPaneAction),
         #[prost(message, tag="151")]
         AdoptPane(super::AdoptPaneAction),
+        #[prost(message, tag="152")]
+        WarpTab(super::WarpTabAction),
+        #[prost(message, tag="153")]
+        AdoptTab(super::AdoptTabAction),
+        #[prost(message, tag="154")]
+        WarpTabFrom(super::WarpTabFromAction),
     }
 }
 // Action message definitions (all 92 variants)
@@ -1534,6 +1540,66 @@ pub struct AdoptPaneAction {
     pub borderless: bool,
     #[prost(enumeration="WarpPlacement", tag="6")]
     pub placement: i32,
+}
+/// One pane of a tab moving between sessions: which supervisor to attach to,
+/// plus the terminal state that supervisor cannot report. The same shape as the
+/// pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
+/// its place decided by the layout.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpedPane {
+    #[prost(string, tag="1")]
+    pub host_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub control_socket: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="3")]
+    pub title: ::core::option::Option<::prost::alloc::string::String>,
+    /// The screen and scrollback as an ANSI dump. Can be megabytes.
+    #[prost(string, optional, tag="4")]
+    pub contents: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="5")]
+    pub borderless: bool,
+}
+/// Move a tab, arrangement and running processes and all, to another session.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpTabAction {
+    #[prost(string, tag="1")]
+    pub to_session: ::prost::alloc::string::String,
+    /// Absent means "whichever tab is focused".
+    #[prost(uint32, optional, tag="2")]
+    pub tab_index: ::core::option::Option<u32>,
+}
+/// Ask another session to send us one of its tabs. There is no focused-tab
+/// default here: the tab being named is in someone else's session.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpTabFromAction {
+    #[prost(string, tag="1")]
+    pub from_session: ::prost::alloc::string::String,
+    #[prost(uint32, tag="2")]
+    pub tab_index: u32,
+}
+/// Take a whole tab over from a session warping it here.
+///
+/// The arrangement travels as a layout rather than as pane geometry, which is
+/// what lets the tab land in a session of a different size. The pane lists are
+/// ordered to match the layout's terminal slots.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdoptTabAction {
+    #[prost(string, optional, tag="1")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="2")]
+    pub tiled_layout: ::core::option::Option<TiledPaneLayout>,
+    #[prost(message, repeated, tag="3")]
+    pub floating_layout: ::prost::alloc::vec::Vec<FloatingPaneLayout>,
+    #[prost(message, repeated, tag="4")]
+    pub tiled_panes: ::prost::alloc::vec::Vec<WarpedPane>,
+    #[prost(message, repeated, tag="5")]
+    pub floating_panes: ::prost::alloc::vec::Vec<WarpedPane>,
+    #[prost(bool, tag="6")]
+    pub hide_floating_panes: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

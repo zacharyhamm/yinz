@@ -289,6 +289,9 @@ message Action {
     NotifyAction notify = 149;
     WarpPaneAction warp_pane = 150;
     AdoptPaneAction adopt_pane = 151;
+    WarpTabAction warp_tab = 152;
+    AdoptTabAction adopt_tab = 153;
+    WarpTabFromAction warp_tab_from = 154;
   }
 }
 
@@ -918,6 +921,47 @@ message AdoptPaneAction {
   optional string contents = 4;
   bool borderless = 5;
   WarpPlacement placement = 6;
+}
+
+// One pane of a tab moving between sessions: which supervisor to attach to,
+// plus the terminal state that supervisor cannot report. The same shape as the
+// pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
+// its place decided by the layout.
+message WarpedPane {
+  string host_id = 1;
+  string control_socket = 2;
+  optional string title = 3;
+  // The screen and scrollback as an ANSI dump. Can be megabytes.
+  optional string contents = 4;
+  bool borderless = 5;
+}
+
+// Move a tab, arrangement and running processes and all, to another session.
+message WarpTabAction {
+  string to_session = 1;
+  // Absent means "whichever tab is focused".
+  optional uint32 tab_index = 2;
+}
+
+// Ask another session to send us one of its tabs. There is no focused-tab
+// default here: the tab being named is in someone else's session.
+message WarpTabFromAction {
+  string from_session = 1;
+  uint32 tab_index = 2;
+}
+
+// Take a whole tab over from a session warping it here.
+//
+// The arrangement travels as a layout rather than as pane geometry, which is
+// what lets the tab land in a session of a different size. The pane lists are
+// ordered to match the layout's terminal slots.
+message AdoptTabAction {
+  optional string name = 1;
+  TiledPaneLayout tiled_layout = 2;
+  repeated FloatingPaneLayout floating_layout = 3;
+  repeated WarpedPane tiled_panes = 4;
+  repeated WarpedPane floating_panes = 5;
+  bool hide_floating_panes = 6;
 }
 
 message NewPanePlacement {
