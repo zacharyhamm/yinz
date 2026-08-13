@@ -11,7 +11,7 @@ use crate::plugin_data::{AttrDef, DataError, DataSchemaInfo, EntityDef};
 
 use super::index::{create_attr_indexes, rebuild_full_text};
 use super::schema::EntitySchema;
-use super::sql::storage_err;
+use super::sql::{quote_ident, storage_err, SqlContext};
 use super::value::sql_literal;
 
 /// Open the store's file, set its pragmas, and make sure the registry table exists.
@@ -20,19 +20,18 @@ pub(super) fn open_db(db_path: &Path) -> Result<Connection, DataError> {
         std::fs::create_dir_all(parent)
             .map_err(|e| storage_err(&format!("failed to create {:?}", parent), e))?;
     }
-    let conn = Connection::open(db_path)
-        .map_err(|e| storage_err(&format!("failed to open {:?}", db_path), e))?;
+    let conn = Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
     // The same pragma set as the recording store. WAL and a busy timeout matter more here than
     // there: this file lives in the data dir rather than a session cache dir, so two zellij
     // servers running at once share it.
     conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| storage_err("failed to enable WAL", e))?;
+        .ctx("failed to enable WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)
-        .map_err(|e| storage_err("failed to set busy_timeout", e))?;
+        .ctx("failed to set busy_timeout")?;
     conn.pragma_update(None, "foreign_keys", "ON")
-        .map_err(|e| storage_err("failed to enable foreign keys", e))?;
+        .ctx("failed to enable foreign keys")?;
     conn.pragma_update(None, "synchronous", "NORMAL")
-        .map_err(|e| storage_err("failed to set synchronous", e))?;
+        .ctx("failed to set synchronous")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -55,7 +54,7 @@ pub(super) fn open_db(db_path: &Path) -> Result<Connection, DataError> {
         );
         "#,
     )
-    .map_err(|e| storage_err("failed to create the entity registry", e))?;
+    .ctx("failed to create the entity registry")?;
     Ok(conn)
 }
 
@@ -78,7 +77,7 @@ pub(super) fn load_entity(
             },
         )
         .optional()
-        .map_err(|e| storage_err("failed to read the entity registry", e))?;
+        .ctx("failed to read the entity registry")?;
     let Some((row_id, definition, owner_plugin)) = row else {
         return Ok(None);
     };
@@ -121,7 +120,7 @@ pub(super) fn create_entity(
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![namespace, def.name, def.version, definition, owner_plugin],
     )
-    .map_err(|e| storage_err("failed to register the entity", e))?;
+    .ctx("failed to register the entity")?;
     // The table is named after the registry row, so it can only be created once the row exists.
     let schema = EntitySchema {
         row_id: conn.last_insert_rowid(),
@@ -143,13 +142,13 @@ pub(super) fn create_entity(
         table,
         columns.join(", ")
     ))
-    .map_err(|e| storage_err(&format!("failed to create the table for `{}`", def.name), e))?;
+    .with_ctx(|| format!("failed to create the table for `{}`", def.name))?;
     // Always indexed, because every list, sync and paginate query orders or filters on them.
     conn.execute_batch(&format!(
         "CREATE INDEX \"{table}_created\" ON \"{table}\"(created_at);
          CREATE INDEX \"{table}_updated\" ON \"{table}\"(updated_at);"
     ))
-    .map_err(|e| storage_err("failed to create the timestamp indexes", e))?;
+    .ctx("failed to create the timestamp indexes")?;
 
     let mut indexes_created = Vec::new();
     for attr in &def.attrs {
@@ -170,7 +169,7 @@ pub(super) fn create_entity(
 }
 
 pub(super) fn column_definition(attr: &AttrDef) -> Result<String, DataError> {
-    let mut sql = format!("\"{}\" {}", attr.name, attr.kind.sql_type());
+    let mut sql = format!("{} {}", quote_ident(&attr.name), attr.kind.sql_type());
     if attr.required {
         sql.push_str(" NOT NULL");
     }

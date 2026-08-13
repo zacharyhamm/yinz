@@ -10,7 +10,7 @@ use rusqlite::ToSql;
 
 use crate::plugin_data::{AttrKind, DataError, DataValue};
 
-use super::sql::storage_err;
+use super::sql::SqlContext;
 
 impl ToSql for DataValue {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
@@ -70,9 +70,7 @@ pub(super) fn read_value(
     index: usize,
     kind: Option<AttrKind>,
 ) -> Result<DataValue, DataError> {
-    let value = row
-        .get_ref(index)
-        .map_err(|e| storage_err("failed to read a value", e))?;
+    let value = row.get_ref(index).ctx("failed to read a value")?;
     Ok(match (value, kind) {
         (ValueRef::Null, _) => DataValue::Null,
         // Only a column declared Bool comes back as one; SQLite stores both in an INTEGER.

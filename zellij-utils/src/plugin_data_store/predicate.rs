@@ -3,6 +3,7 @@
 use crate::plugin_data::{AttrKind, DataError, DataValue, Pred};
 
 use super::schema::EntitySchema;
+use super::sql::{placeholders, qualify};
 
 /// Compile a predicate into a SQL fragment plus its bound parameters.
 pub(super) fn compile_pred(
@@ -24,7 +25,7 @@ pub(super) fn compile_pred(
     ) -> Result<(), DataError> {
         schema.require_column(attr)?;
         check_value_kind(schema, attr, value)?;
-        sql.push_str(&format!("\"{}\".\"{}\" {} ?", table, attr, op));
+        sql.push_str(&format!("{} {} ?", qualify(table, attr), op));
         params.push(value.clone());
         Ok(())
     }
@@ -40,7 +41,7 @@ pub(super) fn compile_pred(
     ) -> Result<(), DataError> {
         schema.require_column(attr)?;
         require_text_column(schema, attr)?;
-        sql.push_str(&format!("\"{}\".\"{}\" LIKE ? ESCAPE '\\'", table, attr));
+        sql.push_str(&format!("{} LIKE ? ESCAPE '\\'", qualify(table, attr)));
         params.push(DataValue::Text(pattern));
         Ok(())
     }
@@ -57,17 +58,17 @@ pub(super) fn compile_pred(
             for value in values {
                 check_value_kind(schema, a, value)?;
             }
-            let placeholders = vec!["?"; values.len()].join(", ");
-            sql.push_str(&format!("\"{}\".\"{}\" IN ({})", table, a, placeholders));
+            let placeholders = placeholders(values.len());
+            sql.push_str(&format!("{} IN ({})", qualify(table, a), placeholders));
             params.extend(values.iter().cloned());
         },
         Pred::IsNull(a) => {
             schema.require_column(a)?;
-            sql.push_str(&format!("\"{}\".\"{}\" IS NULL", table, a));
+            sql.push_str(&format!("{} IS NULL", qualify(table, a)));
         },
         Pred::NotNull(a) => {
             schema.require_column(a)?;
-            sql.push_str(&format!("\"{}\".\"{}\" IS NOT NULL", table, a));
+            sql.push_str(&format!("{} IS NOT NULL", qualify(table, a)));
         },
         Pred::Prefix(a, v) => like(
             schema,
