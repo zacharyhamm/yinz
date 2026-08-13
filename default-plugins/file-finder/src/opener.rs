@@ -92,7 +92,7 @@ fn build_command(command: &str, file: &Path) -> Option<Opener> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
     use std::path::PathBuf;
 
     fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
