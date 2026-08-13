@@ -26,10 +26,20 @@
 //! reaching nobody at all when hocus is not up. That silence is what the
 //! acknowledgement below exists to make visible.
 //!
+//! **The popup goes when your attention does.** Selecting another pane, or
+//! leaving the tab, dismisses it exactly as Esc would. Without that it merely
+//! stops being focused — or, for `ToggleFloatingPanes`, merely stops being
+//! drawn — and since `LaunchOrFocusPlugin` matches on (location,
+//! configuration), the next keypress would re-focus that abandoned instance
+//! with the half-typed question still in it. `focus_verdict` and the
+//! `Event::Visible` arm below are the two halves of that, and they are two
+//! rather than one because `PaneUpdate` does not reach a plugin outside the
+//! client's active tab.
+//!
 //! Known wart: the popup is one pane shared by per-client plugin instances, so
-//! with two clients attached each has their own buffer but either one's Esc
-//! closes the pane for both. Two people asking at the same instant is not a
-//! case worth engineering for.
+//! with two clients attached each has their own buffer but either one's Esc —
+//! or either one's glance at another pane — closes the pane for both. Two
+//! people asking at the same instant is not a case worth engineering for.
 
 mod ui;
 
@@ -80,6 +90,15 @@ impl Default for Phase {
     }
 }
 
+/// What a reading of the client's focused pane means for the popup.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    /// Stay up.
+    Wait,
+    /// Attention has moved on, and so should the popup.
+    Dismiss,
+}
+
 #[derive(Default)]
 struct State {
     /// The plugin's whole KDL block, kept so `PluginConfigurationChanged` can
@@ -89,6 +108,11 @@ struct State {
     plugin_id: u32,
     input: TextInput,
     phase: Phase,
+    /// Whether focus has ever been seen on the popup. See `focus_verdict` for
+    /// why nothing may be concluded from a focus reading before it has.
+    was_focused: bool,
+    /// Latched once a close is on its way to the host, so a second one is not.
+    dismissed: bool,
 }
 
 register_plugin!(State);
@@ -107,11 +131,15 @@ impl ZellijPlugin for State {
         // `PastedText` has to be subscribed for: unsubscribed, the host drops
         // bracketed paste outright rather than degrading it to key events, and
         // pasting an error message into the box would silently do nothing.
+        // `PaneUpdate` and `Visible` are between them how the popup notices it
+        // has been left behind — see `focus_verdict`.
         subscribe(&[
             EventType::Key,
             EventType::PastedText,
             EventType::Timer,
             EventType::PluginConfigurationChanged,
+            EventType::PaneUpdate,
+            EventType::Visible,
         ]);
         set_selectable(true);
         rename_plugin_pane(self.plugin_id, PANE_TITLE);
@@ -130,6 +158,22 @@ impl ZellijPlugin for State {
                 }
             },
             Event::Timer(elapsed) => self.on_tick(elapsed),
+            // Only ever the trigger to go and ask: the manifest itself cannot
+            // answer the question, see `focus_verdict`.
+            Event::PaneUpdate(_) => {
+                let focused = get_focused_pane_info().ok().map(|(_, pane)| pane);
+                if self.focus_verdict(focused) == Verdict::Dismiss {
+                    self.dismiss();
+                }
+                false
+            },
+            // The tab the popup lives in was left behind. `PaneUpdate` is only
+            // delivered to plugins in the client's *active* tab, so this is the
+            // only word the popup gets that it is no longer in front of anyone.
+            Event::Visible(false) => {
+                self.dismiss();
+                false
+            },
             Event::PluginConfigurationChanged(config) => {
                 self.config = config;
                 self.apply_geometry();
@@ -157,7 +201,7 @@ impl ZellijPlugin for State {
             // Queued is as good as sent from here: hocus has the question and
             // has said so, and the popup's job is over either way.
             AskOutcome::Sent | AskOutcome::Queued => {
-                close_self();
+                self.dismiss();
                 false
             },
             AskOutcome::Refused => {
@@ -203,19 +247,67 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Decide what a reading of the client's focused pane means for the popup.
+    ///
+    /// The `PaneManifest` that arrives with `PaneUpdate` cannot answer this,
+    /// which is why the caller pays for a round trip to the host instead: a
+    /// floating pane's `is_focused` there is true if *any* client focuses it,
+    /// and the question being asked is about one client. `get_focused_pane_info`
+    /// resolves through the client's own active pane, across the tiled and
+    /// floating layers alike. This is `file-finder`'s trick run backwards — it
+    /// bounces focus off itself, this closes when focus is off it.
+    ///
+    /// `was_focused` is not a defensive flag but the thing that makes any of
+    /// this safe. The popup is one pane behind a plugin instance per client
+    /// (see the module doc), and each instance is told about *its own* client's
+    /// focus; an instance belonging to a client who never opened the popup
+    /// would otherwise close it on its first update, out from under whoever is
+    /// typing into it. It also means nothing has to be assumed about whether
+    /// the pane was focused before the first event arrived.
+    fn focus_verdict(&mut self, focused: Option<PaneId>) -> Verdict {
+        if focused == Some(PaneId::Plugin(self.plugin_id)) {
+            self.was_focused = true;
+            return Verdict::Wait;
+        }
+        // The host could not say where focus is. Reading that as "elsewhere"
+        // would throw away a half-typed question on no evidence, so it waits —
+        // the same call `pipe` makes about an unreadable acknowledgement.
+        if focused.is_none() {
+            return Verdict::Wait;
+        }
+        if self.was_focused {
+            Verdict::Dismiss
+        } else {
+            Verdict::Wait
+        }
+    }
+
+    /// Close the popup, at most once.
+    ///
+    /// The latch is for `Event::Visible`, which the host broadcasts to every
+    /// client's instance at once: without it each would send a `ClosePane` for
+    /// the same pane. It also settles the race between a keypress and a focus
+    /// reading that both decide the popup is over.
+    fn dismiss(&mut self) {
+        if !self.dismissed {
+            self.dismissed = true;
+            close_self();
+        }
+    }
+
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if matches!(self.phase, Phase::Sending { .. }) {
             // The question is already out and cannot be recalled; the only
             // thing left to offer is a way out of the box.
             if key.bare_key == BareKey::Esc {
-                close_self();
+                self.dismiss();
             }
             return false;
         }
         match self.input.handle_key(key) {
             InputAction::Submit => self.send(),
             InputAction::Cancel => {
-                close_self();
+                self.dismiss();
                 false
             },
             InputAction::Continue => {
@@ -240,7 +332,7 @@ impl State {
         let text = self.input.get_text().trim().to_owned();
         if text.is_empty() {
             // A bare Enter on an empty box is the same as changing your mind.
-            close_self();
+            self.dismiss();
             return false;
         }
         let Ok(payload) = serde_json::to_string(&Ask { text }) else {
@@ -340,6 +432,19 @@ mod tests {
         }
     }
 
+    /// A popup that has been opened and focused, as every real one has been by
+    /// the time a focus reading reaches it.
+    fn open_popup() -> State {
+        let mut state = State::default();
+        state.plugin_id = 7;
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Plugin(7))),
+            Verdict::Wait,
+            "focus landing on the popup is what opening it looks like"
+        );
+        state
+    }
+
     fn note(state: &State) -> Option<&str> {
         match &state.phase {
             Phase::Editing { note } => note.as_deref(),
@@ -433,6 +538,77 @@ mod tests {
 
         assert!(!state.pipe(other));
         assert_eq!(state.phase, Phase::Sending { remaining: 1.0 });
+    }
+
+    #[test]
+    fn focus_on_the_popup_itself_keeps_it_up() {
+        let mut state = open_popup();
+
+        assert_eq!(state.focus_verdict(Some(PaneId::Plugin(7))), Verdict::Wait);
+        assert!(state.was_focused);
+    }
+
+    #[test]
+    fn focus_moving_to_another_pane_dismisses_the_popup() {
+        let mut state = open_popup();
+
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Terminal(1))),
+            Verdict::Dismiss
+        );
+    }
+
+    /// The popup is one pane behind an instance per client, and each instance
+    /// is told where *its* client is looking. An instance belonging to someone
+    /// who never opened the popup must keep its opinion to itself, or it closes
+    /// the box the other client is typing into.
+    #[test]
+    fn an_instance_that_never_had_focus_dismisses_nothing() {
+        let mut state = State::default();
+        state.plugin_id = 7;
+
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Terminal(1))),
+            Verdict::Wait
+        );
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Plugin(9))),
+            Verdict::Wait,
+            "another plugin's pane is no more evidence than a terminal's"
+        );
+    }
+
+    /// Same reasoning as an unreadable acknowledgement: an answer that is not
+    /// an answer is no grounds for throwing away what was typed.
+    #[test]
+    fn a_focus_reading_the_host_could_not_give_dismisses_nothing() {
+        let mut state = open_popup();
+
+        assert_eq!(state.focus_verdict(None), Verdict::Wait);
+        assert!(
+            state.was_focused,
+            "and it does not disarm what was already established"
+        );
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Terminal(1))),
+            Verdict::Dismiss
+        );
+    }
+
+    /// Walking away from a question already in the air still dismisses. The
+    /// question reaches hocus either way; only the acknowledgement is lost, and
+    /// there is by then nobody in front of the pane to read it.
+    #[test]
+    fn a_question_in_flight_does_not_hold_the_popup_open() {
+        let mut state = open_popup();
+        state.phase = Phase::Sending {
+            remaining: ACK_TIMEOUT_SECONDS,
+        };
+
+        assert_eq!(
+            state.focus_verdict(Some(PaneId::Terminal(1))),
+            Verdict::Dismiss
+        );
     }
 
     /// Typing is how you answer a complaint about what you typed.

@@ -6783,10 +6783,21 @@ impl Tab {
         Ok(())
     }
     pub fn visible(&mut self, visible: bool) -> Result<()> {
-        let pids_in_this_tab = self.tiled_panes.pane_ids().filter_map(|p| match p {
-            PaneId::Plugin(pid) => Some(pid),
-            _ => None,
-        });
+        // Floating panes as well as tiled: a floating plugin goes off screen
+        // with the tab exactly as a tiled one does, and for a transient popup
+        // this is the only word it gets that nobody is looking at it any more
+        // (`PaneUpdate` only reaches plugins in a client's *active* tab).
+        // Suppressed panes are deliberately still left out - `suppress_pane`
+        // extracts them from both collections, and a hidden plugin is not on
+        // screen to begin with.
+        let pids_in_this_tab = self
+            .tiled_panes
+            .pane_ids()
+            .chain(self.floating_panes.pane_ids())
+            .filter_map(|p| match p {
+                PaneId::Plugin(pid) => Some(pid),
+                _ => None,
+            });
         let mut plugin_updates = vec![];
         for pid in pids_in_this_tab {
             plugin_updates.push((Some(*pid), None, Event::Visible(visible)));

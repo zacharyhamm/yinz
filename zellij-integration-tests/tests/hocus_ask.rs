@@ -190,6 +190,84 @@ fn dismissing_the_popup_returns_focus_to_the_pane_it_covered() {
     zellij.quit();
 }
 
+/// Selecting another pane is a way of saying you are done with the popup.
+///
+/// `Alt n` opens the new pane *floating and focused*, on top of the popup
+/// rather than in place of it. That is what makes this test say something:
+/// hiding the floating layer would take the popup off the grid whether it had
+/// closed or not, whereas here an undismissed popup would still be sitting
+/// there with its frame around it.
+#[test]
+fn focusing_another_pane_dismisses_the_popup() {
+    let mut zellij = start_without_hocus();
+    open_popup(&zellij);
+
+    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
+    zellij.send_stdin(b"abandoned question");
+    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
+    zellij.wait_until("the question is on screen", |grid_snapshot| {
+        grid_snapshot.contains("abandoned question")
+    });
+
+    zellij.send_stdin(&keys::alt('n'));
+    let second_shell = zellij.expect_pty_spawn();
+    second_shell.output(PROMPT);
+
+    zellij.wait_until("the popup gives way to the new pane", |grid_snapshot| {
+        !grid_snapshot.contains(POPUP_TITLE) && !grid_snapshot.contains(POPUP_PROMPT)
+    });
+
+    zellij.quit();
+}
+
+/// Leaving the tab counts too, and reaches the popup by a different route:
+/// `PaneUpdate` is only delivered to plugins in the client's active tab, so
+/// nothing but `Event::Visible` says that the tab itself went away.
+///
+/// The two shells announce themselves, because both tabs would otherwise be a
+/// bare `$ ` and there would be no way to wait for the right one.
+#[test]
+fn leaving_the_tab_dismisses_the_popup() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE).with_config(ASK_ONLY).start();
+    let first_shell = zellij.expect_pty_spawn();
+    first_shell.output(b"first tab shell");
+    first_shell.output(PROMPT);
+    zellij.wait_for_app_load();
+
+    open_popup(&zellij);
+
+    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
+    zellij.send_stdin(b"abandoned question");
+    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
+    zellij.wait_until("the question is on screen", |grid_snapshot| {
+        grid_snapshot.contains("abandoned question")
+    });
+
+    // Tab mode, then `n` for a new tab - which spawns a shell of its own.
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"n");
+    let second_shell = zellij.expect_pty_spawn();
+    second_shell.output(b"second tab shell");
+    second_shell.output(PROMPT);
+    zellij.wait_until("the second tab is up", |grid_snapshot| {
+        grid_snapshot.contains("second tab shell")
+    });
+
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"h");
+    zellij.wait_until("the first tab is back", |grid_snapshot| {
+        grid_snapshot.contains("first tab shell")
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        !snapshot.contains(POPUP_PROMPT) && !snapshot.contains("abandoned question"),
+        "a popup left behind in a tab should not be waiting when you return to it"
+    );
+
+    zellij.quit();
+}
+
 /// A broadcast into a session with no hocus in it looks exactly like a
 /// successful one from the popup's side. This is the test that the
 /// acknowledgement is doing real work rather than being a formality.
