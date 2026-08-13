@@ -158,6 +158,12 @@ keybinds clear-defaults=true {
         bind "Alt =" { Resize "Increase"; }
         bind "Alt [" { PreviousSwapLayout; }
         bind "Alt ]" { NextSwapLayout; }
+        bind "Alt e" {
+            LaunchOrFocusPlugin "file-finder" {
+                floating true
+                move_to_focused_tab true
+            }
+        }
         bind "Alt f" { ToggleFloatingPanes; }
         bind "Ctrl g" { SwitchToMode "locked"; }
         bind "Alt h" { MoveFocusOrTab "left"; }
@@ -262,6 +268,7 @@ plugins {
     about location="zellij:about"
     compact-bar location="zellij:compact-bar"
     configuration location="zellij:configuration"
+    file-finder location="zellij:file-finder"
     filepicker location="zellij:strider" {
         cwd "/"
     }

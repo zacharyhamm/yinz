@@ -190,6 +190,15 @@ keybinds {
         bind "Ctrl q" { Quit; }
         bind "Alt f" { ToggleFloatingPanes; }
         bind "Alt n" { NewPane; }
+        // Fuzzy-find a file in the project of the focused pane. Needs `fzf` on PATH.
+        // The picker opens in a floating pane; the file then opens in that same pane,
+        // which closes when the editor or viewer quits.
+        bind "Alt e" {
+            LaunchOrFocusPlugin "file-finder" {
+                floating true
+                move_to_focused_tab true
+            }
+        }
         bind "Alt i" { MoveTab "Left"; }
         bind "Alt o" { MoveTab "Right"; }
         bind "Alt h" "Alt Left" { MoveFocusOrTab "Left"; }
@@ -246,6 +255,23 @@ plugins {
     configuration location="zellij:configuration"
     plugin-manager location="zellij:plugin-manager"
     about location="zellij:about"
+    // Fuzzy file finder for the project of the focused pane, bound to Alt e above.
+    // Requires `fzf` on PATH.
+    //
+    // Files open in the editor Zellij already uses elsewhere (scrollback_editor, then
+    // $EDITOR, $VISUAL, vi). Add `open_<extension>` entries to route particular types
+    // somewhere else instead; `{}` stands for the file path, and is appended if you
+    // leave it out. `open_default` catches everything unmatched.
+    //
+    //     open_md  "glow -p"
+    //     open_png "chafa"
+    //     open_pdf "zathura {}"
+    //
+    // Other keys: `file_command` replaces the file listing (default: git-tracked and
+    // untracked-not-ignored files from the git root, or `find` outside a checkout),
+    // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
+    // `file_command` and `fzf_args` are spliced into a shell script as written.
+    file-finder location="zellij:file-finder"
     hocus location="zellij:hocus" {
         shared true
     }
