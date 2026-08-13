@@ -645,8 +645,102 @@ impl State {
         ))
     }
 
-    /// The deferred half of the Slack tools. The context map round-tripped
-    /// through the host, so it names the call this answers.
+    /// The message for a file tool whose binary could not be executed, or `None`
+    /// when this is any other kind of result.
+    ///
+    /// Same shape as `slack_exec_hint` and for the same reason: the model never
+    /// sees the argv, so "No such file or directory" names nothing it can act
+    /// on. Unlike dobbs there is no setting to point at — `rg` and `sed` are
+    /// looked up on PATH — so the only useful thing to say is which one is
+    /// missing and that hunting for it is not on the table.
+    fn file_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
+        let head = self.pending.front()?;
+        if !tools::FILE_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
+            return None;
+        }
+        if !String::from_utf8_lossy(stderr).contains("os error 2") {
+            return None;
+        }
+        let binary = if head.name == "read_file" {
+            "sed"
+        } else {
+            "rg"
+        };
+        Some(format!(
+            "{binary} could not be run: it is not installed or not on PATH.\n\n\
+             Tell the user to install it — ripgrep provides rg. You have no other way to \
+             reach these files, so do not try other commands, and do not ask a pane to run \
+             one on your behalf."
+        ))
+    }
+
+    /// What a file tool's command becomes for the model.
+    ///
+    /// `rg` exits 1 when it ran perfectly well and simply matched nothing, which
+    /// as a bare "exit code: 1" reads as a broken tool and invites the model to
+    /// retry it. Say what actually happened instead.
+    ///
+    /// The listing is cut to the call's line cap before `MAX_TOOL_OUTPUT` gets
+    /// near it, so a search of a large repository comes back as a usable head of
+    /// the matches with a count, rather than 40 000 bytes ending mid-line.
+    fn file_tool_result(
+        head: &ToolCall,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+    ) -> String {
+        let stdout = String::from_utf8_lossy(stdout);
+        let stdout = stdout.trim_end_matches('\n');
+        let stderr = String::from_utf8_lossy(stderr);
+        let stderr = stderr.trim();
+
+        if exit_code == Some(1) && stdout.is_empty() && stderr.is_empty() {
+            return "no matches".to_owned();
+        }
+        if exit_code != Some(0) && exit_code != Some(1) {
+            let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
+            if !stderr.is_empty() {
+                result.push_str(&format!(
+                    "\n\n{}",
+                    log::truncate_str(stderr, MAX_TOOL_OUTPUT)
+                ));
+            }
+            return result;
+        }
+        if stdout.is_empty() {
+            // `sed` on an empty range, or a start_line past the end of the file.
+            return "no lines".to_owned();
+        }
+
+        let cap = tools::Args::parse(&head.arguments)
+            .ok()
+            .and_then(|args| tools::file_line_cap(&head.name, &args));
+        let total = stdout.lines().count();
+        let mut result = match cap {
+            Some(cap) if total > cap => {
+                let kept: Vec<&str> = stdout.lines().take(cap).collect();
+                format!(
+                    "{}\n\n… {} of {total} lines shown; narrow the search or raise max_results.",
+                    kept.join("\n"),
+                    cap
+                )
+            },
+            _ => stdout.to_owned(),
+        };
+        result = log::truncate_str(&result, MAX_TOOL_OUTPUT);
+        // rg writes per-file complaints here — an unreadable file, a bad glob —
+        // while still exiting 0 on what it did match. Worth passing on.
+        if !stderr.is_empty() {
+            result.push_str(&format!(
+                "\n\nstderr:\n{}",
+                log::truncate_str(stderr, MAX_TOOL_OUTPUT)
+            ));
+        }
+        result
+    }
+
+    /// The deferred half of the Slack and file tools. The context map
+    /// round-tripped through the host, so it names the call this answers.
     ///
     /// Each stream is capped at `MAX_TOOL_OUTPUT`: a tool result stays in the
     /// transcript, so it is re-sent and re-billed on every later turn of the
@@ -675,8 +769,14 @@ impl State {
         // (os error 2)", naming nothing. For a Slack tool the model never sees
         // the argv, so that message is undiagnosable from inside the
         // conversation: say which binary, and which setting names it.
-        let result = match self.slack_exec_hint(exit_code, stderr) {
+        let result = match self
+            .slack_exec_hint(exit_code, stderr)
+            .or_else(|| self.file_exec_hint(exit_code, stderr))
+        {
             Some(hint) => hint,
+            None if tools::FILE_TOOLS.contains(&head.name.as_str()) => {
+                Self::file_tool_result(head, exit_code, stdout, stderr)
+            },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
                 for (label, bytes) in [("stdout", stdout), ("stderr", stderr)] {
