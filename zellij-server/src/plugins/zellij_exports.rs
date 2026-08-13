@@ -493,6 +493,14 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         placement,
                     } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
                     PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
+                    PluginCommand::WarpTabToSession {
+                        tab_index,
+                        to_session,
+                    } => warp_tab_to_session(env, tab_index, to_session),
+                    PluginCommand::WarpTabFromSession {
+                        tab_index,
+                        from_session,
+                    } => warp_tab_from_session(env, tab_index, from_session),
                     PluginCommand::AdoptOrphanedPane { host_id, placement } => {
                         adopt_orphaned_pane(env, host_id, placement)
                     },
@@ -3647,6 +3655,30 @@ fn warp_pane_from_session(
     write_warp_response(env, result);
 }
 
+fn warp_tab_to_session(env: &PluginEnv, tab_index: usize, to_session: String) {
+    let result = crate::warp::warp_tab_to_session(
+        &env.senders,
+        env.client_id,
+        // Explicit for the same reason the pane version is: a plugin acts on a
+        // snapshot, and `env.client_id` is whichever client's event is in hand.
+        Some(tab_index),
+        &crate::warp::current_session_name(),
+        &to_session,
+        crate::warp::PLUGIN_WARP_TIMEOUT,
+    );
+    write_warp_response(env, result);
+}
+
+fn warp_tab_from_session(env: &PluginEnv, tab_index: usize, from_session: String) {
+    let result = crate::warp::warp_tab_from_session(
+        &crate::warp::current_session_name(),
+        &from_session,
+        tab_index,
+        crate::warp::PLUGIN_WARP_TIMEOUT,
+    );
+    write_warp_response(env, result);
+}
+
 #[cfg(unix)]
 fn adopt_orphaned_pane(env: &PluginEnv, host_id: String, placement: WarpPlacement) {
     let result = crate::pty_host::cli::adopt_payload(&host_id)
@@ -5972,6 +6004,8 @@ fn check_command_permission(
         | PluginCommand::SetSoftKeyboard(..)
         | PluginCommand::WarpPaneToSession { .. }
         | PluginCommand::WarpPaneFromSession { .. }
+        | PluginCommand::WarpTabToSession { .. }
+        | PluginCommand::WarpTabFromSession { .. }
         | PluginCommand::AdoptOrphanedPane { .. } => PermissionType::ChangeApplicationState,
         PluginCommand::UnblockCliPipeInput(..)
         | PluginCommand::BlockCliPipeInput(..)
