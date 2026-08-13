@@ -7,7 +7,7 @@
 
 mod poll;
 
-use hocus_proto::panes::terminal_panes;
+use hocus_proto::panes::{focused_pane, terminal_panes};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +35,9 @@ struct State {
     panes: Option<Vec<agents::AgentPane>>,
     manifest: PaneManifest,
     tabs: Vec<TabInfo>,
+    /// The terminal pane the user is looking at. Passed on rather than acted on:
+    /// hocus is a global pane and hears no `PaneUpdate` for itself.
+    focused: Option<u32>,
     commands: BTreeMap<u32, String>,
     cwds: BTreeMap<u32, String>,
     activity: agents::Activity,
@@ -194,9 +197,10 @@ impl State {
     }
 
     fn bootstrap(&mut self) {
-        let Some(panes) = poll::gather() else {
+        let Some((panes, focused)) = poll::gather() else {
             return;
         };
+        self.focused = focused;
         for pane in &panes {
             if let Some(command) = &pane.command {
                 self.commands.insert(pane.pane_id, command.clone());
@@ -235,6 +239,7 @@ impl State {
     }
 
     fn rebuild_panes(&mut self) {
+        self.focused = focused_pane(&self.manifest, &self.tabs);
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
         for pane in &mut panes {
             if let Some(command) = self.commands.get(&pane.pane_id) {
@@ -503,6 +508,7 @@ impl State {
             activity: self.activity.clone(),
             manual_kinds: self.manual_kinds.clone(),
             repositories: self.repositories.clone(),
+            focused: self.focused,
         };
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
