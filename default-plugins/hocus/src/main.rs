@@ -16,7 +16,7 @@ mod worker;
 pub use message::{
     Job, Message, Picker, PickerKind, PickerRow, Role, RowKind, Status, StreamState,
 };
-use worker::{post_log, post_prompt_history, post_save};
+use worker::post_log;
 
 use hocus_proto::store::{self, Backend};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
@@ -396,7 +396,6 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
-        self.input.set_history(history::load_prompt_history());
         self.open_store();
         subscribe(&[
             EventType::Key,
@@ -580,25 +579,19 @@ impl State {
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::BeforeClose => {
                 self.cancel_in_flight();
-                if let Some(json) = history::prompt_history_json(self.input.history()) {
-                    history::write_prompt_history(json.as_bytes());
-                }
-                // No projects or todos here any more: hocus-store owns those
-                // files and writes them as each change lands, so there is
-                // nothing of ours left unsaved to flush.
-                // The worker gets no flush on exit; write the transcript here
-                // or lose the last exchange. Background chats have the same one
-                // chance, and their partial replies are worth no less.
+                // Nothing left to flush but the transcripts. Projects and todos
+                // are written as each change lands, and so is every prompt.
+                //
+                // This is the last chance: write the transcript here or lose the
+                // last exchange. Background chats have the same one chance, and
+                // their partial replies are worth no less.
                 self.flush_save();
-                for chat in std::mem::take(&mut self.parked) {
+                for chat in &self.parked {
                     if let Some(stream) = &chat.stream {
                         cancel_web_request(&stream.id);
                     }
-                    let mut id = chat.chat_id;
-                    if let Some((id, json)) = history::save(&mut id, &chat.messages) {
-                        history::write(id, json.as_bytes());
-                    }
                 }
+                self.save_parked();
                 false
             },
             _ => false,
