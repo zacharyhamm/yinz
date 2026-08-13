@@ -113,7 +113,7 @@ pub fn parse_selection(contents: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
 
     fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
