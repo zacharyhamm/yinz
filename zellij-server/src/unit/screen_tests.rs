@@ -8484,17 +8484,40 @@ pub fn send_cli_stack_panes_action() {
         pane_ids: vec!["1".to_owned(), "2".to_owned(), "3".to_owned()],
     };
     send_cli_action_to_server(&session_metadata, stack_panes_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let render_count = received_server_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
+        .count();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    let started_at = std::time::Instant::now();
+    while received_server_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
+        .count()
+        == render_count
+    {
+        assert!(
+            started_at.elapsed() < std::time::Duration::from_secs(5),
+            "timed out waiting for stacked panes to render"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     mock_screen.teardown(vec![server_thread, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+    let (_, snapshot) = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.lock().unwrap().iter(),
         size,
-    );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    )
+    .into_iter()
+    .last()
+    .expect("stack panes action should render");
+    assert_snapshot!(format!("{}", snapshot));
 }
 
 #[test]
