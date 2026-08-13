@@ -190,6 +190,18 @@ Config {
                 ),
                 initial_cwd: None,
             },
+            "file-finder": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "file-finder",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+            },
             "filepicker": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(

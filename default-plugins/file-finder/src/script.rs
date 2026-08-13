@@ -1,0 +1,238 @@
+//! The shell script that runs in the finder pane.
+//!
+//! The git-root walk happens here rather than in the plugin on purpose. Resolving the
+//! root plugin-side would mean an async `run_command` round-trip and a second
+//! state-machine stage before fzf could even start; doing it inside the same `sh -c`
+//! that runs fzf collapses that to zero extra events. The plugin recovers the root from
+//! the absolute path the script writes out.
+//!
+//! POSIX `sh` only — no bashisms, and no GNU-only `find -printf`, since macOS is a
+//! build target too.
+
+use std::collections::BTreeMap;
+
+/// Config key overriding the command that produces the candidate list.
+const FILE_COMMAND: &str = "file_command";
+
+/// Config key appending extra flags to the fzf invocation.
+const FZF_ARGS: &str = "fzf_args";
+
+/// Lists tracked files plus untracked-but-not-ignored ones, which is what a person
+/// means by "the files in this project".
+const GIT_LIST: &str = "git ls-files --cached --others --exclude-standard";
+
+/// Outside a git checkout there is no ignore file to honour, so list everything except
+/// the `.git` directory itself. `sed` strips the `./` that `find .` prefixes.
+const FIND_LIST: &str = r"find . -type f -not -path '*/.git/*' | sed 's|^\./||'";
+
+/// Build the script for the finder pane.
+///
+/// `out_path` receives the absolute path of the selection, or nothing at all if the
+/// user cancels. The plugin distinguishes the two by whether the file is non-empty.
+///
+/// Note that `file_command` and `fzf_args` are interpolated as raw shell fragments.
+/// They have to be — they are commands and flag lists by construction — so they are
+/// documented as such in the default config.
+pub fn build(config: &BTreeMap<String, String>, out_path: &str) -> String {
+    let fzf_args = config
+        .get(FZF_ARGS)
+        .map(|args| args.trim())
+        .filter(|args| !args.is_empty())
+        .unwrap_or("");
+
+    // A configured file_command replaces both branches: the user has told us how to
+    // list files, so the git/non-git distinction stops being ours to make. The root
+    // still resolves to the git toplevel where there is one, so relative paths from
+    // their command land in the right place.
+    let list_body = match config
+        .get(FILE_COMMAND)
+        .map(|cmd| cmd.trim())
+        .filter(|cmd| !cmd.is_empty())
+    {
+        Some(custom) => format!(
+            "\
+if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -n \"$root\" ]; then
+  cd \"$root\" || exit 1
+else
+  root=$PWD
+fi
+list() {{ {custom}; }}"
+        ),
+        None => format!(
+            "\
+if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -n \"$root\" ]; then
+  cd \"$root\" || exit 1
+  list() {{ {GIT_LIST}; }}
+else
+  root=$PWD
+  list() {{ {FIND_LIST}; }}
+fi"
+        ),
+    };
+
+    let fzf = if fzf_args.is_empty() {
+        "fzf --prompt 'file> '".to_string()
+    } else {
+        format!("fzf --prompt 'file> ' {fzf_args}")
+    };
+
+    let quoted_out = single_quote(out_path);
+
+    format!(
+        "\
+set -u
+{list_body}
+sel=$(list | {fzf}) || exit 0
+[ -n \"$sel\" ] || exit 0
+case \"$sel\" in
+  /*) printf '%s\\n' \"$sel\" ;;
+  *)  printf '%s/%s\\n' \"$root\" \"$sel\" ;;
+esac > {quoted_out}
+"
+    )
+}
+
+/// Wrap a value in single quotes for `sh`, escaping any single quotes it contains.
+fn single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Interpret what the script left in the selection file.
+///
+/// Returns `None` when the user cancelled — fzf exiting non-zero, an empty selection,
+/// or the file never being written at all.
+pub fn parse_selection(contents: &str) -> Option<&str> {
+    let selection = contents.lines().next().unwrap_or("").trim();
+    if selection.is_empty() {
+        None
+    } else {
+        Some(selection)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::generators::{self, Generator};
+
+    fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn default_script_has_both_a_git_and_a_find_branch() {
+        let script = build(&BTreeMap::new(), "/tmp/sel");
+        assert!(script.contains("git rev-parse --show-toplevel"));
+        assert!(script.contains(GIT_LIST));
+        assert!(script.contains("find . -type f"));
+    }
+
+    #[test]
+    fn default_script_writes_to_the_given_path() {
+        let script = build(&BTreeMap::new(), "/tmp/zellij-file-finder-7.sel");
+        assert!(script.contains("esac > '/tmp/zellij-file-finder-7.sel'"));
+    }
+
+    #[test]
+    fn relative_selections_are_joined_onto_the_root() {
+        let script = build(&BTreeMap::new(), "/tmp/sel");
+        assert!(script.contains(r#"printf '%s/%s\n' "$root" "$sel""#));
+    }
+
+    #[test]
+    fn file_command_replaces_the_listing_branches() {
+        let script = build(
+            &config(&[("file_command", "rg --files --hidden")]),
+            "/tmp/sel",
+        );
+        assert!(script.contains("list() { rg --files --hidden; }"));
+        assert!(!script.contains(GIT_LIST));
+        assert!(!script.contains("find . -type f"));
+        // The root walk survives, so relative paths still resolve correctly.
+        assert!(script.contains("git rev-parse --show-toplevel"));
+    }
+
+    #[test]
+    fn blank_file_command_falls_back_to_the_defaults() {
+        let script = build(&config(&[("file_command", "  ")]), "/tmp/sel");
+        assert!(script.contains(GIT_LIST));
+    }
+
+    #[test]
+    fn fzf_args_are_appended_to_the_invocation() {
+        let script = build(
+            &config(&[("fzf_args", "--preview 'head -50 {}'")]),
+            "/tmp/sel",
+        );
+        assert!(script.contains("fzf --prompt 'file> ' --preview 'head -50 {}'"));
+    }
+
+    #[test]
+    fn without_fzf_args_the_invocation_is_bare() {
+        let script = build(&BTreeMap::new(), "/tmp/sel");
+        assert!(script.contains("sel=$(list | fzf --prompt 'file> ') || exit 0"));
+    }
+
+    #[test]
+    fn out_path_with_a_quote_is_escaped() {
+        let script = build(&BTreeMap::new(), "/tmp/it's");
+        assert!(script.contains(r"esac > '/tmp/it'\''s'"));
+    }
+
+    #[test]
+    fn selection_is_trimmed_of_its_trailing_newline() {
+        assert_eq!(parse_selection("/p/src/main.rs\n"), Some("/p/src/main.rs"));
+    }
+
+    #[test]
+    fn only_the_first_line_of_the_selection_is_used() {
+        assert_eq!(parse_selection("/p/a.rs\n/p/b.rs\n"), Some("/p/a.rs"));
+    }
+
+    #[test]
+    fn empty_selection_reads_as_a_cancel() {
+        assert_eq!(parse_selection(""), None);
+        assert_eq!(parse_selection("\n"), None);
+        assert_eq!(parse_selection("   \n"), None);
+    }
+
+    /// Whatever the finder pane left behind — a crashed fzf, a partial write, a file
+    /// full of blank lines — the plugin turns a `Some` straight into a `PathBuf` and
+    /// opens it. So a `Some` must always be a usable one-line path: non-empty, already
+    /// trimmed, no embedded newline, and genuinely taken from the file's first line.
+    ///
+    /// The generator is deliberately unconstrained; garbage input is exactly the case
+    /// this guards.
+    #[hegel::test]
+    fn a_parsed_selection_is_always_a_usable_single_line(tc: hegel::TestCase) {
+        let contents = tc.draw(generators::text());
+
+        let Some(selection) = parse_selection(&contents) else {
+            return; // a cancel is always a valid answer
+        };
+
+        assert!(!selection.is_empty(), "a selection must not be empty");
+        assert_eq!(selection, selection.trim(), "a selection must be trimmed");
+        // Only `\n` is disqualifying. A bare `\r` is a legal character in a Unix
+        // filename and `str::lines` does not treat it as a break, so a selection may
+        // legitimately carry one; the CRLF case is already stripped by `lines`.
+        assert!(
+            !selection.contains('\n'),
+            "a selection must not span lines: {:?}",
+            selection
+        );
+        let first_line = contents
+            .lines()
+            .next()
+            .expect("a Some means there was a line to take it from");
+        assert!(
+            first_line.contains(selection),
+            "{:?} did not come from the first line {:?}",
+            selection,
+            first_line
+        );
+    }
+}

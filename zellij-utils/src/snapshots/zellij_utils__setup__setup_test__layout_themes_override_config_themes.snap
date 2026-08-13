@@ -118,6 +118,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -582,6 +612,36 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Tmux,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -1051,6 +1111,36 @@ Config {
                 TogglePaneEmbedOrFloating,
                 SwitchToMode {
                     input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -1738,6 +1828,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -2243,6 +2363,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -2661,6 +2811,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -3064,6 +3244,36 @@ Config {
                 key_modifiers: {},
             }: [
                 HalfPageScrollDown,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3510,6 +3720,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -3860,6 +4100,36 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4297,6 +4567,36 @@ Config {
                 key_modifiers: {},
             }: [
                 Detach,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4820,6 +5120,36 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'f',
                 ),
                 key_modifiers: {
@@ -5231,6 +5561,36 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Tmux,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -5717,6 +6077,36 @@ Config {
                 key_modifiers: {},
             }: [
                 Detach,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "file-finder",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7917,6 +8307,18 @@ Config {
                 location: Zellij(
                     PluginTag(
                         "configuration",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+            },
+            "file-finder": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "file-finder",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
