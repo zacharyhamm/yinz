@@ -6,6 +6,8 @@
 //! is a no-op on non-wasm32 targets, and most value-returning shims `.unwrap()`
 //! the protobuf decode, so calling one from a host-triple test panics.
 
+use hocus_proto::paths;
+use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::prelude::{FloatingPaneCoordinates, PaneId, WarpPlacement};
@@ -740,6 +742,47 @@ pub fn specs() -> Value {
                 "required": ["channel", "text"],
             }),
         ),
+        tool(
+            "find_files",
+            "Find files in the active project by name. Returns paths relative to nothing — they are absolute, and read_file and search_files take them as given. Respects the project's .gitignore, so build output and vendored code are not listed. Needs an active project: without one it fails, and project_list says which projects exist.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Part of a file's name, e.g. tool_loop, or a glob like *.rs or src/**/main.rs. A bare name matches anywhere in the path; a pattern containing * ? [ ] { } or / is used as written." },
+                    "path": { "type": "string", "description": "Subdirectory to search under, relative to the project root, e.g. src. Defaults to the whole project. A path outside the project is refused." },
+                    "max_results": { "type": "integer", "description": "Most paths to return. Defaults to 300." },
+                },
+                "required": ["pattern"],
+            }),
+        ),
+        tool(
+            "search_files",
+            "Search the contents of the active project's files and get back matching lines with their file and line number. The query is a regular expression. Respects .gitignore and skips binary files. Use this to find where something is defined or used, then read_file around the line it points at. Needs an active project: without one it fails, and project_list says which projects exist.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Regular expression to search for, e.g. fn resolve_in_root or impl .* for State." },
+                    "path": { "type": "string", "description": "Subdirectory to search under, relative to the project root. Defaults to the whole project. A path outside the project is refused." },
+                    "glob": { "type": "string", "description": "Only search files matching this glob, e.g. *.rs. Used as written." },
+                    "case_insensitive": { "type": "boolean", "description": "Match without regard to case. Defaults to false." },
+                    "max_results": { "type": "integer", "description": "Most matching lines to return. Defaults to 300." },
+                },
+                "required": ["query"],
+            }),
+        ),
+        tool(
+            "read_file",
+            "Read a file from the active project. Give start_line and line_count to read a window around something search_files found, rather than pulling a whole file you only need part of. Reads at most 300 lines unless line_count says otherwise. Needs an active project: without one it fails, and project_list says which projects exist.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file to read, relative to the project root, e.g. src/main.rs. An absolute path from find_files or search_files also works. A path outside the project is refused." },
+                    "start_line": { "type": "integer", "description": "First line to read, counting from 1. Defaults to 1." },
+                    "line_count": { "type": "integer", "description": "How many lines to read from start_line. Defaults to 300." },
+                },
+                "required": ["path"],
+            }),
+        ),
     ])
 }
 
@@ -993,6 +1036,14 @@ pub struct Args {
     pub from_session: Option<String>,
     pub placement: Option<String>,
     pub host_id: Option<String>,
+    // The file tools. `query` above is `search_files`'s pattern.
+    pub path: Option<String>,
+    pub pattern: Option<String>,
+    pub glob: Option<String>,
+    pub case_insensitive: bool,
+    pub max_results: Option<usize>,
+    pub start_line: Option<usize>,
+    pub line_count: Option<usize>,
 }
 
 impl Args {
@@ -1276,6 +1327,168 @@ pub fn slack_argv(name: &str, args: &Args) -> Result<Vec<String>, String> {
             Ok(argv)
         },
         other => Err(format!("no such tool: {other}")),
+    }
+}
+
+/// The tools that read the project's own files. Intercepted in `run_head` for
+/// two reasons: they need the active project, which `dispatch` cannot reach, and
+/// the plugin cannot read those files itself.
+///
+/// A wasm plugin sees only its WASI preopens — `/host`, `/data`, `/cache`,
+/// `/tmp` — and a project root is none of those, so `std::fs` cannot open a file
+/// in the user's checkout at all. These shell out the way the Slack tools do.
+pub const FILE_TOOLS: [&str; 3] = ["find_files", "search_files", "read_file"];
+
+/// How many lines of a listing or a search reach the model before the rest is
+/// dropped. `read_file` is exempt: its length is what the caller asked for.
+pub const FILE_TOOL_LINES: usize = 300;
+
+/// The largest `max_results` a call can ask for. A listing longer than this is
+/// truncated by `MAX_TOOL_OUTPUT` anyway, and every line of it is re-sent on
+/// every later turn of the conversation.
+const MAX_FILE_TOOL_LINES: usize = 2_000;
+
+/// How many lines of this call's output to keep. `None` for `read_file`.
+pub fn file_line_cap(name: &str, args: &Args) -> Option<usize> {
+    if name == "read_file" {
+        return None;
+    }
+    Some(
+        args.max_results
+            .unwrap_or(FILE_TOOL_LINES)
+            .clamp(1, MAX_FILE_TOOL_LINES),
+    )
+}
+
+/// Resolve a path the model supplied against the project root, refusing anything
+/// that lands outside it.
+///
+/// A relative path is taken from the root, which is what the schemas tell the
+/// model to send; an absolute one is checked as given. The check is lexical and
+/// runs before any command does: `normalize` refuses `..` outright, and
+/// `contains` compares whole components, so `/work/hocus-old` is not inside
+/// `/work/hocus`.
+///
+/// A symlink inside the project that points out of it is not caught. Resolving
+/// one needs the filesystem and the plugin has no access to it — `rg` does not
+/// follow symlinks unless asked, and what a link in the user's own checkout
+/// reaches is already reachable from the user's own shell.
+pub fn resolve_in_root(project: &Project, path: Option<&str>) -> Result<String, String> {
+    let path = path.map(str::trim).filter(|path| !path.is_empty());
+    let joined = match path {
+        None => project.root.clone(),
+        Some(path) if std::path::Path::new(path).is_absolute() => path.to_owned(),
+        Some(path) => format!("{}/{path}", project.root),
+    };
+    // The root is absolute and `..`-free by construction, so the only way this
+    // fails is the model sending `..` — say that rather than repeating the rule.
+    let resolved =
+        paths::normalize(&joined).map_err(|_| "path must not contain a .. component".to_owned())?;
+    if !projects::contains(project, &resolved) {
+        return Err(format!("path must be inside project {}", project.name));
+    }
+    Ok(resolved)
+}
+
+/// The argv a file call becomes. `target` is the path `resolve_in_root` already
+/// checked; nothing else here comes from the model without landing in an
+/// argument of its own.
+///
+/// Zellij execs this directly, so there is no shell to quote for and a value
+/// that looks like a flag cannot become one: every path follows a `--`, and
+/// every pattern follows the option that consumes it.
+pub fn file_argv(name: &str, args: &Args, target: &str) -> Result<Vec<String>, String> {
+    match name {
+        "find_files" => {
+            let pattern = args
+                .pattern
+                .as_deref()
+                .map(str::trim)
+                .filter(|pattern| !pattern.is_empty())
+                .ok_or("pattern is required and must not be empty")?;
+            Ok(vec![
+                "rg".to_owned(),
+                "--files".to_owned(),
+                "--glob".to_owned(),
+                glob_for(pattern),
+                "--".to_owned(),
+                target.to_owned(),
+            ])
+        },
+        "search_files" => {
+            let query = args
+                .query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .ok_or("query is required and must not be empty")?;
+            let mut argv = vec![
+                "rg".to_owned(),
+                "--line-number".to_owned(),
+                "--with-filename".to_owned(),
+                "--color".to_owned(),
+                "never".to_owned(),
+            ];
+            if args.case_insensitive {
+                argv.push("--ignore-case".to_owned());
+            }
+            if let Some(glob) = args
+                .glob
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+            {
+                argv.push("--glob".to_owned());
+                argv.push(glob.to_owned());
+            }
+            // Separated from the path by `-e`, so a query starting with `-` is a
+            // pattern rather than an unknown option.
+            argv.push("-e".to_owned());
+            argv.push(query.to_owned());
+            argv.push("--".to_owned());
+            argv.push(target.to_owned());
+            Ok(argv)
+        },
+        "read_file" => {
+            if args
+                .path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Err("path is required and must not be empty".to_owned());
+            }
+            // `sed` rather than `cat` even for a whole file: an unbounded read of
+            // something enormous would be cut mid-line by MAX_TOOL_OUTPUT after
+            // the host had already read all of it.
+            let start = args.start_line.unwrap_or(1).max(1);
+            let end = match args.line_count {
+                Some(count) => start.saturating_add(count.max(1)).saturating_sub(1),
+                None => start.saturating_add(FILE_TOOL_LINES).saturating_sub(1),
+            };
+            Ok(vec![
+                "sed".to_owned(),
+                "-n".to_owned(),
+                format!("{start},{end}p"),
+                "--".to_owned(),
+                target.to_owned(),
+            ])
+        },
+        other => Err(format!("no such tool: {other}")),
+    }
+}
+
+/// A bare name is matched anywhere in the path, a glob is left as written.
+///
+/// `rg --glob main.rs` matches a file called exactly that at the root of the
+/// search and nothing else, so the obvious call finds nothing. Wrapping the
+/// names — and only the names — makes `find_files main.rs` mean what it reads as.
+fn glob_for(pattern: &str) -> String {
+    if pattern.contains(['*', '?', '[', ']', '{', '}', '/']) {
+        pattern.to_owned()
+    } else {
+        format!("*{pattern}*")
     }
 }
 
@@ -1998,6 +2211,11 @@ mod tests {
             "slack_search",
             "slack_read",
             "slack_backfill",
+            // Reading the project's own files changes nothing, and the root
+            // check is what keeps them the project's own.
+            "find_files",
+            "search_files",
+            "read_file",
         ] {
             assert!(!needs_confirmation(name), "{name} should not be confirmed");
         }
@@ -2005,6 +2223,178 @@ mod tests {
 
     fn argv(name: &str, arguments: &str) -> Result<Vec<String>, String> {
         slack_argv(name, &Args::parse(arguments).unwrap())
+    }
+
+    fn project() -> Project {
+        Project {
+            name: "hocus".to_owned(),
+            root: "/work/hocus".to_owned(),
+            remote: None,
+            worktree_status: None,
+            common_dir: None,
+            discovered: false,
+        }
+    }
+
+    fn file_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
+        let args = Args::parse(arguments).unwrap();
+        let target = resolve_in_root(&project(), args.path.as_deref())?;
+        file_argv(name, &args, &target)
+    }
+
+    #[test]
+    fn a_relative_path_is_taken_from_the_project_root() {
+        assert_eq!(
+            resolve_in_root(&project(), Some("src/main.rs")).unwrap(),
+            "/work/hocus/src/main.rs"
+        );
+        // The whole project when the model names no path at all.
+        assert_eq!(resolve_in_root(&project(), None).unwrap(), "/work/hocus");
+        assert_eq!(
+            resolve_in_root(&project(), Some("  ")).unwrap(),
+            "/work/hocus"
+        );
+    }
+
+    /// An absolute path is what `find_files` and `search_files` hand back, so
+    /// feeding one straight to `read_file` has to work.
+    #[test]
+    fn an_absolute_path_inside_the_root_is_kept() {
+        assert_eq!(
+            resolve_in_root(&project(), Some("/work/hocus/src/main.rs")).unwrap(),
+            "/work/hocus/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_project_is_refused() {
+        assert_eq!(
+            resolve_in_root(&project(), Some("../secrets")),
+            Err("path must not contain a .. component".to_owned())
+        );
+        // Rejected even though it lands back inside: resolving it needs the
+        // filesystem, and refusing is the answer that needs no filesystem.
+        assert!(resolve_in_root(&project(), Some("src/../src/main.rs")).is_err());
+    }
+
+    #[test]
+    fn an_absolute_path_outside_the_project_is_refused() {
+        assert_eq!(
+            resolve_in_root(&project(), Some("/etc/passwd")),
+            Err("path must be inside project hocus".to_owned())
+        );
+    }
+
+    /// The trap a plain string prefix falls into: `/work/hocus-evil` starts with
+    /// `/work/hocus` as text but is a different folder.
+    #[test]
+    fn a_sibling_whose_name_extends_the_root_is_outside_it() {
+        assert!(resolve_in_root(&project(), Some("/work/hocus-evil/x")).is_err());
+    }
+
+    #[test]
+    fn find_files_wraps_a_bare_name_and_leaves_a_glob_alone() {
+        assert_eq!(
+            file_argv_for("find_files", r#"{"pattern": "tool_loop"}"#).unwrap(),
+            [
+                "rg",
+                "--files",
+                "--glob",
+                "*tool_loop*",
+                "--",
+                "/work/hocus"
+            ]
+        );
+        assert_eq!(
+            file_argv_for("find_files", r#"{"pattern": "*.rs", "path": "src"}"#).unwrap(),
+            ["rg", "--files", "--glob", "*.rs", "--", "/work/hocus/src"]
+        );
+        // A pattern with a separator is a path shape the model meant literally.
+        assert_eq!(glob_for("src/**/main.rs"), "src/**/main.rs");
+    }
+
+    #[test]
+    fn search_files_passes_the_query_after_a_flag_of_its_own() {
+        assert_eq!(
+            file_argv_for("search_files", r#"{"query": "fn main"}"#).unwrap(),
+            [
+                "rg",
+                "--line-number",
+                "--with-filename",
+                "--color",
+                "never",
+                "-e",
+                "fn main",
+                "--",
+                "/work/hocus"
+            ]
+        );
+        // A query that looks like an option is still a pattern, because `-e`
+        // consumes the next argument whatever it says.
+        let argv = file_argv_for("search_files", r#"{"query": "--help"}"#).unwrap();
+        assert_eq!(argv[argv.len() - 3..], ["--help", "--", "/work/hocus"]);
+    }
+
+    #[test]
+    fn search_files_adds_only_the_options_it_was_given() {
+        let argv = file_argv_for(
+            "search_files",
+            r#"{"query": "x", "case_insensitive": true, "glob": "*.rs"}"#,
+        )
+        .unwrap();
+        assert!(argv.contains(&"--ignore-case".to_owned()));
+        assert_eq!(argv.iter().filter(|a| *a == "--glob").count(), 1);
+        assert!(!file_argv_for("search_files", r#"{"query": "x"}"#)
+            .unwrap()
+            .contains(&"--ignore-case".to_owned()));
+    }
+
+    #[test]
+    fn read_file_asks_for_the_window_it_was_given() {
+        assert_eq!(
+            file_argv_for(
+                "read_file",
+                r#"{"path": "src/main.rs", "start_line": 10, "line_count": 5}"#
+            )
+            .unwrap(),
+            ["sed", "-n", "10,14p", "--", "/work/hocus/src/main.rs"]
+        );
+    }
+
+    /// An unbounded read would be cut mid-line by MAX_TOOL_OUTPUT after the host
+    /// had already read the whole file, so the default window is a real one.
+    #[test]
+    fn read_file_bounds_a_request_that_names_no_window() {
+        assert_eq!(
+            file_argv_for("read_file", r#"{"path": "x"}"#).unwrap()[2],
+            format!("1,{FILE_TOOL_LINES}p")
+        );
+    }
+
+    #[test]
+    fn file_tools_reject_a_missing_required_argument() {
+        assert!(file_argv_for("find_files", "{}").is_err());
+        assert!(file_argv_for("search_files", r#"{"query": "  "}"#).is_err());
+        assert!(file_argv_for("read_file", "{}").is_err());
+    }
+
+    /// `read_file` returns what was asked for; a listing is capped so a search of
+    /// a large repository does not fill the transcript.
+    #[test]
+    fn only_listings_are_capped() {
+        let args = Args::parse(r#"{"max_results": 5}"#).unwrap();
+        assert_eq!(file_line_cap("read_file", &args), None);
+        assert_eq!(file_line_cap("search_files", &args), Some(5));
+        assert_eq!(
+            file_line_cap("find_files", &Args::default()),
+            Some(FILE_TOOL_LINES)
+        );
+        // Asking for everything still stops somewhere.
+        let huge = Args::parse(r#"{"max_results": 99999}"#).unwrap();
+        assert_eq!(
+            file_line_cap("find_files", &huge),
+            Some(MAX_FILE_TOOL_LINES)
+        );
     }
 
     #[test]
@@ -2120,7 +2510,7 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 46);
+        assert_eq!(names.len(), 49);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
         assert_eq!(confirmed, 11);
     }
