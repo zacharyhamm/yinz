@@ -129,12 +129,7 @@ pub(super) fn escape_like(value: &str) -> String {
 /// against; leaving these two out made them the one place a type mistake produced results instead
 /// of an error.
 pub(super) fn require_text_column(schema: &EntitySchema, attr: &str) -> Result<(), DataError> {
-    let kind = match schema.column_kind(attr) {
-        Some(kind) => kind,
-        // A store column: `uid` is the only text one.
-        None if attr == "uid" => AttrKind::Text,
-        None => AttrKind::Int,
-    };
+    let kind = schema.any_column_kind(attr);
     if matches!(kind, AttrKind::Text | AttrKind::Json) {
         return Ok(());
     }
@@ -153,33 +148,22 @@ pub(super) fn check_value_kind(
     attr: &str,
     value: &DataValue,
 ) -> Result<(), DataError> {
-    let Some(kind) = schema.column_kind(attr) else {
-        // One of the store's own columns: `id`, `created_at` and `updated_at` are integers, `uid`
-        // is text.
-        let expected = if attr == "uid" {
-            AttrKind::Text
-        } else {
-            AttrKind::Int
-        };
-        return if value.fits(expected) {
-            Ok(())
-        } else {
-            Err(DataError::InvalidQuery(format!(
-                "`{}` is {:?} but it is compared against {}",
-                attr,
-                expected,
-                value.kind_name()
-            )))
-        };
-    };
+    let kind = schema.any_column_kind(attr);
     if value.fits(kind) {
-        Ok(())
-    } else {
-        Err(DataError::InvalidQuery(format!(
-            "attribute `{}` is {:?} but it is compared against {}",
-            attr,
-            kind,
-            value.kind_name()
-        )))
+        return Ok(());
     }
+    // A declared attribute is named as one; the store's own columns are not, since a plugin did
+    // not declare them and would not recognise the word.
+    let noun = if schema.column_kind(attr).is_some() {
+        "attribute "
+    } else {
+        ""
+    };
+    Err(DataError::InvalidQuery(format!(
+        "{}`{}` is {:?} but it is compared against {}",
+        noun,
+        attr,
+        kind,
+        value.kind_name()
+    )))
 }

@@ -166,19 +166,26 @@ pub(super) fn build_order(
 /// Punctuation and unbalanced quotes are FTS5 syntax errors, and are also exactly what gets pasted
 /// in from a log line — the same reason [`crate::session_recording`] does this. On a second failure
 /// the *first* error is returned, since that is the one describing what the plugin actually asked.
+pub(super) fn with_search_fallback<T>(
+    request: &FetchRequest,
+    mut run: impl FnMut(Option<&str>) -> Result<T, DataError>,
+) -> Result<T, DataError> {
+    let first = run(request.search.as_deref());
+    let (Err(first_error), Some(search)) = (&first, &request.search) else {
+        return first;
+    };
+    match run(Some(&fts_phrase(search))) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(first_error.clone()),
+    }
+}
+
 pub(super) fn run_fetch_with_search_fallback(
     conn: &Connection,
     schema: &EntitySchema,
     request: &FetchRequest,
 ) -> Result<DataRows, DataError> {
-    let first = run_fetch(conn, schema, request, request.search.as_deref());
-    let (Err(first_error), Some(search)) = (&first, &request.search) else {
-        return first;
-    };
-    match run_fetch(conn, schema, request, Some(&fts_phrase(search))) {
-        Ok(rows) => Ok(rows),
-        Err(_) => Err(first_error.clone()),
-    }
+    with_search_fallback(request, |search| run_fetch(conn, schema, request, search))
 }
 
 pub(super) fn run_fetch(

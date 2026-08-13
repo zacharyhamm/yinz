@@ -34,6 +34,24 @@ impl EntitySchema {
         format!("e_{}_u_{}", self.row_id, attr)
     }
 
+    /// The indexes on `created_at` and `updated_at`, which every entity has because every list,
+    /// sync and paginate query orders or filters on them.
+    pub(super) fn timestamp_indexes(&self) -> [String; 2] {
+        [
+            format!("e_{}_created", self.row_id),
+            format!("e_{}_updated", self.row_id),
+        ]
+    }
+
+    /// The three triggers that keep the full-text index exact, after insert, delete and update.
+    pub(super) fn fts_triggers(&self) -> [String; 3] {
+        [
+            format!("e_{}_fts_ai", self.row_id),
+            format!("e_{}_fts_ad", self.row_id),
+            format!("e_{}_fts_au", self.row_id),
+        ]
+    }
+
     pub(super) fn attr(&self, name: &str) -> Option<&AttrDef> {
         self.def.attr_named(name)
     }
@@ -41,6 +59,18 @@ impl EntitySchema {
     /// The kind of a column, or `None` for one of the store's own columns.
     pub(super) fn column_kind(&self, name: &str) -> Option<AttrKind> {
         self.attr(name).map(|a| a.kind)
+    }
+
+    /// The kind of any column, the store's own included: `uid` is the only text one, and `id`,
+    /// `created_at` and `updated_at` are integers.
+    pub(super) fn any_column_kind(&self, name: &str) -> AttrKind {
+        self.column_kind(name).unwrap_or({
+            if name == "uid" {
+                AttrKind::Text
+            } else {
+                AttrKind::Int
+            }
+        })
     }
 
     /// Reject a column name that is neither a declared attribute nor one of the store's own.

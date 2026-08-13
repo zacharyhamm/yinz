@@ -137,16 +137,14 @@ pub(super) fn create_entity(
     for attr in &def.attrs {
         columns.push(column_definition(attr)?);
     }
-    conn.execute_batch(&format!(
-        "CREATE TABLE \"{}\" ({});",
-        table,
-        columns.join(", ")
-    ))
-    .with_ctx(|| format!("failed to create the table for `{}`", def.name))?;
+    let table_q = quote_ident(&table);
+    conn.execute_batch(&format!("CREATE TABLE {table_q} ({});", columns.join(", ")))
+        .with_ctx(|| format!("failed to create the table for `{}`", def.name))?;
     // Always indexed, because every list, sync and paginate query orders or filters on them.
+    let [created_idx, updated_idx] = schema.timestamp_indexes().map(|i| quote_ident(&i));
     conn.execute_batch(&format!(
-        "CREATE INDEX \"{table}_created\" ON \"{table}\"(created_at);
-         CREATE INDEX \"{table}_updated\" ON \"{table}\"(updated_at);"
+        "CREATE INDEX {created_idx} ON {table_q}(created_at);
+         CREATE INDEX {updated_idx} ON {table_q}(updated_at);"
     ))
     .ctx("failed to create the timestamp indexes")?;
 
@@ -158,14 +156,25 @@ pub(super) fn create_entity(
     }
     let full_text_rebuilt = rebuild_full_text(conn, &schema)?;
     Ok(DataSchemaInfo {
+        indexes_created,
+        full_text_rebuilt,
+        ..schema_info(namespace, def, true)
+    })
+}
+
+/// An empty report for one entity, for `create_entity` and `migrate_entity` to fill in.
+///
+/// The two differ only in `created` and in which of the vectors they end up populating.
+pub(super) fn schema_info(namespace: &str, def: &EntityDef, created: bool) -> DataSchemaInfo {
+    DataSchemaInfo {
         namespace: namespace.to_owned(),
         entity: def.name.clone(),
         version: def.version,
-        created: true,
+        created,
         attrs_added: Vec::new(),
-        indexes_created,
-        full_text_rebuilt,
-    })
+        indexes_created: Vec::new(),
+        full_text_rebuilt: false,
+    }
 }
 
 pub(super) fn column_definition(attr: &AttrDef) -> Result<String, DataError> {

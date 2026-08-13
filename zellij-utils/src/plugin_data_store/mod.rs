@@ -52,10 +52,9 @@ use crate::plugin_data::{
     ApplyReport, DataError, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, FetchRequest,
     Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
 };
-use crate::session_recording::fts_phrase;
 
 use self::migrate::migrate_entity;
-use self::query::{build_count_sql, run_fetch_with_search_fallback};
+use self::query::{build_count_sql, run_fetch_with_search_fallback, with_search_fallback};
 use self::registry::{create_entity, load_entity, open_db, require_entity};
 use self::schema::EntitySchema;
 use self::sql::SqlContext;
@@ -233,25 +232,15 @@ impl PluginDataStore {
         request.validate()?;
         self.with_conn(|conn| {
             let schema = require_entity(conn, namespace, &request.entity)?;
-            let mut attempts = vec![request.search.clone()];
-            if let Some(search) = &request.search {
-                attempts.push(Some(fts_phrase(search)));
-            }
-            let mut first_error = None;
-            for search in attempts {
-                let (sql, params) = build_count_sql(&schema, request, search.as_deref())?;
-                let result = conn
+            with_search_fallback(request, |search| {
+                let (sql, params) = build_count_sql(&schema, request, search)?;
+                let count: i64 = conn
                     .query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
-                        row.get::<_, i64>(0)
+                        row.get(0)
                     })
-                    .ctx("failed to count rows");
-                match result {
-                    Ok(count) => return Ok(count.max(0) as u64),
-                    Err(e) => first_error = Some(first_error.unwrap_or(e)),
-                }
-            }
-            Err(first_error
-                .unwrap_or_else(|| DataError::Storage("failed to count rows".to_owned())))
+                    .ctx("failed to count rows")?;
+                Ok(count.max(0) as u64)
+            })
         })
     }
 
