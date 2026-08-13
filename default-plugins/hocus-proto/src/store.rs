@@ -238,6 +238,59 @@ mod host {
 #[cfg(target_family = "wasm")]
 pub use host::Host;
 
+/// `Host` on the host triple, where there is no host to call.
+///
+/// A plugin's `main.rs` names `Host` and is compiled natively to run its tests,
+/// so the type has to exist on both sides. Every method fails rather than
+/// quietly answering nothing: a test that reaches this has escaped [`Local`],
+/// and should say so loudly instead of passing against an empty store.
+#[cfg(not(target_family = "wasm"))]
+mod host_stub {
+    use super::*;
+
+    pub struct Host {
+        namespace: Option<String>,
+    }
+
+    impl Host {
+        pub fn shared() -> Self {
+            Host {
+                namespace: Some(SHARED.to_owned()),
+            }
+        }
+
+        pub fn private() -> Self {
+            Host { namespace: None }
+        }
+    }
+
+    fn unavailable<T>() -> Result<T, String> {
+        Err("the plugin data store is only reachable from inside zellij".to_owned())
+    }
+
+    impl Backend for Host {
+        fn define(&self, _def: &EntityDef) -> Result<DataSchemaInfo, String> {
+            let _ = &self.namespace;
+            unavailable()
+        }
+
+        fn fetch(&self, _request: &FetchRequest) -> Result<DataRows, String> {
+            unavailable()
+        }
+
+        fn count(&self, _request: &FetchRequest) -> Result<u64, String> {
+            unavailable()
+        }
+
+        fn apply(&self, _mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+            unavailable()
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use host_stub::Host;
+
 // -------------------------------------------------------- native: the engine
 
 #[cfg(not(target_family = "wasm"))]
