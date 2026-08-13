@@ -59,7 +59,7 @@ use self::registry::{create_entity, load_entity, open_db, require_entity};
 use self::schema::EntitySchema;
 use self::sql::SqlContext;
 use self::value::now_ms;
-use self::watch::{apply_watch_mode, digest_rows, Watch};
+use self::watch::{apply_watch_mode, WatchRegistry};
 use self::write::apply_one;
 
 pub use self::watch::WatchChange;
@@ -108,14 +108,7 @@ pub fn is_shared_namespace(namespace: &str) -> bool {
 pub struct PluginDataStore {
     db_path: PathBuf,
     connection: Mutex<Option<Connection>>,
-    /// Registered watches, and the id to hand the next one.
-    ///
-    /// Not persisted: a watch belongs to a running plugin instance, and a plugin that has been
-    /// reloaded has to register again anyway.
-    ///
-    /// Locked *inside* the connection lock wherever both are needed, so that the two are always
-    /// taken in the same order and cannot deadlock against each other.
-    watches: Mutex<(Vec<Watch>, u64)>,
+    watches: WatchRegistry,
 }
 
 impl std::fmt::Debug for PluginDataStore {
@@ -143,7 +136,7 @@ impl PluginDataStore {
         PluginDataStore {
             db_path: data_dir.join(DB_FILENAME),
             connection: Mutex::new(None),
-            watches: Mutex::new((Vec::new(), 1)),
+            watches: WatchRegistry::new(),
         }
     }
 
@@ -299,45 +292,19 @@ impl PluginDataStore {
         request.validate()?;
         let request = apply_watch_mode(request, mode);
         self.with_conn(|conn| {
-            let schema = require_entity(conn, namespace, &request.entity)?;
-            let rows = run_fetch_with_search_fallback(conn, &schema, &request)?;
-            let mut guard = self.lock_watches()?;
-            let (watches, next_id) = &mut *guard;
-            let watch_id = *next_id;
-            *next_id += 1;
-            watches.push(Watch {
-                watch_id,
-                plugin_id,
-                client_id,
-                namespace: namespace.to_owned(),
-                entity: request.entity.clone(),
-                request,
-                last_digest: digest_rows(&rows),
-            });
-            Ok(DataWatchHandle { watch_id, rows })
+            self.watches
+                .register(conn, namespace, plugin_id, client_id, request)
         })
     }
 
     /// Cancel a watch. A plugin may only cancel its own.
     pub fn unregister_watch(&self, plugin_id: u32, watch_id: u64) -> Result<(), DataError> {
-        let mut guard = self.lock_watches()?;
-        let (watches, _) = &mut *guard;
-        let before = watches.len();
-        watches.retain(|w| !(w.watch_id == watch_id && w.plugin_id == plugin_id));
-        if watches.len() == before {
-            return Err(DataError::InvalidQuery(format!(
-                "watch {} is not registered by this plugin",
-                watch_id
-            )));
-        }
-        Ok(())
+        self.watches.unregister(plugin_id, watch_id)
     }
 
     /// Drop every watch belonging to a plugin, for when it unloads.
     pub fn drop_watches_for_plugin(&self, plugin_id: u32) {
-        if let Ok(mut guard) = self.watches.lock() {
-            guard.0.retain(|w| w.plugin_id != plugin_id);
-        }
+        self.watches.drop_for_plugin(plugin_id)
     }
 
     /// Re-run every watch a write to these entities could have affected, and report the ones whose
@@ -352,56 +319,14 @@ impl PluginDataStore {
     ) -> Result<Vec<WatchChange>, DataError> {
         // Nothing to do before taking the connection lock at all in the common case of a write to an
         // entity nobody watches.
-        {
-            let guard = self.lock_watches()?;
-            let any = guard
-                .0
-                .iter()
-                .any(|w| w.namespace == namespace && touched_entities.contains(&w.entity));
-            if !any {
-                return Ok(Vec::new());
-            }
+        if !self.watches.any_watching(namespace, touched_entities)? {
+            return Ok(Vec::new());
         }
-        self.with_conn(|conn| {
-            let mut guard = self.lock_watches()?;
-            let (watches, _) = &mut *guard;
-            let mut changes = Vec::new();
-            for watch in watches.iter_mut() {
-                if watch.namespace != namespace || !touched_entities.contains(&watch.entity) {
-                    continue;
-                }
-                // A watch whose entity has since been dropped, or whose fetch has become invalid,
-                // is skipped rather than failing the write that triggered this.
-                let Ok(schema) = require_entity(conn, &watch.namespace, &watch.entity) else {
-                    continue;
-                };
-                let Ok(rows) = run_fetch_with_search_fallback(conn, &schema, &watch.request) else {
-                    continue;
-                };
-                let digest = digest_rows(&rows);
-                if digest == watch.last_digest {
-                    continue;
-                }
-                watch.last_digest = digest;
-                changes.push(WatchChange {
-                    watch_id: watch.watch_id,
-                    plugin_id: watch.plugin_id,
-                    client_id: watch.client_id,
-                    rows,
-                });
-            }
-            Ok(changes)
-        })
+        self.with_conn(|conn| self.watches.refresh(conn, namespace, touched_entities))
     }
 
     /// How many watches are registered. For tests and diagnostics.
     pub fn watch_count(&self) -> usize {
-        self.watches.lock().map(|guard| guard.0.len()).unwrap_or(0)
-    }
-
-    fn lock_watches(&self) -> Result<std::sync::MutexGuard<'_, (Vec<Watch>, u64)>, DataError> {
-        self.watches.lock().map_err(|_| {
-            DataError::Storage("the plugin data store watch lock is poisoned".to_owned())
-        })
+        self.watches.count()
     }
 }
