@@ -17,6 +17,7 @@ use crate::route::{route_action, wait_for_action_completion, NotificationEnd};
 use crate::ServerInstruction;
 use log::warn;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::{
     collections::{BTreeMap, HashSet},
     io::{Read, Write},
@@ -28,8 +29,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::oneshot;
+use url::Url;
 use wasmi::{Caller, Linker};
 use zellij_utils::consts::ipc_connect;
+use zellij_utils::data::{
+    validate_namespace, DataApplyResponse, DataCountResponse, DataDefineResponse, DataError,
+    DataFetchResponse, DataUnwatchResponse, DataWatchResponse, EntityDef, FetchRequest, Mutation,
+    WatchMode,
+};
 use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
@@ -55,6 +62,7 @@ use zellij_utils::data::{
 use zellij_utils::home::default_layout_dir;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
+use zellij_utils::plugin_data_store;
 use zellij_utils::sessions::generate_random_name as generate_random_name_impl;
 #[cfg(feature = "web_server_capability")]
 use zellij_utils::web_authentication_tokens::{
@@ -89,18 +97,20 @@ use zellij_utils::{
             dump_layout_response, dump_session_layout_response, hide_floating_panes_response,
             parse_layout_response, save_session_response, show_floating_panes_response,
             ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-            ProtobufBreakPanesToTabWithIndexResponse, ProtobufDeleteAllDeadSessionsResponse,
-            ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse,
-            ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-            ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
-            ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-            ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
-            ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-            ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-            ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
-            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
-            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufBreakPanesToTabWithIndexResponse, ProtobufDataApplyResponse,
+            ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
+            ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+            ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
+            ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+            ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse,
+            ProtobufFocusOrCreateTabResponse, ProtobufGenerateRandomNameResponse,
+            ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
+            ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+            ProtobufGetPaneRunningCommandResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+            ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse,
+            ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
+            ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse,
+            ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse,
@@ -486,6 +496,19 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::AdoptOrphanedPane { host_id, placement } => {
                         adopt_orphaned_pane(env, host_id, placement)
                     },
+                    PluginCommand::DataDefineEntity {
+                        namespace,
+                        def,
+                        allow_destructive,
+                    } => data_define_entity(env, namespace, def, allow_destructive),
+                    PluginCommand::DataApply {
+                        namespace,
+                        mutations,
+                    } => data_apply(env, namespace, mutations),
+                    PluginCommand::DataFetch { request } => data_fetch(env, request),
+                    PluginCommand::DataCount { request } => data_count(env, request),
+                    PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
+                    PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
                     PluginCommand::ScanHostFolder(folder_to_scan) => {
                         scan_host_folder(env, folder_to_scan)
                     },
@@ -3699,6 +3722,204 @@ fn write_orphaned_pane_list(env: &PluginEnv, response: ListOrphanedPanesResponse
     .non_fatal();
 }
 
+// ------------------------------------------------------------------ data store
+//
+// These are all "purely local work" handlers: they run on the calling plugin's pinned executor
+// thread, do their work against the shared SQLite store, and write the response inline. No other
+// zellij thread is involved, and nothing is delivered as an event — except the watch notifications,
+// which are queued through the plugin thread rather than dispatched here (see `notify_watchers`).
+
+/// Work out which namespace a command means, and whether this plugin may use it.
+///
+/// `None` is the plugin's own private namespace, which it cannot name and therefore cannot mistake
+/// for anyone else's. Anything else must be `shared:`-prefixed and needs `SharedPluginData`.
+///
+/// The shared check lives here rather than in `check_command_permission` because that sees only the
+/// command, not its arguments — the same reason event permissions are checked separately.
+fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<String, DataError> {
+    let plugin_url = Url::from(&env.plugin.location).to_string();
+    let Some(namespace) = namespace else {
+        return Ok(plugin_data_store::private_namespace(&plugin_url));
+    };
+    validate_namespace(Some(&namespace))?;
+    if !env.plugin.is_builtin() {
+        let granted = env
+            .permissions
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|permissions| permissions.contains(&PermissionType::SharedPluginData))
+            .unwrap_or(false);
+        if !granted {
+            return Err(DataError::PermissionDenied(format!(
+                "reading or writing the shared namespace `{}` needs the SharedPluginData \
+                 permission",
+                namespace
+            )));
+        }
+    }
+    Ok(namespace)
+}
+
+/// The namespace a fetch means, resolved from the request it is carried in.
+fn resolve_fetch_namespace(env: &PluginEnv, request: &FetchRequest) -> Result<String, DataError> {
+    resolve_data_namespace(env, request.namespace.clone())
+}
+
+fn data_define_entity(
+    env: &PluginEnv,
+    namespace: Option<String>,
+    def: EntityDef,
+    allow_destructive: bool,
+) {
+    let plugin_url = Url::from(&env.plugin.location).to_string();
+    let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
+        env.plugin_data_store
+            .define_entity(&namespace, &plugin_url, &def, allow_destructive)
+    }) {
+        Ok(info) => DataDefineResponse::Ok(info),
+        Err(e) => DataDefineResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataDefineResponse::from(response).encode_to_vec(),
+        "define response",
+    );
+}
+
+fn data_apply(env: &PluginEnv, namespace: Option<String>, mutations: Vec<Mutation>) {
+    let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
+        Ok((
+            namespace.clone(),
+            env.plugin_data_store.apply(&namespace, &mutations)?,
+        ))
+    }) {
+        Ok((namespace, outcome)) => {
+            notify_watchers(env, &namespace, &outcome.touched_entities);
+            DataApplyResponse::Ok(outcome.report)
+        },
+        Err(e) => DataApplyResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataApplyResponse::from(response).encode_to_vec(),
+        "apply response",
+    );
+}
+
+fn data_fetch(env: &PluginEnv, request: FetchRequest) {
+    let response = match resolve_fetch_namespace(env, &request)
+        .and_then(|namespace| env.plugin_data_store.fetch(&namespace, &request))
+    {
+        Ok(rows) => DataFetchResponse::Ok(rows),
+        Err(e) => DataFetchResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataFetchResponse::from(response).encode_to_vec(),
+        "fetch response",
+    );
+}
+
+fn data_count(env: &PluginEnv, request: FetchRequest) {
+    let response = match resolve_fetch_namespace(env, &request)
+        .and_then(|namespace| env.plugin_data_store.count(&namespace, &request))
+    {
+        Ok(count) => DataCountResponse::Ok(count),
+        Err(e) => DataCountResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataCountResponse::from(response).encode_to_vec(),
+        "count response",
+    );
+}
+
+fn data_watch(env: &PluginEnv, request: FetchRequest, mode: WatchMode) {
+    let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
+        env.plugin_data_store.register_watch(
+            &namespace,
+            env.plugin_id,
+            env.client_id,
+            request.clone(),
+            mode,
+        )
+    }) {
+        Ok(handle) => {
+            // Event delivery is gated on the plugin's subscriptions, so a plugin that watched but
+            // forgot to subscribe would silently never hear anything. Subscribing it here makes
+            // `data_watch` mean what it says.
+            env.subscriptions
+                .lock()
+                .unwrap()
+                .insert(EventType::PluginDataChanged);
+            DataWatchResponse::Ok(handle)
+        },
+        Err(e) => DataWatchResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataWatchResponse::from(response).encode_to_vec(),
+        "watch response",
+    );
+}
+
+fn data_unwatch(env: &PluginEnv, watch_id: u64) {
+    let response = match env
+        .plugin_data_store
+        .unregister_watch(env.plugin_id, watch_id)
+    {
+        Ok(()) => DataUnwatchResponse::Ok,
+        Err(e) => DataUnwatchResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataUnwatchResponse::from(response).encode_to_vec(),
+        "unwatch response",
+    );
+}
+
+/// Re-run every watch the write could have affected, and queue an event for each whose results
+/// actually changed.
+///
+/// The events are *queued* through the plugin thread rather than dispatched here. This handler runs
+/// on a pinned executor thread that holds the calling plugin's `running_plugin` lock, so calling
+/// back into the plugin directly would deadlock whenever a plugin watches something it also writes
+/// — which is the normal case, not an exotic one.
+fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet<String>) {
+    let changed = match env
+        .plugin_data_store
+        .refresh_watches(namespace, touched_entities)
+    {
+        Ok(changed) => changed,
+        Err(e) => {
+            log::error!("failed to refresh data store watches: {}", e);
+            return;
+        },
+    };
+    for change in changed {
+        let event = Event::PluginDataChanged {
+            watch_id: change.watch_id,
+            truncated: change.rows.truncated,
+            rows: change.rows,
+        };
+        env.senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                Some(change.plugin_id),
+                Some(change.client_id),
+                event,
+            )]))
+            .with_context(|| "failed to deliver a data store change".to_string())
+            .non_fatal();
+    }
+}
+
+fn write_data_response(env: &PluginEnv, encoded: Vec<u8>, what: &str) {
+    wasi_write_object(env, &encoded)
+        .with_context(|| format!("failed to write the data store {}", what))
+        .non_fatal();
+}
+
 fn delete_dead_session_and_reply(env: &PluginEnv, session_name: String) {
     let response =
         match std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name)) {
@@ -5764,6 +5985,15 @@ fn check_command_permission(
         | PluginCommand::GetTabInfo(..)
         | PluginCommand::GetSessionList
         | PluginCommand::ListOrphanedPanes => PermissionType::ReadApplicationState,
+        // One permission covers reading and writing the plugin's *own* namespace. Reaching a
+        // `shared:` namespace additionally needs `SharedPluginData`, which is checked in the
+        // handlers — this match sees only the command, not the namespace it names.
+        PluginCommand::DataDefineEntity { .. }
+        | PluginCommand::DataApply { .. }
+        | PluginCommand::DataFetch { .. }
+        | PluginCommand::DataCount { .. }
+        | PluginCommand::DataWatch { .. }
+        | PluginCommand::DataUnwatch { .. } => PermissionType::PluginData,
         PluginCommand::RebindKeys { .. } | PluginCommand::Reconfigure(..) => {
             PermissionType::Reconfigure
         },

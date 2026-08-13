@@ -20,4 +20,6 @@ enum PermissionType {
   RunActionsAsUser = 14;
   WriteToClipboard = 15;
   ReadSessionEnvironmentVariables = 16;
+  PluginData = 17;
+  SharedPluginData = 18;
 }

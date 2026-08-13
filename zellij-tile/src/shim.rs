@@ -18,6 +18,8 @@ use zellij_utils::plugin_api::plugin_command::{
     parse_layout_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
     ProtobufBreakPanesToTabWithIndexResponse, ProtobufCurrentSessionLastSavedTimeResponse,
+    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
     ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
     ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
     ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
@@ -1859,6 +1861,235 @@ pub fn list_orphaned_panes() -> Result<Vec<OrphanedPane>, String> {
         Ok(ListOrphanedPanesResponse::Ok(panes)) => Ok(panes),
         Ok(ListOrphanedPanesResponse::Err(error)) => Err(error),
         Err(e) => Err(format!("Malformed ListOrphanedPanes response: {}", e)),
+    }
+}
+
+// ------------------------------------------------------------------ data store
+
+/// Issue a data store command and decode its response.
+///
+/// Every one of these is a blocking round trip: the request goes out on stdout, the host handles it
+/// on this plugin's own executor thread, and the response is waiting on stdin by the time
+/// `host_run_plugin_command` returns.
+fn data_request<T, P>(plugin_command: PluginCommand, what: &str) -> Result<T, String>
+where
+    P: Message + Default,
+    T: TryFrom<P, Error = &'static str>,
+{
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
+        .try_into()
+        .map_err(|e| format!("Failed to encode the {} request: {}", what, e))?;
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    // A denied permission is a host-side log and no response at all, so this read comes back empty
+    // rather than hanging — which is why these return `Result` instead of unwrapping.
+    let response_bytes =
+        bytes_from_stdin().map_err(|e| format!("Failed to read the {} response: {}", what, e))?;
+    let protobuf_response = P::decode(response_bytes.as_slice())
+        .map_err(|e| format!("Malformed {} response: {}", what, e))?;
+    T::try_from(protobuf_response).map_err(|e| format!("Malformed {} response: {}", what, e))
+}
+
+/// Declare an entity in the data store, creating or migrating its storage to match.
+///
+/// Idempotent: re-declaring an identical definition does nothing. Adding an attribute, or marking
+/// one indexed or full-text, migrates in place and keeps the rows already stored. Removing an
+/// attribute or changing its type is refused unless `allow_destructive` is set *and* the
+/// definition's version is above the stored one.
+///
+/// Pass `None` for `namespace` to use the plugin's own private one, which is the usual case. A
+/// `shared:`-prefixed namespace is shared with other plugins and needs an extra permission.
+///
+/// ```rust,ignore
+/// data_define_entity(
+///     None,
+///     &EntityDef::new("agent", 1)
+///         .attr(AttrDef::text("project").indexed())
+///         .attr(AttrDef::text("summary").full_text())
+///         .attr(AttrDef::int("updated_at_ms").indexed()),
+///     false,
+/// )?;
+/// ```
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_define_entity(
+    namespace: Option<&str>,
+    def: &EntityDef,
+    allow_destructive: bool,
+) -> Result<DataSchemaInfo, String> {
+    // Checked here as well as in the host so that a typo is caught without a round trip, and with
+    // the same message either way.
+    def.validate().map_err(|e| e.to_string())?;
+    let response: DataDefineResponse = data_request::<_, ProtobufDataDefineResponse>(
+        PluginCommand::DataDefineEntity {
+            namespace: namespace.map(str::to_owned),
+            def: def.clone(),
+            allow_destructive,
+        },
+        "define entity",
+    )?;
+    match response {
+        DataDefineResponse::Ok(info) => Ok(info),
+        DataDefineResponse::Err(error) => Err(error),
+    }
+}
+
+/// Apply a batch of writes in one transaction, all or nothing.
+///
+/// ```rust,ignore
+/// data_apply(None, vec![
+///     Mutation::put("agent").uid("a1").set("project", "zellij").build(),
+///     Mutation::delete("agent", Pred::lt("updated_at_ms", cutoff)),
+/// ])?;
+/// ```
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_apply(
+    namespace: Option<&str>,
+    mutations: Vec<Mutation>,
+) -> Result<ApplyReport, String> {
+    for mutation in &mutations {
+        mutation.validate().map_err(|e| e.to_string())?;
+    }
+    let response: DataApplyResponse = data_request::<_, ProtobufDataApplyResponse>(
+        PluginCommand::DataApply {
+            namespace: namespace.map(str::to_owned),
+            mutations,
+        },
+        "apply",
+    )?;
+    match response {
+        DataApplyResponse::Ok(report) => Ok(report),
+        DataApplyResponse::Err(error) => Err(error),
+    }
+}
+
+/// Read rows from the data store.
+///
+/// The result is capped at [`MAX_FETCH_ROWS`] rows and a byte budget, whichever comes first; a
+/// truncated result says so and carries a cursor to page with.
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_fetch(request: &FetchRequest) -> Result<DataRows, String> {
+    request.validate().map_err(|e| e.to_string())?;
+    let response: DataFetchResponse = data_request::<_, ProtobufDataFetchResponse>(
+        PluginCommand::DataFetch {
+            request: request.clone(),
+        },
+        "fetch",
+    )?;
+    match response {
+        DataFetchResponse::Ok(rows) => Ok(rows),
+        DataFetchResponse::Err(error) => Err(error),
+    }
+}
+
+/// Count the rows a fetch would match, ignoring its limit, offset and cursor.
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_count(request: &FetchRequest) -> Result<u64, String> {
+    request.validate().map_err(|e| e.to_string())?;
+    let response: DataCountResponse = data_request::<_, ProtobufDataCountResponse>(
+        PluginCommand::DataCount {
+            request: request.clone(),
+        },
+        "count",
+    )?;
+    match response {
+        DataCountResponse::Ok(count) => Ok(count),
+        DataCountResponse::Err(error) => Err(error),
+    }
+}
+
+/// Register a standing fetch, and be sent an [`Event::PluginDataChanged`] whenever its results
+/// change.
+///
+/// The rows as they are now come back with the handle, so there is no gap between fetching and
+/// watching in which a change could be missed. Subscribing to `EventType::PluginDataChanged` is
+/// done for you.
+///
+/// Changes are reported only when the result set actually differs, so writing the same values again
+/// is silent.
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_watch(request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHandle, String> {
+    request.validate().map_err(|e| e.to_string())?;
+    let response: DataWatchResponse = data_request::<_, ProtobufDataWatchResponse>(
+        PluginCommand::DataWatch {
+            request: request.clone(),
+            mode,
+        },
+        "watch",
+    )?;
+    match response {
+        DataWatchResponse::Ok(handle) => Ok(handle),
+        DataWatchResponse::Err(error) => Err(error),
+    }
+}
+
+/// Cancel a watch registered with [`data_watch`].
+///
+/// Watches are dropped automatically when the plugin unloads, so this is only needed for a plugin
+/// that stops caring while it is still running.
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`
+pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
+    let response: DataUnwatchResponse = data_request::<_, ProtobufDataUnwatchResponse>(
+        PluginCommand::DataUnwatch { watch_id },
+        "unwatch",
+    )?;
+    match response {
+        DataUnwatchResponse::Ok => Ok(()),
+        DataUnwatchResponse::Err(error) => Err(error),
+    }
+}
+
+/// Terminal operations on a [`FetchRequest`], so that a query reads as one expression.
+///
+/// An extension trait rather than inherent methods because `FetchRequest` is defined in
+/// `zellij-utils`, which cannot reach the host-call shims here.
+///
+/// ```rust,ignore
+/// let rows = FetchRequest::entity("agent")
+///     .filter(Pred::eq("project", "zellij"))
+///     .search("rebase conflict")
+///     .sort_by("updated_at_ms", SortDir::Desc)
+///     .limit(50)
+///     .fetch()?;
+/// ```
+pub trait FetchRequestExt {
+    /// Run this fetch. See [`data_fetch`].
+    fn fetch(&self) -> Result<DataRows, String>;
+    /// Count what this fetch would match. See [`data_count`].
+    fn count(&self) -> Result<u64, String>;
+    /// Watch this fetch. See [`data_watch`].
+    fn watch(&self, mode: WatchMode) -> Result<DataWatchHandle, String>;
+}
+
+impl FetchRequestExt for FetchRequest {
+    fn fetch(&self) -> Result<DataRows, String> {
+        data_fetch(self)
+    }
+
+    fn count(&self) -> Result<u64, String> {
+        data_count(self)
+    }
+
+    fn watch(&self, mode: WatchMode) -> Result<DataWatchHandle, String> {
+        data_watch(self, mode)
     }
 }
 

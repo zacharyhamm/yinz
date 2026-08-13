@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -334,6 +334,164 @@ pub mod plugin_command {
         WarpPaneFromSessionPayload(super::WarpPaneFromSessionPayload),
         #[prost(message, tag="178")]
         AdoptOrphanedPanePayload(super::AdoptOrphanedPanePayload),
+        #[prost(message, tag="179")]
+        DataDefineEntityPayload(super::DataDefineEntityPayload),
+        #[prost(message, tag="180")]
+        DataApplyPayload(super::DataApplyPayload),
+        #[prost(message, tag="181")]
+        DataFetchPayload(super::DataFetchPayload),
+        #[prost(message, tag="182")]
+        DataCountPayload(super::DataFetchPayload),
+        #[prost(message, tag="183")]
+        DataWatchPayload(super::DataWatchPayload),
+        #[prost(message, tag="184")]
+        DataUnwatchPayload(super::DataUnwatchPayload),
+    }
+}
+// ---------------------------------------------------------------- data store
+//
+// The types these carry live in `plugin_data.proto`, because `event.proto` needs
+// `Rows` for the change notification and this file already imports `event.proto`,
+// so declaring them in either one would make the imports circular.
+
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataDefineEntityPayload {
+    #[prost(string, optional, tag="1")]
+    pub namespace: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="2")]
+    pub def: ::core::option::Option<super::plugin_data::EntityDef>,
+    #[prost(bool, tag="3")]
+    pub allow_destructive: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataApplyPayload {
+    #[prost(string, optional, tag="1")]
+    pub namespace: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag="2")]
+    pub mutations: ::prost::alloc::vec::Vec<super::plugin_data::Mutation>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataFetchPayload {
+    #[prost(message, optional, tag="1")]
+    pub request: ::core::option::Option<super::plugin_data::FetchRequest>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataWatchPayload {
+    #[prost(message, optional, tag="1")]
+    pub request: ::core::option::Option<super::plugin_data::FetchRequest>,
+    #[prost(enumeration="super::plugin_data::WatchMode", tag="2")]
+    pub mode: i32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataUnwatchPayload {
+    #[prost(uint64, tag="1")]
+    pub watch_id: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataDefineResponse {
+    #[prost(oneof="data_define_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_define_response::Result>,
+}
+/// Nested message and enum types in `DataDefineResponse`.
+pub mod data_define_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Info(super::super::plugin_data::SchemaInfo),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataApplyResponse {
+    #[prost(oneof="data_apply_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_apply_response::Result>,
+}
+/// Nested message and enum types in `DataApplyResponse`.
+pub mod data_apply_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Report(super::super::plugin_data::ApplyReport),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataFetchResponse {
+    #[prost(oneof="data_fetch_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_fetch_response::Result>,
+}
+/// Nested message and enum types in `DataFetchResponse`.
+pub mod data_fetch_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Rows(super::super::plugin_data::Rows),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataCountResponse {
+    #[prost(oneof="data_count_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_count_response::Result>,
+}
+/// Nested message and enum types in `DataCountResponse`.
+pub mod data_count_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(uint64, tag="1")]
+        Count(u64),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataWatchResponse {
+    #[prost(oneof="data_watch_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_watch_response::Result>,
+}
+/// Nested message and enum types in `DataWatchResponse`.
+pub mod data_watch_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Handle(super::super::plugin_data::WatchHandle),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataUnwatchResponse {
+    #[prost(oneof="data_unwatch_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_unwatch_response::Result>,
+}
+/// Nested message and enum types in `DataUnwatchResponse`.
+pub mod data_unwatch_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(bool, tag="1")]
+        Ok(bool),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -2426,6 +2584,12 @@ pub enum CommandName {
     WarpPaneFromSession = 235,
     ListOrphanedPanes = 236,
     AdoptOrphanedPane = 237,
+    DataDefineEntity = 238,
+    DataApply = 239,
+    DataFetch = 240,
+    DataCount = 241,
+    DataWatch = 242,
+    DataUnwatch = 243,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2645,6 +2809,12 @@ impl CommandName {
             CommandName::WarpPaneFromSession => "WarpPaneFromSession",
             CommandName::ListOrphanedPanes => "ListOrphanedPanes",
             CommandName::AdoptOrphanedPane => "AdoptOrphanedPane",
+            CommandName::DataDefineEntity => "DataDefineEntity",
+            CommandName::DataApply => "DataApply",
+            CommandName::DataFetch => "DataFetch",
+            CommandName::DataCount => "DataCount",
+            CommandName::DataWatch => "DataWatch",
+            CommandName::DataUnwatch => "DataUnwatch",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2861,6 +3031,12 @@ impl CommandName {
             "WarpPaneFromSession" => Some(Self::WarpPaneFromSession),
             "ListOrphanedPanes" => Some(Self::ListOrphanedPanes),
             "AdoptOrphanedPane" => Some(Self::AdoptOrphanedPane),
+            "DataDefineEntity" => Some(Self::DataDefineEntity),
+            "DataApply" => Some(Self::DataApply),
+            "DataFetch" => Some(Self::DataFetch),
+            "DataCount" => Some(Self::DataCount),
+            "DataWatch" => Some(Self::DataWatch),
+            "DataUnwatch" => Some(Self::DataUnwatch),
             _ => None,
         }
     }

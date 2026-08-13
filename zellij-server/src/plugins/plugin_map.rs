@@ -13,6 +13,7 @@ use wasmi_wasi::WasiCtx;
 use crate::{thread_bus::ThreadSenders, ClientId};
 
 use tokio::sync::mpsc::UnboundedSender;
+use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
     data::EventType,
     data::InputMode,
@@ -338,6 +339,8 @@ pub struct PluginEnv {
     pub plugin_own_data_dir: PathBuf,
     /// The zellij data dir (where eg. session recordings live)
     pub zellij_data_dir: PathBuf,
+    /// The data store shared by every plugin, partitioned by namespace.
+    pub plugin_data_store: Arc<PluginDataStore>,
     pub plugin_own_cache_dir: PathBuf,
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,

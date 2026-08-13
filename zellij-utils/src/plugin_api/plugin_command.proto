@@ -10,6 +10,7 @@ import "plugin_permission.proto";
 import "input_mode.proto";
 import "key.proto";
 import "pane_frame_style.proto";
+import "plugin_data.proto";
 
 package api.plugin_command;
 
@@ -226,6 +227,12 @@ enum CommandName {
   WarpPaneFromSession = 235;
   ListOrphanedPanes = 236;
   AdoptOrphanedPane = 237;
+  DataDefineEntity = 238;
+  DataApply = 239;
+  DataFetch = 240;
+  DataCount = 241;
+  DataWatch = 242;
+  DataUnwatch = 243;
 }
 
 message PluginCommand {
@@ -393,6 +400,84 @@ message PluginCommand {
     WarpPaneToSessionPayload warp_pane_to_session_payload = 176;
     WarpPaneFromSessionPayload warp_pane_from_session_payload = 177;
     AdoptOrphanedPanePayload adopt_orphaned_pane_payload = 178;
+    DataDefineEntityPayload data_define_entity_payload = 179;
+    DataApplyPayload data_apply_payload = 180;
+    DataFetchPayload data_fetch_payload = 181;
+    DataFetchPayload data_count_payload = 182;
+    DataWatchPayload data_watch_payload = 183;
+    DataUnwatchPayload data_unwatch_payload = 184;
+  }
+}
+
+// ---------------------------------------------------------------- data store
+//
+// The types these carry live in `plugin_data.proto`, because `event.proto` needs
+// `Rows` for the change notification and this file already imports `event.proto`,
+// so declaring them in either one would make the imports circular.
+
+message DataDefineEntityPayload {
+  optional string namespace = 1;
+  plugin_data.EntityDef def = 2;
+  bool allow_destructive = 3;
+}
+
+message DataApplyPayload {
+  optional string namespace = 1;
+  repeated plugin_data.Mutation mutations = 2;
+}
+
+message DataFetchPayload {
+  plugin_data.FetchRequest request = 1;
+}
+
+message DataWatchPayload {
+  plugin_data.FetchRequest request = 1;
+  plugin_data.WatchMode mode = 2;
+}
+
+message DataUnwatchPayload {
+  uint64 watch_id = 1;
+}
+
+message DataDefineResponse {
+  oneof result {
+    plugin_data.SchemaInfo info = 1;
+    string error = 2;
+  }
+}
+
+message DataApplyResponse {
+  oneof result {
+    plugin_data.ApplyReport report = 1;
+    string error = 2;
+  }
+}
+
+message DataFetchResponse {
+  oneof result {
+    plugin_data.Rows rows = 1;
+    string error = 2;
+  }
+}
+
+message DataCountResponse {
+  oneof result {
+    uint64 count = 1;
+    string error = 2;
+  }
+}
+
+message DataWatchResponse {
+  oneof result {
+    plugin_data.WatchHandle handle = 1;
+    string error = 2;
+  }
+}
+
+message DataUnwatchResponse {
+  oneof result {
+    bool ok = 1;
+    string error = 2;
   }
 }
 

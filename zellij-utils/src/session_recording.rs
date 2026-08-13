@@ -795,7 +795,11 @@ pub fn search_recordings(data_dir: &Path, query: &str, limit: usize) -> Result<V
     }
 }
 
-fn fts_phrase(query: &str) -> String {
+/// Wrap a query as a single literal FTS5 phrase, so that punctuation and unbalanced quotes match
+/// literally instead of being parsed as syntax.
+///
+/// Shared with [`crate::plugin_data_store`], which needs the same fallback for the same reason.
+pub(crate) fn fts_phrase(query: &str) -> String {
     let without_nul = query.replace('\0', "");
     format!("\"{}\"", without_nul.replace('"', "\"\""))
 }

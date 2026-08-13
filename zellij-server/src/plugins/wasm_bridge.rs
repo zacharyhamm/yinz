@@ -35,6 +35,7 @@ use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::plugin_api::event::ProtobufEvent;
+use zellij_utils::plugin_data_store::PluginDataStore;
 
 use prost::Message;
 
@@ -107,6 +108,7 @@ pub struct LoadingContext {
     pub keybinds: Keybinds,
     pub plugin_dir: PathBuf,
     pub zellij_data_dir: PathBuf,
+    pub plugin_data_store: Arc<PluginDataStore>,
     pub size: Size,
 }
 
@@ -158,6 +160,7 @@ impl LoadingContext {
             tab_index,
             plugin_dir: wasm_bridge.plugin_dir.clone(),
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
+            plugin_data_store: wasm_bridge.plugin_data_store.clone(),
             size,
         }
     }
@@ -174,6 +177,9 @@ pub struct WasmBridge {
     senders: ThreadSenders,
     plugin_dir: PathBuf,
     zellij_data_dir: PathBuf,
+    /// The data store every plugin shares. Built here so that there is one connection and one
+    /// watch registry for the whole server, and cloned into each plugin's environment.
+    plugin_data_store: Arc<PluginDataStore>,
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: PluginId,
@@ -241,11 +247,13 @@ impl WasmBridge {
             &plugin_cache,
             &engine,
         ));
+        let plugin_data_store = Arc::new(PluginDataStore::new(&zellij_data_dir));
         WasmBridge {
             connected_clients,
             senders,
             plugin_dir,
             zellij_data_dir,
+            plugin_data_store,
             plugin_map,
             plugin_executor,
             path_to_default_shell,
@@ -528,6 +536,10 @@ impl WasmBridge {
             let _ = self
                 .senders
                 .send_to_screen(ScreenInstruction::ClearAllPluginHighlights(plugin_id));
+
+            // Drop its data store watches. They are keyed on a plugin id the server is free to
+            // reuse, so leaving them would send a later plugin someone else's rows.
+            self.plugin_data_store.drop_watches_for_plugin(plugin_id);
 
             // Send worker exit messages
             for (_worker_name, worker_sender) in workers {
@@ -2144,6 +2156,7 @@ fn check_event_permission(
         | Event::ActivePaneScroll(..)
         | Event::InputReceived => PermissionType::ReadApplicationState,
         Event::WebServerStatus(..) => PermissionType::StartWebServer,
+        Event::PluginDataChanged { .. } => PermissionType::PluginData,
         Event::PaneRenderReport(..) => PermissionType::ReadPaneContents,
         Event::UserAction(..) => PermissionType::InterceptInput,
         _ => return (PermissionStatus::Granted, None),

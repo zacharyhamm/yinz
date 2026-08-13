@@ -791,6 +791,16 @@ impl ZellijPlugin for State {
                         hits.first(),
                     ));
                 },
+                BareKey::Char('d')
+                    if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
+                {
+                    // The whole data store round trip in one keybind: declare, write, read back,
+                    // full-text search, count, and watch.
+                    self.explicit_string_to_render = Some(match data_store_roundtrip() {
+                        Ok(summary) => summary,
+                        Err(e) => format!("Data store error: {}", e),
+                    });
+                },
                 BareKey::Char('a')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Alt]) =>
                 {
@@ -1026,4 +1036,67 @@ impl ZellijPlugin for State {
             );
         }
     }
+}
+
+/// Exercise every data store command over the plugin boundary and summarise the result.
+///
+/// Written as one function returning `Result` so that the first failure is what gets rendered,
+/// rather than a panic that would take the plugin down and tell the test nothing.
+fn data_store_roundtrip() -> Result<String, String> {
+    let def = EntityDef::new("fixture_agent", 1)
+        .attr(AttrDef::text("project").indexed())
+        .attr(AttrDef::text("summary").full_text())
+        .attr(AttrDef::int("updated_at_ms").indexed());
+    let info = data_define_entity(None, &def, false)?;
+
+    // A watch registered before the writes, so that it has something to report.
+    let watch = FetchRequest::entity("fixture_agent").watch(WatchMode::Rows)?;
+
+    data_apply(
+        None,
+        vec![
+            Mutation::put("fixture_agent")
+                .uid("fixture-a")
+                .set("project", "zellij")
+                .set("summary", "fixing a rebase conflict")
+                .set("updated_at_ms", 2)
+                .build(),
+            Mutation::put("fixture_agent")
+                .uid("fixture-b")
+                .set("project", "zellij")
+                .set("summary", "writing the changelog")
+                .set("updated_at_ms", 1)
+                .build(),
+        ],
+    )?;
+
+    let rows = FetchRequest::entity("fixture_agent")
+        .filter(Pred::eq("project", "zellij"))
+        .sort_by("updated_at_ms", SortDir::Desc)
+        .select(["summary"])
+        .fetch()?;
+    let found: Vec<String> = rows
+        .rows
+        .iter()
+        .filter_map(|row| match rows.get(row, "summary") {
+            Some(DataValue::Text(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let hits = FetchRequest::entity("fixture_agent")
+        .search("rebase")
+        .fetch()?;
+    let count = FetchRequest::entity("fixture_agent").count()?;
+
+    data_unwatch(watch.watch_id)?;
+
+    Ok(format!(
+        "Data store: created {}, rows {:?}, search hits {}, count {}, watch {}",
+        info.created,
+        found,
+        hits.len(),
+        count,
+        watch.watch_id > 0,
+    ))
 }

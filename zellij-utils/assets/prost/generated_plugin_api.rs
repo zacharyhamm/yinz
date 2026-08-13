@@ -30,6 +30,9 @@ pub mod api {
     pub mod plugin_command {
         include!("api.plugin_command.rs");
     }
+    pub mod plugin_data {
+        include!("api.plugin_data.rs");
+    }
     pub mod plugin_ids {
         include!("api.plugin_ids.rs");
     }

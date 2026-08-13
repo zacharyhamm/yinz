@@ -4,6 +4,7 @@ import "input_mode.proto";
 import "key.proto";
 import "style.proto";
 import "action.proto";
+import "plugin_data.proto";
 
 package api.event;
 
@@ -73,6 +74,8 @@ enum EventType {
     HintText = 48;
     ActivePaneScroll = 49;
     WebRequestStreamChunk = 50;
+    /// The results of a watch registered with `data_watch` changed
+    PluginDataChanged = 51;
 }
 
 message EventNameList {
@@ -125,11 +128,18 @@ message Event {
     HintTextPayload hint_text_payload = 42;
     ActivePaneScrollPayload active_pane_scroll_payload = 43;
     WebRequestStreamChunkPayload web_request_stream_chunk_payload = 44;
+    PluginDataChangedPayload plugin_data_changed_payload = 45;
   }
 }
 
 message HintTextPayload {
   map<uint32, StyledText> hint_text = 1;
+}
+
+message PluginDataChangedPayload {
+  uint64 watch_id = 1;
+  plugin_data.Rows rows = 2;
+  bool truncated = 3;
 }
 
 message ActivePaneScrollPayload {
