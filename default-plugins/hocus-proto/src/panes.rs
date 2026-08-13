@@ -56,6 +56,30 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
     panes
 }
 
+/// The terminal pane the user is looking at, if it is one.
+///
+/// `PaneInfo::is_focused` is "focused in its layer", so a manifest flags one pane per
+/// tab per layer — the answer is only the user's pane once the tab is the active one
+/// and the layer is the one on top. A plugin pane is not an answer at all: hocus
+/// itself is one, and focusing the sidebar must leave the last agent standing rather
+/// than name the sidebar.
+///
+/// A global pane is in no tab and so passes neither test; the host already works out
+/// its focus per client, so `is_focused` is taken at its word there.
+pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
+    let active = tabs.iter().find(|tab| tab.active);
+    let in_tabs = manifest
+        .panes
+        .iter()
+        .filter(|(position, _)| active.map(|tab| tab.position) == Some(**position))
+        .flat_map(|(_, panes)| panes.iter())
+        .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating));
+    in_tabs
+        .chain(manifest.global_panes.iter())
+        .find(|pane| pane.is_focused && !pane.is_plugin && !pane.is_suppressed)
+        .map(|pane| pane.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +108,84 @@ mod tests {
 
         assert_eq!(panes[0].cwd.as_deref(), Some("/work/hocus"));
         assert_eq!(panes[1].cwd, None);
+    }
+
+    fn tab(position: usize, active: bool, floating_visible: bool) -> TabInfo {
+        TabInfo {
+            position,
+            tab_id: position + 100,
+            active,
+            are_floating_panes_visible: floating_visible,
+            ..TabInfo::default()
+        }
+    }
+
+    fn focused(id: u32) -> PaneInfo {
+        PaneInfo {
+            id,
+            is_focused: true,
+            ..PaneInfo::default()
+        }
+    }
+
+    #[test]
+    fn the_focused_pane_is_the_one_in_the_active_tab() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(0, vec![focused(3)]);
+        manifest.panes.insert(1, vec![focused(4)]);
+
+        let tabs = [tab(0, false, false), tab(1, true, false)];
+
+        assert_eq!(focused_pane(&manifest, &tabs), Some(4));
+    }
+
+    #[test]
+    fn no_active_tab_means_no_focused_pane() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(0, vec![focused(3)]);
+
+        assert_eq!(focused_pane(&manifest, &[tab(0, false, false)]), None);
+    }
+
+    /// Both layers flag a focused pane. The visible one is the user's.
+    #[test]
+    fn the_visible_layer_decides_between_two_focused_panes() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![
+                focused(3),
+                PaneInfo {
+                    is_floating: true,
+                    ..focused(4)
+                },
+            ],
+        );
+
+        assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), Some(3));
+        assert_eq!(focused_pane(&manifest, &[tab(0, true, true)]), Some(4));
+    }
+
+    /// Focusing hocus itself must not answer "hocus".
+    #[test]
+    fn a_plugin_pane_is_never_the_focused_pane() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                is_plugin: true,
+                ..focused(3)
+            }],
+        );
+
+        assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), None);
+    }
+
+    #[test]
+    fn a_focused_global_pane_is_answered_without_a_tab() {
+        let mut manifest = PaneManifest::default();
+        manifest.global_panes = vec![focused(7)];
+
+        assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), Some(7));
     }
 }
