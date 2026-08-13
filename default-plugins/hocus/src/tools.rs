@@ -1497,7 +1497,73 @@ fn glob_for(pattern: &str) -> String {
 fn moved_panes_result(tab_id: Option<usize>) -> String {
     match tab_id {
         Some(_) => "moved; call list_session for the tab's current index".to_owned(),
-        None => "zellij did not move the panes".to_owned(),
+        None => "zellij did not move the panes; call list_session and check the pane ids and the \
+             destination tab"
+            .to_owned(),
+    }
+}
+
+/// What the session looks like, in the only two terms a move cares about.
+#[derive(Debug, Default, PartialEq)]
+pub struct SessionTabs {
+    /// `(position, tab_id)` for every tab, in display order.
+    pub tabs: Vec<(usize, usize)>,
+    /// Every pane in the session, tabs flattened.
+    pub panes: Vec<PaneId>,
+}
+
+fn describe_pane(pane: PaneId) -> String {
+    match pane {
+        PaneId::Terminal(id) => format!("pane {id}"),
+        PaneId::Plugin(id) => format!("plugin pane {id}"),
+    }
+}
+
+/// Refuse a move the session cannot satisfy, naming the argument that is wrong.
+///
+/// Zellij answers a bad tab or a stale pane id with a bare "did not move" (see
+/// `moved_panes_result`), which leaves the model to guess which of its arguments was
+/// the problem — and the likeliest guess, retrying with `tab_index` instead of
+/// `tab_id`, points at a different tab rather than the same one. The snapshot needed
+/// to answer properly is one we already have.
+///
+/// Note that `tab_index` is a position and shifts whenever a tab closes, while
+/// `tab_id` is stable; a session that has closed a tab has different values for the
+/// two, and each is only valid in its own space.
+pub fn check_move_to_tab(
+    destination: &MoveDestination,
+    panes: &[PaneId],
+    session: &SessionTabs,
+) -> Result<(), String> {
+    if let Some(missing) = panes.iter().find(|pane| !session.panes.contains(pane)) {
+        return Err(format!(
+            "{} is not in this session; call list_session for the current panes",
+            describe_pane(*missing)
+        ));
+    }
+    match destination {
+        MoveDestination::New(_) => Ok(()),
+        MoveDestination::ExistingId(id) => {
+            if session.tabs.iter().any(|(_, tab_id)| tab_id == id) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "no tab with tab_id {id} in this session; call list_session for the current \
+                     tab_ids"
+                ))
+            }
+        },
+        MoveDestination::Existing(index) => {
+            if session.tabs.iter().any(|(position, _)| position == index) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "no tab at tab_index {index}; this session has {} tabs; call list_session \
+                     (prefer tab_id, it does not shift when tabs close)",
+                    session.tabs.len()
+                ))
+            }
+        },
     }
 }
 
@@ -2075,18 +2141,57 @@ mod host {
         }
     }
 
+    /// The tabs and panes of the current session, for `check_move_to_tab`.
+    fn current_session_tabs() -> Result<SessionTabs, String> {
+        let snapshot =
+            get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
+        let session = snapshot
+            .live_sessions
+            .iter()
+            .find(|session| session.is_current_session)
+            .ok_or_else(|| "the current session is not in the session list".to_owned())?;
+        Ok(SessionTabs {
+            tabs: session
+                .tabs
+                .iter()
+                .map(|tab| (tab.position, tab.tab_id))
+                .collect(),
+            panes: session
+                .tabs
+                .iter()
+                // PaneManifest is keyed by tab *position*, not by TabInfo.tab_id.
+                .flat_map(|tab| session.panes.panes.get(&tab.position).into_iter().flatten())
+                .map(|pane| {
+                    if pane.is_plugin {
+                        PaneId::Plugin(pane.id)
+                    } else {
+                        PaneId::Terminal(pane.id)
+                    }
+                })
+                .collect(),
+        })
+    }
+
     fn move_panes_to_tab(args: &Args) -> String {
         let panes = match args.pane_ids(1) {
             Ok(panes) => panes,
             Err(error) => return error,
         };
-        let target = match args.move_destination() {
-            Ok(MoveDestination::Existing(index)) => {
-                break_panes_to_tab_with_index(&panes, index, false)
-            },
-            Ok(MoveDestination::ExistingId(id)) => break_panes_to_tab_with_id(&panes, id, false),
-            Ok(MoveDestination::New(name)) => break_panes_to_new_tab(&panes, name, false),
+        let destination = match args.move_destination() {
+            Ok(destination) => destination,
             Err(error) => return error,
+        };
+        // A snapshot we cannot read is not grounds to refuse — fall through and let the
+        // host be the judge.
+        if let Ok(session) = current_session_tabs() {
+            if let Err(error) = check_move_to_tab(&destination, &panes, &session) {
+                return error;
+            }
+        }
+        let target = match destination {
+            MoveDestination::Existing(index) => break_panes_to_tab_with_index(&panes, index, false),
+            MoveDestination::ExistingId(id) => break_panes_to_tab_with_id(&panes, id, false),
+            MoveDestination::New(name) => break_panes_to_new_tab(&panes, name, false),
         };
         moved_panes_result(target)
     }
@@ -3189,7 +3294,82 @@ mod tests {
             moved_panes_result(Some(47)),
             "moved; call list_session for the tab's current index"
         );
-        assert_eq!(moved_panes_result(None), "zellij did not move the panes");
+        assert!(
+            moved_panes_result(None).starts_with("zellij did not move the panes"),
+            "and a failure says so rather than claiming a move"
+        );
+    }
+
+    /// Two tabs in a session that has closed a tab: positions {0, 1}, ids {2, 3}. Every
+    /// id here is invalid as a position and vice versa, so a check that confuses the
+    /// two cannot pass by accident.
+    fn diverged_session() -> SessionTabs {
+        SessionTabs {
+            tabs: vec![(0, 2), (1, 3)],
+            panes: vec![PaneId::Terminal(2), PaneId::Terminal(4)],
+        }
+    }
+
+    #[test]
+    fn moving_panes_to_a_missing_tab_id_names_the_id() {
+        let error = check_move_to_tab(
+            &MoveDestination::ExistingId(9),
+            &[PaneId::Terminal(2)],
+            &diverged_session(),
+        )
+        .unwrap_err();
+        assert!(error.contains("tab_id 9"), "{error}");
+    }
+
+    #[test]
+    fn moving_panes_to_an_out_of_range_tab_index_names_the_index_and_the_count() {
+        let error = check_move_to_tab(
+            &MoveDestination::Existing(7),
+            &[PaneId::Terminal(2)],
+            &diverged_session(),
+        )
+        .unwrap_err();
+        assert!(error.contains("tab_index 7"), "{error}");
+        assert!(error.contains("2 tabs"), "{error}");
+    }
+
+    #[test]
+    fn a_tab_id_and_a_tab_index_are_checked_in_their_own_spaces() {
+        let session = diverged_session();
+        let panes = [PaneId::Terminal(2)];
+        // id 3 exists, and so does position 1 — they are the same tab, named two ways
+        assert!(check_move_to_tab(&MoveDestination::ExistingId(3), &panes, &session).is_ok());
+        assert!(check_move_to_tab(&MoveDestination::Existing(1), &panes, &session).is_ok());
+        // ...while position 3 and id 1 exist in neither space
+        assert!(check_move_to_tab(&MoveDestination::Existing(3), &panes, &session).is_err());
+        assert!(check_move_to_tab(&MoveDestination::ExistingId(1), &panes, &session).is_err());
+    }
+
+    #[test]
+    fn moving_a_pane_that_is_not_in_the_session_names_the_pane() {
+        let error = check_move_to_tab(
+            &MoveDestination::ExistingId(3),
+            &[PaneId::Terminal(2), PaneId::Terminal(99)],
+            &diverged_session(),
+        )
+        .unwrap_err();
+        assert!(error.contains("pane 99"), "{error}");
+    }
+
+    #[test]
+    fn moving_panes_to_a_new_tab_has_no_destination_to_check() {
+        assert!(check_move_to_tab(
+            &MoveDestination::New(None),
+            &[PaneId::Terminal(2)],
+            &SessionTabs::default()
+        )
+        .is_err());
+        assert!(check_move_to_tab(
+            &MoveDestination::New(None),
+            &[PaneId::Terminal(2)],
+            &diverged_session()
+        )
+        .is_ok());
     }
 
     #[test]
