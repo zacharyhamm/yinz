@@ -149,8 +149,7 @@ impl State {
         });
     }
 
-    /// Ctrl-r's answer: the agent picker. Opens over a streaming reply for the
-    /// same reason `/history` does — it drives the session, not the conversation.
+    /// Ctrl-r's answer: hand the keyboard to the permanent agent strip.
     ///
     /// The branches the list groups by are the only part of a snapshot that goes
     /// stale on its own — a checkout in an agent's folder changes one and no host
@@ -159,21 +158,11 @@ impl State {
     /// new one lands.
     pub(crate) fn open_agent_picker(&mut self) -> bool {
         self.autosave();
-        self.show_agents();
+        self.picker = None;
+        self.agents_focused = true;
+        self.refresh_agent_picker();
         Self::request_branch_refresh();
         true
-    }
-
-    /// The agent list from the latest event-fed daemon snapshot.
-    pub(crate) fn show_agents(&mut self) {
-        let (entries, ids) = self.agent_rows();
-        // The first row is a project header, which cannot be selected.
-        let selected = entries.iter().position(PickerRow::selectable).unwrap_or(0);
-        self.picker = Some(Picker {
-            entries,
-            selected,
-            kind: PickerKind::Agents(ids),
-        });
     }
 
     /// Rebuild an open agent list from the snapshot that just landed, staying on
@@ -184,13 +173,9 @@ impl State {
     /// rather than the row number, so a project appearing above it does not move
     /// what `Enter` would focus.
     pub(crate) fn refresh_agent_picker(&mut self) -> bool {
-        let was = match self
-            .picker
-            .as_ref()
-            .map(|picker| (&picker.kind, picker.selected))
-        {
-            Some((PickerKind::Agents(ids), selected)) => ids.get(selected).copied().flatten(),
-            _ => return false,
+        let was = match &self.agent_picker.kind {
+            PickerKind::Agents(ids) => ids.get(self.agent_picker.selected).copied().flatten(),
+            _ => None,
         };
         let (entries, ids) = self.agent_rows();
         let selected = was
@@ -203,8 +188,8 @@ impl State {
             selected,
             kind: PickerKind::Agents(ids),
         };
-        let changed = self.picker.as_ref() != Some(&picker);
-        self.picker = Some(picker);
+        let changed = self.agent_picker != picker;
+        self.agent_picker = picker;
         changed
     }
 
@@ -352,6 +337,29 @@ impl State {
                 picker.selected = step(&picker.entries, picker.selected, key.bare_key);
             },
             _ => return false,
+        }
+        true
+    }
+
+    /// Every key while the permanent agent strip has focus.
+    pub(crate) fn agent_key(&mut self, key: KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Esc => self.agents_focused = false,
+            BareKey::Enter => {
+                if let PickerKind::Agents(ids) = &self.agent_picker.kind {
+                    if let Some(id) = ids.get(self.agent_picker.selected).copied().flatten() {
+                        self.focus_agent(id);
+                    }
+                }
+            },
+            BareKey::Up | BareKey::Down => {
+                self.agent_picker.selected = step(
+                    &self.agent_picker.entries,
+                    self.agent_picker.selected,
+                    key.bare_key,
+                );
+            },
+            _ => {},
         }
         true
     }

@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-//! The one thing hocus cannot prove to itself: where the agent picker lands on
+//! The one thing hocus cannot prove to itself: where the agent strip lands on
 //! the screen.
 //!
 //! `strip_rows` and `picker_key` are unit-tested down to the row text, but they
@@ -68,7 +68,7 @@ fn submit(zellij: &TestSession, line: &str) {
 
 /// The whole chain, for the case that used to break it: pty records the folder
 /// a pane starts in → screen carries it on the manifest → the daemon probes it
-/// → the store makes a project out of it → the picker groups the agent under it.
+/// → the store makes a project out of it → the strip groups the agent under it.
 ///
 /// The agent never changes directory, which is exactly what used to leave it
 /// under "no project" for good: the initial folder was recorded silently and the
@@ -102,16 +102,22 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
         !grid_snapshot.contains("Allow? (y/n)")
     });
 
-    zellij.send_stdin(&keys::ctrl('r'));
-    zellij.wait_until("the agent picker is open", |grid_snapshot| {
-        grid_snapshot.contains("<Enter> focus")
-    });
-
     // The project is named for the folder the checkout is in, and the branch is
-    // the one it has out. Both take a Git probe to work out, so both arrive a
-    // moment after the picker does.
+    // the one it has out. Both arrive in the permanent strip without focusing it.
     zellij.wait_until("the agent is under its project", |grid_snapshot| {
         grid_snapshot.contains("hocus-project") && grid_snapshot.contains("trunk")
+    });
+
+    let unfocused = zellij.snapshot();
+    assert!(
+        !unfocused.text.contains(">   0  claude"),
+        "the strip has no row cursor before Ctrl-r:\n{}",
+        unfocused.text,
+    );
+
+    zellij.send_stdin(&keys::ctrl('r'));
+    zellij.wait_until("the agent strip is focused", |grid_snapshot| {
+        grid_snapshot.contains(">   0  claude")
     });
 
     let screen = zellij.snapshot();
@@ -123,7 +129,7 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     let title = row("hocus — ");
     assert_eq!(row("hocus-project"), title + 1, "the project header");
     assert_eq!(row("  trunk"), title + 2, "the branch header under it");
-    assert_eq!(row(">   0  claude  running"), title + 3);
+    assert_eq!(row(">   0  claude"), title + 3);
     assert!(
         !screen.text.contains("no project"),
         "nothing fell back to the header that names nothing:\n{}",
@@ -133,7 +139,7 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
 }
 
 #[test]
-fn the_agent_picker_takes_the_top_half_and_leaves_the_conversation_below() {
+fn the_agent_strip_always_takes_the_top_third_and_leaves_the_conversation_below() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
         .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
@@ -156,12 +162,11 @@ fn the_agent_picker_takes_the_top_half_and_leaves_the_conversation_below() {
         r#"/project_assign {"name": "marker", "root": "/work/marker"}"#,
     );
     zellij.wait_until("the transcript has something in it", |grid_snapshot| {
-        grid_snapshot.contains("marker")
+        grid_snapshot.contains("assigned tab 0 to project marker")
     });
 
-    zellij.send_stdin(&keys::ctrl('r'));
-    zellij.wait_until("the agent picker is open", |grid_snapshot| {
-        grid_snapshot.contains("<Enter> focus")
+    zellij.wait_until("the permanent agent strip is populated", |grid_snapshot| {
+        grid_snapshot.contains("0  claude  running")
     });
 
     let screen = zellij.snapshot();
@@ -170,38 +175,54 @@ fn the_agent_picker_takes_the_top_half_and_leaves_the_conversation_below() {
             .row_of_line(needle)
             .unwrap_or_else(|| panic!("{needle:?} is on screen:\n{}", screen.text))
     };
-    // The pane runs from its title to the help line, which is its last row.
     let title = row("hocus — ");
-    let help = row("<Enter> focus");
-    let pane_rows = help - title + 1;
+    let pane_bottom = screen
+        .text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("────"))
+        .nth(1)
+        .map(|(row, _)| row)
+        .unwrap_or_else(|| panic!("pane boundary is on screen:\n{}", screen.text));
+    let pane_rows = pane_bottom - title;
 
     // Nothing here owns a project and a pane the harness fakes reports no
     // folder to read a branch out of, so both headers stand in for what they
     // could not name — and the agent sits under them either way.
     assert_eq!(row("no project"), title + 1);
     assert_eq!(row("  no branch"), title + 2);
-    assert_eq!(row(">   0  claude  running"), title + 3);
+    assert_eq!(row("    0  claude  running"), title + 3);
 
-    // The rule closes the picker region, which is the top half of the pane.
+    // The rule closes the permanent region, which is the top third of the pane.
     let rule = row("────");
     assert_eq!(
         rule - title,
-        pane_rows / 2 - 1,
-        "the picker takes the top half of {pane_rows} rows:\n{}",
+        pane_rows / 3 - 1,
+        "the strip takes the top third of {pane_rows} rows:\n{}",
         screen.text,
     );
     // And the conversation is below it rather than replaced by it.
-    assert!((rule..help).contains(&row("marker")));
-    let input = screen.text.lines().nth(help - 1).unwrap_or_default();
+    assert!((rule..pane_bottom).contains(&row("assigned tab 0 to project marker")));
     assert!(
-        input.starts_with("> "),
-        "the input box is drawn above the help line, visible but inert: {input:?}",
+        screen
+            .text
+            .lines()
+            .skip(rule + 1)
+            .take(pane_bottom - rule - 1)
+            .any(|line| line.starts_with("> ")),
+        "the input box is drawn below the strip:\n{}",
+        screen.text,
     );
 
-    // And Esc gives the whole pane back to the conversation.
+    zellij.send_stdin(&keys::ctrl('r'));
+    zellij.wait_until("the strip is focused", |grid_snapshot| {
+        grid_snapshot.contains(">   0  claude")
+    });
+
+    // Esc returns input focus to chat without removing the strip.
     zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("the picker is gone", |grid_snapshot| {
-        !grid_snapshot.contains("<Enter> focus")
+    zellij.wait_until("the strip is blurred", |grid_snapshot| {
+        grid_snapshot.contains("    0  claude") && !grid_snapshot.contains(">   0  claude")
     });
     zellij.wait_until("the conversation is still there", |grid_snapshot| {
         grid_snapshot.contains("marker")

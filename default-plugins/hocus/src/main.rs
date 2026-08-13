@@ -75,7 +75,7 @@ const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
 Ctrl+l        new chat
-Ctrl+r        agent picker
+Ctrl+r        focus agents
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
@@ -83,10 +83,15 @@ PageUp / PageDown        scroll the transcript
 Esc           cancel a stream or tool, or hide hocus
 y / n         confirm or decline a pending tool call
 
-In a picker (history, models, agents):
+In history or models:
 Up / Down     choose
 Enter         select
-Esc           back";
+Esc           back
+
+With agents focused:
+Up / Down     choose
+Enter         focus pane
+Esc           return to chat";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
@@ -249,8 +254,12 @@ pub struct State {
     /// still running. A chat that settles is archived and dropped from here —
     /// `/history` loads it back from the file if you want it again.
     parked: Vec<Chat>,
-    /// The archive browser, when it is open.
+    /// The archive or model browser, when it is open.
     pub picker: Option<Picker>,
+    /// The agent strip that is always drawn above the conversation.
+    pub agent_picker: Picker,
+    /// Whether keys belong to the agent strip rather than the conversation.
+    pub agents_focused: bool,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
     /// Questions from the `hocus-ask` popup that arrived while hocus was busy,
@@ -360,6 +369,12 @@ impl Default for State {
             saved: (0, 0),
             parked: Vec::new(),
             picker: None,
+            agent_picker: Picker {
+                entries: Vec::new(),
+                selected: 0,
+                kind: PickerKind::Agents(Vec::new()),
+            },
+            agents_focused: false,
             jobs: Vec::new(),
             asks: VecDeque::new(),
             job_seq: 0,
@@ -520,9 +535,8 @@ impl ZellijPlugin for State {
             // No current session. A quiet reply, not a dead daemon.
             None => false,
         };
-        // This is also the answer to the branch refresh an open agent picker
-        // asked for, so the list has to take it rather than go on showing the
-        // rows it was built from.
+        // This also answers the branch refresh requested when the permanent
+        // agent strip gains focus.
         let refreshed = self.refresh_agent_picker();
         applied || refreshed
     }
@@ -1888,6 +1902,15 @@ mod tests {
             .collect()
     }
 
+    fn agent_entry_texts(state: &State) -> Vec<&str> {
+        state
+            .agent_picker
+            .entries
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect()
+    }
+
     /// The point of the archive: starting over must not destroy what came
     /// before. Ctrl-l detaches from the file rather than deleting it.
     #[test]
@@ -2126,13 +2149,13 @@ mod tests {
         assert!(state.parked.is_empty(), "nothing outstanding, nothing held");
     }
 
-    /// A picker drives the session, not the conversation, so an arriving reply
-    /// is no reason to refuse it — and the reply keeps arriving behind it.
+    /// Agent focus drives the session, not the conversation, so an arriving
+    /// reply is no reason to refuse it — and the reply keeps arriving behind it.
     #[test]
-    fn the_picker_opens_over_an_arriving_reply() {
+    fn the_agent_strip_focuses_over_an_arriving_reply() {
         let mut state = ready_state();
         assert!(state.open_agent_picker());
-        assert!(state.picker.is_some());
+        assert!(state.agents_focused);
 
         state.on_chunk(
             "hocus-1",
@@ -2218,36 +2241,47 @@ mod tests {
 
         state.picker_key(KeyWithModifier::new(BareKey::Tab));
         assert!(matches!(picker(&state).kind, PickerKind::Chats(_)));
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+        assert!(
+            state.picker.is_none(),
+            "agent focus dismisses the temporary list"
+        );
+        assert!(state.agents_focused);
     }
 
-    /// The agent picker opens on its own key, lists the same rows the agent tools
-    /// would act on under the headers that group them, stands outside any cycle,
-    /// and Enter hands the pane to the focus tool — stubbed off wasm, so what is
-    /// checked is that it closes.
+    /// The strip is present before Ctrl-r; the key only focuses it. While
+    /// focused it swallows text, and Esc hands input back to the conversation.
     #[test]
-    fn ctrl_r_opens_the_agent_picker_and_enter_closes_it() {
+    fn ctrl_r_focuses_the_permanent_agent_strip() {
         let mut state = state_with_panes();
         settle(&mut state);
-        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             ["no project", "  no branch", "  3  codex  running"]
         );
         assert!(
-            matches!(picker(&state).kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
+            matches!(state.agent_picker.kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
         );
         // Past the two headers, which nothing can land on.
-        assert_eq!(picker(&state).selected, 2);
+        assert_eq!(state.agent_picker.selected, 2);
+        assert!(!state.agents_focused);
 
-        state.picker_key(KeyWithModifier::new(BareKey::Tab));
-        assert!(
-            matches!(picker(&state).kind, PickerKind::Agents(_)),
-            "no cycle"
-        );
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
+        assert!(state.agents_focused);
 
-        state.picker_key(KeyWithModifier::new(BareKey::Enter));
+        state.on_key(KeyWithModifier::new(BareKey::Char('x')));
+        assert_eq!(state.input.get_text(), "", "focused strip swallows text");
+        assert!(!state.on_paste("pasted".to_owned()));
+
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
         assert!(state.picker.is_none());
+        assert!(state.agents_focused, "focus survives leaving for the pane");
+
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert!(!state.agents_focused);
+        assert_eq!(agent_entry_texts(&state).len(), 3, "strip stays visible");
     }
 
     /// Two agents in two worktrees of one repository — the case the branch
@@ -2266,13 +2300,14 @@ mod tests {
                 on_branch("/work/trees/topic", "topic"),
             ),
         ]);
+        state.refresh_agent_picker();
         state
     }
 
-    /// The pane the open agent picker would focus.
+    /// The pane the focused agent strip would open.
     fn selected_pane(state: &State) -> Option<u32> {
-        match &picker(state).kind {
-            PickerKind::Agents(ids) => ids.get(picker(state).selected).copied().flatten(),
+        match &state.agent_picker.kind {
+            PickerKind::Agents(ids) => ids.get(state.agent_picker.selected).copied().flatten(),
             _ => None,
         }
     }
@@ -2286,7 +2321,7 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             [
                 "no project",
                 "  main",
@@ -2297,13 +2332,13 @@ mod tests {
         );
         assert_eq!(selected_pane(&state), Some(3), "opens on the first agent");
 
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5), "over the branch header");
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5), "and stops at the last");
-        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        state.agent_key(KeyWithModifier::new(BareKey::Up));
         assert_eq!(selected_pane(&state), Some(3));
-        state.picker_key(KeyWithModifier::new(BareKey::Up));
+        state.agent_key(KeyWithModifier::new(BareKey::Up));
         assert_eq!(
             selected_pane(&state),
             Some(3),
@@ -2348,14 +2383,14 @@ mod tests {
         let mut state = state_with_worktrees();
         settle(&mut state);
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
-        state.picker_key(KeyWithModifier::new(BareKey::Down));
+        state.agent_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(selected_pane(&state), Some(5));
 
         // Pane 3 turns out to be on `zzz`, which sorts it below pane 5.
         assert!(state.pipe(worktree_snapshot(7, "zzz")), "asks to redraw");
 
         assert_eq!(
-            entry_texts(&state),
+            agent_entry_texts(&state),
             [
                 "no project",
                 "  topic",
@@ -3648,6 +3683,7 @@ mod tests {
             ]),
             &[],
         ));
+        state.refresh_agent_picker();
         state
     }
 
