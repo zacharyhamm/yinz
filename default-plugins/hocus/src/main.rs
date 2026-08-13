@@ -18,6 +18,7 @@ pub use message::{
 };
 use worker::{post_log, post_prompt_history, post_save};
 
+use hocus_proto::store::{self, Backend};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
 use hocus_proto::wire::{self, PollReply, PollRequest};
@@ -56,11 +57,6 @@ const JOB_SECONDS: f64 = 1.0;
 /// The shortest interval `schedule` will accept. A model that asks for one
 /// second bills the user sixty times a minute for a pane that hasn't changed.
 const MIN_JOB_SECONDS: f64 = 5.0;
-
-/// How long a tool call waits for hocus-store before giving up. Generous for a
-/// pipe round trip on the same machine, short enough that a missing store is a
-/// visible error rather than an apparently hung model.
-const STORE_TIMEOUT_SECONDS: f64 = 5.0;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
@@ -265,11 +261,6 @@ pub struct State {
     pending_agent_panes: BTreeSet<u32>,
     /// Consecutive unchanged scrollback observations from hocus-agentd.
     activity: agents::Activity,
-    /// The tool call waiting on hocus-store, and how long it has left. At most
-    /// one: the tool queue runs a single call at a time.
-    pending_write: Option<(String, f64)>,
-    /// Highest `seq` merged from hocus-store, same watermark rule as `agent_seq`.
-    store_seq: u64,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
@@ -282,10 +273,27 @@ pub struct State {
     /// host calls will actually be answered.
     granted: bool,
     /// Project names and roots persist across sessions.
+    ///
+    /// A copy, kept current by a watch on the `project` rows rather than by a
+    /// pushed snapshot. It stays a copy because half the plugin reads it from
+    /// synchronous `&self` methods on hot paths — the tab map, the per-request
+    /// system message, every agent tool — and a host call in each of those would
+    /// buy nothing.
+    ///
+    /// The todo lists are deliberately *not* here. They are read only by two
+    /// tools, both already behind a model round trip, so they are fetched when
+    /// asked for. That drops the largest thing hocus used to hold a copy of.
     projects: projects::Registry,
-    /// Todo lists persist across sessions, keyed on the project root folder
-    /// rather than the project name, because a name moves and a folder does not.
-    todos: todos::Store,
+    /// The watch feeding `projects`, so a change event can be told from another
+    /// plugin's.
+    project_watch: u64,
+    /// The data store, on builds that have no host to ask for one.
+    ///
+    /// A real engine over a temporary directory, so the tests exercise the same
+    /// predicates and upserts a session does. In wasm this field does not exist
+    /// and [`State::store`] returns the host shims instead.
+    #[cfg(not(target_family = "wasm"))]
+    store: hocus_proto::store::Local,
     /// Stable tab id to project name. Tab ids only live for this session.
     ///
     /// Only what the user assigned. The poll writes `auto_tab_projects`, so an
@@ -307,7 +315,8 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        State {
+        #[allow(unused_mut)]
+        let mut state = State {
             perms: false,
             // Never rendered: render() short-circuits on `perms` until the real
             // resolution has run.
@@ -351,19 +360,34 @@ impl Default for State {
             manual_kinds: BTreeMap::new(),
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
-            pending_write: None,
-            store_seq: 0,
             agent_seq: 0,
             mono_ms: 0,
             log_seq: 0,
             granted: false,
             projects: BTreeMap::new(),
-            todos: BTreeMap::new(),
+            project_watch: 0,
+            #[cfg(not(target_family = "wasm"))]
+            store: {
+                // Declared here rather than in `open_store`, which the tests do
+                // not go through: a fresh `State` is expected to have a usable
+                // store, and every one of them gets its own temporary file.
+                let local = hocus_proto::store::Local::shared("hocus");
+                let _ = local.define_all(&store::shared_defs());
+                local
+            },
             tab_projects: BTreeMap::new(),
             auto_tab_projects: BTreeMap::new(),
             tabs: Vec::new(),
             active_project: None,
-        }
+        };
+        // In a plugin this waits for `load`, which is where the host is ready to
+        // be asked. On the host triple there is no host and no `load`, so the
+        // temporary store is opened here — otherwise every test would have to
+        // remember to, and the one that forgot would fail against an entity
+        // nobody had declared.
+        #[cfg(not(target_family = "wasm"))]
+        state.open_store();
+        state
     }
 }
 
@@ -373,8 +397,7 @@ impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
         self.input.set_history(history::load_prompt_history());
-        // projects and todos belong to hocus-store now; ours is a read-only
-        // copy, filled by the first snapshot it pushes after we subscribe.
+        self.open_store();
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
@@ -459,14 +482,6 @@ impl ZellijPlugin for State {
     /// the daemon is the only source of panes and folders.
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         match pipe_message.name.as_str() {
-            wire::STORE_SNAPSHOT => return self.on_store_snapshot(&pipe_message),
-            wire::STORE_RESULT => return self.on_store_result(&pipe_message),
-            // A store that just (re)started has forgotten us. Nothing to
-            // render — the snapshot it pushes back is what does that.
-            wire::STORE_HELLO => {
-                self.subscribe_to_store();
-                return false;
-            },
             wire::AGENT_HELLO => {
                 self.subscribe_to_agentd();
                 return false;
@@ -556,6 +571,12 @@ impl State {
             // The payload is the real time the host slept, which is the only
             // clock a plugin gets — there is no wall clock on offer.
             Event::Timer(elapsed) => self.on_timer(elapsed),
+            // The project rows changed — ours or another plugin's write. The
+            // store only sends this when the rows actually differ, so there is
+            // no watermark to check and nothing to do when nothing moved.
+            Event::PluginDataChanged { watch_id, rows, .. } => {
+                self.on_projects_changed(watch_id, &rows)
+            },
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::BeforeClose => {
                 self.cancel_in_flight();
@@ -3017,25 +3038,19 @@ mod tests {
             .collect();
         let mut registry = state.projects.clone();
         if projects::discover(&mut registry, &repositories).changed() {
-            give_store(state, registry, state.todos.clone());
+            give_projects(state, registry);
         }
     }
 
-    /// Deliver a store snapshot, as hocus-store would.
-    fn give_store(state: &mut State, projects: projects::Registry, todos: todos::Store) {
-        let payload = serde_json::to_string(&wire::StoreSnapshot {
-            projects,
-            todos,
-            seq: state.store_seq + 1,
-        })
-        .expect("serialize");
-        state.pipe(PipeMessage {
-            source: PipeSource::Plugin(2),
-            name: wire::STORE_SNAPSHOT.to_owned(),
-            payload: Some(payload),
-            args: BTreeMap::new(),
-            is_private: true,
-        });
+    /// Deliver a project-rows change, as the store's watch would.
+    ///
+    /// Row-shaped rather than registry-shaped on purpose: this is the same entry
+    /// point a real notification arrives at, so what the tests drive is what a
+    /// session runs. The rows are built from a registry because that is what the
+    /// callers have.
+    fn give_projects(state: &mut State, registry: projects::Registry) {
+        let rows = projects::to_rows(&registry);
+        state.on_projects_changed(state.project_watch, &rows);
     }
 
     #[test]
@@ -3294,49 +3309,26 @@ mod tests {
     }
 
     /// The raw answer of a todo tool, or `None` if it is not one.
+    ///
+    /// This used to simulate hocus-store: it re-ran the tree operation against a
+    /// copy of the todo map and fed the result back as a snapshot. That was a
+    /// second implementation of the tool, and it had drifted — it answered
+    /// `also_done` where the store answered `cascaded`. Now the tool runs for
+    /// real against the temporary store, so there is nothing left to drift.
     fn todo_result(state: &mut State, name: &str, arguments: &str) -> Option<String> {
         let call = agent_call(name, arguments);
         if !matches!(name, "todo_add" | "todo_done") {
             return state.run_local(&call);
         }
-        let args = tools::Args::parse(arguments).expect("arguments");
-        // Whatever hocus rejects on its own it rejects before the store hears
-        // about it, and that answer is the tool's answer.
-        let (root, project) = match state.todo_target(&args) {
-            Ok(target) => target,
-            Err(error) => return Some(error),
-        };
-        let mut todos_store = state.todos.clone();
-        let answer = if name == "todo_add" {
-            let Some(text) = args.text.as_deref() else {
-                return Some("text is required".to_owned());
-            };
-            todos::add(&mut todos_store, &root, text, args.parent_id).map(|id| {
-                serde_json::json!({ "project": project, "id": id, "text": text }).to_string()
-            })
-        } else {
-            let Some(id) = args.id else {
-                return Some("id is required".to_owned());
-            };
-            todos::set_done(&mut todos_store, &root, id, !args.undo).map(|change| {
-                serde_json::json!({
-                    "project": project,
-                    "id": change.id,
-                    "text": change.text,
-                    "done": change.done,
-                    "also_done": change.cascaded,
-                    "reopened": change.reopened,
-                })
-                .to_string()
-            })
-        };
-        match answer {
-            Ok(message) => {
-                give_store(state, state.projects.clone(), todos_store);
-                Some(message)
-            },
-            Err(error) => Some(error),
-        }
+        Some(match state.todo_write(&call) {
+            Ok(message) => message,
+            Err(error) => error,
+        })
+    }
+
+    /// One project's todo list, read back out of the store.
+    fn stored_list(state: &State, root: &str) -> todos::List {
+        todos::fetch_list(&state.store(), root).expect("fetched")
     }
 
     #[test]
@@ -3356,8 +3348,11 @@ mod tests {
         assert_eq!(added["id"], 1);
         assert_eq!(added["project"], "hocus");
         assert_eq!(added["text"], "ship the parser");
-        // And it came back to us through a store snapshot, not a local write.
-        assert_eq!(state.todos["/work/hocus"].items[0].text, "ship the parser");
+        // And it is really in the store, not only in the answer.
+        assert_eq!(
+            stored_list(&state, "/work/hocus").items[0].text,
+            "ship the parser"
+        );
     }
 
     #[test]
@@ -3456,7 +3451,10 @@ mod tests {
 
         let change = todo(&mut state, "todo_done", r#"{"id":1}"#);
         assert_eq!(change["done"], true);
-        assert_eq!(change["also_done"], serde_json::json!([2]));
+        // `cascaded`, which is what the store has always answered. This asserted
+        // `also_done` until the simulated harness that invented that name went
+        // away — it was never the key the model actually saw.
+        assert_eq!(change["cascaded"], serde_json::json!([2]));
 
         let open = todo(&mut state, "todo_list", "{}");
         assert!(open["items"].as_array().unwrap().is_empty());
@@ -3522,26 +3520,27 @@ mod tests {
         assert_eq!(found["matches"][0]["project"], serde_json::Value::Null);
     }
 
-    /// The store is asked by name where there is one, and by root where the
-    /// project is gone — a `null` project there is a change the store rejects,
-    /// for a list `todo_list` and `todo_search` still answer for.
+    /// A list is keyed on its folder, so it outlives the project that named it
+    /// and a write addressed by root still lands. The answer names the project
+    /// where there is one and `null` where there is not.
     #[test]
-    fn a_write_to_a_list_whose_project_is_gone_is_sent_by_root() {
+    fn a_write_to_a_list_whose_project_is_gone_still_lands() {
         let mut state = state_with_project();
-        let by_name = state
-            .todo_write_payload(&agent_call("todo_add", r#"{"text":"ship it"}"#))
-            .expect("payload");
-        assert_eq!(by_name["project"], "hocus");
+        let named = todo(&mut state, "todo_add", r#"{"text":"ship it"}"#);
+        assert_eq!(named["project"], "hocus");
 
         state.projects.clear();
         state.active_project = None;
-        let by_root = state
-            .todo_write_payload(&agent_call(
-                "todo_done",
-                r#"{"id":1,"project":"/work/gone"}"#,
-            ))
-            .expect("payload");
-        assert_eq!(by_root["project"], "/work/gone");
+        let orphaned = todo(
+            &mut state,
+            "todo_add",
+            r#"{"text":"still mine","project":"/work/gone"}"#,
+        );
+        assert_eq!(orphaned["project"], serde_json::Value::Null);
+        assert_eq!(
+            stored_list(&state, "/work/gone").items[0].text,
+            "still mine"
+        );
     }
 
     #[test]
@@ -4018,111 +4017,70 @@ mod tests {
         assert!(state.panes.is_empty());
     }
 
-    /// The failure the store introduces: a change goes out and nothing comes
-    /// back. The tool call must fail rather than park the queue forever.
+    /// A todo change is a write and an answer, in that order, with nothing in
+    /// between.
+    ///
+    /// This replaces a test for the failure the pipe used to introduce: a change
+    /// went out, nothing came back, and the queue had to be rescued by a
+    /// five-second timeout. An apply has either happened or returned an error by
+    /// the time it returns, so there is no waiting state left to get wrong.
     #[test]
-    fn a_store_write_that_is_never_answered_gives_up() {
+    fn a_todo_write_answers_without_parking_the_queue() {
         let mut state = state_with_project();
         let call = agent_call("todo_add", r#"{"text":"ship it"}"#);
         state.pending.push_back(call.clone());
 
-        assert!(
-            !state.start_todo_write(&call),
-            "the call waits on the store"
-        );
-        assert!(matches!(state.status, Status::AwaitingStore));
-        assert!(state.pending_write.is_some());
-
-        // Not yet — a slow answer is still an answer.
-        assert!(!state.tick_store(STORE_TIMEOUT_SECONDS / 2.0));
-        assert!(state.pending_write.is_some());
-
-        assert!(state.tick_store(STORE_TIMEOUT_SECONDS));
-        assert!(state.pending_write.is_none());
+        assert!(state.start_todo_write(&call), "the queue advances");
         assert!(matches!(state.status, Status::Idle));
-        assert!(state.pending.is_empty(), "the queue moved on");
+        assert!(state.pending.is_empty());
         let answer = tool_results(&state)
             .last()
             .expect("answered")
             .content
             .clone();
-        assert!(answer.contains("did not answer"), "got {answer}");
+        assert!(answer.contains("ship it"), "got {answer}");
+        assert_eq!(stored_list(&state, "/work/hocus").items[0].text, "ship it");
     }
 
-    /// A reply to a write that already gave up must not answer whatever call is
-    /// at the head by then.
+    /// A change to rows this plugin is not watching is somebody else's.
     #[test]
-    fn a_late_store_reply_answers_nothing() {
+    fn a_change_for_another_watch_is_ignored() {
         let mut state = state_with_project();
-        let result = serde_json::to_string(&wire::StoreResult {
-            request_id: "stale".to_owned(),
-            ok: true,
-            message: "{}".to_owned(),
-        })
-        .expect("serialize");
+        let rows = projects::to_rows(&projects::Registry::new());
 
-        assert!(!state.pipe(PipeMessage {
-            source: PipeSource::Plugin(2),
-            name: wire::STORE_RESULT.to_owned(),
-            payload: Some(result),
-            args: BTreeMap::new(),
-            is_private: true,
-        }));
-        assert!(state.pending_write.is_none());
+        assert!(!state.on_projects_changed(state.project_watch + 1, &rows));
+        assert_eq!(
+            state.active_project.as_deref(),
+            Some("hocus"),
+            "another plugin's watch must not clear ours"
+        );
     }
 
-    /// The snapshot is the only way projects arrive now, so a project that goes
+    /// The watch is the only way projects arrive now, so a project that goes
     /// away in one has to stop being the active project.
     #[test]
-    fn a_snapshot_that_drops_a_project_clears_what_named_it() {
+    fn a_change_that_drops_a_project_clears_what_named_it() {
         let mut state = state_with_project();
         assert_eq!(state.active_project.as_deref(), Some("hocus"));
 
-        give_store(&mut state, projects::Registry::new(), todos::Store::new());
+        give_projects(&mut state, projects::Registry::new());
         assert_eq!(state.active_project, None);
         assert!(state.tab_projects.is_empty());
     }
 
-    /// A reloaded store restarts its counter at one, so re-subscribing has to
-    /// drop the watermark or nothing it sends is ever taken again.
+    /// Opening the store takes the rows that are already there, so hocus has its
+    /// registry in hand rather than after a round trip.
     #[test]
-    fn re_subscribing_to_the_store_forgets_the_watermark() {
-        let mut state = state_with_project();
-        let projects = state.projects.clone();
-        give_store(&mut state, projects, todos::Store::new());
-        assert!(state.store_seq > 0, "a snapshot has been merged");
+    fn opening_the_store_takes_the_projects_already_in_it() {
+        let mut state = State::default();
+        let hocus = projects::validate("hocus", "/work/hocus").unwrap();
+        state
+            .store()
+            .apply(vec![projects::to_mutation(&hocus)])
+            .expect("written");
 
-        state.subscribe_to_store();
-        assert_eq!(state.store_seq, 0, "a restarted store starts at one again");
-
-        // `give_store` sends `store_seq + 1`, so this is the seq-1 snapshot a
-        // fresh store would push back at us.
-        give_store(&mut state, projects::Registry::new(), todos::Store::new());
-        assert_eq!(state.store_seq, 1);
-        assert_eq!(state.active_project, None, "and is heard from once more");
-    }
-
-    /// The store announces itself on load because it cannot rebuild its own
-    /// subscriber list. Hearing it is the only thing that keeps the read cache
-    /// live across a store reload.
-    #[test]
-    fn a_store_hello_re_subscribes() {
-        let mut state = state_with_project();
-        let projects = state.projects.clone();
-        give_store(&mut state, projects, todos::Store::new());
-        assert!(state.store_seq > 0);
-
-        assert!(
-            !state.pipe(PipeMessage {
-                source: PipeSource::Plugin(2),
-                name: wire::STORE_HELLO.to_owned(),
-                payload: None,
-                args: BTreeMap::new(),
-                is_private: false,
-            }),
-            "nothing to render until the snapshot lands"
-        );
-        assert_eq!(state.store_seq, 0);
+        state.open_store();
+        assert_eq!(state.projects["hocus"].root, "/work/hocus");
     }
 
     /// Anything that is not a snapshot is somebody else's message — and every

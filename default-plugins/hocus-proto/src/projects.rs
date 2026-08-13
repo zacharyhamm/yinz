@@ -269,6 +269,40 @@ pub fn diff_mutations(before: &Registry, after: &Registry) -> Vec<Mutation> {
     mutations
 }
 
+/// A registry as the rows a fetch of it would return.
+///
+/// The inverse of [`from_rows`], for anything that has a registry in hand and
+/// needs to hand it to something row-shaped — which in practice means tests
+/// driving the change handler without going near a store.
+pub fn to_rows(projects: &Registry) -> DataRows {
+    DataRows {
+        columns: ROW_COLUMNS.iter().map(|c| (*c).to_owned()).collect(),
+        rows: projects
+            .values()
+            .map(|project| {
+                vec![
+                    DataValue::Text(project.name.clone()),
+                    DataValue::Text(project.root.clone()),
+                    project
+                        .remote
+                        .clone()
+                        .map_or(DataValue::Null, DataValue::Text),
+                    project
+                        .worktree_status
+                        .map_or(DataValue::Null, |s| DataValue::Text(s.as_str().to_owned())),
+                    project
+                        .common_dir
+                        .clone()
+                        .map_or(DataValue::Null, DataValue::Text),
+                    DataValue::Bool(project.discovered),
+                ]
+            })
+            .collect(),
+        truncated: false,
+        next_cursor: None,
+    }
+}
+
 /// The write that forgets one project by name.
 pub fn delete_mutation(name: &str) -> Mutation {
     Mutation::delete("project", Pred::eq("name", name))
