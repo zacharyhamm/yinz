@@ -120,10 +120,10 @@ pub fn parse_command(line: &str) -> Result<(String, String), String> {
 /// than factored into a `$ref`: not every provider resolves references.
 fn pane_properties() -> Value {
     json!({
-        "pane_id": { "type": "integer", "description": "Pane id from list_session." },
+        "pane_id": { "type": "integer" },
         "is_plugin": {
             "type": "boolean",
-            "description": "The is_plugin flag from list_session. Pane ids are only unique within their kind, so this is required to identify a pane.",
+            "description": "Pane kind; IDs overlap by kind.",
         },
     })
 }
@@ -133,7 +133,7 @@ fn pane_properties() -> Value {
 /// what they will point it at.
 fn input_properties() -> Value {
     json!({
-        "text": { "type": "string", "description": "Literal UTF-8 text to send before any keys." },
+        "text": { "type": "string" },
         "keys": {
             "type": "array",
             "items": {
@@ -145,7 +145,6 @@ fn input_properties() -> Value {
                     "ctrl_f", "ctrl_k", "ctrl_l", "ctrl_u", "ctrl_w", "ctrl_y", "ctrl_z"
                 ],
             },
-            "description": "Named keys to send after text, in order.",
         },
     })
 }
@@ -156,7 +155,7 @@ fn placement_property() -> Value {
     json!({
         "type": "string",
         "enum": ["new_tab", "focused_tab", "floating"],
-        "description": "Where the pane lands in the receiving session. Defaults to new_tab, the only placement that cannot disturb a layout that session already has.",
+        "description": "Defaults to new_tab.",
     })
 }
 
@@ -165,10 +164,10 @@ fn placement_property() -> Value {
 /// in whether they read the archive or fill it.
 fn slack_properties() -> Value {
     json!({
-        "channel": { "type": "string", "description": "Channel name (general or #general), or its id. DMs are addressed by id." },
-        "workspace": { "type": "string", "description": "Workspace domain or name. Omit for the only signed-in workspace." },
-        "from": { "type": "string", "description": "Inclusive first day, YYYY-MM-DD. Omit for no lower bound." },
-        "to": { "type": "string", "description": "Inclusive last day, YYYY-MM-DD. Omit for no upper bound." },
+        "channel": { "type": "string", "description": "Channel name or id; DMs use ids." },
+        "workspace": { "type": "string", "description": "Omit for the only workspace." },
+        "from": { "type": "string", "description": "Inclusive YYYY-MM-DD." },
+        "to": { "type": "string", "description": "Inclusive YYYY-MM-DD." },
     })
 }
 
@@ -186,23 +185,23 @@ pub fn specs() -> Value {
     json!([
         tool(
             "list_session",
-            "List every tab and pane in the current Zellij session, with the ids needed by the other tools. Call this first — ids from an earlier turn may be stale.",
+            "List current tabs, panes, and IDs.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "list_other_sessions",
-            "List the other Zellij sessions running on this machine and the terminal panes in them. Pane ids are per-session, so these are the ids to give warp_pane_here — never the ones from list_session. The data is a snapshot and can be a moment stale.",
+            "List other sessions and their terminal-pane IDs.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "warp_pane",
-            "Move a pane, and the program running in it, out of this session and into another one. The process keeps running and its scrollback goes with it. Call list_other_sessions first for the target's name. Cannot move a plugin pane, a pane with a scrollback editor open, or this session's last pane.",
+            "Move a terminal pane to another session; not plugins or the last pane.",
             json!({
                 "type": "object",
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "to_session": { "type": "string", "description": "Name of the session to move the pane into, from list_other_sessions." },
+                    "to_session": { "type": "string" },
                     "placement": placement.clone(),
                 },
                 "required": ["pane_id", "is_plugin", "to_session"],
@@ -210,12 +209,12 @@ pub fn specs() -> Value {
         ),
         tool(
             "warp_pane_here",
-            "Bring a pane from another session into this one, with its process still running. pane_id is that session's id for the pane, from list_other_sessions — ids from list_session name different panes.",
+            "Bring in a terminal pane listed by list_other_sessions.",
             json!({
                 "type": "object",
                 "properties": {
-                    "from_session": { "type": "string", "description": "Name of the session the pane is currently in, from list_other_sessions." },
-                    "pane_id": { "type": "integer", "description": "The pane's id in from_session, from list_other_sessions." },
+                    "from_session": { "type": "string" },
+                    "pane_id": { "type": "integer" },
                     "placement": placement.clone(),
                 },
                 "required": ["from_session", "pane_id"],
@@ -223,16 +222,16 @@ pub fn specs() -> Value {
         ),
         tool(
             "list_orphaned_panes",
-            "List panes whose session died but whose process is still running, waiting to be recovered. Empty unless a Zellij server was killed. Panes in other live sessions are not listed here — those move with warp_pane_here.",
+            "List panes orphaned by a dead session.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "adopt_orphaned_pane",
-            "Take an orphaned pane into this session, reconnecting it to its still-running process along with whatever it printed while orphaned. host_id comes from list_orphaned_panes.",
+            "Recover a pane from list_orphaned_panes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "host_id": { "type": "string", "description": "The orphaned pane's host_id, from list_orphaned_panes." },
+                    "host_id": { "type": "string" },
                     "placement": placement.clone(),
                 },
                 "required": ["host_id"],
@@ -240,7 +239,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "read_pane",
-            "Read the text currently displayed in a pane. Use this to see command output, errors, or what a program is showing.",
+            "Read a pane's visible text or scrollback.",
             json!({
                 "type": "object",
                 "properties": {
@@ -248,7 +247,7 @@ pub fn specs() -> Value {
                     "is_plugin": pane["is_plugin"],
                     "full_scrollback": {
                         "type": "boolean",
-                        "description": "Include scrollback above and below the visible viewport. Defaults to false; can be very long.",
+                        "description": "Defaults to false; may be long.",
                     },
                 },
                 "required": ["pane_id", "is_plugin"],
@@ -256,7 +255,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "send_input",
-            "Send literal text and/or named keys to a pane. Text is sent first, followed by keys in order. Use this to interact with a program already running in a pane.",
+            "Send text, then keys, to a running program.",
             json!({
                 "type": "object",
                 "properties": {
@@ -270,16 +269,16 @@ pub fn specs() -> Value {
         ),
         tool(
             "new_pane",
-            "Open a new pane. With `command`, the pane runs that command and the user can re-run it and see its exit status. Without one, it is a normal shell.",
+            "Open a shell or command pane.",
             json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "Program to run. Omit for a plain shell pane." },
-                    "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments to `command`." },
-                    "cwd": { "type": "string", "description": "Working directory. Defaults to the focused pane's." },
-                    "name": { "type": "string", "description": "Title for the new pane." },
-                    "floating": { "type": "boolean", "description": "Open as a floating pane instead of tiled." },
-                    "in_new_tab": { "type": "boolean", "description": "Open in a new tab instead of the current one." },
+                    "command": { "type": "string", "description": "Omit for a shell." },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "name": { "type": "string" },
+                    "floating": { "type": "boolean" },
+                    "in_new_tab": { "type": "boolean" },
                 },
             }),
         ),
@@ -289,42 +288,42 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Title for the new tab." },
-                    "cwd": { "type": "string", "description": "Working directory for the tab's first pane." },
+                    "name": { "type": "string" },
+                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
                 },
             }),
         ),
         tool(
             "focus",
-            "Focus a pane or switch to a tab. Give exactly one of pane pair, tab_index, or tab_id.",
+            "Focus a pane or tab; give one target.",
             json!({
                 "type": "object",
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer", "description": "0-based tab position from list_session." },
-                    "tab_id": { "type": "integer", "description": "Stable tab id from list_session. Prefer over tab_index; avoids stale-position errors after close/reorder." },
+                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
                 },
             }),
         ),
         tool(
             "rename",
-            "Rename a pane or a tab. Give exactly one of pane pair, tab_index, or tab_id.",
+            "Rename a pane or tab; give one target.",
             json!({
                 "type": "object",
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer", "description": "0-based tab position from list_session." },
-                    "tab_id": { "type": "integer", "description": "Stable tab id from list_session. Prefer over tab_index." },
-                    "name": { "type": "string", "description": "The new name." },
+                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer" },
+                    "name": { "type": "string" },
                 },
                 "required": ["name"],
             }),
         ),
         tool(
             "move_pane",
-            "Move one visible tiled pane by swapping it with its unique neighbor in a direction. Omit direction only to use Zellij's next layout position. Use swap_panes when the user names both panes, and set_floating_pane_geometry for floating panes. Call once and trust a successful result.",
+            "Move one tiled pane toward a unique neighbor; use swap_panes for two named panes and set_floating_pane_geometry for floating panes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -333,7 +332,7 @@ pub fn specs() -> Value {
                     "direction": {
                         "type": "string",
                         "enum": ["left", "right", "up", "down"],
-                        "description": "Direction of the unique adjacent tiled pane to swap with. Omit only for Zellij's next layout position.",
+                        "description": "Omit for the next layout position.",
                     },
                 },
                 "required": ["pane_id", "is_plugin"],
@@ -341,7 +340,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "swap_panes",
-            "Swap exactly two visible tiled panes that uniquely share an edge. Use this when the user names both panes; call it once and trust a successful result.",
+            "Swap two adjacent tiled panes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -367,7 +366,7 @@ pub fn specs() -> Value {
                     "direction": {
                         "type": "string",
                         "enum": ["left", "right", "up", "down"],
-                        "description": "Which edge to move. Omit to resize on all sides.",
+                        "description": "Omit for all sides.",
                     },
                 },
                 "required": ["pane_id", "is_plugin", "resize"],
@@ -375,7 +374,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "toggle_pane",
-            "Toggle a pane between fullscreen and normal, or between floating and tiled.",
+            "Toggle fullscreen or floating state.",
             json!({
                 "type": "object",
                 "properties": {
@@ -388,22 +387,22 @@ pub fn specs() -> Value {
         ),
         tool(
             "move_panes_to_tab",
-            "Move one or more panes to an existing tab or a new tab. Set exactly one of tab_index, tab_id, or new_tab=true.",
+            "Move panes to an existing or new tab; give one target.",
             json!({
                 "type": "object",
                 "properties": {
                     "panes": { "type": "array", "items": pane_ref, "minItems": 1 },
-                    "tab_index": { "type": "integer", "description": "Existing 0-based tab position from list_session." },
-                    "tab_id": { "type": "integer", "description": "Stable tab id from list_session. Prefer over tab_index." },
-                    "new_tab": { "type": "boolean", "description": "Set true to create a new tab instead of targeting tab_index/tab_id." },
-                    "new_tab_name": { "type": "string", "description": "Optional name when new_tab is true." },
+                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer" },
+                    "new_tab": { "type": "boolean" },
+                    "new_tab_name": { "type": "string" },
                 },
                 "required": ["panes"],
             }),
         ),
         tool(
             "stack_panes",
-            "Stack two or more panes together in the current layout.",
+            "Stack panes in the current layout.",
             json!({
                 "type": "object",
                 "properties": {
@@ -414,7 +413,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "set_pane_pinned",
-            "Set whether a floating pane is pinned.",
+            "Pin or unpin a floating pane.",
             json!({
                 "type": "object",
                 "properties": {
@@ -427,7 +426,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "set_floating_pane_geometry",
-            "Set a floating pane's position or size. Values are cells such as \"20\" or percentages such as \"50%\".",
+            "Set floating-pane position or size in cells or percentages.",
             json!({
                 "type": "object",
                 "properties": {
@@ -443,7 +442,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "rerun_pane",
-            "Re-run the command in a terminal command pane.",
+            "Re-run a command pane.",
             json!({
                 "type": "object",
                 "properties": { "pane_id": pane["pane_id"], "is_plugin": pane["is_plugin"] },
@@ -452,7 +451,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "scroll_pane",
-            "Scroll a pane's viewport.",
+            "Scroll a pane.",
             json!({
                 "type": "object",
                 "properties": {
@@ -465,7 +464,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "clear_pane",
-            "Clear a pane's scrollback.",
+            "Clear pane scrollback.",
             json!({
                 "type": "object",
                 "properties": { "pane_id": pane["pane_id"], "is_plugin": pane["is_plugin"] },
@@ -474,7 +473,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "close_pane",
-            "Close a pane. This kills whatever is running in it.",
+            "Close a pane and its process.",
             json!({
                 "type": "object",
                 "properties": { "pane_id": pane["pane_id"], "is_plugin": pane["is_plugin"] },
@@ -483,88 +482,88 @@ pub fn specs() -> Value {
         ),
         tool(
             "close_tab",
-            "Close a tab and every pane in it. Prefer tab_id over tab_index.",
+            "Close a tab and its panes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_index": { "type": "integer", "description": "0-based tab position from list_session." },
-                    "tab_id": { "type": "integer", "description": "Stable tab id from list_session. Prefer over tab_index." },
+                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer" },
                 },
             }),
         ),
         tool(
             "web_search",
-            "Search the web and get back titles, URLs and snippets. Use it for anything you would otherwise be guessing at — current events, release notes, error messages, documentation. Snippets only: there is no way to fetch a page's full text.",
+            "Search the web for current information; returns snippets, not pages.",
             json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "What to search for, as you would type it into a search engine." },
+                    "query": { "type": "string" },
                 },
                 "required": ["query"],
             }),
         ),
         tool(
             "schedule",
-            "Repeat a prompt in this conversation on an interval, so you can watch something over time — e.g. read a pane every minute and report when it changes. The prompt is asked again as if the user had typed it, with the whole conversation so far still in view, so it can refer to what you saw last run. Repeats until cancelled: call unschedule as soon as the user says stop or the thing being watched has happened.",
+            "Repeat a prompt until cancelled; unschedule it when done.",
             json!({
                 "type": "object",
                 "properties": {
-                    "seconds": { "type": "number", "description": "Seconds between runs." },
-                    "prompt": { "type": "string", "description": "What to do each run, written as an instruction to yourself." },
-                    "show": { "type": "boolean", "description": "Pop the hocus pane open when this job runs. Use it when the user asked to be told about something; leave it off for quiet background watching." },
-                    "auto_confirm": { "type": "boolean", "description": "Run confirmation-gated tools without asking during this job. Creating the first unrestricted job requires one confirmation. Defaults to false." },
+                    "seconds": { "type": "number" },
+                    "prompt": { "type": "string" },
+                    "show": { "type": "boolean", "description": "Show Hocus when the job runs; defaults false." },
+                    "auto_confirm": { "type": "boolean", "description": "Skip later confirmations after one initial confirmation; defaults false." },
                 },
                 "required": ["seconds", "prompt"],
             }),
         ),
         tool(
             "unschedule",
-            "Cancel a scheduled job. Omit job_id to cancel all of them.",
+            "Cancel one job, or all if job_id is omitted.",
             json!({
                 "type": "object",
                 "properties": {
-                    "job_id": { "type": "integer", "description": "Job id from schedule. Omit to cancel every job." },
+                    "job_id": { "type": "integer" },
                 },
             }),
         ),
         tool(
             "project_list",
-            "List remembered projects, their roots, Git remotes and worktree status, assigned tabs, and the active project. Includes the projects hocus found by itself from the Git checkouts agents run in: discovered marks these, and auto_tab_ids gives the tabs it worked out rather than the user. Prefer a name the user gave over one hocus made up.",
+            "List projects, roots, worktrees, tabs, and the active project.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "project_assign",
-            "Assign a tab to a project. Give root when the project is new or its root changed. Omit tab_id for the active tab.",
+            "Assign a tab to a project; new projects require root.",
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Exact project name." },
-                    "root": { "type": "string", "description": "Absolute project root. Required for a new project." },
-                    "tab_id": { "type": "integer", "description": "Stable tab id. Defaults to the active tab." },
+                    "name": { "type": "string" },
+                    "root": { "type": "string", "description": "Absolute; required when new." },
+                    "tab_id": { "type": "integer", "description": "Defaults to the active tab." },
                 },
                 "required": ["name"],
             }),
         ),
         tool(
             "project_forget",
-            "Forget a project. The todo list of its folder stays and comes back with the project. A project hocus discovered by itself is made again by the next poll while an agent is still running in its checkout, so forget one of those only once the agent is gone.",
+            "Forget a project; todos remain and discovered projects reappear while an agent runs.",
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Exact project name from project_list." },
+                    "name": { "type": "string" },
                 },
                 "required": ["name"],
             }),
         ),
         tool(
             "project_open",
-            "Open and assign a new tab at a project root. Give root when the project is new or its root changed.",
+            "Open a project in a new assigned tab.",
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Exact project name." },
-                    "root": { "type": "string", "description": "Absolute project root. Required for a new project." },
-                    "tab_name": { "type": "string", "description": "Tab name. Defaults to the project name." },
+                    "name": { "type": "string" },
+                    "root": { "type": "string", "description": "Absolute; required when new." },
+                    "tab_name": { "type": "string", "description": "Defaults to the project name." },
                 },
                 "required": ["name"],
             }),
@@ -574,64 +573,64 @@ pub fn specs() -> Value {
         // `/todo_add {"text": "fix the bug"}`.
         tool(
             "todo_add",
-            "Add an item to a project's todo list. The list belongs to the project folder and lasts across sessions. Omit project for the active project. Give parent_id from todo_list to put the item under another item of the same project.",
+            "Add a persistent project todo, optionally under a parent.",
             json!({
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "The item, in the user's own words. Up to 500 characters." },
-                    "project": { "type": "string", "description": "Exact project name from project_list, or an absolute project root. Defaults to the active project." },
-                    "parent_id": { "type": "integer", "description": "Item id from todo_list to nest under. The item must be in the same project. Items nest 5 levels deep at most." },
+                    "text": { "type": "string", "description": "Up to 500 characters." },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "parent_id": { "type": "integer" },
                 },
                 "required": ["text"],
             }),
         ),
         tool(
             "todo_list",
-            "Read a project's todo list as a tree. Every item carries an id for todo_done, at every depth. Items already crossed off are hidden unless include_done is true.",
+            "List a project's todo tree and item IDs.",
             json!({
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "Exact project name from project_list, or an absolute project root. Defaults to the active project." },
-                    "include_done": { "type": "boolean", "description": "Show the items already crossed off. Defaults to false." },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "include_done": { "type": "boolean", "description": "Defaults to false." },
                 },
             }),
         ),
         tool(
             "todo_search",
-            "Find todo items whose text holds the query. The match ignores case. Each result names the project and the items above the match, so you can say where it is. An item already crossed off matches too, and says so.",
+            "Search todo text, including completed items.",
             json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Words to look for in the item text." },
-                    "project": { "type": "string", "description": "Exact project name from project_list, or an absolute project root. Defaults to the active project." },
-                    "all_projects": { "type": "boolean", "description": "Search every project's list. Overrides project. Defaults to false." },
+                    "query": { "type": "string" },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "all_projects": { "type": "boolean", "description": "Overrides project; defaults false." },
                 },
                 "required": ["query"],
             }),
         ),
         tool(
             "todo_done",
-            "Cross a todo item off. The items below it are crossed off with it. The item stays on the list. Give undo to open an item again: an undo opens the items above it and leaves the items below it crossed off.",
+            "Complete a todo subtree, or reopen it with undo.",
             json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "integer", "description": "Item id from todo_list or todo_search. An id is unique in one project at any depth." },
-                    "project": { "type": "string", "description": "Exact project name from project_list, or an absolute project root. Defaults to the active project." },
-                    "undo": { "type": "boolean", "description": "Open the item again instead of crossing it off. Defaults to false." },
+                    "id": { "type": "integer" },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "undo": { "type": "boolean", "description": "Defaults to false." },
                 },
                 "required": ["id"],
             }),
         ),
         tool(
             "agent_register",
-            "Mark a terminal pane as an agent, so the agent tools will act on it. Use this for a pane agent_list did not find by itself — a shell you are treating as an agent, or a tool hocus does not recognise. The kind is a label of your choosing and replaces any detected one.",
+            "Register an undetected terminal pane as an agent.",
             json!({
                 "type": "object",
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "kind": {
                         "type": "string",
-                        "description": "What to call this agent, e.g. codex or reviewer. Lowercase letters, digits, _ and -, up to 32 characters.",
+                        "description": "Lowercase letters, digits, _ or -; max 32.",
                     },
                 },
                 "required": ["pane_id", "kind"],
@@ -639,17 +638,17 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_list",
-            "List agent panes, optionally for one project. Each agent gives the folder it runs in and the project that owns that folder. Without a project, use the active project or list the full session.",
+            "List agent panes, optionally by project.",
             json!({
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "Exact project name from project_list." },
+                    "project": { "type": "string" },
                 },
             }),
         ),
         tool(
             "agent_send",
-            "Send literal text and/or named keys to an agent pane. Same as send_input, but it refuses any pane that is not an agent. Prompts usually need keys ['enter'] after the text to be submitted.",
+            "Send text or keys to a listed agent; prompts usually need enter.",
             json!({
                 "type": "object",
                 "properties": {
@@ -662,7 +661,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_control",
-            "Interrupt, restart or close an agent. Use interrupt to stop what it is doing without losing the pane, restart to re-run a finished command pane, and close to kill it. To bring an agent into view, use focus instead.",
+            "Interrupt, restart, or close a listed agent.",
             json!({
                 "type": "object",
                 "properties": {
@@ -670,7 +669,6 @@ pub fn specs() -> Value {
                     "action": {
                         "type": "string",
                         "enum": ["interrupt", "restart", "close"],
-                        "description": "interrupt sends ctrl_c; restart re-runs a command pane; close kills the pane.",
                     },
                 },
                 "required": ["pane_id", "action"],
@@ -678,17 +676,17 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_spawn",
-            "Open a new tiled terminal pane running an agent command, in view of the user, and register it as an agent. Use agent_list then agent_send to drive it. For a floating pane, a new tab or a plain shell, use new_pane instead.",
+            "Open and register a tiled agent pane.",
             json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "The agent program to run, e.g. claude." },
-                    "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments to `command`." },
-                    "cwd": { "type": "string", "description": "Working directory. Defaults to the focused pane's." },
-                    "project": { "type": "string", "description": "Exact project name. Defaults to the active project." },
+                    "command": { "type": "string" },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
                     "kind": {
                         "type": "string",
-                        "description": "Label for the agent when the command is not one hocus detects. Same rules as agent_register.",
+                        "description": "For unrecognized agent commands.",
                     },
                 },
                 "required": ["command"],
@@ -696,23 +694,23 @@ pub fn specs() -> Value {
         ),
         tool(
             "slack_status",
-            "Report the Slack archive: where it is, how many messages and channels it holds, its date range, the busiest channels, and whether a daemon is running to keep it filled. Call this first whenever another Slack tool fails or returns nothing — it distinguishes a missing archive from a stopped daemon from a channel that was simply never watched, which is otherwise guesswork.",
+            "Report Slack archive and daemon status; use after empty or failed Slack reads.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "slack_search",
-            "Search the local Slack archive and get back matching messages with their time, channel and author. This is SQLite full-text search over what dobbs has archived, not Slack's own search: the query is FTS5 syntax, so bare words are ANDed, \"a phrase\" is quoted, and NOT/OR work. Use it to find where something was discussed, then slack_read that channel for the surrounding conversation.",
+            "Search the local Slack archive with FTS5; use slack_read for context.",
             json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "FTS5 query, e.g. deploy NOT staging." },
+                    "query": { "type": "string" },
                 },
                 "required": ["query"],
             }),
         ),
         tool(
             "slack_read",
-            "Read a Slack channel as a transcript. This is the whole conversation, so answer or summarise from it directly in your next message — there is no separate summarise tool and re-reading gets you the same text. Narrow busy channels with from/to rather than pulling everything. Only what has been archived is here: an empty transcript means the channel was never watched or backfilled, so call slack_backfill for it and read again.",
+            "Read an archived Slack transcript; backfill then retry if empty.",
             json!({
                 "type": "object",
                 "properties": slack_properties(),
@@ -721,7 +719,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "slack_backfill",
-            "Fetch a channel's history and thread replies from Slack into the local archive, so slack_search and slack_read can see it. Use it when slack_read comes back empty or obviously starts too late. It talks to Slack and is rate-limited, so give it a from/to window rather than asking for all of history.",
+            "Fetch a dated Slack channel window into the local archive.",
             json!({
                 "type": "object",
                 "properties": slack_properties(),
@@ -730,55 +728,55 @@ pub fn specs() -> Value {
         ),
         tool(
             "slack_post",
-            "Post a message to Slack as the user. Sends immediately and cannot be edited or unsent from here, so write it as the user would. To reply inside a thread, pass thread; without it the message goes to the channel where everyone sees it.",
+            "Post immediately to Slack; thread replies require thread.",
             json!({
                 "type": "object",
                 "properties": {
                     "channel": slack["channel"],
                     "workspace": slack["workspace"],
-                    "text": { "type": "string", "description": "The message to post." },
-                    "thread": { "type": "string", "description": "Timestamp of the message to reply under, as shown in a slack_read transcript." },
+                    "text": { "type": "string" },
+                    "thread": { "type": "string" },
                 },
                 "required": ["channel", "text"],
             }),
         ),
         tool(
             "find_files",
-            "Find files in the active project by name. Returns paths relative to nothing — they are absolute, and read_file and search_files take them as given. Respects the project's .gitignore, so build output and vendored code are not listed. Needs an active project: without one it fails, and project_list says which projects exist.",
+            "Find git-visible files by name inside the active project.",
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Part of a file's name, e.g. tool_loop, or a glob like *.rs or src/**/main.rs. A bare name matches anywhere in the path; a pattern containing * ? [ ] { } or / is used as written." },
-                    "path": { "type": "string", "description": "Subdirectory to search under, relative to the project root, e.g. src. Defaults to the whole project. A path outside the project is refused." },
-                    "max_results": { "type": "integer", "description": "Most paths to return. Defaults to 300." },
+                    "pattern": { "type": "string", "description": "Name fragment or glob." },
+                    "path": { "type": "string", "description": "Project-relative subdirectory." },
+                    "max_results": { "type": "integer", "description": "Defaults to 300." },
                 },
                 "required": ["pattern"],
             }),
         ),
         tool(
             "search_files",
-            "Search the contents of the active project's files and get back matching lines with their file and line number. The query is a regular expression. Respects .gitignore and skips binary files. Use this to find where something is defined or used, then read_file around the line it points at. Needs an active project: without one it fails, and project_list says which projects exist.",
+            "Regex-search git-visible text files inside the active project.",
             json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Regular expression to search for, e.g. fn resolve_in_root or impl .* for State." },
-                    "path": { "type": "string", "description": "Subdirectory to search under, relative to the project root. Defaults to the whole project. A path outside the project is refused." },
-                    "glob": { "type": "string", "description": "Only search files matching this glob, e.g. *.rs. Used as written." },
-                    "case_insensitive": { "type": "boolean", "description": "Match without regard to case. Defaults to false." },
-                    "max_results": { "type": "integer", "description": "Most matching lines to return. Defaults to 300." },
+                    "query": { "type": "string", "description": "Regular expression." },
+                    "path": { "type": "string", "description": "Project-relative subdirectory." },
+                    "glob": { "type": "string" },
+                    "case_insensitive": { "type": "boolean", "description": "Defaults to false." },
+                    "max_results": { "type": "integer", "description": "Defaults to 300." },
                 },
                 "required": ["query"],
             }),
         ),
         tool(
             "read_file",
-            "Read a file from the active project. Give start_line and line_count to read a window around something search_files found, rather than pulling a whole file you only need part of. Reads at most 300 lines unless line_count says otherwise. Needs an active project: without one it fails, and project_list says which projects exist.",
+            "Read a line range from a file inside the active project.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "The file to read, relative to the project root, e.g. src/main.rs. An absolute path from find_files or search_files also works. A path outside the project is refused." },
-                    "start_line": { "type": "integer", "description": "First line to read, counting from 1. Defaults to 1." },
-                    "line_count": { "type": "integer", "description": "How many lines to read from start_line. Defaults to 300." },
+                    "path": { "type": "string", "description": "Project-relative or returned absolute path." },
+                    "start_line": { "type": "integer", "description": "1-based; defaults to 1." },
+                    "line_count": { "type": "integer", "description": "Defaults to 300." },
                 },
                 "required": ["path"],
             }),
@@ -2567,6 +2565,38 @@ mod tests {
             assert!(function["name"].is_string());
             assert!(!function["description"].as_str().unwrap().is_empty());
             assert_eq!(function["parameters"]["type"], "object");
+        }
+    }
+
+    #[test]
+    fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
+        let specs = specs();
+        for (name, cues) in [
+            (
+                "move_pane",
+                &["swap_panes", "set_floating_pane_geometry"][..],
+            ),
+            ("warp_pane_here", &["list_other_sessions"][..]),
+            ("schedule", &["unschedule"][..]),
+            ("slack_read", &["backfill"][..]),
+            ("slack_post", &["immediately"][..]),
+            ("agent_send", &["listed agent"][..]),
+            ("find_files", &["active project"][..]),
+            ("search_files", &["active project"][..]),
+            ("read_file", &["active project"][..]),
+            ("close_pane", &["process"][..]),
+        ] {
+            let description = specs
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|spec| spec["function"]["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["description"]
+                .as_str()
+                .unwrap();
+            for cue in cues {
+                assert!(description.contains(cue), "{name} is missing {cue:?}");
+            }
         }
     }
 
