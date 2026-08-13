@@ -832,6 +832,19 @@ pub enum CliAction {
         #[clap(long, conflicts_with = "focused_tab")]
         floating: bool,
     },
+    /// Move a tab, with everything running in it, to another session
+    WarpTab {
+        /// Name of the session to move the tab to
+        #[clap(long, short, conflicts_with = "from_session")]
+        to_session: Option<String>,
+        /// Name of the session to bring a tab from. Requires --tab-index.
+        #[clap(long, short, conflicts_with = "to_session")]
+        from_session: Option<String>,
+        /// The tab to move. Defaults to the focused tab, and is required with
+        /// --from-session.
+        #[clap(long)]
+        tab_index: Option<usize>,
+    },
     /// Change focus to the last focused frame
     FocusLastPane,
     /// Move the focused pane in the specified direction. [right|left|up|down]

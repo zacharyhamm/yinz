@@ -858,7 +858,7 @@ fn tiled_pane_layout_from_manifest(
 }
 
 /// Tab-level parsing
-fn get_tiled_panes_layout_from_panegeoms(
+pub(crate) fn get_tiled_panes_layout_from_panegeoms(
     geoms: &Vec<PaneLayoutManifest>,
     split_size: Option<SplitSize>,
 ) -> Option<TiledPaneLayout> {
@@ -938,7 +938,7 @@ fn all_geoms_are_from_the_same_stack(manifests: &Vec<Vec<PaneLayoutManifest>>) -
     stack_ids.len() == 1 && !stack_ids.contains(&None)
 }
 
-fn get_floating_panes_layout_from_panegeoms(
+pub(crate) fn get_floating_panes_layout_from_panegeoms(
     manifests: &Vec<PaneLayoutManifest>,
 ) -> Vec<FloatingPaneLayout> {
     manifests

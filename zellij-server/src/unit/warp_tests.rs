@@ -208,3 +208,140 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
 
     assert_eq!(result, Err("the supervisor is already attached".to_owned()));
 }
+
+// ---------------------------------------------------------------------------
+// The same guarantees, a tab at a time
+// ---------------------------------------------------------------------------
+//
+// Everything above matters more here. A tab warp's window of nobody-owns-this
+// holds every process in the tab, so a check that happened after the release
+// instead of before it would cost a user a tab rather than a pane.
+
+#[test]
+fn warping_a_tab_to_the_current_session_is_refused_before_anything_is_asked_of_screen() {
+    let harness = harness();
+
+    let result = warp_tab_to_session(&harness.senders, 1, Some(0), "here", "here", TEST_TIMEOUT);
+
+    assert_eq!(
+        result,
+        Err("this tab is already in session 'here'".to_owned())
+    );
+    assert!(
+        harness.screen.try_recv().is_err(),
+        "screen should not have been asked to release a tab"
+    );
+}
+
+#[test]
+fn an_unreachable_target_releases_no_part_of_a_tab() {
+    // The load-bearing invariant, restated for tabs: reachability is checked
+    // first, so a session name that does not resolve costs an error rather than
+    // a tab's worth of homeless processes.
+    let harness = harness();
+
+    let result = warp_tab_to_session(
+        &harness.senders,
+        1,
+        Some(0),
+        "here",
+        &unreachable_session("tab-unreachable"),
+        TEST_TIMEOUT,
+    );
+
+    let error = result.expect_err("a session that is not running cannot be warped to");
+    assert!(
+        error.contains("is not running"),
+        "expected the error to name the missing session, got: {error}"
+    );
+    assert!(
+        harness.screen.try_recv().is_err(),
+        "screen should not have been asked to release a tab"
+    );
+}
+
+#[test]
+fn bringing_a_tab_from_the_current_session_is_refused() {
+    let result = warp_tab_from_session("here", "here", 0, TEST_TIMEOUT);
+
+    assert_eq!(result, Err("'here' is this session".to_owned()));
+}
+
+#[test]
+fn bringing_a_tab_into_a_nameless_session_is_refused() {
+    // A session with no name has no address to give the source, so asking would
+    // send a tab to nowhere.
+    let result = warp_tab_from_session("", &unreachable_session("nameless-tab"), 0, TEST_TIMEOUT);
+
+    assert_eq!(
+        result,
+        Err("this session has no name to bring the tab to".to_owned())
+    );
+}
+
+#[test]
+fn bringing_a_tab_from_an_unreachable_session_reports_which_one() {
+    let missing = unreachable_session("tab-source");
+
+    let result = warp_tab_from_session("here", &missing, 0, TEST_TIMEOUT);
+
+    let error = result.expect_err("a session that is not running has no tab to give");
+    assert!(
+        error.contains(&missing),
+        "expected the error to name the missing session, got: {error}"
+    );
+}
+
+#[test]
+fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
+    let harness = harness();
+
+    let result = adopt_tab_here(
+        &harness.senders,
+        1,
+        Box::new(WarpedTab::default()),
+        TEST_TIMEOUT,
+    );
+
+    assert_eq!(result, Err("timed out adopting the tab".to_owned()));
+    // It did ask, though — the timeout is the pty thread failing to answer, not
+    // the request never being made.
+    assert!(matches!(
+        harness.pty.try_recv(),
+        Ok((PtyInstruction::AdoptTab { .. }, _))
+    ));
+}
+
+#[test]
+fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
+    // Doubly true for a tab: the refusal is the only place the list of
+    // supervisors left running gets written down.
+    let harness = harness();
+    let senders = harness.senders.clone();
+    let responder = std::thread::spawn(move || {
+        let (instruction, _) = harness.pty.recv().expect("the request should arrive");
+        match instruction {
+            PtyInstruction::AdoptTab {
+                response_channel, ..
+            } => {
+                let _ = response_channel.send(Err(anyhow!(
+                    "recover them with `zellij pty-host adopt abc123`"
+                )));
+            },
+            other => panic!("unexpected instruction: {other:?}"),
+        }
+    });
+
+    let result = adopt_tab_here(
+        &senders,
+        1,
+        Box::new(WarpedTab::default()),
+        Duration::from_secs(5),
+    );
+    responder.join().expect("the responder should not panic");
+
+    assert_eq!(
+        result,
+        Err("recover them with `zellij pty-host adopt abc123`".to_owned())
+    );
+}

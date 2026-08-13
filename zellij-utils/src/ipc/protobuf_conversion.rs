@@ -1139,6 +1139,37 @@ fn warp_placement_from_i32(value: i32) -> Result<crate::data::WarpPlacement> {
     }
 }
 
+/// The pane-sized half of a tab warp, which the tab message repeats once per
+/// pane.
+///
+/// Written as a pair of free functions rather than `From` impls because the
+/// protobuf `WarpedPane` has no placement while `AdoptPaneAction` does — the two
+/// are the same five fields but not the same message, and conflating them would
+/// mean inventing a placement for a pane whose place the layout already decides.
+fn warped_pane_to_protobuf(
+    pane: &crate::data::WarpedPane,
+) -> crate::client_server_contract::client_server_contract::WarpedPane {
+    crate::client_server_contract::client_server_contract::WarpedPane {
+        host_id: pane.host_id.clone(),
+        control_socket: pane.control_socket.to_string_lossy().to_string(),
+        title: pane.title.clone(),
+        contents: pane.contents.clone(),
+        borderless: pane.borderless,
+    }
+}
+
+fn warped_pane_from_protobuf(
+    pane: crate::client_server_contract::client_server_contract::WarpedPane,
+) -> crate::data::WarpedPane {
+    crate::data::WarpedPane {
+        host_id: pane.host_id,
+        control_socket: std::path::PathBuf::from(pane.control_socket),
+        title: pane.title,
+        contents: pane.contents,
+        borderless: pane.borderless,
+    }
+}
+
 // Complete Action conversion implementation - all 91 variants
 impl TryFrom<crate::input::actions::Action>
     for crate::client_server_contract::client_server_contract::Action
@@ -1149,6 +1180,7 @@ impl TryFrom<crate::input::actions::Action>
         use crate::client_server_contract::client_server_contract::{
             action::ActionType,
             AdoptPaneAction,
+            AdoptTabAction,
             AreFloatingPanesVisibleAction,
             BreakPaneAction,
             BreakPaneLeftAction,
@@ -1297,6 +1329,8 @@ impl TryFrom<crate::input::actions::Action>
             // Tab-targeting
             UndoRenameTabByTabIdAction,
             WarpPaneAction,
+            WarpTabAction,
+            WarpTabFromAction,
             WriteAction,
             WriteCharsAction,
             WriteCharsToPaneIdAction,
@@ -1737,6 +1771,42 @@ impl TryFrom<crate::input::actions::Action>
                     contents: payload.contents.clone(),
                     borderless: payload.borderless,
                     placement: ProtobufWarpPlacement::from(placement) as i32,
+                })
+            },
+            crate::input::actions::Action::WarpTab {
+                tab_index,
+                to_session,
+            } => ActionType::WarpTab(WarpTabAction {
+                to_session: to_session.clone(),
+                tab_index: tab_index.map(|i| i as u32),
+            }),
+            crate::input::actions::Action::WarpTabFrom {
+                from_session,
+                tab_index,
+            } => ActionType::WarpTabFrom(WarpTabFromAction {
+                from_session: from_session.clone(),
+                tab_index: tab_index as u32,
+            }),
+            crate::input::actions::Action::AdoptTab { payload } => {
+                ActionType::AdoptTab(AdoptTabAction {
+                    name: payload.name.clone(),
+                    tiled_layout: Some(payload.tiled_layout.clone().into()),
+                    floating_layout: payload
+                        .floating_layout
+                        .iter()
+                        .map(|l| l.clone().into())
+                        .collect(),
+                    tiled_panes: payload
+                        .tiled_panes
+                        .iter()
+                        .map(warped_pane_to_protobuf)
+                        .collect(),
+                    floating_panes: payload
+                        .floating_panes
+                        .iter()
+                        .map(warped_pane_to_protobuf)
+                        .collect(),
+                    hide_floating_panes: payload.hide_floating_panes,
                 })
             },
             crate::input::actions::Action::LaunchOrFocusPlugin {
@@ -2696,6 +2766,41 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     }),
                 })
             },
+            ActionType::WarpTab(warp_tab_action) => Ok(crate::input::actions::Action::WarpTab {
+                to_session: warp_tab_action.to_session.clone(),
+                tab_index: warp_tab_action.tab_index.map(|i| i as usize),
+            }),
+            ActionType::WarpTabFrom(warp_tab_from_action) => {
+                Ok(crate::input::actions::Action::WarpTabFrom {
+                    from_session: warp_tab_from_action.from_session.clone(),
+                    tab_index: warp_tab_from_action.tab_index as usize,
+                })
+            },
+            ActionType::AdoptTab(adopt_tab_action) => Ok(crate::input::actions::Action::AdoptTab {
+                payload: Box::new(crate::data::WarpedTab {
+                    name: adopt_tab_action.name,
+                    tiled_layout: adopt_tab_action
+                        .tiled_layout
+                        .ok_or_else(|| anyhow!("AdoptTab missing tiled_layout"))?
+                        .try_into()?,
+                    floating_layout: adopt_tab_action
+                        .floating_layout
+                        .into_iter()
+                        .map(TryInto::try_into)
+                        .collect::<Result<Vec<_>>>()?,
+                    tiled_panes: adopt_tab_action
+                        .tiled_panes
+                        .into_iter()
+                        .map(warped_pane_from_protobuf)
+                        .collect(),
+                    floating_panes: adopt_tab_action
+                        .floating_panes
+                        .into_iter()
+                        .map(warped_pane_from_protobuf)
+                        .collect(),
+                    hide_floating_panes: adopt_tab_action.hide_floating_panes,
+                }),
+            }),
             ActionType::LaunchOrFocusPlugin(launch_plugin_action) => {
                 Ok(crate::input::actions::Action::LaunchOrFocusPlugin {
                     plugin: launch_plugin_action

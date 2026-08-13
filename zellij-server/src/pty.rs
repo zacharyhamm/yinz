@@ -32,7 +32,7 @@ use zellij_utils::{
     data::{
         CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse, GetPanePidResponse,
         GetPaneRunningCommandResponse, GlobalPanePlacement, NewPanePlacement, OriginatingPlugin,
-        SessionInfo, WarpPlacement, WarpedPane,
+        SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -128,6 +128,7 @@ fn new_terminal_screen_instruction(
 }
 
 /// What `Pty::adopt_terminal` hands back so Screen can build the pane.
+#[derive(Debug, Clone)]
 pub struct AdoptedPane {
     pub terminal_id: u32,
     pub cmd: RunCommand,
@@ -139,6 +140,50 @@ pub struct AdoptedPane {
     /// than pretending to run.
     pub child_exit_status: Option<Option<i32>>,
 }
+
+/// Every supervisor in an adopted tab, in the order its layout expects them.
+///
+/// There is no room here for a pane that failed to attach. A tab's layout places
+/// panes by position, so a missing one does not leave a hole — it shifts every
+/// pane after it into the wrong slot. `Pty::adopt_tab` therefore takes the whole
+/// tab or none of it, releasing anything it had already attached before giving
+/// up, which puts the tab back exactly where a rollback can find it.
+#[derive(Debug, Clone)]
+pub struct AdoptedTabPanes {
+    pub tiled: Vec<AdoptedPane>,
+    pub floating: Vec<AdoptedPane>,
+}
+
+/// One adopted terminal, waiting for the tab that will hold it.
+#[derive(Debug, Clone)]
+pub struct AdoptedTabTerminal {
+    pub terminal_id: u32,
+    pub cmd: RunCommand,
+    /// `Some` when the child has already exited, so the pane arrives held
+    /// showing the status it exited with rather than pretending to run.
+    pub child_exit_status: Option<Option<i32>>,
+    /// The pane's screen as it was in the session it left, followed by whatever
+    /// its supervisor caught while nobody was attached.
+    ///
+    /// Replayed by the pty thread rather than by Screen, and that is the whole
+    /// reason it travels back here. Screen builds a warped tab by asking for a
+    /// `NewTab`, which goes out through the plugin thread and only comes back as
+    /// an `ApplyLayout` much later — so bytes Screen sent itself would arrive
+    /// before the panes existed, and be dropped. Sending them from here puts
+    /// them behind that `ApplyLayout` on the same channel, which is exactly
+    /// where a normal pane's first output sits.
+    pub replay: Vec<u8>,
+}
+
+impl AdoptedTabTerminal {
+    fn hold_for_command(&self) -> Option<RunCommand> {
+        self.child_exit_status.map(|_| self.cmd.clone())
+    }
+}
+
+/// The tiled and floating halves of a tab's adopted terminals, in the order
+/// their slots are filled.
+pub type AdoptedTabTerminals = (Vec<AdoptedTabTerminal>, Vec<AdoptedTabTerminal>);
 
 /// Instructions related to PTYs (pseudoterminals).
 #[derive(Clone, Debug)]
@@ -206,6 +251,31 @@ pub enum PtyInstruction {
         placement: WarpPlacement,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<()>>,
+    },
+    /// Give up every supervisor in a tab at once.
+    ///
+    /// Batched rather than looped by the caller because the reply is what Screen
+    /// waits on before serializing the tab: N separate replies would mean N
+    /// chances to serialize a tab that is only half released.
+    ReleaseTerminalsForWarp {
+        tab_index: usize,
+        terminal_ids: Vec<u32>,
+    },
+    /// Take a whole tab's supervisors over into this session.
+    AdoptTab {
+        payload: Box<WarpedTab>,
+        client_id: ClientId,
+        response_channel: crossbeam::channel::Sender<Result<()>>,
+    },
+    /// Set aside a tab's adopted terminals for the `NewTab` that will place them.
+    ///
+    /// Sent by Screen immediately before that `NewTab` goes out through the
+    /// plugin thread, which is what makes the pairing safe: this is enqueued
+    /// first, so it is always here by the time the tab comes back round, and it
+    /// is keyed so that a tab the user opens in the meantime cannot take it.
+    ClaimAdoptedTab {
+        tab_index: usize,
+        terminals: AdoptedTabTerminals,
     },
     ReRunCommandInPane(PaneId, RunCommand, Option<NotificationEnd>),
     DropToShellInPane {
@@ -289,6 +359,9 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::CloseTab(_) => PtyContext::CloseTab,
             PtyInstruction::ReleaseTerminalForWarp { .. } => PtyContext::ReleaseTerminalForWarp,
             PtyInstruction::AdoptTerminal { .. } => PtyContext::AdoptTerminal,
+            PtyInstruction::ReleaseTerminalsForWarp { .. } => PtyContext::ReleaseTerminalsForWarp,
+            PtyInstruction::AdoptTab { .. } => PtyContext::AdoptTab,
+            PtyInstruction::ClaimAdoptedTab { .. } => PtyContext::ClaimAdoptedTab,
             PtyInstruction::NewTab(..) => PtyContext::NewTab,
             PtyInstruction::OverrideLayout(..) => PtyContext::OverrideLayout,
             PtyInstruction::ReRunCommandInPane(..) => PtyContext::ReRunCommandInPane,
@@ -329,6 +402,19 @@ pub(crate) struct Pty {
     pane_activity_flags: HashMap<u32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terminal_cmds: HashMap<u32, Vec<String>>,
     terminal_foreground_cmds: HashMap<u32, Vec<String>>,
+    /// Terminals adopted for a tab that is about to be built, waiting for the
+    /// `NewTab` that will place them, keyed by the tab they belong to.
+    ///
+    /// Keyed rather than kept as a single slot because the `NewTab` this is
+    /// waiting for goes out through the plugin thread and comes back, and any
+    /// tab the user opens in the meantime arrives on this channel too. An
+    /// unkeyed queue would hand a warped tab's panes to whichever `NewTab`
+    /// happened to be first, which is a race a user could lose a tab to.
+    ///
+    /// Screen claims an entry before sending that `NewTab`, so it is always here
+    /// by the time the tab comes round: the claim is enqueued first, and the
+    /// plugin thread cannot forward a `NewTab` it has not yet been sent.
+    adopted_tabs: HashMap<usize, AdoptedTabTerminals>,
 }
 
 pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
@@ -769,6 +855,56 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 };
                 let _ = response_channel.send(result);
             },
+            PtyInstruction::ReleaseTerminalsForWarp {
+                tab_index,
+                terminal_ids,
+            } => {
+                let released = terminal_ids
+                    .into_iter()
+                    .map(|terminal_id| {
+                        let result = pty
+                            .release_terminal_for_warp(terminal_id)
+                            .map_err(|e| format!("{e:#}"));
+                        (terminal_id, result)
+                    })
+                    .collect();
+                // Screen hears about this either way: it has a tab full of panes
+                // in limbo and has to either send them on or put them back.
+                let _ = pty
+                    .bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::TabReleasedForWarp {
+                        tab_index,
+                        released,
+                    });
+            },
+            PtyInstruction::AdoptTab {
+                payload,
+                client_id,
+                response_channel,
+            } => {
+                let result = match pty.adopt_tab(&payload) {
+                    Ok(adopted) => {
+                        let _ =
+                            pty.bus
+                                .senders
+                                .send_to_screen(ScreenInstruction::AdoptedTabReady {
+                                    payload,
+                                    adopted: Box::new(adopted),
+                                    client_id,
+                                });
+                        Ok(())
+                    },
+                    Err(e) => Err(e),
+                };
+                let _ = response_channel.send(result);
+            },
+            PtyInstruction::ClaimAdoptedTab {
+                tab_index,
+                terminals,
+            } => {
+                pty.adopted_tabs.insert(tab_index, terminals);
+            },
             PtyInstruction::ReRunCommandInPane(pane_id, run_command, _completion_tx) => {
                 let err_context = || format!("failed to rerun command in pane {:?}", pane_id);
 
@@ -1103,6 +1239,7 @@ impl Pty {
             pane_activity_flags: HashMap::new(),
             terminal_cmds: HashMap::new(),
             terminal_foreground_cmds: HashMap::new(),
+            adopted_tabs: HashMap::new(),
         }
     }
     pub fn get_default_terminal(
@@ -1383,11 +1520,29 @@ impl Pty {
             }
         }
 
-        let extracted_run_instructions = layout.extract_run_instructions();
-        let extracted_floating_run_instructions = floating_panes_layout
-            .iter()
-            .filter(|f| !f.already_running)
-            .map(|f| f.run.clone());
+        // A tab warped in from another session brings its panes with it. Their
+        // supervisors are already attached and already have reader tasks, so
+        // there is nothing here to spawn: an empty instruction list is what says
+        // so, and the ids come from the queue instead, further down.
+        //
+        // Nothing else about the layout changes. Its plugin nodes were resolved
+        // into `plugin_ids` by the plugin thread on the way here, exactly as they
+        // are for any other new tab — which is how a warped tab gets its plugin
+        // panes back.
+        let adopted_panes = self.adopted_tabs.remove(&tab_index);
+
+        let extracted_run_instructions = match &adopted_panes {
+            Some(_) => vec![],
+            None => layout.extract_run_instructions(),
+        };
+        let extracted_floating_run_instructions: Vec<Option<Run>> = match &adopted_panes {
+            Some(_) => vec![],
+            None => floating_panes_layout
+                .iter()
+                .filter(|f| !f.already_running)
+                .map(|f| f.run.clone())
+                .collect(),
+        };
         let mut new_pane_pids: Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)> =
             vec![]; // (terminal_id,
                     // starts_held,
@@ -1447,26 +1602,31 @@ impl Pty {
         }
 
         // Option<RunCommand> should only be Some if the pane starts held
-        let new_tab_pane_ids: Vec<(u32, Option<RunCommand>)> = new_pane_pids
-            .iter()
-            .map(|(terminal_id, starts_held, run_command, _)| {
-                if *starts_held {
-                    (*terminal_id, run_command.clone())
-                } else {
-                    (*terminal_id, None)
-                }
-            })
-            .collect();
-        let new_tab_floating_pane_ids: Vec<(u32, Option<RunCommand>)> = new_floating_panes_pids
-            .iter()
-            .map(|(terminal_id, starts_held, run_command, _)| {
-                if *starts_held {
-                    (*terminal_id, run_command.clone())
-                } else {
-                    (*terminal_id, None)
-                }
-            })
-            .collect();
+        let spawned_ids =
+            |pids: &Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)>| {
+                pids.iter()
+                    .map(|(terminal_id, starts_held, run_command, _)| {
+                        if *starts_held {
+                            (*terminal_id, run_command.clone())
+                        } else {
+                            (*terminal_id, None)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+        let adopted_ids = |terminals: &[AdoptedTabTerminal]| {
+            terminals
+                .iter()
+                .map(|terminal| (terminal.terminal_id, terminal.hold_for_command()))
+                .collect::<Vec<_>>()
+        };
+        let (new_tab_pane_ids, new_tab_floating_pane_ids) = match &adopted_panes {
+            Some((tiled, floating)) => (adopted_ids(tiled), adopted_ids(floating)),
+            None => (
+                spawned_ids(&new_pane_pids),
+                spawned_ids(&new_floating_panes_pids),
+            ),
+        };
 
         // Track the first terminal_id if blocking is requested
         let first_initial_pane_terminal_id = if block_on_first_terminal && !new_pane_pids.is_empty()
@@ -1504,6 +1664,34 @@ impl Pty {
                 blocking_terminal,
             ))
             .with_context(err_context)?;
+
+        // Behind the `ApplyLayout` on the same channel, so the panes exist by
+        // the time these land. An adopted pane whose child is already gone is
+        // then held, showing the status it exited with.
+        if let Some((tiled, floating)) = adopted_panes {
+            for terminal in tiled.into_iter().chain(floating) {
+                if !terminal.replay.is_empty() {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::PtyBytes(
+                            terminal.terminal_id,
+                            terminal.replay,
+                        ))
+                        .with_context(err_context)?;
+                }
+                if let Some(exit_status) = terminal.child_exit_status {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::HoldPane(
+                            PaneId::Terminal(terminal.terminal_id),
+                            exit_status,
+                            terminal.cmd,
+                        ))
+                        .with_context(err_context)?;
+                }
+            }
+        }
+
         let mut terminals_to_start = vec![];
 
         terminals_to_start.append(&mut new_pane_pids);
@@ -2146,6 +2334,73 @@ impl Pty {
             child_exit_status: adopted.child_exit_status,
         })
     }
+
+    /// Take over every supervisor in a warped tab, or none of them.
+    ///
+    /// All-or-nothing because a tab's layout places panes by position: a pane
+    /// that failed to attach does not leave a gap in the tab, it shifts every
+    /// pane after it into somebody else's slot. Releasing what has already been
+    /// attached puts the tab back in exactly the state the sending session's
+    /// rollback expects to find it in — released, unowned, and reachable at the
+    /// same sockets it sent.
+    ///
+    /// The queue this leaves behind is drained by `spawn_terminals_for_layout`
+    /// once Screen's new-tab instructions come back round to this thread. It can
+    /// be a plain field rather than something threaded through those
+    /// instructions because there is only one pty thread and its channel is
+    /// ordered: nothing can run between the two halves.
+    pub fn adopt_tab(&mut self, payload: &WarpedTab) -> Result<AdoptedTabPanes> {
+        let mut tiled = vec![];
+        let mut floating = vec![];
+        let mut failed = None;
+
+        for (panes, adopted) in [
+            (&payload.tiled_panes, &mut tiled),
+            (&payload.floating_panes, &mut floating),
+        ] {
+            for pane in panes {
+                if failed.is_some() {
+                    break;
+                }
+                match self.adopt_terminal(&pane.control_socket) {
+                    Ok(pane) => adopted.push(pane),
+                    Err(e) => failed = Some((pane.host_id.clone(), e)),
+                }
+            }
+        }
+
+        if let Some((host_id, e)) = failed {
+            let host_ids: Vec<String> = payload
+                .tiled_panes
+                .iter()
+                .chain(payload.floating_panes.iter())
+                .map(|pane| pane.host_id.clone())
+                .collect();
+            for adopted in tiled.iter().chain(floating.iter()) {
+                if let Err(e) = self.release_terminal_for_warp(adopted.terminal_id) {
+                    // Nothing left to try. Say which supervisors are now stranded
+                    // so they can be recovered by hand.
+                    log::error!(
+                        "could not give back an adopted pane after a failed tab warp: {e:#}"
+                    );
+                }
+            }
+            return Err(e)
+                .with_context(|| {
+                    format!(
+                    "could not take the whole tab, so none of it was taken — its panes are still \
+                     running and can be recovered with `zellij pty-host adopt <id>`: {}",
+                    host_ids.join(", ")
+                )
+                })
+                .with_context(|| {
+                    format!("the pane supervised by {host_id} could not be attached")
+                });
+        }
+
+        Ok(AdoptedTabPanes { tiled, floating })
+    }
+
     pub fn set_active_pane(&mut self, pane_id: Option<PaneId>, client_id: ClientId) {
         if let Some(pane_id) = pane_id {
             self.active_panes.insert(client_id, pane_id);
