@@ -76,8 +76,6 @@ impl State {
     pub(crate) fn on_permissions(&mut self, status: PermissionStatus) -> bool {
         // Either way we stop saying "waiting": this is the only answer we get.
         self.perms = true;
-        // Store-backed slash commands do not need API permissions.
-        self.subscribe_to_store();
         self.cfg = match status {
             // Safe now — gated calls will actually be answered.
             PermissionStatus::Granted => {
@@ -331,7 +329,11 @@ impl State {
         let old_len = self.input.history().len();
         let text = self.input.drain_text();
         if self.input.history().len() != old_len {
-            post_prompt_history(self.input.history());
+            // One row, not the whole history: this used to re-serialize the
+            // entire vector and rewrite the file on every submit.
+            if let Some(line) = self.input.history().last().cloned() {
+                history::add_prompt(&self.private_store(), &line);
+            }
         }
         text
     }

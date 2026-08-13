@@ -469,19 +469,17 @@ impl State {
             .ok_or_else(|| "name is required".to_owned())?;
         if let Some(root) = args.root.as_deref() {
             let project = projects::validate(name, root)?;
+            let before = self.projects.clone();
             // The user just gave this folder a better name than a poll could.
             if let Some(gone) = projects::adopt(&mut self.projects, project.clone()) {
                 self.rename_project(&gone, &project.name);
             }
-            // Applied to our copy first and sent on rather than waited for:
-            // `project_open` needs the project in hand to open its tab, and the
-            // store's snapshot will confirm the same change a moment later.
-            // Nothing waits on this reply, so its id matches no pending write
-            // and `on_store_result` will ignore it.
-            self.send_store_write(
-                "project_remember",
-                serde_json::json!({ "name": project.name, "root": project.root }),
-            );
+            // Applied to our copy first and written after: `project_open` needs
+            // the project in hand to open its tab, and the watch notification
+            // confirming the same change is queued through the plugin thread
+            // rather than delivered inline, so it arrives later.
+            let mutations = projects::diff_mutations(&before, &self.projects);
+            let _ = self.write_store(mutations);
             Ok(project)
         } else {
             self.projects.get(name).cloned().ok_or_else(|| {
@@ -589,9 +587,9 @@ impl State {
         };
         self.tab_projects.retain(|_, assigned| assigned != name);
         // Rebuilds the tabs the poll worked out and the active project with
-        // them, which is what the store's next snapshot would do anyway.
+        // them, which is what the watch notification would do anyway.
         self.refresh_tab_projects();
-        self.send_store_write("project_forget", serde_json::json!({ "name": name }));
+        let _ = self.write_store(vec![projects::delete_mutation(name)]);
         projects::forgotten(&project)
     }
 
@@ -624,58 +622,85 @@ impl State {
         todos::resolve(&self.projects, selected)
     }
 
-    /// The arguments a todo change is sent to `hocus-store` with, or why it is
-    /// rejected here.
+    /// Change a todo list, and answer with what changed.
     ///
-    /// The project is resolved here rather than in the store because "which
+    /// The project is resolved here rather than anywhere else because "which
     /// project" is a question about *this* pane's active tab, which only hocus
-    /// knows — the store is told which list, never asked to guess one.
-    /// Everything that can be rejected without troubling the store is, so a bad
-    /// call answers at once instead of after a round trip.
-    pub(crate) fn todo_write_payload(&self, call: &ToolCall) -> Result<serde_json::Value, String> {
+    /// knows.
+    ///
+    /// The whole thing is synchronous now. It used to be piped to hocus-store
+    /// and the tool call parked waiting on the reply, with a five-second timeout
+    /// in case no store was running to answer. An apply is a host call that has
+    /// either happened or failed by the time it returns, so the queue never
+    /// parks and there is no timeout to get wrong.
+    pub(crate) fn todo_write(&mut self, call: &ToolCall) -> Result<String, String> {
         let args = tools::Args::parse(&call.arguments)?;
-        // The store is told the selector that resolves: the name where there is
-        // one, and the root itself for a list whose project is gone.
         let (root, name) = self.todo_target(&args)?;
-        let project = name.unwrap_or(root);
+        let backend = self.store();
+        let list = todos::fetch_list(&backend, &root)?;
+
         match call.name.as_str() {
             "todo_add" => {
                 let text = args.text.as_deref().ok_or("text is required")?;
+                let mutations = todos::plan_add(&list, &root, text, args.parent_id)?;
+                let report = backend.apply(mutations)?;
                 Ok(serde_json::json!({
-                    "project": project,
+                    "project": name,
+                    // The first put of the batch is the new item; anything after
+                    // it reopens an ancestor and inserts nothing.
+                    "id": report.ids.first().copied().unwrap_or_default(),
                     "text": text,
-                    "parent_id": args.parent_id,
-                }))
+                })
+                .to_string())
             },
             _ => {
                 let id = args.id.ok_or("id is required")?;
-                Ok(serde_json::json!({ "project": project, "id": id, "undo": args.undo }))
+                let done = !args.undo;
+                let (mutations, change) = todos::plan_set_done(&list, &root, id, done)?;
+                backend.apply(mutations)?;
+                Ok(serde_json::json!({
+                    "project": name,
+                    "id": change.id,
+                    "text": change.text,
+                    "done": change.done,
+                    "cascaded": change.cascaded,
+                    "reopened": change.reopened,
+                })
+                .to_string())
             },
         }
     }
 
-    /// Hand a todo change to `hocus-store` and wait for it.
+    /// Run a todo change and finish the call with its answer.
     ///
-    /// Returns whether the queue advanced; `false` leaves the call waiting.
+    /// Always returns `true`: the queue always advances, because nothing waits.
     pub(crate) fn start_todo_write(&mut self, call: &ToolCall) -> bool {
-        let payload = match self.todo_write_payload(call) {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
-            },
+        let answer = match self.todo_write(call) {
+            Ok(answer) => answer,
+            Err(error) => error,
         };
-        let op = call.name.clone();
-        self.start_store_write(call, &op, payload);
-        false
+        self.finish_head(answer);
+        true
     }
 
+    /// One project's list, fetched when asked for.
+    ///
+    /// hocus used to hold every list of every project so this could answer out
+    /// of memory. It is a tool call, which is already behind a model round trip,
+    /// so a fetch here costs nothing anyone can perceive — and it drops the
+    /// largest thing hocus was keeping a copy of.
     pub(crate) fn todo_list(&self, args: &tools::Args) -> String {
         let (root, name) = match self.todo_target(args) {
             Ok(target) => target,
             Err(error) => return error,
         };
-        let mut value = todos::list_json(&self.todos, &root, args.include_done);
+        let list = match todos::fetch_list(&self.store(), &root) {
+            Ok(list) => list,
+            Err(error) => return error,
+        };
+        let mut one = todos::Store::new();
+        one.insert(root.clone(), list);
+        let mut value = todos::list_json(&one, &root, args.include_done);
         value["project"] = serde_json::json!(name);
         value.to_string()
     }
@@ -698,17 +723,20 @@ impl State {
             return "query is required".to_owned();
         };
         // Every list is searched by folder, so a list whose project went away is
-        // still found. The registry is worked out again on every poll; the file
-        // is the lasting record.
-        let (roots, scope) = if args.all_projects {
-            (self.todos.keys().cloned().collect(), "all".to_owned())
+        // still found. The rows are the lasting record; the registry is worked
+        // out again on every poll.
+        let (scope_root, scope) = if args.all_projects {
+            (None, "all".to_owned())
         } else {
             match self.todo_target(args) {
-                Ok((root, name)) => (vec![root.clone()], name.unwrap_or(root)),
+                Ok((root, name)) => (Some(root.clone()), name.unwrap_or(root)),
                 Err(error) => return error,
             }
         };
-        let found = todos::search(&self.todos, &roots, query);
+        let found = match todos::search(&self.store(), scope_root.as_deref(), query) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
         let items: Vec<serde_json::Value> = found
             .iter()
             .map(|found| {
