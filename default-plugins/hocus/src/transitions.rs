@@ -371,14 +371,20 @@ impl State {
     pub(crate) fn on_timer(&mut self, elapsed: f64) -> bool {
         self.timer_armed = false;
         self.mono_ms = self.mono_ms.saturating_add((elapsed * 1000.0) as u64);
+        // Asks ahead of jobs: someone is sitting in front of the popup waiting
+        // on this, and a job that comes due on the same tick loses nothing by
+        // going a second later. Once an ask starts, `is_in_flight` holds the
+        // job back anyway — `tick_jobs` still runs, for its countdown.
+        let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
         let gave_up = self.tick_store(elapsed);
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
         }
-        let fired = fired || gave_up;
-        if frames || !self.jobs.is_empty() || self.pending_write.is_some() {
+        let fired = asked || fired || gave_up;
+        if frames || !self.jobs.is_empty() || self.pending_write.is_some() || !self.asks.is_empty()
+        {
             self.arm_timer(if frames { FRAME_SECONDS } else { JOB_SECONDS });
         }
         // A quiet tick changed nothing on screen; asking for a render would
@@ -441,6 +447,141 @@ impl State {
                 "content": log::truncate(&format!("[scheduled] {prompt}")),
                 "scheduled": true,
                 "job_id": job_id,
+            }),
+        );
+        // A fresh tool budget, same as a typed question.
+        self.tool_rounds = 0;
+        self.start_request(&cfg);
+        true
+    }
+
+    /// Take a question from the `hocus-ask` popup.
+    ///
+    /// Every path answers the popup, including the ones that turn the question
+    /// away. The popup is a floating pane the user is looking at while this
+    /// runs, and it cannot tell a hocus that heard and said nothing from a
+    /// session with no hocus in it at all — silence is the one reply that means
+    /// something else.
+    pub(crate) fn on_ask(&mut self, message: &PipeMessage) -> bool {
+        let reply_to = match message.source {
+            PipeSource::Plugin(id) => Some(id),
+            // A hand-typed `zellij pipe` has no plugin to answer. The question
+            // is still taken; there is just nobody to tell.
+            _ => None,
+        };
+        let text = message
+            .payload
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<wire::Ask>(json).ok())
+            .map(|ask| ask.text.trim().to_owned())
+            .unwrap_or_default();
+
+        if text.is_empty() {
+            self.ack_ask(
+                reply_to,
+                wire::AskOutcome::Refused,
+                "the question was empty",
+            );
+            return false;
+        }
+        if self.cfg.is_err() {
+            // Queueing would be a promise nothing can keep: no configuration
+            // means no request, now or on any later tick.
+            self.ack_ask(
+                reply_to,
+                wire::AskOutcome::Refused,
+                "hocus has no working API configuration",
+            );
+            return false;
+        }
+        if self.asks.len() >= MAX_QUEUED_ASKS {
+            self.ack_ask(
+                reply_to,
+                wire::AskOutcome::Refused,
+                "hocus already has a queue of questions waiting",
+            );
+            return false;
+        }
+
+        self.asks.push_back(text);
+        let started = self.drain_asks();
+        self.ack_ask(
+            reply_to,
+            if started {
+                wire::AskOutcome::Sent
+            } else {
+                wire::AskOutcome::Queued
+            },
+            "",
+        );
+        // A question that could not start needs a tick to retry on, and an idle
+        // hocus has no timer chain running to give it one.
+        if !self.asks.is_empty() {
+            self.arm_timer(FRAME_SECONDS);
+        }
+        started
+    }
+
+    /// Tell the popup what became of its question.
+    ///
+    /// Addressed by plugin id rather than broadcast, unlike everything else
+    /// hocus sends: the popup is one of possibly several, and an acknowledgement
+    /// delivered to the wrong one would close a box the user is still typing in.
+    fn ack_ask(&self, reply_to: Option<u32>, outcome: wire::AskOutcome, detail: &str) {
+        let Some(id) = reply_to else {
+            return;
+        };
+        let ack = wire::AskAck {
+            outcome,
+            detail: detail.to_owned(),
+        };
+        if let Ok(payload) = serde_json::to_string(&ack) {
+            pipe_message_to_plugin(
+                MessageToPlugin::new(wire::ASK_ACK)
+                    .with_destination_plugin_id(id)
+                    .with_payload(payload),
+            );
+        }
+    }
+
+    /// Start at most one queued question. Returns whether the transcript changed.
+    ///
+    /// The same guards as `tick_jobs`, for the same reasons: there is exactly
+    /// one stream slot, and an open picker owns the keyboard.
+    pub(crate) fn drain_asks(&mut self) -> bool {
+        if self.is_in_flight() || self.picker.is_some() {
+            return false;
+        }
+        let Ok(cfg) = self.cfg.clone() else {
+            return false;
+        };
+        let Some(mut text) = self.asks.pop_front() else {
+            return false;
+        };
+
+        // Mentions resolve here rather than where the question was typed, the
+        // same as a scheduled job's do: "@codex is stuck" should read the agent
+        // as it is when the question goes out. The popup holds no snapshot of
+        // its own to resolve them against anyway.
+        if let Some(context) =
+            agents::mention_context(&text, &self.panes, &self.manual_kinds, &self.activity)
+        {
+            text.push_str("\n\n");
+            text.push_str(&context);
+        }
+
+        let content = text.clone();
+        self.job_auto_confirm = false;
+        // No `[scheduled]`-style prefix, deliberately. A job's prefix exists
+        // because the model is being handed words nobody typed; an ask *is* the
+        // user's words, and marking them up would change what the model reads.
+        // The provenance lives in the log line instead.
+        self.messages.push(Message::user(text));
+        self.log(
+            "user_input",
+            serde_json::json!({
+                "content": log::truncate(&content),
+                "via": "ask",
             }),
         );
         // A fresh tool budget, same as a typed question.

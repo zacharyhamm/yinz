@@ -120,6 +120,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "shared-test",
     "hocus",
     "hocus-agentd",
+    "hocus-ask",
     "hocus-store",
 ];
 
