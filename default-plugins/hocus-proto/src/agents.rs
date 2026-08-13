@@ -157,41 +157,6 @@ pub fn classify<'a>(
     }
 }
 
-/// Every agent in a snapshot, keyed for comparison across polls.
-pub fn agent_map(
-    panes: &[AgentPane],
-    manual: &BTreeMap<u32, String>,
-) -> BTreeMap<u32, (String, AgentStatus)> {
-    panes
-        .iter()
-        .filter_map(|pane| {
-            let (kind, _) = classify(pane, manual)?;
-            Some((pane.pane_id, (kind.to_owned(), pane.status)))
-        })
-        .collect()
-}
-
-/// One line for each agent that changed status or left the session since the last
-/// snapshot.
-///
-/// A pane only in `after` is a first sighting and says nothing — which is also what
-/// keeps a fresh load quiet, because its first `before` is empty.
-pub fn transition_notices(
-    before: &BTreeMap<u32, (String, AgentStatus)>,
-    after: &BTreeMap<u32, (String, AgentStatus)>,
-) -> Vec<String> {
-    before
-        .iter()
-        .filter_map(|(pane_id, (kind, status))| match after.get(pane_id) {
-            None => Some(format!("agent {kind} (pane {pane_id}) closed")),
-            Some((_, now)) if now != status => {
-                Some(format!("agent {kind} (pane {pane_id}) {}", now.as_str()))
-            },
-            Some(_) => None,
-        })
-        .collect()
-}
-
 /// Fold one poll's pane content into the activity map.
 ///
 /// The hash is `DefaultHasher` over the raw text: not stable across runs, never
@@ -681,39 +646,6 @@ mod tests {
             Some(("codex", "auto")),
         );
         assert_eq!(classify(&pane(5, "zsh", Some("zsh")), &manual), None);
-    }
-
-    #[test]
-    fn transition_notices_report_a_status_change_and_a_closed_agent() {
-        let kinds = manual(&[(5, "reviewer")]);
-        let before = agent_map(
-            &[pane(3, "codex", Some("codex")), pane(5, "zsh", Some("zsh"))],
-            &kinds,
-        );
-        // Pane 5 is gone, and with it its manual kind — the before-map is what
-        // remembers `reviewer`.
-        let after = agent_map(
-            &[AgentPane {
-                status: AgentStatus::Exited,
-                ..pane(3, "codex", Some("codex"))
-            }],
-            &manual(&[]),
-        );
-        assert_eq!(
-            transition_notices(&before, &after),
-            vec![
-                "agent codex (pane 3) exited".to_owned(),
-                "agent reviewer (pane 5) closed".to_owned(),
-            ],
-        );
-    }
-
-    #[test]
-    fn transition_notices_say_nothing_on_a_first_sighting_or_no_change() {
-        let map = agent_map(&[pane(3, "codex", Some("codex"))], &manual(&[]));
-        assert!(transition_notices(&map, &map).is_empty());
-        // Empty before is both a new pane and a fresh plugin load.
-        assert!(transition_notices(&BTreeMap::new(), &map).is_empty());
     }
 
     #[test]
