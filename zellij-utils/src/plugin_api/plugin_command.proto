@@ -233,6 +233,8 @@ enum CommandName {
   DataCount = 241;
   DataWatch = 242;
   DataUnwatch = 243;
+  WarpTabToSession = 244;
+  WarpTabFromSession = 245;
 }
 
 message PluginCommand {
@@ -406,6 +408,8 @@ message PluginCommand {
     DataFetchPayload data_count_payload = 182;
     DataWatchPayload data_watch_payload = 183;
     DataUnwatchPayload data_unwatch_payload = 184;
+    WarpTabToSessionPayload warp_tab_to_session_payload = 185;
+    WarpTabFromSessionPayload warp_tab_from_session_payload = 186;
   }
 }
 
@@ -501,6 +505,17 @@ message WarpPaneFromSessionPayload {
   PaneId pane_id = 1;
   string from_session = 2;
   WarpPlacement placement = 3;
+}
+
+// A tab has no placement to choose: it arrives as a tab.
+message WarpTabToSessionPayload {
+  uint32 tab_index = 1;
+  string to_session = 2;
+}
+
+message WarpTabFromSessionPayload {
+  uint32 tab_index = 1;
+  string from_session = 2;
 }
 
 message AdoptOrphanedPanePayload {
