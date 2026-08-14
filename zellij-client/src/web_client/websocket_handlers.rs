@@ -35,12 +35,7 @@ pub async fn ws_handler_control(
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
 ) -> Response {
-    if !state
-        .connection_table
-        .lock()
-        .unwrap()
-        .verify_client_ownership(&params.web_client_id, &session_token_hash.0)
-    {
+    if !state.client_is_owned_by(&params.web_client_id, &session_token_hash.0) {
         log::error!(
             "Control WebSocket: client does not own web_client_id {}",
             params.web_client_id
@@ -56,10 +51,17 @@ pub async fn ws_handler_terminal(
     Query(params): Query<TerminalParams>,
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_ws_terminal(socket, session_name, params, state, session_token_hash)
-    })
+) -> Response {
+    // Refuse before upgrading, so an unauthorized client gets an HTTP error
+    // rather than a socket that is accepted and then dropped.
+    if !state.client_is_owned_by(&params.web_client_id, &session_token_hash.0) {
+        log::error!(
+            "Terminal WebSocket: client does not own web_client_id {}",
+            params.web_client_id
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_ws_terminal(socket, session_name, params, state))
 }
 
 async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppState) {
@@ -77,13 +79,7 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
         .add_client_control_tx(&web_client_id, control_channel_tx);
 
     let send_message_to_server = |deserialized_msg: WebClientToWebServerControlMessage| {
-        let Some(client_connection) = state
-            .connection_table
-            .lock()
-            .unwrap()
-            .get_client_os_api(&deserialized_msg.web_client_id)
-            .cloned()
-        else {
+        let Some(client_connection) = state.os_api_for(&deserialized_msg.web_client_id) else {
             log::error!("Unknown web_client_id: {}", deserialized_msg.web_client_id);
             return;
         };
@@ -130,7 +126,6 @@ async fn handle_ws_terminal(
     session_name: Option<AxumPath<String>>,
     params: TerminalParams,
     state: AppState,
-    session_token_hash: SessionTokenHash,
 ) {
     let client_size = match (params.rows, params.cols) {
         (Some(rows), Some(cols)) if rows > 0 && cols > 0 => Some(Size {
@@ -148,27 +143,7 @@ async fn handle_ws_terminal(
     };
     let web_client_id = params.web_client_id;
 
-    // Verify the session token owns this web_client_id
-    if !state
-        .connection_table
-        .lock()
-        .unwrap()
-        .verify_client_ownership(&web_client_id, &session_token_hash.0)
-    {
-        log::error!(
-            "Terminal WebSocket: client does not own web_client_id {}",
-            web_client_id
-        );
-        return;
-    }
-
-    let Some(os_input) = state
-        .connection_table
-        .lock()
-        .unwrap()
-        .get_client_os_api(&web_client_id)
-        .cloned()
-    else {
+    let Some(os_input) = state.os_api_for(&web_client_id) else {
         log::error!("Unknown web_client_id: {}", web_client_id);
         return;
     };
@@ -256,13 +231,7 @@ async fn handle_ws_terminal(
                 // Idle timeout fired with `pending_finalize` set:
                 // drain any ambiguous-but-complete events termwiz held
                 // back on the previous frame.
-                if let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                {
+                if let Some(client_connection) = state.os_api_for(&web_client_id) {
                     stdin_session.finalize(&*client_connection, &mut mouse_old_event);
                 } else {
                     // No client to send drained events to — clear the
@@ -273,37 +242,20 @@ async fn handle_ws_terminal(
             },
         };
         match msg {
-            Message::Binary(buf) => {
-                let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                else {
+            // Browsers may send stdin as either frame type; the bytes mean
+            // the same thing to the parser.
+            Message::Binary(_) | Message::Text(_) => {
+                let bytes: &[u8] = match &msg {
+                    Message::Binary(buf) => buf,
+                    Message::Text(text) => text.as_bytes(),
+                    _ => unreachable!("outer match restricts this to Binary/Text"),
+                };
+                let Some(client_connection) = state.os_api_for(&web_client_id) else {
                     log::error!("Unknown web_client_id: {}", web_client_id);
                     continue;
                 };
                 parse_stdin(
-                    &buf,
-                    client_connection.clone(),
-                    &mut mouse_old_event,
-                    &mut stdin_session,
-                );
-            },
-            Message::Text(msg) => {
-                let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                else {
-                    log::error!("Unknown web_client_id: {}", web_client_id);
-                    continue;
-                };
-                parse_stdin(
-                    msg.as_bytes(),
+                    bytes,
                     client_connection.clone(),
                     &mut mouse_old_event,
                     &mut stdin_session,

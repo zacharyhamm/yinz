@@ -227,6 +227,28 @@ pub struct AppState {
     pub pending_welcome_sessions: PendingWelcomeSessions,
 }
 
+impl AppState {
+    /// The client's own view of the OS, cloned out from under the table lock.
+    ///
+    /// Every websocket frame needs this, and holding the lock while handling
+    /// the frame would serialise all connections, so it is always cloned.
+    pub fn os_api_for(&self, web_client_id: &str) -> Option<Box<dyn ClientOsApi>> {
+        self.connection_table
+            .lock()
+            .unwrap()
+            .get_client_os_api(web_client_id)
+            .cloned()
+    }
+
+    /// Whether `session_token_hash` is the token that created `web_client_id`.
+    pub fn client_is_owned_by(&self, web_client_id: &str, session_token_hash: &str) -> bool {
+        self.connection_table
+            .lock()
+            .unwrap()
+            .verify_client_ownership(web_client_id, session_token_hash)
+    }
+}
+
 #[derive(Serialize)]
 pub struct CreateClientIdResponse {
     pub web_client_id: String,

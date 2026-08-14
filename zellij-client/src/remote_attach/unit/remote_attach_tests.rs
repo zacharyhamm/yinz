@@ -1000,7 +1000,6 @@ mod tests {
 
 #[cfg(feature = "web_server_capability")]
 mod cookie_jar_tests {
-    use super::*;
     use crate::remote_attach::http_client::HttpClientWithCookies;
     use axum::{response::IntoResponse, routing::get, Router};
     use tokio::net::TcpListener;
