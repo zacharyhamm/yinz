@@ -246,12 +246,12 @@ impl GridSnapshot {
     pub fn row_has_italic(&self, y: usize) -> bool {
         self.styles
             .get(y)
-            .map_or(false, |row| row.iter().any(|cell| cell.italic))
+            .is_some_and(|row| row.iter().any(|cell| cell.italic))
     }
     pub fn row_has_bold(&self, y: usize) -> bool {
         self.styles
             .get(y)
-            .map_or(false, |row| row.iter().any(|cell| cell.bold))
+            .is_some_and(|row| row.iter().any(|cell| cell.bold))
     }
     pub fn row_count(&self) -> usize {
         self.styles.len()
@@ -278,7 +278,7 @@ impl GridSnapshot {
             Some(y) => self
                 .styles
                 .get(y)
-                .map_or(false, |row| row.iter().any(|cell| cell.dim)),
+                .is_some_and(|row| row.iter().any(|cell| cell.dim)),
             None => false,
         }
     }

@@ -800,7 +800,7 @@ mod tests {
         let depth = tc.draw(generators::integers::<usize>().max_value(MAX_PRED_DEPTH - 1));
         let mut pred = Pred::eq("a", 1);
         for _ in 0..depth {
-            pred = pred.not();
+            pred = !pred;
         }
         assert!(
             ProtobufPred::try_from(pred.clone()).is_ok(),
@@ -814,7 +814,7 @@ mod tests {
         let excess = tc.draw(generators::integers::<usize>().min_value(1).max_value(8));
         let mut pred = Pred::eq("a", 1);
         for _ in 0..MAX_PRED_DEPTH + excess {
-            pred = pred.not();
+            pred = !pred;
         }
         assert!(ProtobufPred::try_from(pred).is_err(), "excess {}", excess);
     }
@@ -920,10 +920,10 @@ mod tests {
             Pred::contains("a", "x"),
             Pred::eq("a", 1).and(Pred::eq("b", 2)),
             Pred::eq("a", 1).or(Pred::eq("b", 2)),
-            Pred::eq("a", 1).not(),
+            !Pred::eq("a", 1),
             // nested, so the recursion is exercised in both directions
             Pred::all([
-                Pred::any([Pred::eq("a", 1), Pred::contains("b", "y").not()]),
+                Pred::any([Pred::eq("a", 1), !Pred::contains("b", "y")]),
                 Pred::is_null("c"),
             ]),
         ];
@@ -937,7 +937,7 @@ mod tests {
     fn a_predicate_nested_past_the_limit_is_rejected_in_both_directions() {
         let mut pred = Pred::eq("a", 1);
         for _ in 0..MAX_PRED_DEPTH + 2 {
-            pred = pred.not();
+            pred = !pred;
         }
         assert!(ProtobufPred::try_from(pred).is_err());
     }

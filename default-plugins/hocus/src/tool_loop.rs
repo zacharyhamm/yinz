@@ -596,7 +596,7 @@ impl State {
     }
 
     pub(crate) fn register_opened_project(&mut self, name: &str, result: &str) -> String {
-        let tab_id = serde_json::from_str::<serde_json::Value>(&result)
+        let tab_id = serde_json::from_str::<serde_json::Value>(result)
             .ok()
             .and_then(|value| value["tab_id"].as_u64());
         let Some(tab_id) = tab_id else {
@@ -942,7 +942,7 @@ impl State {
             &self.activity,
             &self.pane_projects(),
             &self.pane_branches(),
-            |pane_id| read_pane_text(pane_id),
+            read_pane_text,
         )
     }
 

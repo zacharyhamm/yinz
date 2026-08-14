@@ -488,7 +488,7 @@ impl SortDir {
 
 /// A filter over rows.
 ///
-/// Combine with [`Pred::and`], [`Pred::or`] and [`Pred::not`]. Every leaf names an attribute; the
+/// Combine with [`Pred::and`], [`Pred::or`] and `!`. Every leaf names an attribute; the
 /// host checks that the attribute is declared before compiling anything, so a typo is an error
 /// rather than an empty result set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -583,10 +583,6 @@ impl Pred {
         }
     }
 
-    pub fn not(self) -> Self {
-        Pred::Not(Box::new(self))
-    }
-
     pub fn all(preds: impl IntoIterator<Item = Pred>) -> Self {
         Pred::And(preds.into_iter().collect())
     }
@@ -673,6 +669,14 @@ impl Pred {
             },
             _ => Ok(()),
         }
+    }
+}
+
+impl std::ops::Not for Pred {
+    type Output = Pred;
+
+    fn not(self) -> Pred {
+        Pred::Not(Box::new(self))
     }
 }
 
@@ -1012,19 +1016,14 @@ pub struct DataSchemaInfo {
 }
 
 /// How much a watch wants to be told when its results change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WatchMode {
     /// Send the rows themselves, under the same limits as a fetch.
+    #[default]
     Rows,
     /// Send only the `id` column. For a watcher over a large set that would rather page for the
     /// rows it actually needs than receive all of them on every change.
     Ids,
-}
-
-impl Default for WatchMode {
-    fn default() -> Self {
-        WatchMode::Rows
-    }
 }
 
 /// A registered watch, and the results at the moment it was registered.
@@ -1176,9 +1175,9 @@ mod tests {
 
     #[test]
     fn a_name_at_the_length_limit_is_allowed_and_one_past_it_is_not() {
-        let at_limit: String = std::iter::repeat('a').take(MAX_NAME_LEN).collect();
+        let at_limit: String = std::iter::repeat_n('a', MAX_NAME_LEN).collect();
         assert_eq!(validate_name(&at_limit, NameKind::Attribute), Ok(()));
-        let past_limit: String = std::iter::repeat('a').take(MAX_NAME_LEN + 1).collect();
+        let past_limit: String = std::iter::repeat_n('a', MAX_NAME_LEN + 1).collect();
         assert!(matches!(
             validate_name(&past_limit, NameKind::Attribute),
             Err(DataError::InvalidName(_))
@@ -1240,7 +1239,7 @@ mod tests {
     fn a_predicate_deeper_than_the_limit_is_rejected() {
         let mut pred = Pred::eq("a", 1);
         for _ in 0..MAX_PRED_DEPTH {
-            pred = pred.not();
+            pred = !pred;
         }
         assert!(matches!(pred.validate(), Err(DataError::InvalidQuery(_))));
     }
@@ -1249,7 +1248,7 @@ mod tests {
     fn a_predicate_at_the_depth_limit_is_allowed() {
         let mut pred = Pred::eq("a", 1);
         for _ in 0..MAX_PRED_DEPTH - 1 {
-            pred = pred.not();
+            pred = !pred;
         }
         assert_eq!(pred.depth(), MAX_PRED_DEPTH);
         assert_eq!(pred.validate(), Ok(()));
@@ -1273,7 +1272,7 @@ mod tests {
     fn referenced_attrs_finds_every_leaf() {
         let pred = Pred::eq("a", 1)
             .and(Pred::any([Pred::gt("b", 2), Pred::is_null("c")]))
-            .and(Pred::contains("d", "x").not());
+            .and(!Pred::contains("d", "x"));
         let mut attrs = pred.referenced_attrs();
         attrs.sort_unstable();
         assert_eq!(attrs, vec!["a", "b", "c", "d"]);

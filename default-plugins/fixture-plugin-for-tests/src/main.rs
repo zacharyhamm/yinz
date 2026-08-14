@@ -1,3 +1,7 @@
+// Everything here is gated on wasm - a host-target build (which is what a workspace-wide
+// `cargo clippy` does) has no entry point of its own and sees the plugin's helpers as dead.
+#![cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[allow(unused_imports)]
@@ -41,6 +45,9 @@ impl<'de> ZellijWorker<'de> for TestWorker {
         }
     }
 }
+
+#[cfg(not(target_family = "wasm"))]
+fn main() {}
 
 #[cfg(target_family = "wasm")]
 register_plugin!(State);
@@ -637,9 +644,9 @@ impl ZellijPlugin for State {
                 {
                     let name = generate_random_name();
                     if !name.is_empty() {
-                        self.explicit_string_to_render = Some(format!("Generated name"));
+                        self.explicit_string_to_render = Some("Generated name".to_string());
                     } else {
-                        self.explicit_string_to_render = Some(format!("Error: got empty name"));
+                        self.explicit_string_to_render = Some("Error: got empty name".to_string());
                     }
                 },
                 BareKey::Char('b')
@@ -677,10 +684,10 @@ impl ZellijPlugin for State {
                     // Test get_layout_dir()
                     let dir = get_layout_dir();
                     if !dir.is_empty() {
-                        self.explicit_string_to_render = Some(format!("Got layout folder"));
+                        self.explicit_string_to_render = Some("Got layout folder".to_string());
                     } else {
                         self.explicit_string_to_render =
-                            Some(format!("Error: Got empty layout folder!"));
+                            Some("Error: Got empty layout folder!".to_string());
                     }
                 },
                 BareKey::Char('e')
@@ -741,10 +748,10 @@ impl ZellijPlugin for State {
                     match parse_layout(valid_kdl) {
                         Ok(metadata) => {
                             if metadata.tabs.len() == 1 {
-                                self.explicit_string_to_render = Some(format!("Parse success"));
+                                self.explicit_string_to_render = Some("Parse success".to_string());
                             } else {
                                 self.explicit_string_to_render =
-                                    Some(format!("Parse failure: got wrong metadata"));
+                                    Some("Parse failure: got wrong metadata".to_string());
                             }
                         },
                         Err(e) => {
@@ -775,7 +782,8 @@ impl ZellijPlugin for State {
                         self.explicit_string_to_render =
                             Some(format!("Got environment variables: {:#?}", env_vars,));
                     } else {
-                        self.explicit_string_to_render = Some(format!("Error: Got empty env vars"));
+                        self.explicit_string_to_render =
+                            Some("Error: Got empty env vars".to_string());
                     }
                 },
                 BareKey::Char('r')
@@ -807,7 +815,7 @@ impl ZellijPlugin for State {
                     let test_kdl = "layout { tab { pane; }; }";
                     match save_layout("test_layout", test_kdl, false) {
                         Ok(_) => {
-                            self.explicit_string_to_render = Some(format!("Save layout success"))
+                            self.explicit_string_to_render = Some("Save layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -821,7 +829,7 @@ impl ZellijPlugin for State {
                     let test_kdl = "layout { tab { pane; }; }";
                     match save_layout("test_layout", test_kdl, false) {
                         Ok(_) => {
-                            self.explicit_string_to_render = Some(format!("Save layout success"))
+                            self.explicit_string_to_render = Some("Save layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -836,7 +844,7 @@ impl ZellijPlugin for State {
                     match save_layout("test_layout2", test_kdl, true) {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Save layout with overwrite success"))
+                                Some("Save layout with overwrite success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -852,7 +860,7 @@ impl ZellijPlugin for State {
                     match save_layout("invalid_layout", invalid_kdl, false) {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Save invalid layout success"))
+                                Some("Save invalid layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -865,7 +873,8 @@ impl ZellijPlugin for State {
                 {
                     match rename_layout("test_layout", "renamed_layout") {
                         Ok(_) => {
-                            self.explicit_string_to_render = Some(format!("Rename layout success"))
+                            self.explicit_string_to_render =
+                                Some("Rename layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -880,7 +889,7 @@ impl ZellijPlugin for State {
                     match rename_layout("nonexistent_layout", "new_name") {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Rename nonexistent layout success"))
+                                Some("Rename nonexistent layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -894,7 +903,8 @@ impl ZellijPlugin for State {
                     // Test delete_layout() - success case
                     match delete_layout("renamed_layout") {
                         Ok(_) => {
-                            self.explicit_string_to_render = Some(format!("Delete layout success"))
+                            self.explicit_string_to_render =
+                                Some("Delete layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -909,7 +919,7 @@ impl ZellijPlugin for State {
                     match delete_layout("nonexistent_layout") {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Delete nonexistent layout success"))
+                                Some("Delete nonexistent layout success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -924,7 +934,7 @@ impl ZellijPlugin for State {
                     match save_layout("../evil_layout", test_kdl, false) {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Path traversal save success"))
+                                Some("Path traversal save success".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -941,7 +951,7 @@ impl ZellijPlugin for State {
                     match edit_layout("test_layout2", context) {
                         Ok(_) => {
                             self.explicit_string_to_render =
-                                Some(format!("Edit layout command sent"))
+                                Some("Edit layout command sent".to_string())
                         },
                         Err(e) => {
                             self.explicit_string_to_render =
@@ -956,13 +966,14 @@ impl ZellijPlugin for State {
                     let mut context = BTreeMap::new();
                     context.insert("override_test".to_owned(), "value".to_owned());
                     override_layout(
-                        &LayoutInfo::BuiltIn("compact".to_owned()),
+                        LayoutInfo::BuiltIn("compact".to_owned()),
                         false, // retain_existing_terminal_panes
                         false, // retain_existing_plugin_panes
                         false, // apply_only_to_active_tab
                         context,
                     );
-                    self.explicit_string_to_render = Some(format!("Override layout command sent"));
+                    self.explicit_string_to_render =
+                        Some("Override layout command sent".to_string());
                 },
                 BareKey::Char('l')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Alt]) =>
@@ -1011,7 +1022,7 @@ impl ZellijPlugin for State {
         let input_pipe_id = match pipe_message.source {
             PipeSource::Cli(id) => id.clone(),
             PipeSource::Plugin(id) => format!("{}", id),
-            PipeSource::Keybind => format!("keybind"),
+            PipeSource::Keybind => "keybind".to_string(),
         };
         let name = pipe_message.name;
         let payload = pipe_message.payload;
@@ -1028,8 +1039,8 @@ impl ZellijPlugin for State {
         } else if name == "message_to_plugin" {
             self.message_to_plugin_payload = payload.clone();
         }
-        let should_render = true;
-        should_render
+
+        true
     }
 
     fn render(&mut self, rows: usize, cols: usize) {

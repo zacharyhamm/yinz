@@ -277,7 +277,7 @@ mod tests {
         let connection_table = Arc::new(Mutex::new(ConnectionTable::default()));
         connection_table.lock().unwrap().add_new_client(
             client_id.to_owned(),
-            Box::new(StubOsInput::default()),
+            Box::new(StubOsInput),
             false,
             "token".to_owned(),
         );

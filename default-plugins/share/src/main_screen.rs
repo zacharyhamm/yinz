@@ -37,6 +37,9 @@ impl<'a> MainScreen<'a> {
     const SSL_URL: &'static str = "https://zellij.dev/documentation/web-client.html#https";
     const HELP_TEXT_WITH_CLICK: &'static str = "Help: Click or Shift-Click to open in browser";
     const HELP_TEXT_SHIFT_ONLY: &'static str = "Help: Shift-Click to open in browser";
+    // every argument is a field of the struct being built - a params struct would only move the
+    // list one call up
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         token_list_is_empty: bool,
         web_server_started: bool,
@@ -284,7 +287,7 @@ impl<'a> MainScreen<'a> {
         print_text_with_coordinates(help_text, x, y, None, None);
     }
     pub fn connection_is_unencrypted(&self) -> bool {
-        Url::parse(&self.web_server_base_url)
+        Url::parse(self.web_server_base_url)
             .ok()
             .map(|b| b.scheme() == "http")
             .unwrap_or(false)

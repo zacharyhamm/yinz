@@ -182,8 +182,9 @@ mod mock_ws_server {
     pub struct MockWsServer {
         pub terminal_to_client_tx: mpsc::UnboundedSender<Message>,
         pub control_to_client_tx: mpsc::UnboundedSender<Message>,
-        pub client_to_terminal_rx: Arc<Mutex<mpsc::UnboundedReceiver<Message>>>,
-        pub client_to_control_rx: Arc<Mutex<mpsc::UnboundedReceiver<Message>>>,
+        // tokio mutexes: the tests `recv()` on these while holding the guard across an await
+        pub client_to_terminal_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>,
+        pub client_to_control_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>,
     }
 
     impl MockWsServer {
@@ -225,8 +226,8 @@ mod mock_ws_server {
             let server = MockWsServer {
                 terminal_to_client_tx,
                 control_to_client_tx,
-                client_to_terminal_rx: Arc::new(Mutex::new(client_to_terminal_rx)),
-                client_to_control_rx: Arc::new(Mutex::new(client_to_control_rx)),
+                client_to_terminal_rx: Arc::new(tokio::sync::Mutex::new(client_to_terminal_rx)),
+                client_to_control_rx: Arc::new(tokio::sync::Mutex::new(client_to_control_rx)),
             };
 
             (port, server, server_handle)
@@ -373,7 +374,7 @@ async fn test_stdin_forwarded_to_terminal_websocket() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let received = tokio::time::timeout(
         Duration::from_secs(1),
-        server.client_to_terminal_rx.lock().unwrap().recv(),
+        server.client_to_terminal_rx.lock().await.recv(),
     )
     .await
     .expect("Timeout")
@@ -514,7 +515,7 @@ async fn test_resize_signal_sends_control_message() {
 
     let _ = tokio::time::timeout(
         Duration::from_millis(500),
-        server.client_to_control_rx.lock().unwrap().recv(),
+        server.client_to_control_rx.lock().await.recv(),
     )
     .await;
 
@@ -524,7 +525,7 @@ async fn test_resize_signal_sends_control_message() {
 
     let received = tokio::time::timeout(
         Duration::from_secs(1),
-        server.client_to_control_rx.lock().unwrap().recv(),
+        server.client_to_control_rx.lock().await.recv(),
     )
     .await
     .expect("Timeout")
@@ -717,7 +718,7 @@ async fn test_control_message_handling() {
 
     let _ = tokio::time::timeout(
         Duration::from_millis(500),
-        server.client_to_control_rx.lock().unwrap().recv(),
+        server.client_to_control_rx.lock().await.recv(),
     )
     .await;
 
@@ -733,7 +734,7 @@ async fn test_control_message_handling() {
 
     let received = tokio::time::timeout(
         Duration::from_secs(1),
-        server.client_to_control_rx.lock().unwrap().recv(),
+        server.client_to_control_rx.lock().await.recv(),
     )
     .await
     .expect("Timeout")
@@ -831,7 +832,7 @@ async fn test_nested_ping_frame_is_answered_locally_and_stripped_from_forwarded_
     tokio::time::sleep(Duration::from_millis(200)).await;
     let received = tokio::time::timeout(
         Duration::from_secs(1),
-        server.client_to_terminal_rx.lock().unwrap().recv(),
+        server.client_to_terminal_rx.lock().await.recv(),
     )
     .await
     .expect("Timeout")
@@ -885,11 +886,10 @@ async fn test_nested_announce_ack_is_relayed_over_control_websocket() {
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let mut relayed_payload = None;
-    loop {
+    let relayed_payload = loop {
         let received = tokio::time::timeout(
             Duration::from_secs(1),
-            server.client_to_control_rx.lock().unwrap().recv(),
+            server.client_to_control_rx.lock().await.recv(),
         )
         .await
         .expect("Timeout")
@@ -902,13 +902,12 @@ async fn test_nested_announce_ack_is_relayed_over_control_websocket() {
             } = control_msg.payload
             {
                 assert_eq!(control_msg.web_client_id, "test-nested");
-                relayed_payload = Some(payload_bytes);
-                break;
+                break payload_bytes;
             }
         }
-    }
+    };
     assert_eq!(
-        zellij_utils::nested_session::decode_payload(&relayed_payload.unwrap()),
+        zellij_utils::nested_session::decode_payload(&relayed_payload),
         Some(announce_ack)
     );
 

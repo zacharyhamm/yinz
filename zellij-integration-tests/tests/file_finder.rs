@@ -11,7 +11,7 @@
 //! part: it writes a selection to the file the generated script names, then reports the
 //! command as exited.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zellij_integration_tests::{
     keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
@@ -97,7 +97,7 @@ fn open_finder(zellij: &TestSession) -> (FakePtyHandle, PathBuf) {
 /// unlinks after an async `close_pane_with_id`, so the repaint that satisfies those waits
 /// can beat the unlink. Poll on the same bounded-loop pattern the re-trigger test below
 /// uses for the same reason.
-fn assert_cleaned_up(selection_file: &PathBuf, what: &str) {
+fn assert_cleaned_up(selection_file: &Path, what: &str) {
     for _ in 0..50 {
         if !selection_file.exists() {
             return;

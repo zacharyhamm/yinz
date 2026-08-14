@@ -437,13 +437,10 @@ impl TextInput {
         // Ctrl-Shift-Z also satisfies the plain-Ctrl block below, which now
         // swallows every Char it doesn't recognize.
         if key.has_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) {
-            match key.bare_key {
-                BareKey::Char('Z') => {
-                    // Ctrl-Shift-Z: Redo (alternative)
-                    self.redo();
-                    return InputAction::Continue;
-                },
-                _ => {},
+            if let BareKey::Char('Z') = key.bare_key {
+                // Ctrl-Shift-Z: Redo (alternative)
+                self.redo();
+                return InputAction::Continue;
             }
         }
 

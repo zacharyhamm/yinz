@@ -262,15 +262,13 @@ impl SharedPtys {
     ) -> Option<(u16, u16)> {
         let mut fake_pty_registry = self.lock_registry();
         loop {
-            match fake_pty_registry.fake_pty_states.get(&terminal_id) {
-                None => return None,
-                Some(fake_pty_state) => {
-                    if let Some((cols, rows)) = fake_pty_state.size {
-                        if (cols, rows) != last_seen {
-                            return Some((cols, rows));
-                        }
+            {
+                let fake_pty_state = fake_pty_registry.fake_pty_states.get(&terminal_id)?;
+                if let Some((cols, rows)) = fake_pty_state.size {
+                    if (cols, rows) != last_seen {
+                        return Some((cols, rows));
                     }
-                },
+                }
             }
             let (guard, _) = self
                 .inner

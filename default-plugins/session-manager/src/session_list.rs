@@ -6,6 +6,10 @@ use crate::ui::{
     SessionUiInfo,
 };
 
+/// One flattened row of the session list: the item itself, the session it belongs to, the tab
+/// position, the (pane id, is_plugin) pair, and whether it is the current session.
+type FlattenedAsset = (ListItem, String, Option<usize>, Option<(u32, bool)>, bool);
+
 #[derive(Debug, Default)]
 pub struct SessionList {
     pub session_ui_infos: Vec<SessionUiInfo>,
@@ -42,7 +46,7 @@ impl SessionList {
         for (list_item, session_name, tab_position, pane_id, is_current_session) in
             flattened_assets.drain(..)
         {
-            if let Some((score, indices)) = matcher.fuzzy_indices(&list_item.name, &search_term) {
+            if let Some((score, indices)) = matcher.fuzzy_indices(&list_item.name, search_term) {
                 matches.push(SearchResult::new(
                     score,
                     indices,
@@ -54,16 +58,12 @@ impl SessionList {
                 ));
             }
         }
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|m| std::cmp::Reverse(m.score));
         self.search_results = matches;
         self.is_searching = !search_term.is_empty();
         self.selected_search_index = Some(0);
     }
-    fn flatten_assets(
-        &self,
-        colors: &Colors,
-    ) -> Vec<(ListItem, String, Option<usize>, Option<(u32, bool)>, bool)> {
-        // list_item, session_name, tab_position, (pane_id, is_plugin), is_current_session
+    fn flatten_assets(&self, colors: &Colors) -> Vec<FlattenedAsset> {
         let mut list_items = vec![];
         for session in &self.session_ui_infos {
             let session_name = session.name.clone();
@@ -355,10 +355,13 @@ impl SessionList {
             .any(|s| s.name == session_name)
     }
     pub fn update_session_name(&mut self, old_name: &str, new_name: &str) {
-        self.session_ui_infos
+        if let Some(session) = self
+            .session_ui_infos
             .iter_mut()
             .find(|s| s.name == old_name)
-            .map(|s| s.name = new_name.to_owned());
+        {
+            session.name = new_name.to_owned();
+        }
     }
     pub fn all_other_sessions(&self) -> Vec<String> {
         self.session_ui_infos

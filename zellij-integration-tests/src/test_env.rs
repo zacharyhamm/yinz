@@ -86,6 +86,7 @@ fn hold_own_process_lock(parent: &Path) {
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(true)
         .open(process_lock_path(parent, std::process::id()))
         .unwrap();
     lock_file.lock().unwrap();
@@ -181,6 +182,7 @@ pub fn acquire_concurrency_slot() -> ConcurrencySlot {
             let slot_file = OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(true)
                 .open(slot_dir.join(format!("slot-{}", slot_index)))
                 .unwrap();
             if slot_file.try_lock().is_ok() {
@@ -276,7 +278,7 @@ fn defaults_overridden_by(extra_config_kdl: &str) -> String {
         .filter(|line| {
             line.split_whitespace()
                 .next()
-                .map_or(true, |key| !overridden_keys.contains(key))
+                .is_none_or(|key| !overridden_keys.contains(key))
         })
         .collect::<Vec<_>>()
         .join("\n")

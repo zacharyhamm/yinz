@@ -34,7 +34,7 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
     grid_snapshot
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains(needle))
+        .is_some_and(|last_line| last_line.contains(needle))
 }
 
 fn normal_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
@@ -54,7 +54,7 @@ fn guest_tab_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
 }
 
 fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
-    guest_grid.lines().last().map_or(false, |last_line| {
+    guest_grid.lines().last().is_some_and(|last_line| {
         if last_line.contains("LOCK") {
             return true;
         }
@@ -73,7 +73,7 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
     let lines = guest_grid.lines();
     lines
         .first()
-        .map_or(false, |first_line| first_line.contains("Tab #1"))
+        .is_some_and(|first_line| first_line.contains("Tab #1"))
         && last_line_contains(guest_grid, "Ctrl +")
         && guest_normal_mode_bar_settled(guest_grid)
 }
@@ -86,7 +86,7 @@ fn guest_ascended_ui_settled(guest_grid: &GridSnapshot) -> bool {
     guest_grid
         .lines()
         .first()
-        .map_or(false, |first_line| first_line.contains("Tab #1"))
+        .is_some_and(|first_line| first_line.contains("Tab #1"))
         && guest_ascended_bar_settled(guest_grid)
 }
 
@@ -111,12 +111,12 @@ fn two_pane_guest_settled(guest_grid: &GridSnapshot) -> bool {
 
 fn host_own_tab_bar_settled(grid_snapshot: &GridSnapshot, guest_session_name: &str) -> bool {
     let lines = grid_snapshot.lines();
-    let first_row_is_host_tab_bar = lines.first().map_or(false, |first_line| {
+    let first_row_is_host_tab_bar = lines.first().is_some_and(|first_line| {
         first_line.contains("Tab #1") && !first_line.contains(guest_session_name)
     });
-    let guest_pane_title_row_present = lines.get(1).map_or(false, |second_line| {
-        second_line.contains(guest_session_name)
-    });
+    let guest_pane_title_row_present = lines
+        .get(1)
+        .is_some_and(|second_line| second_line.contains(guest_session_name));
     first_row_is_host_tab_bar && guest_pane_title_row_present
 }
 
@@ -124,15 +124,15 @@ fn host_tab_bar_renamed_to_guest(grid_snapshot: &GridSnapshot, guest_session_nam
     grid_snapshot
         .lines()
         .first()
-        .map_or(false, |first_line| first_line.contains(guest_session_name))
+        .is_some_and(|first_line| first_line.contains(guest_session_name))
 }
 
 fn host_chrome_dimmed(host_grid: &GridSnapshot) -> bool {
-    host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").map_or(false, |dim| dim)
+    host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").is_some_and(|dim| dim)
 }
 
 fn host_chrome_undimmed(host_grid: &GridSnapshot) -> bool {
-    !host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").map_or(true, |dim| !dim)
+    !host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").is_none_or(|dim| !dim)
 }
 
 #[test]
@@ -489,9 +489,11 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
     let host_after_new_tab = nested.host.wait_until(
         "the host opened a second tab and undimmed after clicking the new tab button",
         |host_grid| {
-            host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
-            }) && normal_mode_bar_settled(host_grid)
+            host_grid
+                .lines()
+                .first()
+                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
+                && normal_mode_bar_settled(host_grid)
         },
     );
     assert_snapshot!(
@@ -543,9 +545,11 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     let host_two_tabs = nested.host.wait_until(
         "the host now has two tabs with the second one focused on a host pane",
         |host_grid| {
-            host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
-            }) && normal_mode_bar_settled(host_grid)
+            host_grid
+                .lines()
+                .first()
+                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
+                && normal_mode_bar_settled(host_grid)
         },
     );
     let first_tab_column = host_two_tabs
@@ -573,9 +577,11 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     nested.host.wait_until(
         "clicking the second host tab switches away from the guest tab in normal mode",
         |host_grid| {
-            host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
-            }) && normal_mode_bar_settled(host_grid)
+            host_grid
+                .lines()
+                .first()
+                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
+                && normal_mode_bar_settled(host_grid)
         },
     );
 
@@ -750,7 +756,7 @@ fn descend_and_ascend_work_at_depth_three() {
             && middle_grid
                 .lines()
                 .first()
-                .map_or(false, |first_line| first_line.contains(&inner_session_name))
+                .is_some_and(|first_line| first_line.contains(&inner_session_name))
             && composite_contains_settled_guest_grid(middle_grid, &inner_grid)
     };
     let middle_ascended_from_settled_inner = |middle_grid: &GridSnapshot| {
@@ -760,23 +766,24 @@ fn descend_and_ascend_work_at_depth_three() {
             && middle_grid
                 .lines()
                 .first()
-                .map_or(false, |first_line| first_line.contains(&inner_session_name))
+                .is_some_and(|first_line| first_line.contains(&inner_session_name))
             && composite_contains_settled_guest_grid(middle_grid, &inner_grid)
     };
     let settled_outer_tab_title = format!("{} | {}", inner_session_name, inner_session_name);
     let outer_settled = |outer_grid: &GridSnapshot| {
         host_descended_bar_settled(outer_grid)
-            && outer_grid.lines().first().map_or(false, |first_line| {
-                first_line.contains(&settled_outer_tab_title)
-            })
+            && outer_grid
+                .lines()
+                .first()
+                .is_some_and(|first_line| first_line.contains(&settled_outer_tab_title))
     };
 
     let outer_doubly_nested = wait_for_settled_composite(
         &nested.outer,
         &nested.middle,
         "outer host shows the doubly-nested descended UI",
-        &middle_descended_into_settled_inner,
-        &outer_settled,
+        middle_descended_into_settled_inner,
+        outer_settled,
     );
     assert_snapshot!(
         "outer_grid_doubly_nested_descended",
@@ -798,8 +805,8 @@ fn descend_and_ascend_work_at_depth_three() {
         &nested.outer,
         &nested.middle,
         "middle ascended out of the inner while outer stays descended into middle",
-        &middle_ascended_from_settled_inner,
-        &outer_settled,
+        middle_ascended_from_settled_inner,
+        outer_settled,
     );
     assert_snapshot!(
         "outer_grid_after_inner_ascend",
@@ -834,7 +841,7 @@ fn split_second_guest_pane(nested: &NestedHarness) {
 
 #[test]
 fn descended_client_sees_dimmed_host_chrome_while_second_client_does_not() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
     let guest_session_name = nested.guest.session_name().to_string();
 
     boot_and_descend_on_first_load(&nested);
@@ -997,7 +1004,7 @@ fn guest_edge_focus_move_bubbles_out_to_the_adjacent_host_pane() {
 
 #[test]
 fn host_focus_move_onto_guest_pane_enters_at_the_correct_edge() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
 
@@ -1044,7 +1051,7 @@ fn host_focus_move_onto_guest_pane_enters_at_the_correct_edge() {
 
 #[test]
 fn no_bubble_when_the_focus_move_stays_inside_the_guest() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
     split_second_guest_pane(&nested);
@@ -1058,7 +1065,7 @@ fn no_bubble_when_the_focus_move_stays_inside_the_guest() {
     nested.guest.wait_until(
         "guest focus moved to the left pane while staying in pane mode",
         |guest_grid| {
-            guest_grid.cursor.map_or(false, |cursor| cursor.x < 15)
+            guest_grid.cursor.is_some_and(|cursor| cursor.x < 15)
                 && guest_pane_mode_bar_settled(guest_grid)
         },
     );
@@ -1159,7 +1166,7 @@ fn move_focus_or_tab_bubbles_only_when_the_guest_has_a_single_tab() {
 
 #[test]
 fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tabs() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
 
@@ -1182,7 +1189,7 @@ fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tab
     nested.guest.wait_until(
         "guest wrapped back to the first tab instead of bubbling",
         |guest_grid| {
-            guest_grid.lines().first().map_or(false, |first_line| {
+            guest_grid.lines().first().is_some_and(|first_line| {
                 first_line.contains("Tab #1") && first_line.contains("Tab #2")
             }) && guest_normal_mode_bar_settled(guest_grid)
         },

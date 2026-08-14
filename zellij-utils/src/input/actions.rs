@@ -2547,7 +2547,7 @@ mod tests {
                 assert_eq!(key.bare_key, BareKey::Enter);
                 assert!(key.key_modifiers.is_empty());
                 assert!(!bytes.is_empty());
-                assert_eq!(*is_kitty_keyboard_protocol, true);
+                assert!(*is_kitty_keyboard_protocol);
             },
             _ => panic!("Expected Write action"),
         }
@@ -2573,7 +2573,7 @@ mod tests {
                 let key = key_with_modifier.as_ref().unwrap();
                 assert_eq!(key.bare_key, BareKey::Char('a'));
                 assert!(key.key_modifiers.contains(&KeyModifier::Ctrl));
-                assert_eq!(*is_kitty_keyboard_protocol, true);
+                assert!(*is_kitty_keyboard_protocol);
             },
             _ => panic!("Expected Write action"),
         }
@@ -2595,7 +2595,7 @@ mod tests {
                     is_kitty_keyboard_protocol,
                     ..
                 } => {
-                    assert_eq!(*is_kitty_keyboard_protocol, true);
+                    assert!(*is_kitty_keyboard_protocol);
                 },
                 _ => panic!("Expected Write action"),
             }

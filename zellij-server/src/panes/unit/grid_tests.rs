@@ -2,6 +2,8 @@ use super::super::Grid;
 use crate::panes::grid::SixelImageStore;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::link_handler::LinkHandler;
+use base64::engine::general_purpose::STANDARD as BASE64_ENCODER;
+use base64::engine::Engine as _;
 use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,7 +26,7 @@ fn read_fixture(fixture_name: &str) -> Vec<u8> {
     path_to_file.push("fixtures");
     path_to_file.push(fixture_name);
     std::fs::read(path_to_file)
-        .unwrap_or_else(|_| panic!("could not read fixture {:?}", &fixture_name))
+        .unwrap_or_else(|_| panic!("could not read fixture {:?}", fixture_name))
 }
 
 #[test]
@@ -6519,7 +6521,7 @@ fn kitty_apc(control: &str, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(control.as_bytes());
     if !payload.is_empty() {
         out.push(b';');
-        out.extend_from_slice(base64::encode(payload).as_bytes());
+        out.extend_from_slice(BASE64_ENCODER.encode(payload).as_bytes());
     }
     out.extend_from_slice(b"\x1b\\");
     out
@@ -7153,7 +7155,7 @@ fn kitty_yazi_kgpold_stream_roundtrip() {
     let mut vte_parser = vte::Parser::new();
     let mut interceptor = KittyApcInterceptor::new();
     let raster = rgb_raster(2, 2);
-    let full_b64 = base64::encode(&raster);
+    let full_b64 = BASE64_ENCODER.encode(&raster);
     let (b64_chunk_one, b64_chunk_two) = full_b64.split_at(8);
     let mut stream = Vec::new();
     stream.extend_from_slice(
@@ -7484,7 +7486,7 @@ fn kitty_reply_icat_detection_sequence() {
         format!(
             "\x1b_Gt=t,a=q,i=2,s=1,v=1,f=24,S={};{}\x1b\\",
             path_bytes.len(),
-            base64::encode(path_bytes)
+            BASE64_ENCODER.encode(path_bytes)
         )
         .as_bytes(),
     );
@@ -7494,7 +7496,7 @@ fn kitty_reply_icat_detection_sequence() {
         &mut interceptor,
         format!(
             "\x1b_Gt=s,a=q,i=3,s=1,v=1,f=24,S=3;{}\x1b\\",
-            base64::encode(b"/some-shm")
+            BASE64_ENCODER.encode(b"/some-shm")
         )
         .as_bytes(),
     );
@@ -7844,15 +7846,18 @@ fn kitty_image_absolute_cell_row(grid: &Grid) -> isize {
 
 fn buffer_cell_row_of_canonical_line(grid: &Grid, canonical_index: usize) -> isize {
     let mut canonical_seen = 0usize;
-    let mut wrapped_row = 0isize;
-    for row in grid.lines_above.iter().chain(grid.viewport.iter()) {
+    for (wrapped_row, row) in grid
+        .lines_above
+        .iter()
+        .chain(grid.viewport.iter())
+        .enumerate()
+    {
         if row.is_canonical {
             if canonical_seen == canonical_index {
-                return wrapped_row;
+                return wrapped_row as isize;
             }
             canonical_seen += 1;
         }
-        wrapped_row += 1;
     }
     -1
 }

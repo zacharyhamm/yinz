@@ -22,8 +22,10 @@ pub static POSSIBLE_MODIFIERS: [KeyModifier; 4] = [
 
 #[derive(Debug)]
 enum Screen {
-    RebindLeaders(RebindLeadersScreen),
-    Presets(PresetsScreen),
+    // both boxed: either screen is large enough that an unboxed variant would widen every
+    // `Screen` on the stack
+    RebindLeaders(Box<RebindLeadersScreen>),
+    Presets(Box<PresetsScreen>),
 }
 
 impl Screen {
@@ -34,12 +36,12 @@ impl Screen {
             match self {
                 Screen::RebindLeaders(r) => {
                     let notification = r.drain_notification();
-                    *r = Default::default();
+                    **r = Default::default();
                     r.set_notification(notification);
                 },
                 Screen::Presets(r) => {
                     let notification = r.drain_notification();
-                    *r = Default::default();
+                    **r = Default::default();
                     r.set_notification(notification);
                 },
             }
@@ -55,13 +57,13 @@ impl Screen {
 
 impl Default for Screen {
     fn default() -> Self {
-        Screen::RebindLeaders(Default::default())
+        Screen::RebindLeaders(Box::default())
     }
 }
 
 impl Screen {
     pub fn new_reset_keybindings_screen(selected_index: Option<usize>) -> Self {
-        Screen::Presets(PresetsScreen::new(selected_index))
+        Screen::Presets(Box::new(PresetsScreen::new(selected_index)))
     }
 }
 
@@ -159,7 +161,7 @@ impl ZellijPlugin for State {
                         ));
                     },
                     None => {
-                        self.notification = Some(format!("Failed to write configuration file."));
+                        self.notification = Some("Failed to write configuration file.".to_string());
                     },
                 }
                 should_render = true;
@@ -203,23 +205,19 @@ impl State {
         match &self.current_screen {
             Screen::RebindLeaders(_) => true,
             Screen::Presets(presets_screen) => {
-                if self.is_setup_wizard || presets_screen.rebinding_leaders() {
-                    false
-                } else {
-                    true
-                }
+                !(self.is_setup_wizard || presets_screen.rebinding_leaders())
             },
         }
     }
     fn switch_screen(&mut self) {
         match &self.current_screen {
             Screen::RebindLeaders(_) => {
-                self.current_screen = Screen::Presets(Default::default());
+                self.current_screen = Screen::Presets(Box::default());
             },
             Screen::Presets(_) => {
-                self.current_screen = Screen::RebindLeaders(
+                self.current_screen = Screen::RebindLeaders(Box::new(
                     RebindLeadersScreen::default().with_mode_info(self.latest_mode_info.clone()),
-                );
+                ));
             },
         }
         if let Some(mode_info) = &self.latest_mode_info {

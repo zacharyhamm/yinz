@@ -43,7 +43,7 @@ fn hidden_startup_tip_stays_hidden_after_terminal_resize() {
         grid_snapshot
             .lines()
             .last()
-            .map_or(false, |last_line| last_line.contains("Fullscreen"))
+            .is_some_and(|last_line| last_line.contains("Fullscreen"))
     });
     zellij.send_stdin(&keys::ESC);
     let settled = zellij.wait_until("normal mode restored after the resize", |grid_snapshot| {

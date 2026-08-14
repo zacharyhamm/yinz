@@ -251,7 +251,7 @@ impl SessionUiInfo {
             match selected_index
                 .selected_tab_index()
                 .and_then(|i| self.tabs.get(i))
-                .map(|t| t.line_count(&selected_index))
+                .map(|t| t.line_count(selected_index))
             {
                 Some(line_count_of_selected_tab) => {
                     // we add the line count in the selected tab minus 1 because we will account
@@ -273,7 +273,7 @@ impl SessionUiInfo {
         colors: Colors,
     ) -> LineToRender {
         let mut line_to_render = LineToRender::new(colors);
-        let ui_spans = build_session_ui_line(&self, colors);
+        let ui_spans = build_session_ui_line(self, colors);
         for span in ui_spans {
             span.render(None, &mut line_to_render, &mut max_cols);
         }
@@ -299,7 +299,7 @@ impl TabUiInfo {
                         if pane_info.is_selectable && !pane_info.is_suppressed {
                             Some(PaneUiInfo {
                                 name: pane_info.title.clone(),
-                                exit_code: pane_info.exit_status.clone(),
+                                exit_code: pane_info.exit_status,
                                 pane_id: pane_info.id,
                                 is_plugin: pane_info.is_plugin,
                             })
@@ -330,7 +330,7 @@ impl TabUiInfo {
         colors: Colors,
     ) -> LineToRender {
         let mut line_to_render = LineToRender::new(colors);
-        let ui_spans = build_tab_ui_line(&self, colors);
+        let ui_spans = build_tab_ui_line(self, colors);
         for span in ui_spans {
             span.render(None, &mut line_to_render, &mut max_cols);
         }
@@ -354,7 +354,7 @@ impl PaneUiInfo {
         colors: Colors,
     ) -> LineToRender {
         let mut line_to_render = LineToRender::new(colors);
-        let ui_spans = build_pane_ui_line(&self, colors);
+        let ui_spans = build_pane_ui_line(self, colors);
         for span in ui_spans {
             span.render(None, &mut line_to_render, &mut max_cols);
         }

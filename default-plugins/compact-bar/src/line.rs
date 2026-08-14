@@ -137,7 +137,7 @@ impl TabLinePopulator {
 
             let tab_sizes = TabSizes {
                 left: tabs_before_active.last().map_or(usize::MAX, |tab| tab.len),
-                right: tabs_after_active.get(0).map_or(usize::MAX, |tab| tab.len),
+                right: tabs_after_active.first().map_or(usize::MAX, |tab| tab.len),
             };
 
             let fit_analysis = self.analyze_tab_fit(
@@ -357,7 +357,7 @@ impl<'a> TabLinePrefixBuilder<'a> {
 
     fn build(&self, session_name: Option<&str>, mode: InputMode) -> TabLinePrefix {
         let mut parts = vec![self.create_zellij_part()];
-        let mut used_len = parts.get(0).map_or(0, |p| p.len);
+        let mut used_len = parts.first().map_or(0, |p| p.len);
         let mut breadcrumb_range = None;
 
         if let Some(name) = session_name {

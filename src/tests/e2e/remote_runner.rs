@@ -98,7 +98,7 @@ fn start_zellij_mirrored_session_with_layout(channel: &mut ssh2::Channel, layout
                 ZELLIJ_EXECUTABLE_LOCATION,
                 SESSION_NAME,
                 ZELLIJ_DATA_DIR,
-                format!("{}/{}", ZELLIJ_FIXTURE_PATH, layout_file_name)
+                format_args!("{}/{}", ZELLIJ_FIXTURE_PATH, layout_file_name)
             )
             .as_bytes(),
         )

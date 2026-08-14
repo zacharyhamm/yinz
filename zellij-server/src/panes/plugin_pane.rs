@@ -1016,9 +1016,11 @@ mod tests {
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         let (plugin_tx, _plugin_rx) = channels::unbounded();
-        let mut geom = PaneGeom::default();
-        geom.rows = Dimension::fixed(rows);
-        geom.cols = Dimension::fixed(cols);
+        let geom = PaneGeom {
+            rows: Dimension::fixed(rows),
+            cols: Dimension::fixed(cols),
+            ..Default::default()
+        };
         let mut pane = PluginPane::new(
             1,
             geom,

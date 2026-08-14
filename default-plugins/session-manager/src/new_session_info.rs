@@ -12,16 +12,11 @@ pub struct NewSessionInfo {
     pub new_session_folder: Option<PathBuf>,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Default)]
 enum EnteringState {
+    #[default]
     EnteringName,
     EnteringLayoutSearch,
-}
-
-impl Default for EnteringState {
-    fn default() -> Self {
-        EnteringState::EnteringName
-    }
 }
 
 impl NewSessionInfo {
@@ -106,7 +101,7 @@ impl NewSessionInfo {
                 if new_session_name != current_session_name.as_ref().map(|s| s.as_str()) {
                     match new_session_layout {
                         Some(new_session_layout) => {
-                            let cwd = self.new_session_folder.as_ref().map(|c| PathBuf::from(c));
+                            let cwd = self.new_session_folder.as_ref().map(PathBuf::from);
                             switch_session_with_layout(new_session_name, new_session_layout, cwd);
                             if self.is_welcome_screen {
                                 // the welcome screen has done its job and now we need to quit this temporary
@@ -278,7 +273,7 @@ impl LayoutList {
             let matcher = SkimMatcherV2::default().use_cache(true);
             for layout_info in &self.layout_list {
                 if let Some((score, indices)) =
-                    matcher.fuzzy_indices(&layout_info.name(), &self.layout_search_term)
+                    matcher.fuzzy_indices(layout_info.name(), &self.layout_search_term)
                 {
                     matches.push(LayoutSearchResult {
                         layout_info: layout_info.clone(),
@@ -287,7 +282,7 @@ impl LayoutList {
                     });
                 }
             }
-            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            matches.sort_by_key(|m| std::cmp::Reverse(m.score));
             self.layout_search_results = matches;
             self.clear_selection();
         }
@@ -373,8 +368,10 @@ mod tests {
     }
 
     fn make_layout_list(names: &[&str]) -> LayoutList {
-        let mut ll = LayoutList::default();
-        ll.layout_list = names.iter().map(|n| make_layout(n)).collect();
+        let ll = LayoutList {
+            layout_list: names.iter().map(|n| make_layout(n)).collect(),
+            ..Default::default()
+        };
         ll
     }
 

@@ -364,7 +364,7 @@ fn set_start_and_end_without_finalize_only_moves_start() {
 
 mod props {
     use super::*;
-    use hegel::generators::{self, Generator};
+    use hegel::generators::{self};
 
     #[hegel::composite]
     fn positions(tc: &hegel::TestCase) -> Position {

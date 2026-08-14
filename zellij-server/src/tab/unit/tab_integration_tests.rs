@@ -1001,7 +1001,7 @@ fn read_fixture(fixture_name: &str) -> Vec<u8> {
     path_to_file.push("fixtures");
     path_to_file.push(fixture_name);
     std::fs::read(path_to_file)
-        .unwrap_or_else(|_| panic!("could not read fixture {:?}", &fixture_name))
+        .unwrap_or_else(|_| panic!("could not read fixture {:?}", fixture_name))
 }
 
 use crate::panes::grid::Grid;
@@ -15583,7 +15583,7 @@ fn osc99_namespace_denormalize_roundtrip() {
     );
 
     // Simulate a response with the namespaced ID
-    let response_payload = format!("i=p42r.mynotif:p=close;activated");
+    let response_payload = "i=p42r.mynotif:p=close;activated".to_string();
     let result = denormalize_notification_response(response_payload.as_bytes());
     assert!(result.is_some(), "Should successfully denormalize");
 
@@ -15697,7 +15697,7 @@ fn osc99_report_flag_roundtrip() {
         "a=report should produce 'r' flag in namespace, got: {:?}",
         namespaced
     );
-    let response = format!("i=p5r.myid;activated");
+    let response = "i=p5r.myid;activated".to_string();
     let (pane_id, wants_report, _is_query, _bytes) =
         denormalize_notification_response(response.as_bytes()).unwrap();
     assert_eq!(pane_id, 5);
@@ -15715,7 +15715,7 @@ fn osc99_report_flag_roundtrip() {
         "a=focus should be augmented with report for the host terminal, got: {:?}",
         namespaced
     );
-    let response = format!("i=p5.myid;activated");
+    let response = "i=p5.myid;activated".to_string();
     let (pane_id, wants_report, _is_query, _bytes) =
         denormalize_notification_response(response.as_bytes()).unwrap();
     assert_eq!(pane_id, 5);
@@ -15734,7 +15734,7 @@ fn osc99_query_flag_roundtrip() {
         "p=? should produce 'q' flag, got: {:?}",
         namespaced
     );
-    let response = format!("i=p3q.qid;p=title,body");
+    let response = "i=p3q.qid;p=title,body".to_string();
     let (pane_id, wants_report, is_query, _bytes) =
         denormalize_notification_response(response.as_bytes()).unwrap();
     assert_eq!(pane_id, 3);
@@ -15748,7 +15748,7 @@ fn osc99_query_flag_roundtrip() {
         "Both flags should be present, got: {:?}",
         namespaced
     );
-    let response = format!("i=p3rq.both;p=title,body");
+    let response = "i=p3rq.both;p=title,body".to_string();
     let (pane_id, wants_report, is_query, _bytes) =
         denormalize_notification_response(response.as_bytes()).unwrap();
     assert_eq!(pane_id, 3);
@@ -15762,7 +15762,7 @@ fn osc99_query_flag_roundtrip() {
         "No flags expected, got: {:?}",
         namespaced
     );
-    let response = format!("i=p3.plain;activated");
+    let response = "i=p3.plain;activated".to_string();
     let (pane_id, wants_report, is_query, _bytes) =
         denormalize_notification_response(response.as_bytes()).unwrap();
     assert_eq!(pane_id, 3);

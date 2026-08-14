@@ -789,78 +789,6 @@ impl SessionState {
     }
 }
 
-#[cfg(test)]
-mod session_state_tests {
-    use super::*;
-
-    fn with_client(id: ClientId) -> SessionState {
-        let mut s = SessionState::new();
-        s.clients.insert(id, None);
-        s
-    }
-
-    #[test]
-    fn pick_forward_target_prefers_last_active_when_still_connected() {
-        let mut s = SessionState::new();
-        s.clients.insert(1, None);
-        s.clients.insert(2, None);
-        s.set_last_active_client(2);
-        assert_eq!(s.pick_forward_target(), Some(2));
-    }
-
-    #[test]
-    fn pick_forward_target_falls_back_when_last_active_disconnected() {
-        let mut s = SessionState::new();
-        s.clients.insert(1, None);
-        s.clients.insert(2, None);
-        // Client 3 was last active but has since disconnected — not in
-        // `clients` map anymore. Must fall through to any connected
-        // client rather than returning None.
-        s.last_active_client = Some(3);
-        let picked = s
-            .pick_forward_target()
-            .expect("some client still connected");
-        assert!(picked == 1 || picked == 2);
-    }
-
-    #[test]
-    fn pick_forward_target_none_when_no_clients() {
-        let s = SessionState::new();
-        assert_eq!(s.pick_forward_target(), None);
-    }
-
-    #[test]
-    fn remove_client_returns_stuck_forward_tokens() {
-        let mut s = with_client(1);
-        s.mark_forward_in_flight(10, 1);
-        s.mark_forward_in_flight(11, 1);
-        // A forward dispatched to a *different* client — must not be
-        // returned when we remove client 1.
-        s.clients.insert(2, None);
-        s.mark_forward_in_flight(12, 2);
-
-        let mut stuck = s.remove_client(1);
-        stuck.sort_unstable();
-        assert_eq!(stuck, vec![10, 11]);
-        assert_eq!(s.forwards_in_flight.get(&12), Some(&2));
-    }
-
-    #[test]
-    fn remove_client_returns_empty_when_no_forwards_in_flight() {
-        let mut s = with_client(1);
-        assert!(s.remove_client(1).is_empty());
-    }
-
-    #[test]
-    fn clear_forward_in_flight_removes_entry() {
-        let mut s = with_client(1);
-        s.mark_forward_in_flight(42, 1);
-        s.clear_forward_in_flight(42);
-        // After clear, removing the client yields no stuck tokens.
-        assert!(s.remove_client(1).is_empty());
-    }
-}
-
 pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
     info!("Starting Zellij server!");
 
@@ -2583,4 +2511,76 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
         .as_ref()
         .map(|l| format!("{}", l.display()));
     Layout::list_available_layouts(layout_dir, &default_layout_name)
+}
+
+#[cfg(test)]
+mod session_state_tests {
+    use super::*;
+
+    fn with_client(id: ClientId) -> SessionState {
+        let mut s = SessionState::new();
+        s.clients.insert(id, None);
+        s
+    }
+
+    #[test]
+    fn pick_forward_target_prefers_last_active_when_still_connected() {
+        let mut s = SessionState::new();
+        s.clients.insert(1, None);
+        s.clients.insert(2, None);
+        s.set_last_active_client(2);
+        assert_eq!(s.pick_forward_target(), Some(2));
+    }
+
+    #[test]
+    fn pick_forward_target_falls_back_when_last_active_disconnected() {
+        let mut s = SessionState::new();
+        s.clients.insert(1, None);
+        s.clients.insert(2, None);
+        // Client 3 was last active but has since disconnected — not in
+        // `clients` map anymore. Must fall through to any connected
+        // client rather than returning None.
+        s.last_active_client = Some(3);
+        let picked = s
+            .pick_forward_target()
+            .expect("some client still connected");
+        assert!(picked == 1 || picked == 2);
+    }
+
+    #[test]
+    fn pick_forward_target_none_when_no_clients() {
+        let s = SessionState::new();
+        assert_eq!(s.pick_forward_target(), None);
+    }
+
+    #[test]
+    fn remove_client_returns_stuck_forward_tokens() {
+        let mut s = with_client(1);
+        s.mark_forward_in_flight(10, 1);
+        s.mark_forward_in_flight(11, 1);
+        // A forward dispatched to a *different* client — must not be
+        // returned when we remove client 1.
+        s.clients.insert(2, None);
+        s.mark_forward_in_flight(12, 2);
+
+        let mut stuck = s.remove_client(1);
+        stuck.sort_unstable();
+        assert_eq!(stuck, vec![10, 11]);
+        assert_eq!(s.forwards_in_flight.get(&12), Some(&2));
+    }
+
+    #[test]
+    fn remove_client_returns_empty_when_no_forwards_in_flight() {
+        let mut s = with_client(1);
+        assert!(s.remove_client(1).is_empty());
+    }
+
+    #[test]
+    fn clear_forward_in_flight_removes_entry() {
+        let mut s = with_client(1);
+        s.mark_forward_in_flight(42, 1);
+        s.clear_forward_in_flight(42);
+        // After clear, removing the client yields no stuck tokens.
+        assert!(s.remove_client(1).is_empty());
+    }
 }

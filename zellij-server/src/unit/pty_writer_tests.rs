@@ -27,13 +27,18 @@ enum WriteBehavior {
     Error,
 }
 
+/// Log of (terminal_id, bytes) for each successful write, shared with the test thread.
+type WriteLog = Arc<Mutex<Vec<(u32, Vec<u8>)>>>;
+/// The last resize each terminal was told about, shared with the test thread.
+type CachedResizes = Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>;
+
 #[derive(Clone)]
 struct MockServerOsApi {
     /// Controls how each terminal behaves on write.
     write_behavior: Arc<Mutex<HashMap<u32, WriteBehavior>>>,
     /// Log of (terminal_id, bytes) for each successful write.
-    write_log: Arc<Mutex<Vec<(u32, Vec<u8>)>>>,
-    cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>,
+    write_log: WriteLog,
+    cached_resizes: CachedResizes,
 }
 
 impl MockServerOsApi {
@@ -452,7 +457,7 @@ fn pty_writer_records_successful_resize() {
         "success resize should produce one event"
     );
     // verify resize data encodes cols/rows via RecordedEvent::resize logic (format "80x24")
-    assert_eq!(resize_events[0].data, format!("80x24").into_bytes());
+    assert_eq!(resize_events[0].data, "80x24".to_string().into_bytes());
     assert_eq!(resize_events[0].terminal_id, 1);
 
     let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();

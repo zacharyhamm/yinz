@@ -1868,15 +1868,17 @@ mod tests {
 
     /// A question, then a reply four times taller than the pane.
     fn state_mid_reply() -> State {
-        let mut state = State::default();
-        state.messages = vec![
-            Message::user("count"),
-            Message::assistant(
-                (1..=12)
-                    .map(|n| format!("line {n}\n\n"))
-                    .collect::<String>(),
-            ),
-        ];
+        let mut state = State {
+            messages: vec![
+                Message::user("count"),
+                Message::assistant(
+                    (1..=12)
+                        .map(|n| format!("line {n}\n\n"))
+                        .collect::<String>(),
+                ),
+            ],
+            ..Default::default()
+        };
         state.view.anchor = Some(1);
         state
     }
@@ -2012,8 +2014,10 @@ mod tests {
     /// goes on following the tail exactly as it always did.
     #[test]
     fn an_anchored_reply_that_fits_still_follows_the_tail() {
-        let mut state = State::default();
-        state.messages = vec![Message::user("hi"), Message::assistant("yo")];
+        let mut state = State {
+            messages: vec![Message::user("hi"), Message::assistant("yo")],
+            ..Default::default()
+        };
         state.view.anchor = Some(1);
 
         render(&mut state);

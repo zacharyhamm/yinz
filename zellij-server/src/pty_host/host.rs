@@ -929,13 +929,12 @@ fn install_signal_forwarder(event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
         },
     };
     let mut wake_tx = wake_tx;
+    // the first signal is enough - it tears the host down
     std::thread::spawn(move || {
-        for _signal in signals.forever() {
-            if event_tx.send(HostEvent::TerminateRequested).is_err() {
-                return;
-            }
+        if signals.forever().next().is_some()
+            && event_tx.send(HostEvent::TerminateRequested).is_ok()
+        {
             let _ = wake_tx.write_all(b"w");
-            return;
         }
     });
 }

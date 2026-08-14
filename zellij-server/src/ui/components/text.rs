@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn empty_param_survives_parse_text_params() {
-        let mut params = vec![String::new()];
+        let mut params = [String::new()];
         let parsed = parse_text_params(params.iter_mut());
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].text, "");
@@ -307,7 +307,7 @@ mod tests {
     fn flags_only_param_parses_as_empty_text() {
         // "d" is the disabled flag with no text after it - eg. a plugin
         // rendering a blank line with styling flags attached
-        let mut params = vec!["d".to_owned()];
+        let mut params = ["d".to_owned()];
         let parsed = parse_text_params(params.iter_mut());
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].text, "");

@@ -58,8 +58,8 @@ pub fn get_cached_tip_name() -> String {
 
     let usable_tips = local_cache
         .get_cached_data()
-        .iter()
-        .map(|(k, _)| k.to_string())
+        .keys()
+        .map(|k| k.to_string())
         .collect::<Vec<String>>();
 
     if usable_tips.is_empty() {
@@ -67,7 +67,7 @@ pub fn get_cached_tip_name() -> String {
         let diff = TIPS
             .keys()
             .cloned()
-            .filter(|k| !cached_set.contains(&k.to_string()))
+            .filter(|k| !cached_set.contains(*k))
             .collect::<Vec<&str>>();
 
         if !diff.is_empty() {

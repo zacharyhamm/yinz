@@ -3573,11 +3573,11 @@ mod tests {
 
     #[test]
     fn global_placement_action_protobuf_round_trips() {
-        let fixed = Some(GlobalPanePlacement {
+        let fixed = GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Fixed(12),
             length: None,
-        });
+        };
         let percent = Some(GlobalPanePlacement {
             edge: GlobalPaneEdge::Bottom,
             size: PercentOrFixed::Percent(25),
@@ -3588,7 +3588,7 @@ mod tests {
                 direction: None,
                 pane_name: None,
                 start_suppressed: false,
-                global_placement: fixed,
+                global_placement: Some(fixed),
             },
             Action::NewBlockingPane {
                 placement: NewPanePlacement::Tiled {
@@ -3614,7 +3614,7 @@ mod tests {
                 near_current_pane: false,
                 no_focus: false,
                 tab_id: None,
-                global_placement: fixed,
+                global_placement: Some(fixed),
             },
             Action::NewFloatingPane {
                 command: None,
@@ -3633,7 +3633,7 @@ mod tests {
                 no_focus: false,
                 borderless: None,
                 tab_id: None,
-                global_placement: fixed,
+                global_placement: Some(fixed),
             },
             Action::NewInPlacePane {
                 command: None,
@@ -3651,7 +3651,7 @@ mod tests {
                 near_current_pane: false,
                 no_focus: false,
                 tab_id: None,
-                global_placement: fixed,
+                global_placement: Some(fixed),
             },
             Action::Run {
                 command: RunCommandAction::default(),
@@ -3667,7 +3667,7 @@ mod tests {
                 close_replaced_pane: false,
                 skip_cache: false,
                 tab_id: None,
-                global_placement: fixed,
+                global_placement: Some(fixed),
             },
             Action::LaunchPlugin {
                 plugin: RunPluginOrAlias::RunPlugin(RunPlugin::default()),
@@ -3682,7 +3682,7 @@ mod tests {
             },
             Action::SetGlobalPanePlacement {
                 pane_id: PaneId::Plugin(7),
-                placement: fixed.unwrap(),
+                placement: fixed,
             },
         ];
 

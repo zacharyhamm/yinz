@@ -1113,7 +1113,11 @@ mod tests {
     }
 
     /// Ignore the ids, which the store reassigns, and compare the shape.
-    fn shape(items: &[Item]) -> Vec<(String, bool, Vec<(String, bool, Vec<()>)>)> {
+    /// (title, done, children as (title, done, grandchildren)) - the grandchildren are only
+    /// counted, hence the unit.
+    type Shape = Vec<(String, bool, Vec<(String, bool, Vec<()>)>)>;
+
+    fn shape(items: &[Item]) -> Shape {
         items
             .iter()
             .map(|item| {

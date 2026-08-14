@@ -153,14 +153,14 @@ impl ResurrectableSessions {
         }
     }
     fn render_session_name(&self, session_name: &str, indices: Option<Vec<usize>>) -> Text {
-        let text = Text::new(&session_name).color_range(0, ..);
+        let text = Text::new(session_name).color_range(0, ..);
         match indices {
             Some(indices) => text.color_indices(1, indices),
             None => text,
         }
     }
     fn render_ctime(&self, ctime: &Duration) -> Text {
-        let duration = format_duration(ctime.clone()).to_string();
+        let duration = format_duration(*ctime).to_string();
         let duration_parts = duration.split_whitespace();
         let mut formatted_duration = String::new();
         for part in duration_parts {
@@ -186,7 +186,7 @@ impl ResurrectableSessions {
         is_selected: bool,
     ) -> Text {
         if is_selected {
-            Text::new(format!("<ENTER> - Resurrect Session")).color_range(3, 0..7)
+            Text::new("<ENTER> - Resurrect Session".to_string()).color_range(3, 0..7)
         } else if i == first_row_index_to_render && i > 0 {
             Text::new(format!("+ {} more", first_row_index_to_render)).color_range(1, ..)
         } else if i == last_row_index_to_render.saturating_sub(1)
@@ -207,7 +207,7 @@ impl ResurrectableSessions {
                 if *selected_index == self.search_results.len().saturating_sub(1) {
                     *selected_index = 0;
                 } else {
-                    *selected_index = *selected_index + 1;
+                    *selected_index += 1;
                 }
             } else {
                 self.selected_search_index = Some(0);
@@ -217,7 +217,7 @@ impl ResurrectableSessions {
                 if *selected_index == self.all_resurrectable_sessions.len().saturating_sub(1) {
                     *selected_index = 0;
                 } else {
-                    *selected_index = *selected_index + 1;
+                    *selected_index += 1;
                 }
             } else {
                 self.selected_index = Some(0);
@@ -314,17 +314,16 @@ impl ResurrectableSessions {
         let mut matches = vec![];
         let matcher = SkimMatcherV2::default().use_cache(true);
         for (session_name, ctime) in &self.all_resurrectable_sessions {
-            if let Some((score, indices)) = matcher.fuzzy_indices(&session_name, &self.search_term)
-            {
+            if let Some((score, indices)) = matcher.fuzzy_indices(session_name, &self.search_term) {
                 matches.push(SearchResult {
                     session_name: session_name.to_owned(),
-                    ctime: ctime.clone(),
+                    ctime: *ctime,
                     score,
                     indices,
                 });
             }
         }
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|m| std::cmp::Reverse(m.score));
         self.search_results = matches;
         self.is_searching = !self.search_term.is_empty();
         match self.selected_search_index {

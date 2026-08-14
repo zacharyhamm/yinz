@@ -494,7 +494,7 @@ pub fn open_file_in_place_of_plugin(
 }
 /// Open a new terminal pane to the specified location on the host filesystem
 pub fn open_terminal<P: AsRef<Path>>(path: P) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminal(file_to_open);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -509,7 +509,7 @@ pub fn open_terminal<P: AsRef<Path>>(path: P) -> Option<PaneId> {
 /// This variant is identical to open_terminal, excpet it opens it near the plugin regardless of
 /// whether the user was focused on it or not
 pub fn open_terminal_near_plugin<P: AsRef<Path>>(path: P) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalNearPlugin(file_to_open);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -526,7 +526,7 @@ pub fn open_terminal_floating<P: AsRef<Path>>(
     path: P,
     coordinates: Option<FloatingPaneCoordinates>,
 ) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalFloating(file_to_open, coordinates);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -545,7 +545,7 @@ pub fn open_terminal_floating_near_plugin<P: AsRef<Path>>(
     path: P,
     coordinates: Option<FloatingPaneCoordinates>,
 ) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalFloatingNearPlugin(file_to_open, coordinates);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -561,7 +561,7 @@ pub fn open_terminal_floating_near_plugin<P: AsRef<Path>>(
 /// Open a new terminal pane to the specified location on the host filesystem, temporarily
 /// replacing the focused pane
 pub fn open_terminal_in_place<P: AsRef<Path>>(path: P) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalInPlace(file_to_open);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -579,7 +579,7 @@ pub fn open_terminal_in_place_of_plugin<P: AsRef<Path>>(
     path: P,
     close_plugin_after_replace: bool,
 ) -> Option<PaneId> {
-    let file_to_open = FileToOpen::new(path.as_ref().to_path_buf());
+    let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command =
         PluginCommand::OpenTerminalInPlaceOfPlugin(file_to_open, close_plugin_after_replace);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -864,14 +864,14 @@ pub fn run_command_with_env_variables_and_cwd(
 /// Make a web request, optionally being notified of its output
 /// if subscribed to the `WebRequestResult` Event, the context will be returned verbatim in this
 /// event and can be used for eg. marking the request_id
-pub fn web_request<S: AsRef<str>>(
+pub fn web_request<S>(
     url: S,
     verb: HttpVerb,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     context: BTreeMap<String, String>,
 ) where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command =
         PluginCommand::WebRequest(url.to_string(), verb, headers, body, context, None);
@@ -1000,9 +1000,9 @@ pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<us
 }
 
 /// Open a new tab with the default layout
-pub fn new_tab<S: AsRef<str>>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let name = name.map(|s| s.to_string());
     let cwd = cwd.map(|s| s.to_string());
@@ -1015,9 +1015,9 @@ where
     NewTabResponse::try_from(response).unwrap()
 }
 
-pub fn new_tab_unfocused<S: AsRef<str>>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let name = name.map(|s| s.to_string());
     let cwd = cwd.map(|s| s.to_string());
@@ -1141,9 +1141,9 @@ pub fn go_to_previous_tab() {
 
 pub fn report_panic(info: &std::panic::PanicHookInfo) {
     let panic_payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-        format!("{}", s)
+        s.to_string()
     } else {
-        format!("<NO PAYLOAD>")
+        "<NO PAYLOAD>".to_string()
     };
     let panic_stringified = format!("{}\n\r{:#?}", panic_payload, info).replace("\n", "\r\n");
     let plugin_command = PluginCommand::ReportPanic(panic_stringified);
@@ -1540,9 +1540,9 @@ pub fn focus_plugin_pane(
 }
 
 /// Changes the name (the title that appears in the UI) of the terminal pane with the specified id.
-pub fn rename_terminal_pane<S: AsRef<str>>(terminal_pane_id: u32, new_name: S)
+pub fn rename_terminal_pane<S>(terminal_pane_id: u32, new_name: S)
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::RenameTerminalPane(terminal_pane_id, new_name.to_string());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1551,9 +1551,9 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the plugin pane with the specified id.
-pub fn rename_plugin_pane<S: AsRef<str>>(plugin_pane_id: u32, new_name: S)
+pub fn rename_plugin_pane<S>(plugin_pane_id: u32, new_name: S)
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::RenamePluginPane(plugin_pane_id, new_name.to_string());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1562,9 +1562,9 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified position.
-pub fn rename_tab<S: AsRef<str>>(tab_position: u32, new_name: S)
+pub fn rename_tab<S>(tab_position: u32, new_name: S)
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::RenameTab(tab_position, new_name.to_string());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1573,9 +1573,9 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified id.
-pub fn rename_tab_with_id<S: AsRef<str>>(tab_id: u64, new_name: S)
+pub fn rename_tab_with_id<S>(tab_id: u64, new_name: S)
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::RenameTabWithId(tab_id, new_name.to_string());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1742,13 +1742,12 @@ pub fn disconnect_other_clients() {
 /// sends as part of its shutdown, or a stream-close if the peer dies first).
 /// Returns once every kill has been confirmed or one has failed. A wedged
 /// peer is bounded by a short server-side wedge timeout.
-pub fn kill_sessions<S: AsRef<str>>(session_names: &[S]) -> Result<(), String>
+pub fn kill_sessions<S>(session_names: &[S]) -> Result<(), String>
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::KillSessionsAndReply(
-        session_names.into_iter().map(|s| s.to_string()).collect(),
-    );
+    let plugin_command =
+        PluginCommand::KillSessionsAndReply(session_names.iter().map(|s| s.to_string()).collect());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -2631,7 +2630,7 @@ pub fn save_layout<S: AsRef<str>>(
 /// # Arguments
 ///
 /// * `layout_name` - The name of the layout file to delete (without the `.kdl` extension).
-///                   Layout names are sanitized server-side to prevent directory traversal.
+///   Layout names are sanitized server-side to prevent directory traversal.
 ///
 /// # Returns
 ///
@@ -2898,9 +2897,9 @@ pub fn go_to_tab_with_id(tab_id: u64) {
 }
 
 /// Rename the specified pane
-pub fn rename_pane_with_id<S: AsRef<str>>(pane_id: PaneId, new_name: S)
+pub fn rename_pane_with_id<S>(pane_id: PaneId, new_name: S)
 where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = match pane_id {
         PaneId::Terminal(terminal_pane_id) => {
@@ -2986,13 +2985,13 @@ pub fn reload_plugin_with_id(plugin_id: u32) {
 }
 
 /// Reload an already-running in this session, optionally skipping the cache
-pub fn load_new_plugin<S: AsRef<str>>(
+pub fn load_new_plugin<S>(
     url: S,
     config: BTreeMap<String, String>,
     load_in_background: bool,
     skip_plugin_cache: bool,
 ) where
-    S: ToString,
+    S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::LoadNewPlugin {
         url: url.to_string(),
@@ -3331,7 +3330,7 @@ pub fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
             return Some(tab_info.clone());
         }
     }
-    return None;
+    None
 }
 
 #[allow(unused)]

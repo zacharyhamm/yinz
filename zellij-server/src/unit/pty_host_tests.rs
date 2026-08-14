@@ -595,7 +595,7 @@ fn the_requested_window_size_is_applied_to_the_new_pty() {
     let (_child_pid, master) = host.spawn_with(sh("sleep 60"), None, Some(requested));
 
     let mut actual: Winsize = unsafe { std::mem::zeroed() };
-    let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ.into(), &mut actual) };
+    let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut actual) };
     assert_eq!(
         rc,
         0,

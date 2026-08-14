@@ -509,6 +509,17 @@ impl<'a> PluginLoader<'a> {
     }
 }
 
+fn create_optimized_store_limits() -> StoreLimits {
+    use wasmi::StoreLimitsBuilder;
+    StoreLimitsBuilder::new()
+        .instances(1) // One instance per plugin
+        .memories(4) // Max 4 linear memories per plugin
+        .memory_size(16 * 1024 * 1024) // 16MB per memory maximum
+        .tables(16) // Small table element limit
+        .trap_on_grow_failure(true) // Fail fast on resource exhaustion
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::plugin_cache_key;
@@ -539,15 +550,4 @@ mod tests {
             plugin_cache_key(&external, Some(Path::new("two")))
         );
     }
-}
-
-fn create_optimized_store_limits() -> StoreLimits {
-    use wasmi::StoreLimitsBuilder;
-    StoreLimitsBuilder::new()
-        .instances(1) // One instance per plugin
-        .memories(4) // Max 4 linear memories per plugin
-        .memory_size(16 * 1024 * 1024) // 16MB per memory maximum
-        .tables(16) // Small table element limit
-        .trap_on_grow_failure(true) // Fail fast on resource exhaustion
-        .build()
 }

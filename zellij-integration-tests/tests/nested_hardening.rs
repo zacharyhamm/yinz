@@ -14,11 +14,11 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
     grid_snapshot
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains(needle))
+        .is_some_and(|last_line| last_line.contains(needle))
 }
 
 fn has_breadcrumb(grid: &GridSnapshot) -> bool {
-    grid.lines().first().map_or(false, |l| l.contains('▸'))
+    grid.lines().first().is_some_and(|l| l.contains('▸'))
 }
 
 fn normal_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
@@ -44,7 +44,7 @@ fn entering_search_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
 }
 
 fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
-    guest_grid.lines().last().map_or(false, |last_line| {
+    guest_grid.lines().last().is_some_and(|last_line| {
         if last_line.contains("LOCK") {
             return true;
         }
@@ -63,7 +63,7 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
     let lines = guest_grid.lines();
     lines
         .first()
-        .map_or(false, |first_line| first_line.contains("Tab #1"))
+        .is_some_and(|first_line| first_line.contains("Tab #1"))
         && last_line_contains(guest_grid, "Ctrl +")
         && guest_normal_mode_bar_settled(guest_grid)
 }
@@ -72,7 +72,7 @@ fn guest_ascended_ui_settled(guest_grid: &GridSnapshot) -> bool {
     guest_grid
         .lines()
         .first()
-        .map_or(false, |first_line| first_line.contains("Tab #1"))
+        .is_some_and(|first_line| first_line.contains("Tab #1"))
         && guest_ascended_bar_settled(guest_grid)
 }
 
@@ -336,7 +336,7 @@ fn host_scrollback_on_a_guest_pane_scrolls_the_host_not_the_guest() {
     nested.host.send_stdin(&keys::ESC);
     let host_back_to_normal = nested.host.wait_until(
         "the host returns to normal mode after scrolling the guest pane",
-        |host_grid| normal_mode_bar_settled(host_grid),
+        normal_mode_bar_settled,
     );
     nested.guest.wait_until(
         "the guest still shows its ascended UI undisturbed by the host scrolling its pane",
@@ -382,7 +382,7 @@ fn host_search_over_a_guest_pane_stays_host_side() {
     nested.host.send_stdin(&keys::ESC);
     nested.host.wait_until(
         "the host returns to normal mode after searching the guest pane",
-        |host_grid| normal_mode_bar_settled(host_grid),
+        normal_mode_bar_settled,
     );
     nested.guest.wait_until(
         "the guest still shows its ascended UI undisturbed by the host searching its pane",

@@ -37,7 +37,7 @@ struct ColumnWidths {
 }
 
 pub struct TokenManagementScreen<'a> {
-    token_list: &'a Vec<(String, String, bool)>, // bool -> is_read_only
+    token_list: &'a [(String, String, bool)], // bool -> is_read_only
     selected_list_index: Option<usize>,
     renaming_token: &'a Option<String>,
     entering_new_token_name: &'a Option<String>,
@@ -48,8 +48,10 @@ pub struct TokenManagementScreen<'a> {
 }
 
 impl<'a> TokenManagementScreen<'a> {
+    // every argument is a field of the struct being built
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        token_list: &'a Vec<(String, String, bool)>,
+        token_list: &'a [(String, String, bool)],
         selected_list_index: Option<usize>,
         renaming_token: &'a Option<String>,
         entering_new_token_name: &'a Option<String>,
@@ -362,13 +364,9 @@ impl<'a> TokenManagementScreen<'a> {
         // The "create new token" line is always visible and handled separately
 
         // Find the selected index within the token list only
-        let selected_index = if let Some(idx) = self.selected_list_index {
-            idx
-        } else {
-            // If "create new token" is selected or no selection,
-            // we don't need to center anything in the token list
-            0
-        };
+        // If "create new token" is selected or nothing is, we don't need to center anything in
+        // the token list
+        let selected_index = self.selected_list_index.unwrap_or_default();
 
         // Calculate how many items to show above and below the selected item
         let items_above = max_height / 2;
@@ -393,7 +391,7 @@ impl<'a> TokenManagementScreen<'a> {
         }
     }
 
-    fn add_truncation_indicator(&self, row: &mut Vec<Text>, count: usize) {
+    fn add_truncation_indicator(&self, row: &mut [Text], count: usize) {
         let indicator = format!("+[{}]", count);
 
         // Replace the last cell (controls column) with the truncation indicator
@@ -599,10 +597,10 @@ impl<'a> TokenManagementScreen<'a> {
     fn create_status_message(&self) -> Option<(String, Text)> {
         if let Some(error) = &self.error {
             Some((error.clone(), Text::new(error).color_range(3, ..)))
-        } else if let Some(info) = &self.info {
-            Some((info.clone(), Text::new(info).color_range(1, ..)))
         } else {
-            None
+            self.info
+                .as_ref()
+                .map(|info| (info.clone(), Text::new(info).color_range(1, ..)))
         }
     }
 

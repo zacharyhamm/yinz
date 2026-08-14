@@ -1626,10 +1626,12 @@ impl TryFrom<ProtobufLayoutParsingError> for crate::data::LayoutParsingError {
         match protobuf.error_type.ok_or("Missing error_type")? {
             ProtobufLayoutParsingErrorType::KdlError(kdl_variant) => {
                 Ok(crate::data::LayoutParsingError::KdlError {
-                    kdl_error: kdl_variant
-                        .kdl_error
-                        .ok_or("Missing kdl_error")?
-                        .try_into()?,
+                    kdl_error: Box::new(
+                        kdl_variant
+                            .kdl_error
+                            .ok_or("Missing kdl_error")?
+                            .try_into()?,
+                    ),
                     file_name: kdl_variant.file_name,
                     source_code: kdl_variant.source_code,
                 })
@@ -1650,7 +1652,7 @@ impl TryFrom<crate::data::LayoutParsingError> for ProtobufLayoutParsingError {
                 file_name,
                 source_code,
             } => ProtobufLayoutParsingErrorType::KdlError(ProtobufKdlErrorVariant {
-                kdl_error: Some(kdl_error.try_into()?),
+                kdl_error: Some((*kdl_error).try_into()?),
                 file_name,
                 source_code,
             }),
@@ -3389,8 +3391,8 @@ mod tests {
     mod props {
         use super::*;
         use crate::data::{
-            ClientId, CopyDestination, FileMetadata, HostTerminalThemeMode, PaneId,
-            PermissionStatus, WebServerStatus,
+            CopyDestination, FileMetadata, HostTerminalThemeMode, PaneId, PermissionStatus,
+            WebServerStatus,
         };
         use hegel::generators;
         use std::collections::BTreeMap;
@@ -3420,10 +3422,6 @@ mod tests {
             } else {
                 PaneId::Plugin(n)
             }
-        }
-
-        fn client_ids(tc: &hegel::TestCase) -> Vec<ClientId> {
-            tc.draw(generators::vecs(generators::integers::<ClientId>()).max_size(4))
         }
 
         fn paths_with_metadata(tc: &hegel::TestCase) -> Vec<(PathBuf, Option<FileMetadata>)> {
