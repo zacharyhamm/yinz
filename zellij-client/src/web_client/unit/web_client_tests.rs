@@ -3,7 +3,7 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use isahc::prelude::*;
 use serde_json;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -11,17 +11,15 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use zellij_utils::input::layout::Layout;
 use zellij_utils::{consts::VERSION, input::config::Config, input::options::Options};
 
-use crate::os_input_output::{
-    ClientOsApi, ServerConnection, SignalSource, StdioAccess, TtyControl,
-};
+use crate::os_input_output::{ClientOsApi, ServerConnection};
+use crate::test_support::FakeClientOsApi;
 use crate::web_client::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
 };
 use crate::web_client::types::{SessionListResponse, WebSessionInfo};
 use crate::web_client::ClientOsApiFactory;
 use zellij_utils::{
-    data::{LayoutInfo, Palette},
-    errors::ErrorContext,
+    data::LayoutInfo,
     ipc::{ClientToServerMsg, ServerToClientMsg},
     pane_size::Size,
     web_authentication_tokens::{create_token, delete_db, revoke_token},
@@ -467,7 +465,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let mut found_resize = false;
         let mut found_terminal_input = false;
@@ -651,7 +649,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_pixel_dims = sent_messages
             .into_iter()
@@ -1078,7 +1076,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let total_resize_messages = sent_messages
             .iter()
@@ -1299,11 +1297,7 @@ mod tests {
         {
             let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api
-                    .messages_to_server
-                    .lock()
-                    .unwrap()
-                    .push(ClientToServerMsg::ClientExited);
+                mock_api.send_to_server(ClientToServerMsg::ClientExited);
             }
         }
 
@@ -1333,7 +1327,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_client_exited = sent_messages
             .iter()
@@ -1987,7 +1981,7 @@ mod tests {
                 "Expected at least one mock API to be registered"
             );
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api.queue_server_message(ServerToClientMsg::Exit {
+                mock_api.queue_from_server(ServerToClientMsg::Exit {
                     exit_reason: zellij_utils::ipc::ExitReason::KickedByHost,
                 });
             }
@@ -2164,7 +2158,7 @@ mod tests {
                 "Expected at least one mock API to be registered"
             );
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api.queue_server_message(ServerToClientMsg::Exit {
+                mock_api.queue_from_server(ServerToClientMsg::Exit {
                     exit_reason: zellij_utils::ipc::ExitReason::Normal,
                 });
             }
@@ -2527,7 +2521,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         assert!(
             !sent_messages
@@ -2619,7 +2613,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_resize = sent_messages
             .iter()
@@ -3382,7 +3376,7 @@ impl SessionManager for MockSessionManager {
 
 #[derive(Debug, Clone)]
 struct MockClientOsApiFactory {
-    mock_apis: Arc<Mutex<HashMap<String, Arc<MockClientOsApi>>>>,
+    mock_apis: Arc<Mutex<HashMap<String, Arc<FakeClientOsApi>>>>,
 }
 
 impl MockClientOsApiFactory {
@@ -3395,7 +3389,7 @@ impl MockClientOsApiFactory {
 
 impl ClientOsApiFactory for MockClientOsApiFactory {
     fn create_client_os_api(&self) -> Result<Box<dyn ClientOsApi>, Box<dyn std::error::Error>> {
-        let mock_api = Arc::new(MockClientOsApi::new());
+        let mock_api = Arc::new(FakeClientOsApi::new());
 
         let client_id = uuid::Uuid::new_v4().to_string();
         self.mock_apis
@@ -3404,89 +3398,5 @@ impl ClientOsApiFactory for MockClientOsApiFactory {
             .insert(client_id, mock_api.clone());
 
         Ok(Box::new((*mock_api).clone()))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct MockClientOsApi {
-    terminal_size: Size,
-    messages_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
-    messages_from_server: Arc<Mutex<VecDeque<(ServerToClientMsg, ErrorContext)>>>,
-}
-
-impl MockClientOsApi {
-    fn new() -> Self {
-        Self {
-            terminal_size: Size { rows: 24, cols: 80 },
-            messages_to_server: Arc::new(Mutex::new(Vec::new())),
-            messages_from_server: Arc::new(Mutex::new(VecDeque::new())),
-        }
-    }
-
-    fn get_sent_messages(&self) -> Vec<ClientToServerMsg> {
-        self.messages_to_server.lock().unwrap().clone()
-    }
-
-    fn queue_server_message(&self, msg: ServerToClientMsg) {
-        self.messages_from_server
-            .lock()
-            .unwrap()
-            .push_back((msg, ErrorContext::default()));
-    }
-}
-
-impl TtyControl for MockClientOsApi {
-    fn get_terminal_size(&self) -> Size {
-        self.terminal_size
-    }
-    fn set_raw_mode(&mut self) {}
-    fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-    fn load_palette(&self) -> Palette {
-        Palette::default()
-    }
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl StdioAccess for MockClientOsApi {
-    fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
-        Box::new(std::io::sink())
-    }
-    fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
-        Box::new(std::io::Cursor::new(Vec::new()))
-    }
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-}
-
-impl ServerConnection for MockClientOsApi {
-    fn update_session_name(&mut self, _new_session_name: String) {}
-    fn send_to_server(&self, msg: ClientToServerMsg) {
-        self.messages_to_server.lock().unwrap().push(msg);
-    }
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-        let msg = self.messages_from_server.lock().unwrap().pop_front();
-        if msg.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        msg
-    }
-    fn connect_to_server(&self, _path: &std::path::Path) {}
-}
-
-impl SignalSource for MockClientOsApi {
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-}
-
-impl ClientOsApi for MockClientOsApi {
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new(self.clone())
     }
 }

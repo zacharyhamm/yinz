@@ -1,169 +1,19 @@
-use crate::os_input_output::{
-    AsyncSignals, AsyncStdin, ClientOsApi, ServerConnection, SignalEvent, SignalSource,
-    StdioAccess, TtyControl,
-};
+use crate::os_input_output::{SignalEvent, TtyControl};
 use crate::remote_attach::websockets::MaybeTls;
 use crate::remote_attach::WebSocketConnections;
 use crate::run_remote_client_terminal_loop;
+use crate::test_support::FakeClientOsApi;
 use crate::web_client::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
     WebServerToWebClientControlMessage,
 };
-use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
-use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use zellij_utils::data::Palette;
-use zellij_utils::errors::ErrorContext;
-use zellij_utils::ipc::{ClientToServerMsg, ServerToClientMsg};
-use zellij_utils::pane_size::Size;
-
-struct MockAsyncStdin {
-    rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
-}
-
-#[async_trait]
-impl AsyncStdin for MockAsyncStdin {
-    async fn read(&mut self) -> io::Result<Vec<u8>> {
-        match self.rx.lock().await.recv().await {
-            Some(data) => Ok(data),
-            None => Ok(Vec::new()),
-        }
-    }
-}
-
-struct MockAsyncSignals {
-    rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>,
-}
-
-#[async_trait]
-impl AsyncSignals for MockAsyncSignals {
-    async fn recv(&mut self) -> Option<SignalEvent> {
-        self.rx.lock().await.recv().await
-    }
-}
-
-#[derive(Clone)]
-struct TestClientOsApi {
-    stdout_buffer: Arc<Mutex<Vec<u8>>>,
-    stdin_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
-    signal_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>,
-    terminal_size: Size,
-}
-
-impl TestClientOsApi {
-    fn new(
-        stdin_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-        signal_rx: mpsc::UnboundedReceiver<SignalEvent>,
-    ) -> Self {
-        Self {
-            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-            stdin_rx: Arc::new(tokio::sync::Mutex::new(stdin_rx)),
-            signal_rx: Arc::new(tokio::sync::Mutex::new(signal_rx)),
-            terminal_size: Size { rows: 24, cols: 80 },
-        }
-    }
-}
-
-impl std::fmt::Debug for TestClientOsApi {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestClientOsApi").finish()
-    }
-}
-
-impl TtyControl for TestClientOsApi {
-    fn get_terminal_size(&self) -> Size {
-        self.terminal_size
-    }
-
-    fn set_raw_mode(&mut self) {}
-
-    fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    fn load_palette(&self) -> Palette {
-        Palette::default()
-    }
-
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl StdioAccess for TestClientOsApi {
-    fn get_stdout_writer(&self) -> Box<dyn Write> {
-        Box::new(TestWriter {
-            buffer: self.stdout_buffer.clone(),
-        })
-    }
-
-    fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
-        Box::new(io::Cursor::new(Vec::new()))
-    }
-
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-
-    fn get_async_stdin_reader(&self) -> Box<dyn AsyncStdin> {
-        Box::new(MockAsyncStdin {
-            rx: self.stdin_rx.clone(),
-        })
-    }
-}
-
-impl ServerConnection for TestClientOsApi {
-    fn update_session_name(&mut self, _new_session_name: String) {}
-
-    fn send_to_server(&self, _msg: ClientToServerMsg) {}
-
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-        None
-    }
-
-    fn connect_to_server(&self, _path: &std::path::Path) {}
-}
-
-impl SignalSource for TestClientOsApi {
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-
-    fn get_async_signal_listener(&self) -> io::Result<Box<dyn AsyncSignals>> {
-        Ok(Box::new(MockAsyncSignals {
-            rx: self.signal_rx.clone(),
-        }))
-    }
-}
-
-impl ClientOsApi for TestClientOsApi {
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new(self.clone())
-    }
-}
-
-struct TestWriter {
-    buffer: Arc<Mutex<Vec<u8>>>,
-}
-
-impl Write for TestWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.buffer.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 mod mock_ws_server {
     use super::*;
@@ -366,7 +216,12 @@ async fn test_stdin_forwarded_to_terminal_websocket() {
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = Box::new(TestClientOsApi::new(stdin_rx, signal_rx));
+    let os_input = Box::new(
+        FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_async_stdin(stdin_rx)
+            .with_async_signals(signal_rx),
+    );
 
     let loop_handle =
         tokio::spawn(
@@ -435,8 +290,11 @@ async fn test_terminal_output_written_to_stdout() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = TestClientOsApi::new(stdin_rx, signal_rx);
-    let stdout_buffer = os_input.stdout_buffer.clone();
+    let os_input = FakeClientOsApi::new()
+        .capturing_stdout()
+        .with_async_stdin(stdin_rx)
+        .with_async_signals(signal_rx);
+    let stdout_reader = os_input.clone();
     let os_input = Box::new(os_input);
 
     let loop_handle =
@@ -452,7 +310,7 @@ async fn test_terminal_output_written_to_stdout() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let stdout = stdout_buffer.lock().unwrap().clone();
+    let stdout = stdout_reader.stdout_bytes();
     let stdout_str = String::from_utf8_lossy(&stdout);
     assert!(
         stdout_str.contains(test_output),
@@ -509,7 +367,12 @@ async fn test_resize_signal_sends_control_message() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = Box::new(TestClientOsApi::new(stdin_rx, signal_rx));
+    let os_input = Box::new(
+        FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_async_stdin(stdin_rx)
+            .with_async_signals(signal_rx),
+    );
 
     let loop_handle =
         tokio::spawn(
@@ -597,7 +460,12 @@ async fn test_quit_signal_exits_loop() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = Box::new(TestClientOsApi::new(stdin_rx, signal_rx));
+    let os_input = Box::new(
+        FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_async_stdin(stdin_rx)
+            .with_async_signals(signal_rx),
+    );
 
     let loop_handle =
         tokio::spawn(
@@ -652,7 +520,12 @@ async fn test_websocket_close_exits_loop() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = Box::new(TestClientOsApi::new(stdin_rx, signal_rx));
+    let os_input = Box::new(
+        FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_async_stdin(stdin_rx)
+            .with_async_signals(signal_rx),
+    );
 
     let loop_handle =
         tokio::spawn(
@@ -710,8 +583,11 @@ async fn test_control_message_handling() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = TestClientOsApi::new(stdin_rx, signal_rx);
-    let terminal_size = os_input.terminal_size;
+    let os_input = FakeClientOsApi::new()
+        .capturing_stdout()
+        .with_async_stdin(stdin_rx)
+        .with_async_signals(signal_rx);
+    let terminal_size = os_input.get_terminal_size();
     let os_input = Box::new(os_input);
 
     let loop_handle =
@@ -818,8 +694,11 @@ async fn test_nested_ping_frame_is_answered_locally_and_stripped_from_forwarded_
 
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
-    let os_input = TestClientOsApi::new(stdin_rx, signal_rx);
-    let stdout_buffer = os_input.stdout_buffer.clone();
+    let os_input = FakeClientOsApi::new()
+        .capturing_stdout()
+        .with_async_stdin(stdin_rx)
+        .with_async_signals(signal_rx);
+    let stdout_reader = os_input.clone();
     let os_input = Box::new(os_input);
 
     let loop_handle =
@@ -850,7 +729,7 @@ async fn test_nested_ping_frame_is_answered_locally_and_stripped_from_forwarded_
     let pong_frame = zellij_utils::nested_session::encode_frame(
         &zellij_utils::nested_session::NestedSessionMessage::Pong,
     );
-    let stdout_bytes = stdout_buffer.lock().unwrap().clone();
+    let stdout_bytes = stdout_reader.stdout_bytes();
     assert!(
         stdout_bytes
             .windows(pong_frame.len())
@@ -874,7 +753,12 @@ async fn test_nested_announce_ack_is_relayed_over_control_websocket() {
 
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
-    let os_input = Box::new(TestClientOsApi::new(stdin_rx, signal_rx));
+    let os_input = Box::new(
+        FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_async_stdin(stdin_rx)
+            .with_async_signals(signal_rx),
+    );
 
     let loop_handle =
         tokio::spawn(
