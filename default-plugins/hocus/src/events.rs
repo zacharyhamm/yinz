@@ -136,7 +136,7 @@ impl State {
         }
         // The confirmation prompt owns y/n outright, for the same reason: they
         // would otherwise be typed into the input box.
-        if matches!(self.status, Status::ConfirmingTool) && key.has_no_modifiers() {
+        if self.is_confirming() && key.has_no_modifiers() {
             match key.bare_key {
                 BareKey::Char('y') | BareKey::Char('Y') => return self.confirm_tool(),
                 BareKey::Char('n') | BareKey::Char('N') => return self.decline_tool(),
@@ -188,7 +188,7 @@ impl State {
     pub(crate) fn on_paste(&mut self, text: String) -> bool {
         // The states that already take every key before the input box sees it
         // refuse a paste for the same reason.
-        if self.picker.is_some() || matches!(self.status, Status::ConfirmingTool) {
+        if self.picker.is_some() || self.is_confirming() {
             return false;
         }
         self.input.insert_text(&text);

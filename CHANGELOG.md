@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
-* feat: toast notifications - `zellij action notify "..."`, a `Notify` bindable action and a `notify()` plugin API, configurable with `notification_position` and `notification_timeout`
+* feat: toast notifications - `zellij action notify "..."`, a `Notify` bindable action and a `notify()` plugin API, configurable with `notification_position` and `notification_timeout`; messages wrap into a taller box, and hocus raises one when a tool is waiting on a y/n
 * feat: allow tabs to have different sizes if clients aren't focused on the same one (https://github.com/zellij-org/zellij/pull/5133)
 * feat: PWA support for the web client (manifest + icons + iOS meta tags) so the page can be installed as a standalone app (https://github.com/zellij-org/zellij/pull/5184)
 * feat: mobile UI (https://github.com/zellij-org/zellij/pull/5241 and https://github.com/zellij-org/zellij/pull/5441)

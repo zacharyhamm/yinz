@@ -67,7 +67,10 @@ use std::time::{Duration, Instant};
 use crate::route::NotificationEnd;
 
 use crate::pty_host::client::ReleasedPtyHost;
-use crate::ui::notification::{notification_chunks, notification_origins, notification_width};
+use crate::ui::notification::{
+    notification_chunks, notification_height, notification_lines, notification_origins,
+    notification_width,
+};
 use log::{debug, warn};
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
@@ -2737,6 +2740,12 @@ impl Screen {
     /// `fill_unowned_strip_rows` - a pane that repaints would overwrite the toast's cells, and
     /// re-emitting after every pane is both correct and cheap. The floating pane stack is cleared
     /// first so `Output` doesn't clip these chunks behind a floating pane sitting in that corner.
+    ///
+    /// Every toast in the stack shares one box width - the widest any of them wants - so the text
+    /// can only be wrapped once that width is settled. One consequence: a new wide toast re-wraps,
+    /// and can change the height of, every other live toast on the frame it arrives. Nothing caches
+    /// the result, which is what keeps that honest; the wrapping is noise beside the chunk building
+    /// already happening here, so it does not want a cache that would go stale on a resize.
     fn render_notifications(
         &self,
         output: &mut Output,
@@ -2754,16 +2763,22 @@ impl Screen {
         let Some(width) = width else {
             return Ok(());
         };
-        let origins = notification_origins(
-            viewport,
-            self.notification_position,
-            self.notifications.len(),
-            width,
-        );
+        // Wrapped once and reused for both the height and the glyphs: wrapping again inside
+        // `notification_chunks` could disagree with what the stacking was laid out for.
+        let wrapped: Vec<Vec<String>> = self
+            .notifications
+            .iter()
+            .map(|notification| notification_lines(&notification.text, width))
+            .collect();
+        let heights: Vec<usize> = wrapped
+            .iter()
+            .map(|lines| notification_height(lines.len()))
+            .collect();
+        let origins = notification_origins(viewport, self.notification_position, &heights, width);
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
-            for (notification, (x, y)) in self.notifications.iter().zip(origins) {
-                let chunks = notification_chunks(&notification.text, x, y, width, &self.style);
+            for (lines, (x, y)) in wrapped.iter().zip(origins) {
+                let chunks = notification_chunks(lines, x, y, width, &self.style);
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
                     client_ids.iter().copied(),

@@ -6,6 +6,7 @@ use zellij_integration_tests::{
 use zellij_utils::cli::CliAction;
 
 const TOAST_TOP_LEFT_CORNER: &str = "╭";
+const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";
 
 fn notify(zellij: &TestSession, text: &str) {
     let exit_code = zellij.run_cli_action(CliAction::Notify {
@@ -14,8 +15,15 @@ fn notify(zellij: &TestSession, text: &str) {
     assert_eq!(exit_code, 0, "notify exited cleanly");
 }
 
-/// The row each toast's top border sits on, top-to-bottom.
+/// Wait for `expected` toasts, then report the row each one's top border sits on, top-to-bottom.
 fn toast_border_rows(zellij: &TestSession, what: &str, expected: usize) -> Vec<usize> {
+    wait_for_toasts(zellij, what, expected).0
+}
+
+/// The `(top border rows, bottom border rows)` of the toasts on screen once there are `expected` of
+/// them. Both are top-to-bottom, so a toast's own height is the difference between the two at the
+/// same index - which is only worth asking now that toasts are not all the same height.
+fn wait_for_toasts(zellij: &TestSession, what: &str, expected: usize) -> (Vec<usize>, Vec<usize>) {
     let snapshot = zellij.wait_until(what, |grid_snapshot| {
         grid_snapshot
             .lines()
@@ -24,13 +32,19 @@ fn toast_border_rows(zellij: &TestSession, what: &str, expected: usize) -> Vec<u
             .count()
             == expected
     });
-    snapshot
-        .lines()
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.contains(TOAST_TOP_LEFT_CORNER))
-        .map(|(row, _)| row)
-        .collect()
+    let rows_with = |marker: &str| -> Vec<usize> {
+        snapshot
+            .lines()
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(marker))
+            .map(|(row, _)| row)
+            .collect()
+    };
+    (
+        rows_with(TOAST_TOP_LEFT_CORNER),
+        rows_with(TOAST_BOTTOM_LEFT_CORNER),
+    )
 }
 
 #[test]
@@ -260,21 +274,24 @@ keybinds {
     zellij.quit();
 }
 
+/// Text wraps into a taller box now, so it takes a message past the row cap - not merely past one
+/// row - to reach the ellipsis.
 #[test]
-fn long_notification_text_is_truncated_rather_than_overflowing() {
+fn notification_text_past_the_row_cap_is_truncated_rather_than_overflowing() {
     let mut zellij = start_zellij();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
-    notify(
-        &zellij,
-        "this notification message is far longer than any toast box has room to show in full",
-    );
+    let mut message =
+        "this notification message is far longer than any toast box has room to show ".repeat(7);
+    message.push_str("and this tail is well past the last row");
+
+    notify(&zellij, &message);
 
     let snapshot = zellij.wait_until("truncated notification is drawn", |grid_snapshot| {
         grid_snapshot.contains("…")
     });
     assert!(
-        !snapshot.contains("room to show in full"),
+        !snapshot.contains("well past the last row"),
         "the tail should have been truncated away, got {}",
         snapshot
     );
@@ -285,6 +302,105 @@ fn long_notification_text_is_truncated_rather_than_overflowing() {
             line
         );
     }
+
+    zellij.quit();
+}
+
+#[test]
+fn multi_line_notification_text_wraps_into_a_taller_box() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_position \"top-right\"\nnotification_timeout 30")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "hocus needs confirmation\n  pane_id: 3");
+
+    let snapshot = zellij.wait_until("both rows of the message are drawn", |grid_snapshot| {
+        grid_snapshot.contains("hocus needs confirmation") && grid_snapshot.contains("pane_id: 3")
+    });
+    let lines = snapshot.lines();
+    let top = lines
+        .iter()
+        .position(|line| line.contains(TOAST_TOP_LEFT_CORNER))
+        .expect("a toast is drawn");
+    let bottom = lines
+        .iter()
+        .position(|line| line.contains(TOAST_BOTTOM_LEFT_CORNER))
+        .expect("the toast is closed");
+
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains(TOAST_TOP_LEFT_CORNER))
+            .count(),
+        1,
+        "one taller box, not one box per line, got {}",
+        snapshot
+    );
+    assert_eq!(bottom - top, 3, "two text rows between the borders");
+    assert!(lines[top + 1].contains("hocus needs confirmation"));
+    assert!(
+        lines[top + 2].contains("  pane_id: 3"),
+        "the indentation survives, got {:?}",
+        lines[top + 2]
+    );
+
+    zellij.quit();
+}
+
+#[test]
+fn a_taller_toast_pushes_the_next_one_further_from_the_corner() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_position \"top-left\"\nnotification_timeout 30")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "short");
+    let first = toast_border_rows(&zellij, "one notification is drawn", 1);
+    notify(&zellij, "one\ntwo\nthree");
+    let both = toast_border_rows(&zellij, "two notifications are drawn", 2);
+
+    assert_eq!(both[0], first[0], "the newest toast takes the corner");
+    assert_eq!(
+        both[1] - both[0],
+        5,
+        "the older toast starts below all five rows of the tall one, got {:?}",
+        both
+    );
+
+    zellij.quit();
+}
+
+/// The case the stacking maths is easiest to get wrong: growing upwards, a toast is placed by its
+/// bottom edge, so a taller one must not hang off the end of the viewport.
+#[test]
+fn a_tall_toast_at_a_bottom_corner_still_ends_on_the_last_viewport_row() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_position \"bottom-right\"\nnotification_timeout 30")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "short");
+    let (_, short_bottoms) = wait_for_toasts(&zellij, "one notification is drawn", 1);
+
+    notify(&zellij, "one\ntwo\nthree");
+    let (tops, bottoms) = wait_for_toasts(&zellij, "two notifications are drawn", 2);
+
+    let newest_bottom = *bottoms
+        .last()
+        .expect("the newest toast is nearest the corner");
+    assert_eq!(
+        newest_bottom, short_bottoms[0],
+        "the tall toast ends on the row the short one ended on, got {:?}",
+        bottoms
+    );
+    assert_eq!(
+        newest_bottom - tops[1],
+        4,
+        "and it is five rows tall, got tops {:?} bottoms {:?}",
+        tops,
+        bottoms
+    );
 
     zellij.quit();
 }
