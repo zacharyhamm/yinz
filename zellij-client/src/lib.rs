@@ -1187,7 +1187,7 @@ pub fn start_server_detached(
                 config_file_path: Config::config_file_path(&cli_args),
                 config_dir: cli_args.config_dir.clone(),
                 should_ignore_config: cli_args.is_setup_clean(),
-                configuration_options: cli_args.options(),
+                configuration_options: Some(config_options.clone()),
                 layout: layout_info.or_else(|| {
                     cli_args
                         .layout
