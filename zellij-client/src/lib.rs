@@ -1131,8 +1131,6 @@ pub fn start_client(
     let on_force_close = config_options.on_force_close.unwrap_or_default();
     let stdin_ansi_parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
 
-    let (resize_sender, resize_receiver) = std::sync::mpsc::channel::<()>();
-
     let _stdin_thread = thread::Builder::new()
         .name("stdin_handler".to_string())
         .spawn({
@@ -1146,7 +1144,6 @@ pub fn start_client(
                     stdin_ansi_parser,
                     explicitly_disable_kitty_keyboard_protocol,
                     support_kitty_graphics_protocol,
-                    Some(resize_sender),
                 )
             }
         });
@@ -1219,7 +1216,6 @@ pub fn start_client(
                             });
                         }
                     }),
-                    Some(resize_receiver),
                 );
             }
         })

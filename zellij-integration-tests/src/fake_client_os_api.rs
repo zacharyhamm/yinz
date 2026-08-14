@@ -181,12 +181,7 @@ impl ClientOsApi for FakeClientOsApi {
         }
         received
     }
-    fn handle_signals(
-        &self,
-        sigwinch_cb: Box<dyn Fn()>,
-        quit_cb: Box<dyn Fn()>,
-        _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    ) {
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
         loop {
             match self.signal_rx.recv() {
                 Ok(SignalEvent::Resize) => sigwinch_cb(),

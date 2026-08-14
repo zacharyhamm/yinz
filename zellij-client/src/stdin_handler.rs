@@ -18,7 +18,6 @@ pub(crate) fn stdin_loop(
     stdin_ansi_parser: Arc<Mutex<StdinAnsiParser>>,
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
-    resize_sender: Option<std::sync::mpsc::Sender<()>>,
 ) {
     // Send the startup host query string so the host terminal replies
     // with its live pixel dimensions, fg/bg, sync-output support, and
@@ -39,9 +38,6 @@ pub(crate) fn stdin_loop(
             ]));
         }
     }
-
-    // Signal handling does not use the crossterm resize channel.
-    drop(resize_sender);
 
     // Byte reader + termwiz/kitty parser path.
     let mut input_parser = InputParser::new();

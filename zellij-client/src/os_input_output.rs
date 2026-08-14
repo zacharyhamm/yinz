@@ -128,12 +128,7 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
     fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)>;
-    fn handle_signals(
-        &self,
-        sigwinch_cb: Box<dyn Fn()>,
-        quit_cb: Box<dyn Fn()>,
-        resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    );
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>);
     /// Establish a connection with the server socket.
     fn connect_to_server(&self, path: &Path);
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
@@ -250,14 +245,9 @@ impl ClientOsApi for ClientOsInputOutput {
             .unwrap()
             .recv_server_msg()
     }
-    fn handle_signals(
-        &self,
-        sigwinch_cb: Box<dyn Fn()>,
-        quit_cb: Box<dyn Fn()>,
-        resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    ) {
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
         let mut sigwinch_cb_timestamp = time::Instant::now();
-        let signals = BlockingSignalIterator::new(resize_receiver).unwrap();
+        let signals = BlockingSignalIterator::new().unwrap();
         for event in signals {
             match event {
                 SignalEvent::Resize => {
@@ -338,13 +328,7 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
 }
 
 pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
-    let reading_from_stdin = Arc::new(Mutex::new(None));
-    Ok(ClientOsInputOutput {
-        send_instructions_to_server: Arc::new(Mutex::new(None)),
-        receive_instructions_from_server: Arc::new(Mutex::new(None)),
-        reading_from_stdin,
-        session_name: Arc::new(Mutex::new(None)),
-    })
+    get_client_os_input()
 }
 
 pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
