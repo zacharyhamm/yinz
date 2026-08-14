@@ -998,6 +998,47 @@ mod tests {
     }
 }
 
+#[cfg(feature = "web_server_capability")]
+mod cookie_jar_tests {
+    use super::*;
+    use crate::remote_attach::http_client::HttpClientWithCookies;
+    use axum::{response::IntoResponse, routing::get, Router};
+    use tokio::net::TcpListener;
+
+    /// A response carrying each cookie in its own Set-Cookie header, which is
+    /// how servers normally send more than one.
+    async fn two_cookies() -> impl IntoResponse {
+        axum::response::Response::builder()
+            .header("Set-Cookie", "session_token=abc; Path=/; HttpOnly")
+            .header("Set-Cookie", "csrf_token=xyz; Path=/")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stores_every_set_cookie_header() {
+        let app = Router::new().route("/two", get(two_cookies));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = HttpClientWithCookies::new(None, true).unwrap();
+        let request = isahc::Request::get(format!("http://127.0.0.1:{}/two", port))
+            .body(Vec::new())
+            .unwrap();
+        client.send_with_cookies(request).await.unwrap();
+
+        assert_eq!(client.get_cookie("session_token").as_deref(), Some("abc"));
+        assert_eq!(
+            client.get_cookie("csrf_token").as_deref(),
+            Some("xyz"),
+            "a cookie sent in a second Set-Cookie header must not be dropped"
+        );
+
+        server.abort();
+    }
+}
+
 // Tests that don't require the web_server_capability feature
 #[cfg(not(feature = "web_server_capability"))]
 mod tests {
