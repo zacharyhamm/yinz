@@ -65,6 +65,126 @@ pub fn summarize(call: &ToolCall) -> String {
     }
 }
 
+/// What running `call` will actually do, said in the user's terms rather than the
+/// model's.
+///
+/// Deliberately not the tool's own description from `specs()`: those are written
+/// to tell a model what a tool is *for* ("Send text, then keys, to a running
+/// program"), and the question here is what is about to happen to this session
+/// if you press `y`. `None` for a tool that never asks.
+///
+/// Arguments that fail to parse fall back to the bare effect. A confirmation for
+/// a call whose arguments are malformed is exactly when the user most needs to
+/// see something, so this must not go quiet.
+pub fn consequence(call: &ToolCall) -> Option<String> {
+    let args = Args::parse(&call.arguments).unwrap_or_default();
+    let pane = match args.pane_id {
+        Some(pane_id) => format!("pane {pane_id}"),
+        None => "a pane".to_owned(),
+    };
+    let sentence = match call.name.as_str() {
+        "rerun_pane" => format!("re-runs {pane}, killing whatever it is running now"),
+        "clear_pane" => format!("throws away {pane}'s scrollback; it cannot be scrolled back"),
+        "send_input" => format!("types into {pane}, as if you had typed it yourself"),
+        "agent_send" => format!("types into the agent in {pane}, as if you had typed it yourself"),
+        "agent_control" => match args.action.as_deref() {
+            Some("interrupt") => format!("interrupts the agent in {pane} mid-run"),
+            Some("restart") => format!("restarts the agent in {pane}, losing its conversation"),
+            Some("close") => format!("closes {pane} and the agent running in it"),
+            _ => format!("interrupts, restarts or closes the agent in {pane}"),
+        },
+        "agent_spawn" => match args.command_words() {
+            words if words.is_empty() => "opens a new pane running an agent".to_owned(),
+            words => format!("opens a new pane running `{}`", words.join(" ")),
+        },
+        "project_forget" => {
+            let name = args.name.as_deref().unwrap_or("a project");
+            format!("forgets the project {name}; its todos stay, the project does not")
+        },
+        "slack_post" => {
+            let channel = args.channel.as_deref().unwrap_or("a channel");
+            match args.thread.as_deref() {
+                Some(_) => {
+                    format!("posts to {channel} as a thread reply, visible to everyone in it")
+                },
+                None => format!("posts to {channel} immediately, visible to everyone in it"),
+            }
+        },
+        "warp_pane" => {
+            let session = args.to_session.as_deref().unwrap_or("another session");
+            format!("moves {pane} out to {session}; it leaves this screen")
+        },
+        "warp_pane_here" => {
+            let session = args.from_session.as_deref().unwrap_or("another session");
+            format!("takes {pane} from {session} into this one")
+        },
+        "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
+        // Scheduling is otherwise free; handing a job standing permission is the
+        // confirmable part, and `pump_tools` stops for exactly that case.
+        "schedule" if args.auto_confirm => {
+            "lets every run of this job use tools without stopping to ask again".to_owned()
+        },
+        _ => return None,
+    };
+    Some(sentence)
+}
+
+/// The call's arguments as one `key: value` line each, so the thing being agreed
+/// to can be read rather than parsed.
+///
+/// Keys come out alphabetically: the workspace does not enable serde_json's
+/// `preserve_order`, so an object is a `BTreeMap`. Arbitrary but stable, which
+/// is what a prompt needs.
+///
+/// Strings lose their quotes; everything else is compact JSON. Arguments that do
+/// not parse as an object are handed back verbatim, for the same reason
+/// `consequence` does not go quiet on them.
+pub fn argument_lines(call: &ToolCall) -> Vec<String> {
+    let arguments = call.arguments.trim();
+    if arguments.is_empty() || arguments == "{}" {
+        return Vec::new();
+    }
+    let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(arguments) else {
+        return vec![arguments.to_owned()];
+    };
+    fields
+        .iter()
+        .map(|(key, value)| match value {
+            Value::String(text) => format!("{key}: {text}"),
+            value => format!("{key}: {value}"),
+        })
+        .collect()
+}
+
+/// The whole confirmation block: what is being run, what it will do, and what it
+/// was given, one line each.
+///
+/// The pane prompt and the toast both render this, so the two cannot drift into
+/// telling the user different things about the same call.
+pub fn confirmation_detail(call: &ToolCall) -> Vec<String> {
+    let mut lines = vec![call.name.clone()];
+    if let Some(consequence) = consequence(call) {
+        lines.push(format!("  {consequence}"));
+    }
+    lines.extend(
+        argument_lines(call)
+            .into_iter()
+            .map(|line| format!("  {line}")),
+    );
+    lines
+}
+
+/// The confirmation as a toast: the same block behind a line saying who is
+/// asking, since a toast is read from a pane that has nothing to do with hocus.
+pub fn confirmation_toast(call: &ToolCall) -> String {
+    let mut lines = vec![TOAST_HEADLINE.to_owned()];
+    lines.extend(confirmation_detail(call));
+    lines.join("\n")
+}
+
+/// Named rather than inline so the test that reads it back cannot drift from it.
+pub const TOAST_HEADLINE: &str = "hocus needs confirmation";
+
 /// Every advertised tool name, for the manual `/tool` prompt and its completion.
 pub fn names() -> Vec<String> {
     specs()
@@ -2620,6 +2740,132 @@ mod tests {
         assert_eq!(names.len(), 49);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
         assert_eq!(confirmed, 11);
+    }
+
+    fn call(name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    /// The same guard as the confirmation table above, one layer along: a tool
+    /// that stops to ask and then cannot say what it will do is a prompt with
+    /// nothing in it but the model's JSON.
+    #[test]
+    fn every_confirmed_tool_says_what_it_will_do() {
+        for name in names().iter().filter(|name| needs_confirmation(name)) {
+            let sentence = consequence(&call(name, "{}"));
+            assert!(sentence.is_some(), "{name} should say what it will do");
+            assert!(
+                !sentence.expect("checked").trim().is_empty(),
+                "{name}'s consequence should not be blank"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_that_never_asks_has_no_consequence() {
+        assert_eq!(consequence(&call("list_session", "{}")), None);
+    }
+
+    /// `schedule` is not in the confirmation table, but asking for standing
+    /// permission stops `pump_tools` all the same - and only then.
+    #[test]
+    fn scheduling_only_says_anything_when_it_asks_for_standing_permission() {
+        assert_eq!(
+            consequence(&call(
+                "schedule",
+                r#"{"prompt":"check ci","auto_confirm":true}"#
+            )),
+            Some("lets every run of this job use tools without stopping to ask again".into())
+        );
+        assert_eq!(
+            consequence(&call("schedule", r#"{"prompt":"check ci"}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_consequence_names_the_pane_it_will_act_on() {
+        assert_eq!(
+            consequence(&call("send_input", r#"{"pane_id":3,"text":"hi"}"#)),
+            Some("types into pane 3, as if you had typed it yourself".into())
+        );
+    }
+
+    /// `agent_control`'s argument is a verb, and interrupting is not restarting.
+    #[test]
+    fn agent_control_says_which_of_its_verbs_is_about_to_run() {
+        let restart = consequence(&call(
+            "agent_control",
+            r#"{"pane_id":7,"action":"restart"}"#,
+        ));
+        assert_eq!(
+            restart,
+            Some("restarts the agent in pane 7, losing its conversation".into())
+        );
+        let close = consequence(&call("agent_control", r#"{"pane_id":7,"action":"close"}"#));
+        assert_eq!(
+            close,
+            Some("closes pane 7 and the agent running in it".into())
+        );
+    }
+
+    /// Arguments the model got wrong are exactly when a prompt must not go quiet.
+    #[test]
+    fn a_consequence_survives_arguments_that_do_not_parse() {
+        let sentence = consequence(&call("send_input", "not json at all"));
+        assert_eq!(
+            sentence,
+            Some("types into a pane, as if you had typed it yourself".into())
+        );
+    }
+
+    #[test]
+    fn arguments_are_one_readable_line_each_rather_than_json() {
+        assert_eq!(
+            argument_lines(&call("send_input", r#"{"pane_id":3,"text":"git push"}"#)),
+            vec!["pane_id: 3", "text: git push"]
+        );
+    }
+
+    #[test]
+    fn an_empty_argument_object_contributes_no_lines() {
+        assert!(argument_lines(&call("clear_pane", "{}")).is_empty());
+        assert!(argument_lines(&call("clear_pane", "")).is_empty());
+    }
+
+    #[test]
+    fn arguments_that_do_not_parse_are_shown_verbatim_rather_than_dropped() {
+        assert_eq!(
+            argument_lines(&call("send_input", "not json at all")),
+            vec!["not json at all"]
+        );
+    }
+
+    #[test]
+    fn the_confirmation_block_names_the_call_what_it_does_and_what_it_was_given() {
+        assert_eq!(
+            confirmation_detail(&call("clear_pane", r#"{"pane_id":4}"#)),
+            vec![
+                "clear_pane",
+                "  throws away pane 4's scrollback; it cannot be scrolled back",
+                "  pane_id: 4",
+            ]
+        );
+    }
+
+    /// A toast is read from a pane that has nothing to do with hocus, so it has
+    /// to say who is asking before it says what for.
+    #[test]
+    fn the_toast_says_who_is_asking_before_the_block() {
+        let toast = confirmation_toast(&call("clear_pane", r#"{"pane_id":4}"#));
+        let mut lines = toast.lines();
+        assert_eq!(lines.next(), Some(TOAST_HEADLINE));
+        assert_eq!(lines.next(), Some("clear_pane"));
+        assert!(toast.ends_with("  pane_id: 4"), "got {toast:?}");
     }
 
     /// `agent_control` is the one tool whose argument is a verb rather than a target,
