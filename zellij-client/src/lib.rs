@@ -121,6 +121,26 @@ impl From<std::io::Error> for RemoteClientError {
     }
 }
 
+impl From<serde_json::Error> for RemoteClientError {
+    fn from(error: serde_json::Error) -> Self {
+        RemoteClientError::Other(Box::new(error))
+    }
+}
+
+#[cfg(feature = "web_server_capability")]
+impl From<isahc::http::Error> for RemoteClientError {
+    fn from(error: isahc::http::Error) -> Self {
+        RemoteClientError::Other(Box::new(error))
+    }
+}
+
+#[cfg(feature = "web_server_capability")]
+impl From<isahc::Error> for RemoteClientError {
+    fn from(error: isahc::Error) -> Self {
+        RemoteClientError::Other(Box::new(error))
+    }
+}
+
 use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
 use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,

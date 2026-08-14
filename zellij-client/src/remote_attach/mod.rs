@@ -91,15 +91,15 @@ fn try_to_connect_with_saved_session_token(
         // we have a saved session token, let's try to authenticate with it
         let ca_cert_owned = ca_cert.map(|p| p.to_path_buf());
         match runtime.block_on(async move {
-            remote_attach_with_session_token(
+            remote_attach(
                 remote_session_url,
-                &saved_session_token,
+                Credential::SessionToken(&saved_session_token),
                 ca_cert_owned.as_deref(),
                 insecure,
             )
             .await
         }) {
-            Ok(connections) => {
+            Ok((connections, _)) => {
                 return Ok(Some(connections));
             },
             Err(RemoteClientError::SessionTokenExpired) => {
@@ -150,8 +150,10 @@ fn authenticate_with_retry(
         match runtime.block_on(async move {
             remote_attach(
                 remote_session_url,
-                &auth_token,
-                remember,
+                Credential::AuthToken {
+                    token: &auth_token,
+                    remember_me: remember,
+                },
                 ca_cert_owned.as_deref(),
                 insecure,
             )
@@ -200,24 +202,52 @@ fn authenticate_with_retry(
     }
 }
 
+/// How this attach proves who it is.
+enum Credential<'a> {
+    /// A fresh auth token, exchanged for a session via `/login`.
+    AuthToken { token: &'a str, remember_me: bool },
+    /// A session token remembered from a previous attach.
+    SessionToken(&'a str),
+}
+
+/// Authenticate against the remote server and open both WebSockets.
+///
+/// Returns the session token to remember, which only exists when we logged
+/// in with an auth token and the caller asked to be remembered.
 async fn remote_attach(
     server_url: &str,
-    auth_token: &str,
-    remember_me: bool,
+    credential: Credential<'_>,
     ca_cert: Option<&std::path::Path>,
     insecure: bool,
 ) -> Result<(websockets::WebSocketConnections, Option<String>), RemoteClientError> {
     let server_base_url = extract_server_url(server_url)?;
     let session_name = extract_session_name(server_url)?;
-    let (web_client_id, http_client, session_token) = auth::authenticate(
-        &server_base_url,
-        auth_token,
-        remember_me,
-        &session_name,
-        ca_cert,
-        insecure,
-    )
-    .await?;
+
+    let (web_client_id, http_client, session_token) = match credential {
+        Credential::AuthToken { token, remember_me } => {
+            auth::authenticate(
+                &server_base_url,
+                token,
+                remember_me,
+                &session_name,
+                ca_cert,
+                insecure,
+            )
+            .await?
+        },
+        Credential::SessionToken(session_token) => {
+            let (web_client_id, http_client) = auth::validate_session_token(
+                &server_base_url,
+                session_token,
+                &session_name,
+                ca_cert,
+                insecure,
+            )
+            .await?;
+            (web_client_id, http_client, None)
+        },
+    };
+
     let connections = websockets::establish_websocket_connections(
         &web_client_id,
         &http_client,
@@ -229,35 +259,6 @@ async fn remote_attach(
     .await
     .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
     Ok((connections, session_token))
-}
-
-async fn remote_attach_with_session_token(
-    server_url: &str,
-    session_token: &str,
-    ca_cert: Option<&std::path::Path>,
-    insecure: bool,
-) -> Result<websockets::WebSocketConnections, RemoteClientError> {
-    let server_base_url = extract_server_url(server_url)?;
-    let session_name = extract_session_name(server_url)?;
-    let (web_client_id, http_client) = auth::validate_session_token(
-        &server_base_url,
-        session_token,
-        &session_name,
-        ca_cert,
-        insecure,
-    )
-    .await?;
-    let connections = websockets::establish_websocket_connections(
-        &web_client_id,
-        &http_client,
-        &server_base_url,
-        &session_name,
-        ca_cert,
-        insecure,
-    )
-    .await
-    .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
-    Ok(connections)
 }
 
 pub fn extract_server_url(full_url: &str) -> Result<String, RemoteClientError> {
