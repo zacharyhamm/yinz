@@ -70,6 +70,14 @@ const HOCUS_AND_SHELL: &str = r#"layout {
 }
 "#;
 
+const GLOBAL_AND_SHELL: &str = r#"layout {
+    global_panes {
+        pane edge="left" size="50%" focus=true
+    }
+    pane
+}
+"#;
+
 /// A session with one shell pane and the popup available.
 fn start_without_hocus() -> TestSession {
     let zellij = TestRunner::new(TERMINAL_SIZE).with_config(ASK_ONLY).start();
@@ -187,6 +195,66 @@ fn dismissing_the_popup_returns_focus_to_the_pane_it_covered() {
         "typing after the popup closes should reach the shell it covered"
     );
 
+    zellij.quit();
+}
+
+#[test]
+fn popup_from_a_global_pane_covers_it_and_returns_focus() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(ASK_ONLY)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("$")
+    });
+    zellij.send_stdin(&keys::alt('h'));
+    for _ in 0..50 {
+        zellij.send_stdin(b"g");
+        if global.stdin_bytes().contains(&b'g') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(global.stdin_bytes().contains(&b'g'), "global pane focused");
+
+    open_popup(&zellij);
+    let prompt_column = zellij
+        .snapshot()
+        .lines()
+        .into_iter()
+        .find_map(|line| {
+            line.find(POPUP_PROMPT)
+                .map(|byte_index| line[..byte_index].chars().count())
+        })
+        .expect("popup prompt rendered");
+    assert!(prompt_column < TERMINAL_SIZE.cols / 2);
+
+    zellij.send_stdin(b"q");
+    zellij.wait_until("the popup takes keyboard focus", |snapshot| {
+        snapshot.contains("ask> q")
+    });
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("the popup closes", |snapshot| {
+        !snapshot.contains(POPUP_PROMPT)
+    });
+
+    let mut restored = false;
+    for _ in 0..50 {
+        zellij.send_stdin(b"x");
+        if global.stdin_bytes().contains(&b'x') {
+            restored = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        restored,
+        "closing the popup should restore global-pane focus"
+    );
     zellij.quit();
 }
 

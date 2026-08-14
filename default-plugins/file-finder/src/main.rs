@@ -290,6 +290,7 @@ impl State {
             height,
         } = geometry(&self.config);
         FloatingPaneCoordinates::new(Some(x), Some(y), Some(width), Some(height), None, None)
+            .map(FloatingPaneCoordinates::as_overlay)
     }
 }
 
@@ -399,6 +400,10 @@ mod tests {
                 width: "80%".to_owned(),
                 height: "70%".to_owned(),
             }
+        );
+        assert_eq!(
+            State::default().floating_geometry().unwrap().overlay,
+            Some(true)
         );
     }
 

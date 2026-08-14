@@ -3240,6 +3240,9 @@ pub struct FloatingPaneCoordinates {
     pub height: Option<PercentOrFixed>,
     pub pinned: Option<bool>,
     pub borderless: Option<bool>,
+    /// Position this pane against the whole session surface and draw it above global panes.
+    #[serde(default)]
+    pub overlay: Option<bool>,
 }
 
 impl FloatingPaneCoordinates {
@@ -3291,8 +3294,13 @@ impl FloatingPaneCoordinates {
                 height,
                 pinned,
                 borderless,
+                overlay: None,
             })
         }
+    }
+    pub fn as_overlay(mut self) -> Self {
+        self.overlay = Some(true);
+        self
     }
     pub fn with_x_fixed(mut self, x: usize) -> Self {
         self.x = Some(PercentOrFixed::Fixed(x));
@@ -3353,6 +3361,7 @@ impl From<PaneGeom> for FloatingPaneCoordinates {
             height: Some(PercentOrFixed::Fixed(pane_geom.rows.as_usize())),
             pinned: Some(pane_geom.is_pinned),
             borderless: None,
+            overlay: None,
         }
     }
 }

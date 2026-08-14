@@ -962,6 +962,7 @@ impl Tab {
             display_area.clone(),
             display_area_origin.clone(),
             viewport.clone(),
+            global_pane_strips.clone(),
             connected_clients.clone(),
             connected_clients_in_app.clone(),
             mode_info.clone(),
@@ -4834,7 +4835,12 @@ impl Tab {
             return false;
         }
         *own_strips = global_pane_strips.to_vec();
+        drop(own_strips);
+        self.floating_panes.reapply_overlay_coordinates();
         true
+    }
+    pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
+        self.floating_panes.is_overlay(pane_id)
     }
     /// Recompute the tiled panes' content offsets (and the pty sizes that follow from them) against
     /// the current boundary viewport — needed when the global pane strips change without the tab's
@@ -4975,6 +4981,7 @@ impl Tab {
                     inactive_clients,
                     &self.mouse_help_text_visible,
                     self.mouse_scroll_resize,
+                    false,
                 )
                 .with_context(err_context)?;
         }
@@ -4988,6 +4995,29 @@ impl Tab {
             .with_context(err_context)?;
 
         Ok(())
+    }
+
+    pub fn render_overlays_after_global_panes(
+        &mut self,
+        output: &mut Output,
+        client_id_override: Option<ClientId>,
+        inactive_clients: &HashSet<ClientId>,
+    ) -> Result<()> {
+        if !self.floating_panes.has_overlays()
+            || (!self.floating_panes.panes_are_visible() && !self.floating_panes.has_pinned_panes())
+        {
+            return Ok(());
+        }
+        self.floating_panes.render(
+            output,
+            &self.mouse_hover_pane_id,
+            self.current_pane_group.borrow().clone_inner(),
+            client_id_override,
+            inactive_clients,
+            &self.mouse_help_text_visible,
+            self.mouse_scroll_resize,
+            true,
+        )
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
@@ -7430,21 +7460,17 @@ impl Tab {
         }
         if let Some(mut new_pane_geom) = self.floating_panes.find_room_for_new_pane() {
             if let Some(floating_pane_coordinates) = &floating_pane_coordinates {
-                let viewport = self.viewport.borrow();
                 if let Some(pinned) = floating_pane_coordinates.pinned.as_ref() {
                     pane.set_pinned(*pinned);
                 }
-                let origin = *self.display_area_origin.borrow();
-                new_pane_geom.adjust_coordinates(
-                    floating_pane_coordinates.clone(),
-                    *viewport,
-                    origin,
-                );
+                self.floating_panes
+                    .adjust_coordinates(&mut new_pane_geom, floating_pane_coordinates.clone());
                 self.swap_layouts.set_is_floating_damaged();
             }
             pane.set_active_at(Instant::now());
             pane.set_geom(new_pane_geom);
             let is_borderless = floating_pane_coordinates
+                .as_ref()
                 .and_then(|c| c.borderless)
                 .unwrap_or(false);
             if is_borderless {
@@ -7457,6 +7483,10 @@ impl Tab {
             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
                 .with_context(err_context)?;
             self.floating_panes.add_pane(pane_id, pane);
+            if let Some(coordinates) = floating_pane_coordinates.as_ref() {
+                self.floating_panes
+                    .remember_overlay_coordinates(pane_id, coordinates);
+            }
             if should_focus_new_pane {
                 if let Some(client_id) = client_id {
                     self.floating_panes.focus_pane(pane_id, client_id);
@@ -7550,6 +7580,7 @@ impl Tab {
                 height: Some(PercentOrFixed::Fixed(pane.rows())),
                 pinned: Some(pane.current_geom().is_pinned),
                 borderless: Some(pane.borderless()),
+                overlay: None,
             };
             // non_fatal rather than `?`: the only error here comes from `relayout`, which
             // runs after the pane is already in the tab, and the caller must not abort a

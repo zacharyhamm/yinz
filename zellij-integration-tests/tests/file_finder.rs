@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use zellij_integration_tests::{
-    keys, FakePtyHandle, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
+    keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
 use zellij_utils::input::command::TerminalAction;
 
@@ -22,6 +22,14 @@ const FINDER_TITLE: &str = "Find file";
 /// Keep the session to just the shell pane: the default background plugins would
 /// otherwise be spawning work of their own while the test watches for pty spawns.
 const NO_BACKGROUND_PLUGINS: &str = "load_plugins clear-defaults=true {\n}\n";
+
+const GLOBAL_AND_SHELL: &str = r#"layout {
+    global_panes {
+        pane edge="left" size="50%" focus=true
+    }
+    pane
+}
+"#;
 
 fn start() -> (TestSession, FakePtyHandle) {
     let zellij = TestRunner::new(TERMINAL_SIZE)
@@ -162,6 +170,72 @@ fn cancelling_the_finder_dismisses_the_overlay() {
         !grid_snapshot.contains(FINDER_TITLE) && grid_snapshot.status_bar_appears()
     });
     assert_cleaned_up(&selection_file, "a cancel should leave no selection file");
+    zellij.quit();
+}
+
+#[test]
+fn finder_from_a_global_pane_covers_it_and_returns_focus() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("$")
+    });
+    zellij.send_stdin(&keys::alt('h'));
+    for _ in 0..50 {
+        zellij.send_stdin(b"g");
+        if global.stdin_bytes().contains(&b'g') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(global.stdin_bytes().contains(&b'g'), "global pane focused");
+
+    let (finder, _selection_file) = open_finder(&zellij);
+    let title_column = zellij
+        .snapshot()
+        .lines()
+        .into_iter()
+        .find_map(|line| {
+            line.find(FINDER_TITLE)
+                .map(|byte_index| line[..byte_index].chars().count())
+        })
+        .expect("finder title rendered");
+    assert!(title_column < TERMINAL_SIZE.cols / 2);
+
+    let mut focused = false;
+    for _ in 0..50 {
+        zellij.send_stdin(b"q");
+        if finder.stdin_bytes().contains(&b'q') {
+            focused = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(focused, "the finder should take keyboard focus");
+    finder.exit(Some(130));
+    zellij.wait_until("the finder closes", |snapshot| {
+        !snapshot.contains(FINDER_TITLE)
+    });
+
+    let mut restored = false;
+    for _ in 0..50 {
+        zellij.send_stdin(b"x");
+        if global.stdin_bytes().contains(&b'x') {
+            restored = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        restored,
+        "closing the finder should restore global-pane focus"
+    );
     zellij.quit();
 }
 

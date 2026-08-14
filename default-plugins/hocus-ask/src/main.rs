@@ -409,6 +409,7 @@ fn floating_geometry(config: &BTreeMap<String, String>) -> Option<FloatingPaneCo
         None,
         None,
     )
+    .map(FloatingPaneCoordinates::as_overlay)
 }
 
 #[cfg(test)]
@@ -463,6 +464,7 @@ mod tests {
             None,
             None,
         )
+        .map(FloatingPaneCoordinates::as_overlay)
         .expect("some geometry");
         assert_eq!(coordinates, expected);
     }

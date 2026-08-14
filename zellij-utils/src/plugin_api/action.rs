@@ -2723,6 +2723,7 @@ impl TryFrom<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
             height: protobuf_coords.height.and_then(|h| h.try_into().ok()),
             pinned: protobuf_coords.pinned,
             borderless: protobuf_coords.borderless,
+            overlay: protobuf_coords.overlay,
         })
     }
 }
@@ -2737,6 +2738,7 @@ impl TryFrom<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
             height: coords.height.and_then(|h| h.try_into().ok()),
             pinned: coords.pinned,
             borderless: coords.borderless,
+            overlay: coords.overlay,
         })
     }
 }
