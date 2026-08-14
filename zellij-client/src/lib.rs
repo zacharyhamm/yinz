@@ -733,7 +733,7 @@ pub fn start_client(
     );
 
     let outcome = crate::client_loop::ClientLoop {
-        os_input: &os_input,
+        os_input: &*os_input,
         cli_args: &cli_args,
         command_is_executing: &mut command_is_executing,
         stdin_ansi_parser: &stdin_ansi_parser,

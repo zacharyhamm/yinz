@@ -10,7 +10,7 @@
 use crate::os_input_output::ClientOsApi;
 use crate::terminal_escapes::ClientTeardown;
 use crate::{create_ipc_pipe, spawn_server_error_message, spawn_web_server, ClientInfo};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     data::{LayoutInfo, LayoutMetadata},
@@ -121,7 +121,7 @@ impl<'a> StartupContext<'a> {
     /// Fork the server process for a session that does not have one yet, and
     /// start the web server alongside it if configured. Does not return if
     /// the server cannot be spawned — there is no session to attach to.
-    fn spawn_server(&self, os_input: &dyn ClientOsApi, ipc_pipe: &PathBuf) {
+    fn spawn_server(&self, os_input: &dyn ClientOsApi, ipc_pipe: &Path) {
         if let Err(e) = os_input.spawn_server(ipc_pipe, self.cli_args.debug) {
             ClientTeardown::exit_after_startup_error(self.teardown, spawn_server_error_message(e));
         }

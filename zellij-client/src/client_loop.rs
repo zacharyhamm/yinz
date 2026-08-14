@@ -55,7 +55,7 @@ pub(crate) struct LoopOutcome {
 }
 
 pub(crate) struct ClientLoop<'a> {
-    pub os_input: &'a Box<dyn ClientOsApi>,
+    pub os_input: &'a dyn ClientOsApi,
     pub cli_args: &'a CliArgs,
     pub command_is_executing: &'a mut CommandIsExecuting,
     pub stdin_ansi_parser: &'a Arc<Mutex<StdinAnsiParser>>,
@@ -176,7 +176,7 @@ impl ClientLoop<'_> {
 
     /// Restore the terminal, report `message`, and exit non-zero.
     fn fail(&self, message: String) -> ! {
-        self.teardown.tear_down(&**self.os_input, message, 1)
+        self.teardown.tear_down(self.os_input, message, 1)
     }
 
     fn start_web_server(&self) {

@@ -696,9 +696,6 @@ impl StdinAnsiParser {
     }
 }
 
-/// Walk an OSC sequence starting at the head of `buf`. Returns whether
-/// the sequence is complete, needs more bytes, or is malformed.
-
 #[cfg(test)]
 #[path = "./unit/stdin_ansi_parser_tests.rs"]
 mod tests;
