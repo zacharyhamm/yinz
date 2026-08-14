@@ -245,7 +245,8 @@ pub fn zellij_server_listener(
                                         for seed in build_host_query_seed_msgs(&new_config, &config_options) {
                                             os_input.send_to_server(seed);
                                         }
-                                        let set_config_payload = SetConfigPayload::from(&new_config);
+                                        let set_config_payload =
+                                            SetConfigPayload::new(&new_config, &config_options);
                                         client_connection_bus.send_control(
                                             WebServerToWebClientControlMessage::SetConfig(set_config_payload),
                                         );
