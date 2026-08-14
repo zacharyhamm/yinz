@@ -1,5 +1,5 @@
-use super::config::{WS_CONTROL_ENDPOINT, WS_TERMINAL_ENDPOINT};
 use super::http_client::HttpClientWithCookies;
+use crate::web_protocol::endpoints::{WS_CONTROL, WS_TERMINAL};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -234,7 +234,7 @@ pub async fn establish_websocket_connections(
 
     let terminal_url = if session_name.is_empty() {
         format!(
-            "{}://{}{WS_TERMINAL_ENDPOINT}?web_client_id={}{}",
+            "{}://{}{WS_TERMINAL}?web_client_id={}{}",
             ws_protocol,
             base_host,
             urlencoding::encode(web_client_id),
@@ -242,7 +242,7 @@ pub async fn establish_websocket_connections(
         )
     } else {
         format!(
-            "{}://{}{WS_TERMINAL_ENDPOINT}/{}?web_client_id={}{}",
+            "{}://{}{WS_TERMINAL}/{}?web_client_id={}{}",
             ws_protocol,
             base_host,
             urlencoding::encode(session_name),
@@ -252,7 +252,7 @@ pub async fn establish_websocket_connections(
     };
 
     let control_url = format!(
-        "{}://{}{WS_CONTROL_ENDPOINT}?web_client_id={}",
+        "{}://{}{WS_CONTROL}?web_client_id={}",
         ws_protocol,
         base_host,
         urlencoding::encode(web_client_id)

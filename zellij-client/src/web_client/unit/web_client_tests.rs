@@ -13,11 +13,14 @@ use zellij_utils::{consts::VERSION, input::config::Config, input::options::Optio
 
 use crate::os_input_output::{ClientOsApi, ServerConnection};
 use crate::test_support::FakeClientOsApi;
-use crate::web_client::control_message::{
+use crate::web_client::ClientOsApiFactory;
+use crate::web_protocol::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
 };
-use crate::web_client::types::{SessionListResponse, WebSessionInfo};
-use crate::web_client::ClientOsApiFactory;
+use crate::web_protocol::endpoints::{
+    LOGIN, SESSION_LIST, VERSION as VERSION_ENDPOINT, WS_CONTROL, WS_TERMINAL,
+};
+use crate::web_protocol::http::{SessionListResponse, WebSessionInfo};
 use zellij_utils::{
     data::LayoutInfo,
     ipc::{ClientToServerMsg, ServerToClientMsg},
@@ -69,7 +72,7 @@ mod tests {
 
     async fn wait_for_server(port: u16, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         while start.elapsed() < timeout {
             match tokio::task::spawn_blocking({
@@ -110,7 +113,7 @@ mod tests {
         let (port, server_handle) =
             start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         let mut response = timeout(
             Duration::from_secs(5),
@@ -172,7 +175,7 @@ mod tests {
             .await
             .expect("Server failed to start");
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -215,7 +218,7 @@ mod tests {
         assert_eq!(response_json["success"], true);
         assert_eq!(response_json["message"], "Login successful");
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": false
@@ -270,7 +273,7 @@ mod tests {
         let (port, server_handle) =
             start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": "invalid_token_123",
             "remember_me": false
@@ -316,7 +319,7 @@ mod tests {
         let (port, server_handle) =
             start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -378,7 +381,7 @@ mod tests {
         let web_client_id = client_data["web_client_id"].as_str().unwrap().to_string();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -414,7 +417,7 @@ mod tests {
             .expect("Failed to send resize message");
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -499,7 +502,7 @@ mod tests {
         let (port, server_handle) =
             start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true,
@@ -554,7 +557,7 @@ mod tests {
         let web_client_id = client_data["web_client_id"].as_str().unwrap().to_string();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -721,7 +724,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -750,7 +753,7 @@ mod tests {
             .expect("Failed to send resize message");
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -839,7 +842,7 @@ mod tests {
         let client_id_2 = create_client_session(port, &session_token).await;
 
         let control_ws_url_1 = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, client_id_1
         );
         let (control_ws_1, _) = timeout(
@@ -853,7 +856,7 @@ mod tests {
         let (mut control_sink_1, _control_stream_1) = control_ws_1.split();
 
         let control_ws_url_2 = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, client_id_2
         );
         let (control_ws_2, _) = timeout(
@@ -897,7 +900,7 @@ mod tests {
             .expect("Failed to send resize message for client 2");
 
         let terminal_ws_url_1 = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, client_id_1
         );
         let (terminal_ws_1, _) = timeout(
@@ -986,7 +989,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1101,7 +1104,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1242,7 +1245,7 @@ mod tests {
         assert!(is_read_only, "Client should be marked as read-only");
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
 
@@ -1309,7 +1312,7 @@ mod tests {
         let regular_web_client_id = create_client_session(port, &regular_session_token).await;
 
         let regular_control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, regular_web_client_id
         );
         let (regular_control_ws, _) = timeout(
@@ -1323,7 +1326,7 @@ mod tests {
         let (mut regular_control_sink, _regular_control_stream) = regular_control_ws.split();
 
         let regular_terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, regular_web_client_id
         );
         let (regular_terminal_ws, _) = timeout(
@@ -1365,7 +1368,7 @@ mod tests {
         let readonly_web_client_id = create_client_session(port, &readonly_session_token).await;
 
         let readonly_control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, readonly_web_client_id
         );
         let (readonly_control_ws, _) = timeout(
@@ -1379,7 +1382,7 @@ mod tests {
         let (mut readonly_control_sink, _readonly_control_stream) = readonly_control_ws.split();
 
         let readonly_terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, readonly_web_client_id
         );
         let (readonly_terminal_ws, _) = timeout(
@@ -1474,7 +1477,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -1488,7 +1491,7 @@ mod tests {
         let (mut control_sink, _control_stream) = control_ws.split();
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1644,7 +1647,7 @@ mod tests {
     }
 
     async fn login_and_get_session_token(port: u16, auth_token: &str) -> String {
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -1737,7 +1740,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1751,7 +1754,7 @@ mod tests {
         let (_terminal_sink, mut terminal_stream) = terminal_ws.split();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -1893,7 +1896,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1907,7 +1910,7 @@ mod tests {
         let (_terminal_sink, mut terminal_stream) = terminal_ws.split();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -2015,7 +2018,7 @@ mod tests {
         // The intruder logs in separately, then tries to use the owner's id.
         let intruder_session_token = login_and_get_session_token(port, &intruder_auth).await;
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, owner_web_client_id
         );
         let result = timeout(
@@ -2075,7 +2078,7 @@ mod tests {
         let (port, server_handle) =
             start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         let response = timeout(
             Duration::from_secs(5),
@@ -2223,7 +2226,7 @@ mod tests {
         let _ro_web_client_id = create_client_session(port, &ro_session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, rw_web_client_id
         );
         let connect_result = timeout(
@@ -2279,7 +2282,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -2354,7 +2357,7 @@ mod tests {
         let _ro_web_client_id = create_client_session(port, &ro_session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, rw_web_client_id
         );
         let ws_result = timeout(
@@ -2733,7 +2736,7 @@ mod tests {
         let (port, server_handle) =
             spawn_test_server_with_session_manager(Arc::new(MockSessionManager::new())).await;
 
-        let url = format!("http://127.0.0.1:{}/session-list", port);
+        let url = format!("http://127.0.0.1:{}{SESSION_LIST}", port);
         let response = timeout(
             Duration::from_secs(5),
             tokio::task::spawn_blocking(move || isahc::get(&url)),
@@ -2783,7 +2786,7 @@ mod tests {
 
         let session_token = login_and_get_session_token(port, &regular_token).await;
 
-        let url = format!("http://127.0.0.1:{}/session-list", port);
+        let url = format!("http://127.0.0.1:{}{SESSION_LIST}", port);
         let mut response = timeout(
             Duration::from_secs(5),
             tokio::task::spawn_blocking(move || {
@@ -2888,7 +2891,7 @@ mod tests {
             create_client_session_with_query(port, &session_token, query).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal/{}?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}/{}?web_client_id={}",
             port, session_name, web_client_id
         );
         let (terminal_ws, _) = timeout(

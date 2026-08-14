@@ -10,7 +10,7 @@
 use crate::os_input_output::{AsyncSignals, AsyncStdin, ClientOsApi};
 use crate::stdin_ansi_parser::SyncOutput;
 use crate::terminal_escapes::{announce_nested, write_synchronised};
-use crate::web_client::control_message::{
+use crate::web_protocol::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
     WebServerToWebClientControlMessage,
 };

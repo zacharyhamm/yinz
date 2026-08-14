@@ -16,8 +16,8 @@ pub fn close_message(should_not_reconnect: bool) -> Message {
         reason: "Connection closed".into(),
     }))
 }
-use crate::web_client::control_message::WebServerToWebClientControlMessage;
 use crate::web_client::types::{ClientChannels, ClientConnectionBus, ConnectionTable};
+use crate::web_protocol::control_message::WebServerToWebClientControlMessage;
 use axum::extract::ws::{CloseFrame, Message};
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::mpsc::UnboundedSender;

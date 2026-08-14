@@ -25,6 +25,8 @@ mod stdin_handler;
 mod terminal_escapes;
 #[cfg(feature = "web_server_capability")]
 pub mod web_client;
+#[cfg(feature = "web_server_capability")]
+pub mod web_protocol;
 
 use log::info;
 use std::env::current_exe;
