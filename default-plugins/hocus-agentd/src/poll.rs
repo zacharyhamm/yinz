@@ -6,7 +6,7 @@
 //! of hocus's tool dispatch into a daemon that never runs a tool.
 
 use hocus_proto::agents;
-use hocus_proto::panes::terminal_panes;
+use hocus_proto::panes::{focused_pane, terminal_panes};
 use hocus_proto::projects::{Repository, WorktreeStatus};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -58,12 +58,16 @@ pub fn read_pane_text(pane_id: u32) -> String {
     }
 }
 
-/// One startup snapshot for panes that existed before this plugin loaded.
+/// One startup snapshot for panes that existed before this plugin loaded, and the
+/// pane focused at that moment.
 ///
 /// Later changes come from `PaneUpdate`, `CommandChanged`, and `CwdChanged`; this
-/// is deliberately not a repeating poll.
-pub fn gather() -> Option<Vec<agents::AgentPane>> {
+/// is deliberately not a repeating poll. The focused pane is taken here as well as
+/// there because a session nobody touches sends no `PaneUpdate` at all, and until
+/// one arrives the focus would be nothing.
+pub fn gather() -> Option<(Vec<agents::AgentPane>, Option<u32>)> {
     let session = current_session()?;
+    let focused = focused_pane(&session.panes, &session.tabs);
     let mut panes = terminal_panes(&session.panes, &session.tabs);
     // ponytail: one blocking host round-trip per terminal pane at plugin startup.
     // Events keep this fresh afterwards; batch only if startup ever feels slow.
@@ -73,7 +77,7 @@ pub fn gather() -> Option<Vec<agents::AgentPane>> {
         }
         pane.cwd = pane_cwd(pane.pane_id);
     }
-    Some(panes)
+    Some((panes, focused))
 }
 
 /// What one folder's Git probe concluded.

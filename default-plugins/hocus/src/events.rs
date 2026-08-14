@@ -107,12 +107,11 @@ impl State {
             .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
         self.auto_tab_projects
             .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
-        self.active_project = tabs
-            .iter()
-            .find(|tab| tab.active)
-            .and_then(|tab| self.tab_project(tab.tab_id))
-            .map(str::to_owned);
         self.tabs = tabs;
+        // Rather than deriving the active project a second way here. Switching tabs
+        // does not change which agent was focused last, but a tab that went away
+        // can still change the answer.
+        self.refresh_tab_projects();
         false
     }
 

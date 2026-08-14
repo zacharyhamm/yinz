@@ -7332,10 +7332,12 @@ impl Screen {
                 plugin_ids.extend(tab.get_plugin_ids());
             }
         }
-        // Global-pane plugins are in no tab but are part of every client's session, so events
-        // reach them like any active-tab plugin (the plugin thread drops event types a plugin
-        // is not subscribed to) - a hocus sidebar that never learns which tab is active cannot
-        // assign a project to it
+        // A global pane is visible in every tab but sits in none, so the active-tab
+        // walk above never finds it and it is not a background plugin either — it is
+        // loaded with a real tab index. Without this it would hear nothing at all.
+        // Every event type, not just ModeUpdate: `WasmBridge::update_plugins` gates
+        // each event on the plugin's own subscription list, so this widens who *may*
+        // hear an event, never what a plugin actually receives.
         for plugin_id in self.global_panes.plugin_ids() {
             if !plugin_ids.contains(&plugin_id) {
                 plugin_ids.push(plugin_id);

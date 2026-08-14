@@ -9,6 +9,7 @@
 
 use super::*;
 
+use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 use std::path::PathBuf;
 use zellij_utils::channels::{unbounded, SenderWithContext};
 use zellij_utils::errors::ErrorContext;
@@ -41,6 +42,52 @@ fn harness() -> Harness {
 /// certainly not a running session.
 fn unreachable_session(tag: &str) -> String {
     format!("warp-tests-no-such-session-{tag}")
+}
+
+#[test]
+fn an_input_unblock_before_the_warp_reply_is_ignored() {
+    let socket_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    let socket_path = socket_dir.path().join("warp-reply.sock");
+    let listener = ListenerOptions::new()
+        .name(
+            socket_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("invalid socket path"),
+        )
+        .create_sync()
+        .expect("failed to bind socket");
+    let server = std::thread::spawn(move || {
+        let stream = listener
+            .incoming()
+            .next()
+            .expect("listener stopped")
+            .expect("failed to accept connection");
+        let mut sender: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(stream);
+        sender
+            .send_server_msg(ServerToClientMsg::UnblockInputThread)
+            .expect("failed to send input unblock");
+        sender
+            .send_server_msg(ServerToClientMsg::Log {
+                lines: vec!["Adopted pane".to_owned()],
+            })
+            .expect("failed to send warp reply");
+    });
+
+    let stream = LocalSocketStream::connect(
+        socket_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("invalid socket path"),
+    )
+    .expect("failed to connect socket");
+    let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
+
+    assert_eq!(
+        read_cli_reply(&mut sender).expect("the warp reply should follow the input unblock"),
+        "Adopted pane"
+    );
+    server.join().expect("server thread panicked");
 }
 
 #[test]
