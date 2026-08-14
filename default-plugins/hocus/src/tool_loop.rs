@@ -909,7 +909,7 @@ impl State {
         self.manual_kinds.insert(pane_id, kind.to_owned());
         // hocus stays authoritative for the overrides; the daemon holds a copy
         // only to classify with, so it needs the new one before its next poll.
-        self.subscribe_to_agentd();
+        self.send_manual_kinds();
         format!("registered pane {pane_id} as {kind}")
     }
 
@@ -1016,7 +1016,7 @@ impl State {
                 let pane_id = pane_id as u32;
                 self.manual_kinds.insert(pane_id, kind.to_owned());
                 self.pending_agent_panes.insert(pane_id);
-                self.subscribe_to_agentd();
+                self.send_manual_kinds();
                 format!("{result} (registered as {kind})")
             },
             _ => result.to_owned(),
@@ -1098,8 +1098,13 @@ impl State {
         // hocus-store now, which receives that snapshot directly and pushes the
         // registry back; `refresh_tab_projects` still runs against our copy.
         self.refresh_tab_projects();
+        // Only the overrides go back, never a watermark reset: we are *inside*
+        // the merge of a snapshot whose `seq` we just recorded, and forgetting it
+        // here would re-admit the older snapshots still in flight — one of which
+        // still holds the pane whose closing caused this prune in the first
+        // place, which is how a closed agent came back.
         if kinds_pruned {
-            self.subscribe_to_agentd();
+            self.send_manual_kinds();
         }
     }
 
