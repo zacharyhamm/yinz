@@ -235,9 +235,8 @@ mod mock_server {
             axum::serve(listener, app).await.unwrap();
         });
 
-        // Wait for server to be ready
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
+        // No readiness wait needed: the listener is already bound, so
+        // connections queue in the accept backlog until axum picks them up.
         (port, server_handle)
     }
 }
