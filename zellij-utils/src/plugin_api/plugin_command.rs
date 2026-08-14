@@ -228,6 +228,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
             }),
             pinned: self.pinned,
             borderless: self.borderless,
+            overlay: self.overlay,
         }
     }
 }
@@ -282,6 +283,7 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
             },
             pinned: self.pinned,
             borderless: self.borderless,
+            overlay: self.overlay,
         }
     }
 }

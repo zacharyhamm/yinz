@@ -12,6 +12,7 @@ use crate::tab::{pane_info_for_pane, Pane};
 use floating_pane_grid::FloatingPaneGrid;
 
 use crate::{
+    global_panes::{expand_viewport_over_global_panes, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{FloatingPanesStack, Output},
     panes::{ActivePanes, PaneId},
@@ -44,6 +45,7 @@ pub struct FloatingPanes {
     // top - panes are positioned from it (see `TiledPanes::display_area_origin`)
     display_area_origin: Rc<RefCell<(usize, usize)>>,
     viewport: Rc<RefCell<Viewport>>,
+    global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -52,6 +54,7 @@ pub struct FloatingPanes {
     style: Style,
     session_is_mirrored: bool,
     desired_pane_positions: HashMap<PaneId, PaneGeom>, // this represents the positions of panes the user moved with intention, rather than by resizing the terminal window
+    overlay_coordinates: HashMap<PaneId, FloatingPaneCoordinates>,
     z_indices: Vec<PaneId>,
     active_panes: ActivePanes,
     show_panes: bool,
@@ -74,6 +77,7 @@ impl FloatingPanes {
         display_area: Rc<RefCell<Size>>,
         display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
+        global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -91,6 +95,7 @@ impl FloatingPanes {
             display_area,
             display_area_origin,
             viewport,
+            global_pane_strips,
             connected_clients,
             connected_clients_in_app,
             mode_info,
@@ -99,6 +104,7 @@ impl FloatingPanes {
             default_mode_info,
             style,
             desired_pane_positions: HashMap::new(),
+            overlay_coordinates: HashMap::new(),
             z_indices: vec![],
             show_panes: false,
             active_panes: ActivePanes::new(&os_input),
@@ -239,6 +245,9 @@ impl FloatingPanes {
             self.desired_pane_positions
                 .insert(with_pane_id, desired_pane_position);
         }
+        if let Some(coordinates) = self.overlay_coordinates.remove(&pane_id) {
+            self.overlay_coordinates.insert(with_pane_id, coordinates);
+        }
 
         // move clients from the previously active pane to the new pane we just inserted
         self.move_clients_between_panes(pane_id, with_pane_id);
@@ -248,6 +257,7 @@ impl FloatingPanes {
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.desired_pane_positions.remove(&pane_id);
+        self.overlay_coordinates.remove(&pane_id);
         self.panes.remove(&pane_id)
     }
     pub fn hold_pane(
@@ -480,6 +490,7 @@ impl FloatingPanes {
         inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
+        overlays: bool,
     ) -> Result<()> {
         let err_context = || "failed to render output";
         let mut connected_clients: HashSet<ClientId> =
@@ -500,6 +511,9 @@ impl FloatingPanes {
         };
 
         for (kind, pane) in &self.panes {
+            if self.is_overlay(*kind) != overlays {
+                continue;
+            }
             if let Some(fullscreen_pane_id) = self.fullscreen_pane_id {
                 if kind != &fullscreen_pane_id {
                     continue;
@@ -547,14 +561,23 @@ impl FloatingPanes {
         let mut floating_panes: Vec<_> = if let Some(fullscreen_pane_id) = fullscreen_pane_id {
             self.panes
                 .iter_mut()
-                .filter(|(id, _)| **id == fullscreen_pane_id)
+                .filter(|(id, _)| {
+                    **id == fullscreen_pane_id
+                        && self.overlay_coordinates.contains_key(*id) == overlays
+                })
                 .collect()
         } else if self.panes_are_visible() {
-            self.panes.iter_mut().collect()
+            self.panes
+                .iter_mut()
+                .filter(|(id, _)| self.overlay_coordinates.contains_key(*id) == overlays)
+                .collect()
         } else if self.has_pinned_panes() {
             self.panes
                 .iter_mut()
-                .filter(|(_, p)| p.position_and_size().is_pinned)
+                .filter(|(id, p)| {
+                    p.position_and_size().is_pinned
+                        && self.overlay_coordinates.contains_key(*id) == overlays
+                })
                 .collect()
         } else {
             vec![]
@@ -675,6 +698,7 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.resize(new_screen_size).non_fatal();
+        self.reapply_overlay_coordinates();
         self.set_force_render();
     }
 
@@ -1125,8 +1149,8 @@ impl FloatingPanes {
         let err_context = || "Failed to change_pane_coordinates".to_string();
 
         {
-            let viewport = { *self.viewport.borrow() };
-            let origin = { *self.display_area_origin.borrow() };
+            let is_overlay = new_coordinates.overlay.unwrap_or(false);
+            let (viewport, origin) = self.coordinate_space(is_overlay);
             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
             let mut pane_geom = pane.position_and_size();
             if let Some(pinned) = new_coordinates.pinned.as_ref() {
@@ -1139,7 +1163,7 @@ impl FloatingPanes {
                     pane.set_borderless(false);
                 };
             }
-            pane_geom.adjust_coordinates(new_coordinates, viewport, origin);
+            pane_geom.adjust_coordinates(new_coordinates.clone(), viewport, origin);
             pane.set_geom(pane_geom);
             pane.set_should_render(true);
 
@@ -1153,9 +1177,82 @@ impl FloatingPanes {
             }
 
             self.desired_pane_positions.insert(pane_id, pane_geom);
+            if is_overlay {
+                self.overlay_coordinates
+                    .insert(pane_id, new_coordinates.clone());
+            } else {
+                self.overlay_coordinates.remove(&pane_id);
+            }
         }
         let _ = self.set_pane_frames();
         Ok(())
+    }
+
+    pub fn adjust_coordinates(
+        &self,
+        pane_geom: &mut PaneGeom,
+        coordinates: FloatingPaneCoordinates,
+    ) {
+        let (viewport, origin) = self.coordinate_space(coordinates.overlay.unwrap_or(false));
+        pane_geom.adjust_coordinates(coordinates, viewport, origin);
+    }
+
+    pub fn remember_overlay_coordinates(
+        &mut self,
+        pane_id: PaneId,
+        coordinates: &FloatingPaneCoordinates,
+    ) {
+        if coordinates.overlay.unwrap_or(false) {
+            self.overlay_coordinates
+                .insert(pane_id, coordinates.clone());
+        }
+    }
+
+    pub fn is_overlay(&self, pane_id: PaneId) -> bool {
+        self.overlay_coordinates.contains_key(&pane_id)
+    }
+
+    pub fn has_overlays(&self) -> bool {
+        !self.overlay_coordinates.is_empty()
+    }
+
+    pub fn reapply_overlay_coordinates(&mut self) {
+        let overlays: Vec<_> = self
+            .overlay_coordinates
+            .iter()
+            .map(|(pane_id, coordinates)| (*pane_id, coordinates.clone()))
+            .collect();
+        for (pane_id, coordinates) in overlays {
+            let (viewport, origin) = self.coordinate_space(true);
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                let mut geom = pane.position_and_size();
+                geom.adjust_coordinates(coordinates, viewport, origin);
+                pane.set_geom(geom);
+                self.desired_pane_positions.insert(pane_id, geom);
+            }
+        }
+        if !self.overlay_coordinates.is_empty() {
+            self.set_pane_frames().non_fatal();
+        }
+    }
+
+    fn coordinate_space(&self, overlay: bool) -> (Viewport, (usize, usize)) {
+        if overlay {
+            let (x, y) = *self.display_area_origin.borrow();
+            let display_area = *self.display_area.borrow();
+            let surface = expand_viewport_over_global_panes(
+                Viewport {
+                    x,
+                    y,
+                    cols: display_area.cols,
+                    rows: display_area.rows,
+                },
+                &self.global_pane_strips.borrow(),
+            );
+            (surface, (surface.x, surface.y))
+        } else {
+            (*self.viewport.borrow(), *self.display_area_origin.borrow())
+        }
     }
     pub fn move_clients_out_of_pane(&mut self, pane_id: PaneId) {
         let active_panes: Vec<(ClientId, PaneId)> = self

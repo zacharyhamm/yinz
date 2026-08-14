@@ -10568,6 +10568,7 @@ fn borderless_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(true),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10615,6 +10616,7 @@ fn borderless_pane_content_fills_edges() {
         height: Some(PercentOrFixed::Fixed(5)),
         pinned: None,
         borderless: Some(true),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10663,6 +10665,7 @@ fn borderless_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(true),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10715,6 +10718,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10736,6 +10740,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10795,6 +10800,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -10816,6 +10822,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -11257,6 +11264,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_edge() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11338,6 +11346,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_corner() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11419,6 +11428,7 @@ fn test_ctrl_drag_resizes_pinned_floating_pane_when_floating_panes_not_shown() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_pane(
@@ -11682,6 +11692,7 @@ fn test_left_click_on_floating_pane_changes_focus() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -11691,6 +11702,7 @@ fn test_left_click_on_floating_pane_changes_focus() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11753,6 +11765,7 @@ fn test_left_click_on_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -11762,6 +11775,7 @@ fn test_left_click_on_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -12840,6 +12854,7 @@ fn test_ctrl_scroll_up_increases_pinned_floating_pane_size_when_floating_panes_h
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_pane(
@@ -12908,6 +12923,7 @@ fn test_ctrl_scroll_down_decreases_pinned_floating_pane_size_when_floating_panes
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.new_pane(
@@ -14438,6 +14454,7 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -14447,6 +14464,7 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -14662,6 +14680,7 @@ fn focus_follows_mouse_ignores_tiled_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            overlay: None,
         })),
         Some(client_id),
         None,
@@ -14712,6 +14731,7 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            overlay: None,
         })),
         Some(client_id),
         None,
@@ -14730,6 +14750,7 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            overlay: None,
         })),
         Some(client_id),
         None,

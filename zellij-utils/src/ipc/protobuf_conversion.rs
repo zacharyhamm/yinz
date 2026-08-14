@@ -4106,6 +4106,7 @@ impl From<crate::data::FloatingPaneCoordinates>
             height: coords.height.map(|h| h.into()),
             pinned: coords.pinned,
             borderless: coords.borderless,
+            overlay: coords.overlay,
         }
     }
 }
@@ -4125,6 +4126,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::FloatingPane
             height: coords.height.map(|h| h.try_into()).transpose()?,
             pinned: coords.pinned,
             borderless: coords.borderless,
+            overlay: coords.overlay,
         })
     }
 }

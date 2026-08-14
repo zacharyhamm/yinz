@@ -5054,6 +5054,7 @@ fn open_new_floating_pane_with_custom_coordinates() {
                 height: Some(PercentOrFixed::Fixed(2)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5090,6 +5091,7 @@ fn open_new_floating_pane_with_custom_coordinates_exceeding_viewport() {
                 height: Some(PercentOrFixed::Fixed(10)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5126,6 +5128,7 @@ fn floating_pane_auto_centers_horizontally_with_only_width() {
                 height: Some(PercentOrFixed::Fixed(10)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5162,6 +5165,7 @@ fn floating_pane_auto_centers_vertically_with_only_height() {
                 height: Some(PercentOrFixed::Fixed(20)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5198,6 +5202,7 @@ fn floating_pane_auto_centers_both_axes_with_only_size() {
                 height: Some(PercentOrFixed::Fixed(30)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5234,6 +5239,7 @@ fn floating_pane_respects_explicit_coordinates_with_size() {
                 height: Some(PercentOrFixed::Fixed(30)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5270,6 +5276,7 @@ fn floating_pane_centers_with_percentage_width() {
                 height: Some(PercentOrFixed::Fixed(20)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -5311,6 +5318,7 @@ fn floating_pane_centers_large_pane_safely() {
                 height: Some(PercentOrFixed::Fixed(50)),
                 pinned: None,
                 borderless: Some(false),
+                overlay: None,
             })),
             Some(1),
             None,
@@ -15890,6 +15898,65 @@ fn gp02_moved_floating_pane_keeps_position_across_noop_reflows_beside_left_globa
             iteration + 1
         );
     }
+}
+
+#[test]
+fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let popup = PaneId::Terminal(2);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            popup,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Percent(20)),
+                width: Some(PercentOrFixed::Percent(60)),
+                height: Some(PercentOrFixed::Fixed(4)),
+                overlay: Some(true),
+                ..Default::default()
+            })),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.activate_overlay(popup);
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(popup)
+        .unwrap()
+        .position_and_size();
+    assert_eq!((geom.x, geom.cols.as_usize()), (24, 72));
+    assert_eq!(screen.active_pane_id(1), Some(popup));
+
+    let restore = screen.take_global_focus_after_overlay_close(popup);
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .close_pane(popup, false, None);
+    screen.restore_global_focus(restore);
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99))
+    );
 }
 
 #[test]

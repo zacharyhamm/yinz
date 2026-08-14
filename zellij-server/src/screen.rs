@@ -1834,6 +1834,7 @@ pub(crate) struct Screen {
     last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
     layout_global_panes_started: bool,
+    suspended_global_focus: HashMap<ClientId, (usize, PaneId)>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
 }
 
@@ -2050,6 +2051,7 @@ impl Screen {
             last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
             layout_global_panes_started: false,
+            suspended_global_focus: HashMap::new(),
             mobile_web_prefs: HashMap::new(),
         }
     }
@@ -2838,6 +2840,68 @@ impl Screen {
         }
         self.global_panes.set_force_render();
         let _ = self.sync_scroll_mode_on_focus(client_id);
+    }
+
+    fn activate_overlay(&mut self, pane_id: PaneId) {
+        let Some((tab_id, tab)) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.pane_is_overlay(pane_id))
+        else {
+            return;
+        };
+        let tab_id = *tab_id;
+        let clients: Vec<_> = self
+            .active_tab_ids
+            .iter()
+            .filter_map(|(client_id, active_tab_id)| {
+                (*active_tab_id == tab_id && tab.get_active_pane_id(*client_id) == Some(pane_id))
+                    .then_some(*client_id)
+            })
+            .collect();
+        for client_id in clients {
+            if let Some(global_pane_id) = self.global_panes.focused_pane_id(client_id) {
+                self.suspended_global_focus
+                    .insert(client_id, (tab_id, global_pane_id));
+                self.defocus_global_pane(client_id);
+            }
+        }
+    }
+
+    fn take_global_focus_after_overlay_close(
+        &mut self,
+        pane_id: PaneId,
+    ) -> Vec<(ClientId, PaneId)> {
+        let Some((tab_id, tab)) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.pane_is_overlay(pane_id))
+        else {
+            return vec![];
+        };
+        let tab_id = *tab_id;
+        let mut restore = vec![];
+        self.suspended_global_focus
+            .retain(|client_id, (saved_tab, global_pane)| {
+                if *saved_tab != tab_id {
+                    return true;
+                }
+                if tab.get_active_pane_id(*client_id) == Some(pane_id) {
+                    restore.push((*client_id, *global_pane));
+                }
+                false
+            });
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.set_should_clear_display_before_rendering();
+        }
+        self.global_panes.set_force_render();
+        restore
+    }
+
+    fn restore_global_focus(&mut self, focus: Vec<(ClientId, PaneId)>) {
+        for (client_id, pane_id) in focus {
+            self.focus_global_pane(pane_id, client_id).non_fatal();
+        }
     }
 
     /// The global pane to focus next when cycling, or `None` to hand the cycle back to the tab.
@@ -5175,6 +5239,14 @@ impl Screen {
                     let force = output.any_host_display_cleared();
                     self.fill_unowned_strip_rows(&mut output, tab_id, &layout, &client_ids, force)
                         .context(err_context)?;
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        tab.render_overlays_after_global_panes(
+                            &mut output,
+                            None,
+                            &global_focused_clients,
+                        )
+                        .context(err_context)?;
+                    }
                 }
                 if !self.notifications.is_empty() {
                     notification_targets.push((layout.center, client_ids));
@@ -5386,6 +5458,12 @@ impl Screen {
                     .get_mut(&focused_tab_index_of_followed_client_id)
                     .as_mut()
                 {
+                    tab.render_overlays_after_global_panes(
+                        &mut watcher_output,
+                        Some(followed_client_id),
+                        &global_focused_clients,
+                    )
+                    .context(err_context)?;
                     tab.render_cursor_after_global_panes(
                         &mut watcher_output,
                         &global_focused_clients,
@@ -5983,6 +6061,7 @@ impl Screen {
         let err_context = || format!("failed to remove client {client_id}");
 
         self.set_client_dimmed(client_id, false, None);
+        self.suspended_global_focus.remove(&client_id);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices
             .iter()
@@ -9089,6 +9168,10 @@ impl Screen {
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
     ) {
+        let pane_ids: Vec<_> = pane_ids_and_coordinates
+            .iter()
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             for (_tab_id, tab) in self.tabs.iter_mut() {
                 if tab.has_pane_with_pid(&pane_id) {
@@ -9097,6 +9180,9 @@ impl Screen {
                     break;
                 }
             }
+        }
+        for pane_id in pane_ids {
+            self.activate_overlay(pane_id);
         }
     }
     pub fn toggle_pane_borderless(&mut self, pane_id: PaneId) {
@@ -10822,6 +10908,7 @@ pub(crate) fn screen_thread_main(
                         }
                     },
                 };
+                screen.activate_overlay(pid);
                 if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
                     for event in pending_events {
                         screen.bus.senders.send_to_screen(event).non_fatal();
@@ -12089,6 +12176,7 @@ pub(crate) fn screen_thread_main(
                 // waiting for it
                 exit_status,
             ) => {
+                let global_focus_to_restore = screen.take_global_focus_after_overlay_close(id);
                 let removed_global_pane = screen.close_global_pane(id, None)?;
                 if removed_global_pane {
                     screen.render(None)?;
@@ -12132,6 +12220,7 @@ pub(crate) fn screen_thread_main(
                         .senders
                         .send_to_pty(PtyInstruction::ClosePane(id, None));
                 }
+                screen.restore_global_focus(global_focus_to_restore);
 
                 let connected_client_ids: Vec<ClientId> =
                     screen.active_tab_ids.keys().copied().collect();
@@ -13449,6 +13538,7 @@ pub(crate) fn screen_thread_main(
                     log::error!("Tab index not found: {:?}", tab_index);
                 }
                 let pane_id = PaneId::Plugin(plugin_id);
+                screen.activate_overlay(pane_id);
                 let plugin_exists = screen.global_panes.pane(pane_id).is_some()
                     || screen.tabs.values().any(|tab| tab.has_plugin(plugin_id));
                 if plugin_exists {
