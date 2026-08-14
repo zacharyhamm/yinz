@@ -1,6 +1,8 @@
 use crate::input_handler::from_termwiz;
 use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
 use crate::os_input_output::ClientOsApi;
+use crate::web_client::connection_manager::close_message;
+use crate::web_client::types::client_action;
 use crate::web_client::types::BRACKETED_PASTE_END;
 use crate::web_client::types::BRACKETED_PASTE_START;
 use std::sync::{
@@ -102,36 +104,21 @@ fn dispatch_termwiz_event(
             });
         },
         InputEvent::Paste(pasted_text) => {
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: BRACKETED_PASTE_START.to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: pasted_text.as_bytes().to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: BRACKETED_PASTE_END.to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: BRACKETED_PASTE_START.to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: pasted_text.as_bytes().to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: BRACKETED_PASTE_END.to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
         },
         _ => {
             log::error!("Unsupported event: {:#?}", input_event);
@@ -139,7 +126,7 @@ fn dispatch_termwiz_event(
     }
 }
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{Message, WebSocket};
 use futures::{prelude::stream::SplitSink, SinkExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -155,23 +142,8 @@ pub fn render_to_client(
             tokio::select! {
                 biased;
                 _ = cancellation_token.cancelled() => {
-                    let code = if should_not_reconnect.load(Ordering::Relaxed) {
-                        4001u16
-                    } else {
-                        axum::extract::ws::close_code::NORMAL
-                    };
-                    let close_frame = CloseFrame {
-                        code,
-                        reason: "Connection closed".into(),
-                    };
-                    let close_message = Message::Close(Some(close_frame));
-                    if client_channel_tx
-                        .send(close_message)
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    let close = close_message(should_not_reconnect.load(Ordering::Relaxed));
+                    let _ = client_channel_tx.send(close).await;
                     break;
                 }
                 result = stdout_channel_rx.recv() => {
