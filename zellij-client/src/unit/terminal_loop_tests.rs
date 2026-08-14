@@ -76,8 +76,8 @@ mod mock_ws_server {
                 axum::serve(listener, app).await.unwrap();
             });
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
+            // The listener is bound above, so a client can connect right
+            // away - the backlog holds the connection until axum accepts it.
             let server = MockWsServer {
                 terminal_to_client_tx,
                 control_to_client_tx,

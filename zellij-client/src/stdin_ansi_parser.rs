@@ -700,5 +700,5 @@ impl StdinAnsiParser {
 /// the sequence is complete, needs more bytes, or is malformed.
 
 #[cfg(test)]
-#[path = "stdin_ansi_parser_tests.rs"]
+#[path = "./unit/stdin_ansi_parser_tests.rs"]
 mod tests;
