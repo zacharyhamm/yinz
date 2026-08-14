@@ -1,4 +1,4 @@
-use crate::os_input_output::ClientOsApi;
+use crate::os_input_output::StdioAccess;
 use crate::terminal_escapes::announce_nested;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ pub struct NestedReannounce {
 }
 
 impl NestedReannounce {
-    pub fn spawn(os_input: Box<dyn ClientOsApi>, session_name: String) -> Self {
+    pub fn spawn(os_input: Box<dyn StdioAccess + Send>, session_name: String) -> Self {
         let handle = NestedReannounce {
             last_heard_from_host: Arc::new(Mutex::new(Instant::now())),
             stop: Arc::new(AtomicBool::new(false)),

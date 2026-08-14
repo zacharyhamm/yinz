@@ -277,7 +277,9 @@ pub fn parse_stdin(
 #[cfg(test)]
 mod tests {
     use super::parse_stdin;
-    use crate::os_input_output::ClientOsApi;
+    use crate::os_input_output::{
+        ClientOsApi, ServerConnection, SignalSource, StdioAccess, TtyControl,
+    };
     use std::io::{BufRead, Cursor, Write};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
@@ -300,7 +302,7 @@ mod tests {
         }
     }
 
-    impl ClientOsApi for RecordingOsInput {
+    impl TtyControl for RecordingOsInput {
         fn get_terminal_size(&self) -> Size {
             Size::default()
         }
@@ -308,27 +310,6 @@ mod tests {
         fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
             Ok(())
         }
-        fn get_stdout_writer(&self) -> Box<dyn Write> {
-            Box::new(std::io::sink())
-        }
-        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
-            Box::new(Cursor::new(Vec::<u8>::new()))
-        }
-        fn update_session_name(&mut self, _new_session_name: String) {}
-        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-            Ok(vec![])
-        }
-        fn box_clone(&self) -> Box<dyn ClientOsApi> {
-            Box::new(self.clone())
-        }
-        fn send_to_server(&self, msg: ClientToServerMsg) {
-            self.sent_messages.lock().unwrap().push(msg);
-        }
-        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-            None
-        }
-        fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-        fn connect_to_server(&self, _path: &Path) {}
         fn load_palette(&self) -> Palette {
             Palette::default()
         }
@@ -337,6 +318,39 @@ mod tests {
         }
         fn disable_mouse(&self) -> anyhow::Result<()> {
             Ok(())
+        }
+    }
+
+    impl StdioAccess for RecordingOsInput {
+        fn get_stdout_writer(&self) -> Box<dyn Write> {
+            Box::new(std::io::sink())
+        }
+        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
+            Box::new(Cursor::new(Vec::<u8>::new()))
+        }
+        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
+            Ok(vec![])
+        }
+    }
+
+    impl ServerConnection for RecordingOsInput {
+        fn update_session_name(&mut self, _new_session_name: String) {}
+        fn send_to_server(&self, msg: ClientToServerMsg) {
+            self.sent_messages.lock().unwrap().push(msg);
+        }
+        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
+            None
+        }
+        fn connect_to_server(&self, _path: &Path) {}
+    }
+
+    impl SignalSource for RecordingOsInput {
+        fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
+    }
+
+    impl ClientOsApi for RecordingOsInput {
+        fn box_clone(&self) -> Box<dyn ClientOsApi> {
+            Box::new(self.clone())
         }
     }
 

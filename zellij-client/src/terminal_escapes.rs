@@ -7,7 +7,7 @@
 //! out. Keeping the sequences and the code that writes them together means
 //! the setup and teardown halves cannot drift apart.
 
-use crate::os_input_output::ClientOsApi;
+use crate::os_input_output::{StdioAccess, TtyControl};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::Write;
 use zellij_utils::errors::FatalError;
@@ -35,7 +35,7 @@ pub const QUERY_HOST_THEME: &str = "\u{1b}[?996n";
 pub const CLEAR_SCREEN: &str = "\u{1b}[2J";
 
 /// Write a run of escape sequences to the controlling terminal and flush.
-pub fn write_seqs(os_input: &dyn ClientOsApi, seqs: &[&str]) {
+pub fn write_seqs(os_input: &dyn StdioAccess, seqs: &[&str]) {
     let mut stdout = os_input.get_stdout_writer();
     for seq in seqs {
         stdout
@@ -50,7 +50,7 @@ pub fn write_seqs(os_input: &dyn ClientOsApi, seqs: &[&str]) {
 /// `ENABLE_HOST_THEME_NOTIFY` and `QUERY_HOST_THEME` are sent directly after
 /// `CLEAR_CLIENT_TERMINAL_ATTRIBUTES` so there is no window in which the host
 /// is unsubscribed. Hosts that don't support CSI 2031 ignore both.
-pub fn enter_terminal(os_input: &dyn ClientOsApi, kitty_keyboard: bool) {
+pub fn enter_terminal(os_input: &dyn StdioAccess, kitty_keyboard: bool) {
     let mut seqs = vec![ENTER_ALTERNATE_SCREEN, CLEAR_CLIENT_TERMINAL_ATTRIBUTES];
     if kitty_keyboard {
         seqs.push(ENTER_KITTY_KEYBOARD_MODE);
@@ -76,7 +76,7 @@ pub fn write_synchronised(w: &mut dyn Write, sync: Option<SyncOutput>, bytes: &[
 
 /// Tell an enclosing Zellij pane that a client is running inside it, so the
 /// outer session can route nested control frames to us.
-pub fn announce_nested(os_input: &dyn ClientOsApi, session_name: &str) {
+pub fn announce_nested(os_input: &dyn StdioAccess, session_name: &str) {
     let announce = nested_session::NestedSessionMessage::Announce {
         session_name: session_name.to_owned(),
         capabilities: vec![nested_session::NestedSessionCapability::NestedControl],
@@ -85,11 +85,11 @@ pub fn announce_nested(os_input: &dyn ClientOsApi, session_name: &str) {
 }
 
 /// Tell an enclosing Zellij pane that this client is going away.
-pub fn say_bye(os_input: &dyn ClientOsApi) {
+pub fn say_bye(os_input: &dyn StdioAccess) {
     write_nested_frame(os_input, &nested_session::NestedSessionMessage::Bye);
 }
 
-fn write_nested_frame(os_input: &dyn ClientOsApi, message: &nested_session::NestedSessionMessage) {
+fn write_nested_frame(os_input: &dyn StdioAccess, message: &nested_session::NestedSessionMessage) {
     let mut stdout = os_input.get_stdout_writer();
     let _ = stdout.write_all(&nested_session::encode_frame(message));
     let _ = stdout.flush();
@@ -175,7 +175,7 @@ impl ClientTeardown {
     ///
     /// Used on the path that returns a `ConnectToSession` to the caller, which
     /// needs the process to stay alive to reconnect.
-    pub fn restore(&self, os_input: &dyn ClientOsApi, message: &str) {
+    pub fn restore<O: TtyControl + StdioAccess + ?Sized>(&self, os_input: &O, message: &str) {
         os_input.disable_mouse().non_fatal();
         let _ = os_input.unset_raw_mode();
         let mut stdout = os_input.get_stdout_writer();
@@ -187,7 +187,12 @@ impl ClientTeardown {
     ///
     /// A zero `exit_status` is an ordinary shutdown and logs at info level;
     /// anything else logs at error level.
-    pub fn tear_down(&self, os_input: &dyn ClientOsApi, message: String, exit_status: i32) -> ! {
+    pub fn tear_down<O: TtyControl + StdioAccess + ?Sized>(
+        &self,
+        os_input: &O,
+        message: String,
+        exit_status: i32,
+    ) -> ! {
         if exit_status == 0 {
             log::info!("{}", message);
         } else {
