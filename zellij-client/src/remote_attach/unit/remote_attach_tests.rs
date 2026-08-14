@@ -370,7 +370,7 @@ fn cleanup_test_db(server_url: &str) {
 #[derive(Debug, Clone)]
 struct MockClientOsApi;
 
-impl crate::os_input_output::ClientOsApi for MockClientOsApi {
+impl crate::os_input_output::TtyControl for MockClientOsApi {
     fn get_terminal_size(&self) -> zellij_utils::pane_size::Size {
         zellij_utils::pane_size::Size { rows: 24, cols: 80 }
     }
@@ -381,10 +381,20 @@ impl crate::os_input_output::ClientOsApi for MockClientOsApi {
         Ok(())
     }
 
-    fn box_clone(&self) -> Box<dyn crate::os_input_output::ClientOsApi> {
-        Box::new(MockClientOsApi)
+    fn load_palette(&self) -> zellij_utils::data::Palette {
+        zellij_utils::shared::default_palette()
     }
 
+    fn enable_mouse(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn disable_mouse(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl crate::os_input_output::StdioAccess for MockClientOsApi {
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         Ok(Vec::new())
     }
@@ -396,7 +406,9 @@ impl crate::os_input_output::ClientOsApi for MockClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
         Box::new(std::io::sink())
     }
+}
 
+impl crate::os_input_output::ServerConnection for MockClientOsApi {
     fn update_session_name(&mut self, _new_session_name: String) {}
 
     fn send_to_server(&self, _msg: zellij_utils::ipc::ClientToServerMsg) {}
@@ -410,20 +422,16 @@ impl crate::os_input_output::ClientOsApi for MockClientOsApi {
         None
     }
 
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-
     fn connect_to_server(&self, _path: &std::path::Path) {}
+}
 
-    fn load_palette(&self) -> zellij_utils::data::Palette {
-        zellij_utils::shared::default_palette()
-    }
+impl crate::os_input_output::SignalSource for MockClientOsApi {
+    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
+}
 
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
+impl crate::os_input_output::ClientOsApi for MockClientOsApi {
+    fn box_clone(&self) -> Box<dyn crate::os_input_output::ClientOsApi> {
+        Box::new(MockClientOsApi)
     }
 }
 

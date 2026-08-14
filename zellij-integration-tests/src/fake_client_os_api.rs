@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use zellij_client::os_input_output::{ClientOsApi, SignalEvent};
+use zellij_client::os_input_output::{
+    ClientOsApi, ServerConnection, SignalEvent, SignalSource, StdioAccess, TtyControl,
+};
 use zellij_utils::data::Palette;
 use zellij_utils::errors::ErrorContext;
 use zellij_utils::ipc::{
@@ -132,7 +134,7 @@ impl FakeClientOsApi {
     }
 }
 
-impl ClientOsApi for FakeClientOsApi {
+impl TtyControl for FakeClientOsApi {
     fn get_terminal_size(&self) -> Size {
         *self.size.lock().unwrap()
     }
@@ -140,20 +142,38 @@ impl ClientOsApi for FakeClientOsApi {
     fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
         Ok(())
     }
+    fn load_palette(&self) -> Palette {
+        default_palette()
+    }
+    fn enable_mouse(&self) -> anyhow::Result<()> {
+        use std::io::Write;
+        const ENABLE_MOUSE_SUPPORT: &str =
+            "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h";
+        let mut writer = self.client_screen.writer();
+        writer.write_all(ENABLE_MOUSE_SUPPORT.as_bytes())?;
+        writer.flush()?;
+        Ok(())
+    }
+    fn disable_mouse(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl StdioAccess for FakeClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
         self.client_screen.writer()
     }
     fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
         Box::new(std::io::BufReader::new(std::io::empty()))
     }
-    fn update_session_name(&mut self, new_session_name: String) {
-        *self.session_name.lock().unwrap() = Some(new_session_name);
-    }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         self.stdin_rx.recv().map_err(|_| "fake client stdin closed")
     }
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new(self.clone())
+}
+
+impl ServerConnection for FakeClientOsApi {
+    fn update_session_name(&mut self, new_session_name: String) {
+        *self.session_name.lock().unwrap() = Some(new_session_name);
     }
     fn send_to_server(&self, msg: ClientToServerMsg) {
         match self.send_instructions_to_server.lock().unwrap().as_mut() {
@@ -181,18 +201,6 @@ impl ClientOsApi for FakeClientOsApi {
         }
         received
     }
-    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
-        loop {
-            match self.signal_rx.recv() {
-                Ok(SignalEvent::Resize) => sigwinch_cb(),
-                Ok(SignalEvent::Quit) => {
-                    quit_cb();
-                    break;
-                },
-                Err(_) => break,
-            }
-        }
-    }
     fn connect_to_server(&self, path: &Path) {
         let socket;
         loop {
@@ -217,23 +225,29 @@ impl ClientOsApi for FakeClientOsApi {
         }
         Ok(())
     }
-    fn load_palette(&self) -> Palette {
-        default_palette()
-    }
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        use std::io::Write;
-        const ENABLE_MOUSE_SUPPORT: &str =
-            "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h";
-        let mut writer = self.client_screen.writer();
-        writer.write_all(ENABLE_MOUSE_SUPPORT.as_bytes())?;
-        writer.flush()?;
-        Ok(())
-    }
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
+}
+
+impl SignalSource for FakeClientOsApi {
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
+        loop {
+            match self.signal_rx.recv() {
+                Ok(SignalEvent::Resize) => sigwinch_cb(),
+                Ok(SignalEvent::Quit) => {
+                    quit_cb();
+                    break;
+                },
+                Err(_) => break,
+            }
+        }
     }
     fn env_variable(&self, name: &str) -> Option<String> {
         self.env.lock().unwrap().get(name).cloned()
+    }
+}
+
+impl ClientOsApi for FakeClientOsApi {
+    fn box_clone(&self) -> Box<dyn ClientOsApi> {
+        Box::new(self.clone())
     }
     fn should_install_panic_hook(&self) -> bool {
         false

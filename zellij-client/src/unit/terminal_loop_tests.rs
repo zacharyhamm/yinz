@@ -1,4 +1,7 @@
-use crate::os_input_output::{AsyncSignals, AsyncStdin, ClientOsApi, SignalEvent};
+use crate::os_input_output::{
+    AsyncSignals, AsyncStdin, ClientOsApi, ServerConnection, SignalEvent, SignalSource,
+    StdioAccess, TtyControl,
+};
 use crate::remote_attach::websockets::MaybeTls;
 use crate::remote_attach::WebSocketConnections;
 use crate::run_remote_client_terminal_loop;
@@ -73,7 +76,7 @@ impl std::fmt::Debug for TestClientOsApi {
     }
 }
 
-impl ClientOsApi for TestClientOsApi {
+impl TtyControl for TestClientOsApi {
     fn get_terminal_size(&self) -> Size {
         self.terminal_size
     }
@@ -83,36 +86,6 @@ impl ClientOsApi for TestClientOsApi {
     fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
         Ok(())
     }
-
-    fn get_stdout_writer(&self) -> Box<dyn Write> {
-        Box::new(TestWriter {
-            buffer: self.stdout_buffer.clone(),
-        })
-    }
-
-    fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
-        Box::new(io::Cursor::new(Vec::new()))
-    }
-
-    fn update_session_name(&mut self, _new_session_name: String) {}
-
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new(self.clone())
-    }
-
-    fn send_to_server(&self, _msg: ClientToServerMsg) {}
-
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-        None
-    }
-
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-
-    fn connect_to_server(&self, _path: &std::path::Path) {}
 
     fn load_palette(&self) -> Palette {
         Palette::default()
@@ -125,17 +98,55 @@ impl ClientOsApi for TestClientOsApi {
     fn disable_mouse(&self) -> anyhow::Result<()> {
         Ok(())
     }
+}
+
+impl StdioAccess for TestClientOsApi {
+    fn get_stdout_writer(&self) -> Box<dyn Write> {
+        Box::new(TestWriter {
+            buffer: self.stdout_buffer.clone(),
+        })
+    }
+
+    fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
+        Box::new(io::Cursor::new(Vec::new()))
+    }
+
+    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
+        Ok(Vec::new())
+    }
 
     fn get_async_stdin_reader(&self) -> Box<dyn AsyncStdin> {
         Box::new(MockAsyncStdin {
             rx: self.stdin_rx.clone(),
         })
     }
+}
+
+impl ServerConnection for TestClientOsApi {
+    fn update_session_name(&mut self, _new_session_name: String) {}
+
+    fn send_to_server(&self, _msg: ClientToServerMsg) {}
+
+    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
+        None
+    }
+
+    fn connect_to_server(&self, _path: &std::path::Path) {}
+}
+
+impl SignalSource for TestClientOsApi {
+    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
 
     fn get_async_signal_listener(&self) -> io::Result<Box<dyn AsyncSignals>> {
         Ok(Box::new(MockAsyncSignals {
             rx: self.signal_rx.clone(),
         }))
+    }
+}
+
+impl ClientOsApi for TestClientOsApi {
+    fn box_clone(&self) -> Box<dyn ClientOsApi> {
+        Box::new(self.clone())
     }
 }
 
