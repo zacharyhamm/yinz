@@ -4012,7 +4012,7 @@ impl TryFrom<crate::data::GlobalPanePlacement>
 
     fn try_from(placement: crate::data::GlobalPanePlacement) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
-            global_pane_size, GlobalPaneEdge, GlobalPaneSize,
+            GlobalPaneEdge, GlobalPaneSize,
         };
 
         let edge = match placement.edge {
@@ -4021,31 +4021,71 @@ impl TryFrom<crate::data::GlobalPanePlacement>
             crate::data::GlobalPaneEdge::Top => GlobalPaneEdge::Top,
             crate::data::GlobalPaneEdge::Bottom => GlobalPaneEdge::Bottom,
         };
-        let size_type = match placement.size {
-            crate::input::layout::PercentOrFixed::Fixed(0)
-            | crate::input::layout::PercentOrFixed::Percent(0) => {
-                return Err(anyhow!("Global pane size must be greater than zero"))
-            },
-            crate::input::layout::PercentOrFixed::Percent(size) if size > 100 => {
-                return Err(anyhow!("Global pane percent must be between 1 and 100"))
-            },
-            crate::input::layout::PercentOrFixed::Fixed(size) => global_pane_size::SizeType::Fixed(
-                u32::try_from(size)
-                    .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
-            ),
-            crate::input::layout::PercentOrFixed::Percent(size) => {
-                global_pane_size::SizeType::Percent(
-                    u32::try_from(size)
-                        .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
-                )
-            },
-        };
+        let size_type = contract_global_pane_size_to_protobuf(placement.size)?;
+        let length = placement
+            .length
+            .map(|length| {
+                contract_global_pane_size_to_protobuf(length).map(|size_type| GlobalPaneSize {
+                    size_type: Some(size_type),
+                })
+            })
+            .transpose()?;
         Ok(Self {
             edge: edge as i32,
             size: Some(GlobalPaneSize {
                 size_type: Some(size_type),
             }),
+            length,
         })
+    }
+}
+
+fn contract_global_pane_size_to_protobuf(
+    size: crate::input::layout::PercentOrFixed,
+) -> Result<crate::client_server_contract::client_server_contract::global_pane_size::SizeType> {
+    use crate::client_server_contract::client_server_contract::global_pane_size;
+    match size {
+        crate::input::layout::PercentOrFixed::Fixed(0)
+        | crate::input::layout::PercentOrFixed::Percent(0) => {
+            Err(anyhow!("Global pane size must be greater than zero"))
+        },
+        crate::input::layout::PercentOrFixed::Percent(size) if size > 100 => {
+            Err(anyhow!("Global pane percent must be between 1 and 100"))
+        },
+        crate::input::layout::PercentOrFixed::Fixed(size) => Ok(global_pane_size::SizeType::Fixed(
+            u32::try_from(size)
+                .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
+        )),
+        crate::input::layout::PercentOrFixed::Percent(size) => {
+            Ok(global_pane_size::SizeType::Percent(
+                u32::try_from(size)
+                    .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
+            ))
+        },
+    }
+}
+
+fn contract_global_pane_size_from_protobuf(
+    size: crate::client_server_contract::client_server_contract::global_pane_size::SizeType,
+) -> Result<crate::input::layout::PercentOrFixed> {
+    use crate::client_server_contract::client_server_contract::global_pane_size;
+    match size {
+        global_pane_size::SizeType::Fixed(0) | global_pane_size::SizeType::Percent(0) => {
+            Err(anyhow!("Global pane size must be greater than zero"))
+        },
+        global_pane_size::SizeType::Percent(size) if size > 100 => {
+            Err(anyhow!("Global pane percent must be between 1 and 100"))
+        },
+        global_pane_size::SizeType::Fixed(size) => Ok(crate::input::layout::PercentOrFixed::Fixed(
+            usize::try_from(size)
+                .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
+        )),
+        global_pane_size::SizeType::Percent(size) => {
+            Ok(crate::input::layout::PercentOrFixed::Percent(
+                usize::try_from(size)
+                    .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
+            ))
+        },
     }
 }
 
@@ -4057,9 +4097,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::GlobalPanePl
     fn try_from(
         placement: crate::client_server_contract::client_server_contract::GlobalPanePlacement,
     ) -> Result<Self> {
-        use crate::client_server_contract::client_server_contract::{
-            global_pane_size, GlobalPaneEdge,
-        };
+        use crate::client_server_contract::client_server_contract::GlobalPaneEdge;
 
         let edge = match GlobalPaneEdge::try_from(placement.edge) {
             Ok(GlobalPaneEdge::Left) => crate::data::GlobalPaneEdge::Left,
@@ -4068,29 +4106,18 @@ impl TryFrom<crate::client_server_contract::client_server_contract::GlobalPanePl
             Ok(GlobalPaneEdge::Bottom) => crate::data::GlobalPaneEdge::Bottom,
             _ => return Err(anyhow!("Invalid global pane edge: {}", placement.edge)),
         };
-        let size = match placement
-            .size
-            .and_then(|size| size.size_type)
-            .ok_or_else(|| anyhow!("Global pane placement missing size"))?
-        {
-            global_pane_size::SizeType::Fixed(0) | global_pane_size::SizeType::Percent(0) => {
-                return Err(anyhow!("Global pane size must be greater than zero"))
-            },
-            global_pane_size::SizeType::Percent(size) if size > 100 => {
-                return Err(anyhow!("Global pane percent must be between 1 and 100"))
-            },
-            global_pane_size::SizeType::Fixed(size) => crate::input::layout::PercentOrFixed::Fixed(
-                usize::try_from(size)
-                    .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
-            ),
-            global_pane_size::SizeType::Percent(size) => {
-                crate::input::layout::PercentOrFixed::Percent(
-                    usize::try_from(size)
-                        .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
-                )
-            },
-        };
-        Ok(Self { edge, size })
+        let size = contract_global_pane_size_from_protobuf(
+            placement
+                .size
+                .and_then(|size| size.size_type)
+                .ok_or_else(|| anyhow!("Global pane placement missing size"))?,
+        )?;
+        let length = placement
+            .length
+            .and_then(|length| length.size_type)
+            .map(contract_global_pane_size_from_protobuf)
+            .transpose()?;
+        Ok(Self { edge, size, length })
     }
 }
 

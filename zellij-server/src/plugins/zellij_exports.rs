@@ -60,6 +60,7 @@ use zellij_utils::data::{
     TabMetadata, WarpPaneResponse, WarpPlacement,
 };
 use zellij_utils::home::default_layout_dir;
+use zellij_utils::input::layout::PercentOrFixed;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
 use zellij_utils::plugin_data_store;
@@ -853,6 +854,22 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                                     None,
                                 ));
                     },
+                    PluginCommand::LaunchOrFocusGlobalPaneSplit {
+                        plugin_url,
+                        config,
+                        before,
+                        length,
+                        should_focus,
+                        skip_cache,
+                    } => launch_or_focus_global_pane_split(
+                        env,
+                        plugin_url,
+                        config,
+                        before,
+                        length,
+                        should_focus,
+                        skip_cache,
+                    ),
                 },
                 (PermissionStatus::Denied, permission) => {
                     log::error!(
@@ -5414,6 +5431,45 @@ fn reload_plugin(env: &PluginEnv, plugin_id: u32) {
         .send_to_plugin(PluginInstruction::ReloadPluginWithId(plugin_id));
 }
 
+/// Launch `plugin_url` as a split of the calling plugin's own global pane, or reveal an existing
+/// global pane for it. The anchor is always the caller, so a plugin can only split itself - the
+/// server rejects callers that are not global panes.
+fn launch_or_focus_global_pane_split(
+    env: &PluginEnv,
+    plugin_url: String,
+    config: BTreeMap<String, String>,
+    before: bool,
+    length: Option<PercentOrFixed>,
+    should_focus: bool,
+    skip_cache: bool,
+) {
+    let url = if &plugin_url == "zellij:OWN_URL" {
+        env.plugin.location.display()
+    } else {
+        plugin_url
+    };
+    // no caller cwd: it would become part of the plugin's configuration and with it the plugin's
+    // identity, so the adopt path could never match the pane again after a session restore
+    match RunPluginOrAlias::from_url(&url, &Some(config), None, None) {
+        Ok(run_plugin_or_alias) => {
+            let _ = env
+                .senders
+                .send_to_screen(ScreenInstruction::LaunchOrFocusGlobalPaneSplit {
+                    run_plugin: run_plugin_or_alias,
+                    anchor: PaneId::Plugin(env.plugin_id),
+                    before,
+                    length,
+                    should_focus,
+                    skip_cache,
+                    client_id: env.client_id,
+                });
+        },
+        Err(e) => {
+            log::error!("Failed to launch global pane split: {:?}", e);
+        },
+    }
+}
+
 fn load_new_plugin(
     env: &PluginEnv,
     url: String,
@@ -5851,7 +5907,21 @@ fn check_command_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
-    let permission = match command {
+    let Some(permission) = command_permission(command) else {
+        return (PermissionStatus::Granted, None);
+    };
+
+    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref() {
+        if permissions.contains(&permission) {
+            return (PermissionStatus::Granted, None);
+        }
+    }
+
+    (PermissionStatus::Denied, Some(permission))
+}
+
+fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
+    Some(match command {
         PluginCommand::OpenFile(..)
         | PluginCommand::OpenFileFloating(..)
         | PluginCommand::OpenFileNearPlugin(..)
@@ -5868,6 +5938,7 @@ fn check_command_permission(
         | PluginCommand::OpenTerminalInPlaceOfPlugin(..)
         | PluginCommand::OpenPluginPaneInNewTab { .. }
         | PluginCommand::OpenPluginPaneFloating { .. }
+        | PluginCommand::LaunchOrFocusGlobalPaneSplit { .. }
         | PluginCommand::NewTiledPaneInTab { .. }
         | PluginCommand::OpenTerminalPaneInPlaceOfPaneId(..) => {
             PermissionType::OpenTerminalsOrPlugins
@@ -6062,14 +6133,28 @@ fn check_command_permission(
         },
         PluginCommand::OpenCommandPaneInNewTab(..) => PermissionType::RunCommands,
         PluginCommand::OpenEditorPaneInNewTab(..) => PermissionType::OpenFiles,
-        _ => return (PermissionStatus::Granted, None),
-    };
+        _ => return None,
+    })
+}
 
-    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref() {
-        if permissions.contains(&permission) {
-            return (PermissionStatus::Granted, None);
-        }
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn global_pane_splits_require_plugin_launch_permission() {
+        let command = PluginCommand::LaunchOrFocusGlobalPaneSplit {
+            plugin_url: "file:/tmp/plugin.wasm".to_owned(),
+            config: BTreeMap::new(),
+            before: true,
+            length: None,
+            should_focus: false,
+            skip_cache: false,
+        };
+
+        assert_eq!(
+            command_permission(&command),
+            Some(PermissionType::OpenTerminalsOrPlugins)
+        );
     }
-
-    (PermissionStatus::Denied, Some(permission))
 }

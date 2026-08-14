@@ -992,6 +992,7 @@ fn global_pane_renders_once_for_clients_on_different_tabs() {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             false,
         )
@@ -1132,6 +1133,7 @@ fn global_pane_render_does_not_move_the_cursor_of_a_client_focused_on_a_tab_pane
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             false,
         )
@@ -1212,6 +1214,7 @@ fn insert_left_global_pane(screen: &mut Screen, cols: usize) {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(cols),
+                length: None,
             },
             false,
         )
@@ -1568,7 +1571,7 @@ fn a_click_on_tab_chrome_beside_a_global_pane_is_not_a_border_drag() {
     // the row is the global pane's border, it is only the chrome on top of it that saves the click
     assert!(screen
         .global_panes
-        .border_pane_id_at(&Position::new(border_line, 5))
+        .border_hit_at(&Position::new(border_line, 5))
         .is_some());
     assert!(screen
         .get_active_tab(client_id)
@@ -1715,6 +1718,486 @@ fn move_focus_crosses_into_and_out_of_a_left_global_pane() {
 }
 
 #[test]
+fn move_focus_walks_within_a_strip_then_hops_to_another_edge() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        97,
+        GlobalPaneEdge::Top,
+        PercentOrFixed::Fixed(2),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+
+    screen
+        .focus_global_pane(PaneId::Terminal(98), client_id)
+        .unwrap();
+
+    // down walks the strip to the same-edge neighbor
+    assert!(screen.global_pane_handles_direction(Direction::Down, client_id));
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(99))
+    );
+
+    // down again is the strip's end and no bottom pane exists - focus stays
+    assert!(screen.global_pane_handles_direction(Direction::Down, client_id));
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(99))
+    );
+
+    // up walks back
+    assert!(screen.global_pane_handles_direction(Direction::Up, client_id));
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(98))
+    );
+
+    // up off the strip's end hops to the pane on the top edge, as it did
+    // before splits existed
+    assert!(screen.global_pane_handles_direction(Direction::Up, client_id));
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(97))
+    );
+}
+
+#[test]
+fn entering_a_split_strip_lands_on_the_overlapping_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    // two tab panes stacked on top of each other
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Tiled {
+                direction: Some(Direction::Down),
+                borderless: None,
+            },
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    screen.render_to_clients().expect("TEST");
+
+    // whichever tab pane overlaps a strip pane's span is the one a left move
+    // from it should land on
+    let strip_pane_containing = |screen: &Screen, row: usize| {
+        [98u32, 99u32]
+            .iter()
+            .copied()
+            .find(|id| {
+                let geom = screen
+                    .global_panes
+                    .pane(PaneId::Terminal(*id))
+                    .unwrap()
+                    .position_and_size();
+                row >= geom.y && row < geom.y + geom.rows.as_usize()
+            })
+            .expect("a strip pane spans this row")
+    };
+    for tab_pane in [1u32, 2u32] {
+        screen
+            .get_active_tab_mut(client_id)
+            .unwrap()
+            .focus_pane_with_id(PaneId::Terminal(tab_pane), false, false, client_id)
+            .unwrap();
+        let geom = screen
+            .get_active_tab(client_id)
+            .unwrap()
+            .get_active_pane(client_id)
+            .unwrap()
+            .position_and_size();
+        let expected = strip_pane_containing(&screen, geom.y + geom.rows.as_usize() / 2);
+        assert!(screen.enter_global_pane_in_direction(Direction::Left, client_id));
+        assert_eq!(
+            screen.get_active_pane_id(&client_id),
+            Some(PaneId::Terminal(expected)),
+            "the move lands on the strip pane beside tab pane {tab_pane}"
+        );
+        screen.defocus_global_pane(client_id);
+    }
+}
+
+#[test]
+fn hiding_a_strip_pane_hides_the_whole_edge_and_showing_restores_it() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+
+    // hiding either pane hides the strip - the sidebar and its agent list go
+    // together
+    screen.hide_pane(PaneId::Terminal(98)).expect("TEST");
+    assert!(screen.global_panes.visible_pane_ids().is_empty());
+
+    // showing either restores both, split geometry included
+    screen.show_pane(PaneId::Terminal(99)).expect("TEST");
+    assert_eq!(screen.global_panes.visible_pane_ids().len(), 2);
+    let first = screen
+        .global_panes
+        .pane(PaneId::Terminal(98))
+        .unwrap()
+        .position_and_size();
+    let second = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(second.y, first.y + first.rows.as_usize());
+}
+
+#[test]
+fn restoring_a_strip_leaves_independently_hidden_panes_hidden() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_try_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+        true,
+    )
+    .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    screen.hide_pane(PaneId::Terminal(98)).expect("TEST");
+    screen.show_pane(PaneId::Terminal(98)).expect("TEST");
+
+    assert_eq!(
+        screen.global_panes.visible_pane_ids(),
+        HashSet::from([PaneId::Terminal(98)])
+    );
+    assert!(screen.global_panes.is_hidden(PaneId::Terminal(99)).unwrap());
+
+    // Asking for the independently hidden pane reveals it too, even though
+    // restoring its strip also reveals a sibling.
+    screen.hide_pane(PaneId::Terminal(98)).expect("TEST");
+    screen.show_pane(PaneId::Terminal(99)).expect("TEST");
+    assert_eq!(
+        screen.global_panes.visible_pane_ids(),
+        HashSet::from([PaneId::Terminal(98), PaneId::Terminal(99)])
+    );
+}
+
+#[test]
+fn split_resizing_uses_non_selectable_physical_neighbors() {
+    use zellij_utils::data::{GlobalPaneEdge, Resize, ResizeStrategy};
+
+    let client_id: ClientId = 1;
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 40,
+        rows: 100,
+    });
+    new_tab(&mut screen, 1, 0);
+    for id in [98, 99, 100] {
+        gp_insert_global_pane(
+            &mut screen,
+            id,
+            GlobalPaneEdge::Left,
+            PercentOrFixed::Fixed(8),
+            false,
+        );
+    }
+    screen
+        .global_panes
+        .pane_mut(PaneId::Terminal(99))
+        .unwrap()
+        .set_selectable(false);
+    screen.render_to_clients().expect("TEST");
+
+    let rows = |screen: &Screen, id| {
+        screen
+            .global_panes
+            .pane(PaneId::Terminal(id))
+            .unwrap()
+            .position_and_size()
+            .rows
+            .as_usize()
+    };
+    let before = [rows(&screen, 98), rows(&screen, 99), rows(&screen, 100)];
+    screen
+        .resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Down)),
+            PaneId::Terminal(98),
+        )
+        .unwrap();
+    assert_eq!(rows(&screen, 98), before[0] + 5);
+    assert_eq!(rows(&screen, 99), before[1] - 5);
+    assert_eq!(rows(&screen, 100), before[2]);
+
+    let middle = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
+    let split_line = (middle.y + middle.rows.as_usize() - 1) as i32;
+    let split_column = (middle.x + 1) as u16;
+    let middle_before_drag = rows(&screen, 99);
+    let last_before_drag = rows(&screen, 100);
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(split_line, split_column)),
+        client_id,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(split_line - 1, split_column)),
+        client_id,
+    );
+    assert_eq!(rows(&screen, 99), middle_before_drag - 1);
+    assert_eq!(rows(&screen, 100), last_before_drag + 1);
+}
+
+#[test]
+fn closing_a_strip_pane_refocuses_its_neighbor() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), client_id)
+        .unwrap();
+
+    screen
+        .close_global_pane(PaneId::Terminal(99), None)
+        .expect("TEST");
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(98)),
+        "the client lands on the pane that inherited the closed pane's cells"
+    );
+}
+
+#[test]
+fn a_new_pane_on_a_focused_global_pane_splits_it() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(98), client_id)
+        .unwrap();
+
+    let handled = screen
+        .split_focused_global_pane(
+            PaneId::Terminal(98),
+            PaneId::Terminal(50),
+            None,
+            None,
+            None,
+            &NewPanePlacement::default(),
+            true,
+            client_id,
+            &mut None,
+        )
+        .expect("TEST");
+    assert!(handled);
+    let anchor = screen
+        .global_panes
+        .pane(PaneId::Terminal(98))
+        .unwrap()
+        .position_and_size();
+    let split = screen
+        .global_panes
+        .pane(PaneId::Terminal(50))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(split.cols.as_usize(), anchor.cols.as_usize());
+    assert_eq!(
+        split.y,
+        anchor.y + anchor.rows.as_usize(),
+        "NoPreference splits after the anchor"
+    );
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(50))
+    );
+
+    // a direction across the strip is rejected: the pane never lands anywhere
+    let handled = screen
+        .split_focused_global_pane(
+            PaneId::Terminal(50),
+            PaneId::Terminal(51),
+            None,
+            None,
+            None,
+            &NewPanePlacement::Tiled {
+                direction: Some(Direction::Right),
+                borderless: None,
+            },
+            true,
+            client_id,
+            &mut None,
+        )
+        .expect("TEST");
+    assert!(handled, "consumed, not passed through to the tab");
+    assert!(screen.global_panes.pane(PaneId::Terminal(51)).is_none());
+
+    // an up-split lands before the anchor
+    let handled = screen
+        .split_focused_global_pane(
+            PaneId::Terminal(50),
+            PaneId::Terminal(52),
+            None,
+            None,
+            None,
+            &NewPanePlacement::Tiled {
+                direction: Some(Direction::Up),
+                borderless: None,
+            },
+            true,
+            client_id,
+            &mut None,
+        )
+        .expect("TEST");
+    assert!(handled);
+    let above = screen
+        .global_panes
+        .pane(PaneId::Terminal(52))
+        .unwrap()
+        .position_and_size();
+    let below = screen
+        .global_panes
+        .pane(PaneId::Terminal(50))
+        .unwrap()
+        .position_and_size();
+    assert!(above.y < below.y, "an up-split sits before its anchor");
+}
+
+#[test]
+fn a_blocking_global_pane_split_reports_an_insertion_failure() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 1 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let mut blocking_notification = Some(NotificationEnd::new(completion_tx));
+
+    let handled = screen
+        .split_focused_global_pane(
+            PaneId::Terminal(98),
+            PaneId::Terminal(50),
+            None,
+            None,
+            None,
+            &NewPanePlacement::default(),
+            true,
+            client_id,
+            &mut blocking_notification,
+        )
+        .expect("TEST");
+    let completion = completion_rx.blocking_recv().expect("completion");
+
+    assert!(handled);
+    assert_eq!(completion.exit_status, Some(1));
+    assert_eq!(
+        completion.error_message.as_deref(),
+        Some("global panes do not fit their strip")
+    );
+    assert!(screen.global_panes.pane(PaneId::Terminal(50)).is_none());
+}
+
+#[test]
 fn adding_a_tiled_pane_with_swap_layouts_stays_beside_a_left_global_pane() {
     // with swap layouts the new pane goes through the layout applier rather than the constraint
     // system, which positions panes in the tab's display area from scratch
@@ -1799,6 +2282,7 @@ fn screen_resizes_tabs_directly_to_the_global_center_without_accumulating_origin
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             false,
         )
@@ -1857,6 +2341,7 @@ fn insert_global_pane_on_edge(
             GlobalPanePlacement {
                 edge,
                 size: PercentOrFixed::Fixed(cols),
+                length: None,
             },
             false,
         )
@@ -2004,6 +2489,7 @@ fn newly_added_client_sees_existing_global_panes() {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(12),
+                length: None,
             },
             false,
         )
@@ -2071,6 +2557,7 @@ fn global_pane_fake_cursor_does_not_move_other_clients_cursor() {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             false,
         )
@@ -2119,6 +2606,7 @@ fn global_terminal_creation_preserves_placement_from_pty_to_screen() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Bottom,
         size: PercentOrFixed::Fixed(3),
+        length: None,
     };
     let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
     let pty_bus = Bus::new(
@@ -2179,6 +2667,7 @@ fn global_new_tiled_pane_route_preserves_command_shell_and_spawn_context() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Right,
         size: PercentOrFixed::Fixed(8),
+        length: None,
     };
     let default_shell = TerminalAction::RunCommand(
         RunCommandAction {
@@ -2338,6 +2827,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -2346,6 +2836,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             completion_tx: Some(NotificationEnd::new(failed_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     let failed = failed_rx.blocking_recv().unwrap();
@@ -2361,6 +2852,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -2369,6 +2861,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             completion_tx: Some(NotificationEnd::new(succeeded_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     let succeeded = succeeded_rx.blocking_recv().unwrap();
@@ -2384,6 +2877,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -2392,6 +2886,7 @@ fn global_insertion_failure_reports_error_cleans_up_once_and_keeps_screen_alive(
             completion_tx: Some(NotificationEnd::new(duplicate_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     let duplicate = duplicate_rx.blocking_recv().unwrap();
@@ -2498,6 +2993,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             borderless: true,
             initially_hidden: false,
@@ -2506,6 +3002,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
             completion_tx: Some(NotificationEnd::new(failed_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     assert_eq!(failed_rx.blocking_recv().unwrap().exit_status, Some(1));
@@ -2521,6 +3018,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: true,
             initially_hidden: false,
@@ -2529,6 +3027,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
             completion_tx: Some(NotificationEnd::new(succeeded_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     assert_eq!(
@@ -2587,6 +3086,7 @@ fn early_global_plugin_bytes_replay_before_already_queued_later_bytes() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: true,
             initially_hidden: false,
@@ -2595,6 +3095,7 @@ fn early_global_plugin_bytes_replay_before_already_queued_later_bytes() {
             completion_tx: Some(NotificationEnd::new(completion_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     mock_screen
@@ -2704,6 +3205,7 @@ fn early_global_plugin_events_are_replayed_after_insertion() {
                 placement: GlobalPanePlacement {
                     edge,
                     size: PercentOrFixed::Fixed(size),
+                    length: None,
                 },
                 borderless: true,
                 initially_hidden: false,
@@ -2712,6 +3214,7 @@ fn early_global_plugin_events_are_replayed_after_insertion() {
                 completion_tx: Some(NotificationEnd::new(completion_tx)),
                 set_blocking: false,
                 declaration_order: None,
+                split: None,
             })
             .unwrap();
         assert_eq!(
@@ -2850,6 +3353,7 @@ fn closed_or_rejected_global_plugins_unload_exactly_once_through_pty() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -2858,6 +3362,7 @@ fn closed_or_rejected_global_plugins_unload_exactly_once_through_pty() {
             completion_tx: Some(NotificationEnd::new(completion_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     assert_eq!(
@@ -2889,6 +3394,7 @@ fn closed_or_rejected_global_plugins_unload_exactly_once_through_pty() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(10),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -2897,6 +3403,7 @@ fn closed_or_rejected_global_plugins_unload_exactly_once_through_pty() {
             completion_tx: Some(NotificationEnd::new(failed_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     let failed = failed_rx.blocking_recv().unwrap();
@@ -2953,6 +3460,7 @@ fn add_matching_global_plugin(
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(5),
+                length: None,
             },
             hidden,
         )
@@ -3011,6 +3519,7 @@ fn add_global_terminal_on_edge(
             GlobalPanePlacement {
                 edge,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             false,
         )
@@ -3038,6 +3547,7 @@ fn global_pane_manifest_reports_each_global_once_outside_tabs() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Bottom,
         size: PercentOrFixed::Fixed(3),
+        length: None,
     };
 
     assert_eq!(manifest.panes.len(), 2);
@@ -3094,6 +3604,7 @@ fn global_tab_only_screen_instructions_report_exact_completion_errors() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Fixed(3),
+                length: None,
             },
             borderless: false,
             initially_hidden: false,
@@ -3102,6 +3613,7 @@ fn global_tab_only_screen_instructions_report_exact_completion_errors() {
             completion_tx: Some(NotificationEnd::new(created_tx)),
             set_blocking: false,
             declaration_order: None,
+            split: None,
         })
         .unwrap();
     created_rx.blocking_recv().unwrap();
@@ -3276,6 +3788,7 @@ fn global_pane_commands_resolve_generic_ids_and_reject_tab_only_ids() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Right,
         size: PercentOrFixed::Fixed(6),
+        length: None,
     };
     screen
         .set_global_pane_placement(global_id, placement)
@@ -3385,6 +3898,7 @@ fn global_plugin_commands_use_the_global_first_resolver() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Top,
         size: PercentOrFixed::Fixed(2),
+        length: None,
     };
     screen
         .set_global_pane_placement(global_id, placement)
@@ -3714,6 +4228,7 @@ fn global_terminal_selection_survives_a_release_on_the_frame() {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(11),
+                length: None,
             },
         )
         .unwrap();
@@ -3965,10 +4480,12 @@ fn resurrection_layout_global_panes_launch_once_in_declaration_order_before_tab_
     let terminal_placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Bottom,
         size: PercentOrFixed::Fixed(3),
+        length: None,
     };
     let plugin_placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Right,
         size: PercentOrFixed::Fixed(8),
+        length: None,
     };
     let run_plugin =
         RunPluginOrAlias::from_url("file:/path/to/layout/plugin", &None, None, None).unwrap();
@@ -4062,6 +4579,7 @@ fn global_plugin_launch_retains_placement_when_not_loaded() {
     let placement = GlobalPanePlacement {
         edge: GlobalPaneEdge::Right,
         size: PercentOrFixed::Fixed(9),
+        length: None,
     };
     let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
@@ -4211,6 +4729,7 @@ fn global_plugin_launch_rejects_a_matching_tab_local_plugin() {
             Some(GlobalPanePlacement {
                 edge: GlobalPaneEdge::Right,
                 size: PercentOrFixed::Fixed(8),
+                length: None,
             }),
         ))
         .unwrap();
@@ -13120,6 +13639,7 @@ fn add_hidden_global_plugin(screen: &mut Screen, plugin_id: u32) {
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(1),
+                length: None,
             },
             true,
         )
@@ -15673,7 +16193,7 @@ fn attaching_web_watcher_follows_the_host_tab() {
 // - gp02_* (stage 2B): FAIL - moved floating panes drift by the global-pane origin on reflow
 // - gp04_* (stage 3B): PASS - protects the strip-change frame reapplication
 // - gp05_* (stage 4A): FAIL - borderless left/top panes' content is overwritten by separators
-// - gp06_* (stage 4B): FAIL - same-edge global panes have no internal separator
+// - gp06_* (stage 4B): PASS - same-edge global panes split the strip's long axis
 // =====================================================================================
 
 fn gp_insert_global_pane(
@@ -15720,9 +16240,15 @@ fn gp_try_insert_global_pane(
     if borderless {
         global_pane.set_borderless(true);
     }
-    screen
-        .global_panes
-        .insert(global_pane, GlobalPanePlacement { edge, size }, hidden)
+    screen.global_panes.insert(
+        global_pane,
+        GlobalPanePlacement {
+            edge,
+            size,
+            length: None,
+        },
+        hidden,
+    )
 }
 
 fn gp_drain_client_1_snapshot(
@@ -16150,6 +16676,7 @@ fn gp04_placement_change_to_opposite_edge_updates_boundary_reservation_on_next_r
             GlobalPanePlacement {
                 edge: GlobalPaneEdge::Right,
                 size: PercentOrFixed::Fixed(8),
+                length: None,
             },
         )
         .expect("TEST");
@@ -16394,11 +16921,11 @@ fn gp05_borderless_top_global_pane_reserves_the_tab_separator_row() {
     }
 }
 
-// Same-edge global panes have no separator geometry between them (only strips are grown over, they
-// never contribute rects of their own), so they are rejected rather than half-supported.
+// Panes sharing an edge form one strip: a second pane on an occupied edge splits the strip's long
+// axis with the first, adopting its thickness, and closing one gives its span back.
 #[test]
-fn gp06_same_edge_global_panes_are_rejected() {
-    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+fn gp06_same_edge_global_panes_split_the_strip() {
+    use zellij_utils::data::GlobalPaneEdge;
 
     let size = Size { cols: 40, rows: 10 };
     let mut screen = create_non_mirrored_screen(size); // PaneFrameStyle::None
@@ -16411,64 +16938,58 @@ fn gp06_same_edge_global_panes_are_rejected() {
         false,
     );
     screen.render_to_clients().expect("TEST");
-    let geom_before = screen
+    let geom_alone = screen
         .global_panes
         .pane(PaneId::Terminal(98))
         .unwrap()
         .position_and_size();
 
-    // inserting a second visible pane on the occupied edge
-    assert_eq!(
-        gp_try_insert_global_pane(
-            &mut screen,
-            99,
-            GlobalPaneEdge::Left,
-            PercentOrFixed::Fixed(8),
-            false,
-            false,
-        ),
-        Err("a global pane is already docked to the left edge".to_owned())
-    );
-    assert!(screen.global_panes.pane(PaneId::Terminal(99)).is_none());
-
-    // a free edge is still fine
-    gp_insert_global_pane(
-        &mut screen,
-        97,
-        GlobalPaneEdge::Right,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-
-    // a hidden pane may be parked on an occupied edge, but showing it is rejected
+    // a second visible pane on the occupied edge splits the strip's rows with the first;
+    // its different declared thickness loses to the strip's first pane
     gp_try_insert_global_pane(
         &mut screen,
-        96,
+        99,
         GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
+        PercentOrFixed::Fixed(12),
         false,
-        true,
+        false,
     )
-    .expect("a hidden pane on an occupied edge is legal");
-    let area = zellij_utils::pane_size::Viewport::from(size);
+    .expect("a second pane on an occupied edge splits the strip");
+    screen.render_to_clients().expect("TEST");
+    let geom_first = screen
+        .global_panes
+        .pane(PaneId::Terminal(98))
+        .unwrap()
+        .position_and_size();
+    let geom_second = screen
+        .global_panes
+        .pane(PaneId::Terminal(99))
+        .unwrap()
+        .position_and_size();
     assert_eq!(
-        screen.global_panes.show(PaneId::Terminal(96), area),
-        Err("a global pane is already docked to the left edge".to_owned())
+        geom_first.cols.as_usize(),
+        8,
+        "the strip keeps the first pane's thickness"
+    );
+    assert_eq!(
+        geom_second.cols.as_usize(),
+        8,
+        "the joiner adopts the strip's thickness"
+    );
+    assert_eq!(
+        geom_first.rows.as_usize() + geom_second.rows.as_usize(),
+        geom_alone.rows.as_usize(),
+        "the two panes tile the strip's rows"
+    );
+    assert_eq!(
+        geom_second.y,
+        geom_first.y + geom_first.rows.as_usize(),
+        "the joiner sits after the first pane in the strip"
     );
 
-    // as is moving a visible pane onto an occupied edge
-    assert_eq!(
-        screen.global_panes.set_placement(
-            PaneId::Terminal(97),
-            GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Fixed(8),
-            },
-            area,
-        ),
-        Err("a global pane is already docked to the left edge".to_owned())
-    );
-
+    // removing the joiner gives the strip back to the first pane
+    assert!(screen.global_panes.remove(PaneId::Terminal(99)).is_some());
+    screen.reflow_global_panes().expect("TEST");
     screen.render_to_clients().expect("TEST");
     assert_eq!(
         screen
@@ -16476,8 +16997,219 @@ fn gp06_same_edge_global_panes_are_rejected() {
             .pane(PaneId::Terminal(98))
             .unwrap()
             .position_and_size(),
-        geom_before,
-        "the rejected placements left the docked pane untouched"
+        geom_alone,
+        "the survivor reclaims the whole strip"
+    );
+}
+
+#[test]
+fn an_undersized_attaching_client_is_rejected_without_blocking_rendering() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Terminal(99),
+            initial_pane_title: None,
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(5),
+                length: None,
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: false,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(completion_tx)),
+            set_blocking: false,
+            declaration_order: None,
+            split: None,
+        })
+        .unwrap();
+    completion_rx.blocking_recv().expect("global pane created");
+    server_receiver.try_iter().for_each(drop);
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::AddClient(
+            2,
+            false,
+            Size { cols: 1, rows: 1 },
+            None,
+            None,
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let server_instructions: Vec<_> = server_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    mock_screen.teardown(vec![screen_thread]);
+
+    assert!(server_instructions
+        .iter()
+        .any(|instruction| matches!(instruction, ServerInstruction::ClientExit(2, _))));
+    assert!(server_instructions.iter().any(|instruction| matches!(
+        instruction,
+        ServerInstruction::Render(Some(rendered_clients))
+            if rendered_clients.contains_key(&1) && !rendered_clients.contains_key(&2)
+    )));
+}
+
+#[test]
+fn equivalent_split_plugin_arrivals_keep_the_first_global_pane() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let mut mock_screen = MockScreen::new(Size { cols: 40, rows: 10 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/agents.wasm", &None, None, None).unwrap();
+    let placement = GlobalPanePlacement {
+        edge: GlobalPaneEdge::Left,
+        size: PercentOrFixed::Fixed(5),
+        length: None,
+    };
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(77),
+            initial_pane_title: None,
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(run_plugin.clone())),
+            placement,
+            borderless: false,
+            initially_hidden: false,
+            should_focus: false,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(first_tx)),
+            set_blocking: false,
+            declaration_order: None,
+            split: None,
+        })
+        .unwrap();
+    first_rx.blocking_recv().expect("first plugin created");
+
+    let (duplicate_tx, duplicate_rx) = tokio::sync::oneshot::channel();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: PaneId::Plugin(78),
+            initial_pane_title: None,
+            hold_for_command: None,
+            invoked_with: Some(Run::Plugin(run_plugin)),
+            placement,
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true,
+            client_id: Some(1),
+            completion_tx: Some(NotificationEnd::new(duplicate_tx)),
+            set_blocking: false,
+            declaration_order: None,
+            split: Some(crate::pty::GlobalSplitAnchor {
+                anchor: PaneId::Plugin(77),
+                before: true,
+            }),
+        })
+        .unwrap();
+    let completion = duplicate_rx.blocking_recv().expect("duplicate adopted");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let pty_instructions: Vec<_> = pty_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    mock_screen.teardown(vec![screen_thread]);
+
+    assert_eq!(completion.affected_pane_id, Some(PaneId::Plugin(77)));
+    assert!(pty_instructions.iter().any(|instruction| matches!(
+        instruction,
+        PtyInstruction::ClosePane(PaneId::Plugin(78), None)
+    )));
+}
+
+// The integration-visible shape of the hocus sidebar: a global plugin pane with a second
+// plugin pane split off above it. Both halves of the strip must reach the client's screen.
+#[test]
+fn gp08_both_halves_of_a_split_plugin_strip_render() {
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    new_tab(&mut screen, 1, 0);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/hocus.wasm", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+    screen.render_to_clients().expect("TEST");
+
+    // the split the chat plugin makes for its agent list, above itself
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let agents_pane = PaneFactory::plugin(
+        78,
+        Default::default(),
+        plugin_sender,
+        "agents".to_owned(),
+        "agents".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        None,
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    screen
+        .global_panes
+        .insert_split(agents_pane, PaneId::Plugin(77), true, None)
+        .expect("TEST");
+    screen.reflow_global_panes().expect("TEST");
+
+    screen
+        .global_panes
+        .handle_plugin_bytes(78, 1, b"AGENTS".to_vec());
+    screen
+        .global_panes
+        .handle_plugin_bytes(77, 1, b"HOCUS".to_vec());
+    screen.render_to_clients().expect("TEST");
+    let mut grid = grid_for_render_snapshot(size);
+    let snapshot = gp_drain_client_1_snapshot(&server_receiver, &mut grid);
+
+    let row_of = |needle: &str| {
+        snapshot
+            .lines()
+            .position(|line| gp_line_content(line).contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} rendered:\n{snapshot}"))
+    };
+    // the strip is 5 columns of which the last is reserved, so the content wraps at 4
+    assert!(
+        row_of("AGEN") < row_of("HOCU"),
+        "the split pane sits above its anchor:\n{snapshot}"
+    );
+    let separator_row = snapshot
+        .lines()
+        .position(|line| gp_line_content(line).contains("────"))
+        .unwrap_or_else(|| panic!("the split separator rendered:\n{snapshot}"));
+    assert!(
+        (row_of("AGEN")..row_of("HOCU")).contains(&separator_row),
+        "the separator sits between the two panes:\n{snapshot}"
     );
 }
 

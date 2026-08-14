@@ -429,6 +429,7 @@ pub(crate) fn plugin_thread_main(
                                         completion_tx,
                                         set_blocking: false,
                                         declaration_order: properties.declaration_order,
+                                        split: properties.split,
                                     }),
                             );
                         } else {

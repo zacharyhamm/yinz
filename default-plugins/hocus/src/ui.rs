@@ -873,17 +873,17 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         return;
     }
 
-    // The agent strip permanently owns the top third of the pane.
-    let agent_rows = (rows / 3).saturating_sub(1).max(1);
-    let agent_ruled = agent_rows > 1;
-    let body_y = 1 + agent_rows;
+    // The agent strip that used to own the top third is its own pane now
+    // (hocus-agents, split off above this one); the conversation has the whole
+    // body below the title.
+    let body_y = 1;
     let body_rows = rows.saturating_sub(body_y + 1);
     let layout = state
         .picker
         .is_none()
         .then(|| chat_layout(state, body_rows, cols));
 
-    if state.picker.is_some() || state.agents_focused {
+    if state.picker.is_some() {
         show_cursor(None);
     } else if let Some(layout) = &layout {
         // Must precede any print_*: the host reads the cursor position out of
@@ -896,24 +896,8 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         );
     }
     render_title(state, cols);
-    render_picker(
-        &state.agent_picker,
-        1,
-        agent_rows - usize::from(agent_ruled),
-        cols,
-        state.agents_focused,
-    );
-    if agent_ruled {
-        print_text_with_coordinates(
-            Text::new("─".repeat(cols)).dim_range(..),
-            0,
-            agent_rows,
-            Some(cols),
-            None,
-        );
-    }
 
-    // History and models stay below agents and leave the conversation visible.
+    // History and models take the top half and leave the conversation visible.
     if let Some(picker) = &state.picker {
         let picker_rows = (body_rows / 2).max(1);
         let ruled = picker_rows > 1;
@@ -1006,14 +990,8 @@ fn render_title(state: &State, cols: usize) {
         Ok(cfg) => cfg.model.clone(),
         Err(error) => error.model.clone(),
     };
-    let title = format!("hocus — {model}  agents");
-    let agents = title.chars().count().saturating_sub(6)..title.chars().count();
+    let title = format!("hocus — {model}");
     let text = Text::new(&title).color_range(0, ..title.chars().count().min(5));
-    let text = if state.agents_focused {
-        text.color_range(2, agents)
-    } else {
-        text.dim_range(agents)
-    };
     print_text_with_coordinates(text, 0, 0, Some(cols), None);
 
     // One slot at the right edge: what is happening now beats what is pending.
@@ -1221,9 +1199,8 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     }
 }
 
-/// The archive (one chat per row, titled by its opening question), the model
-/// list (one id per row), or the agent list (agents under the project and
-/// branch headers that group them).
+/// The archive (one chat per row, titled by its opening question) or the model
+/// list (one id per row).
 fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: bool) {
     if picker.entries.is_empty() {
         // An empty model list is the fetch still being in flight — `finish_models`
@@ -1231,7 +1208,6 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: 
         let empty = match picker.kind {
             PickerKind::Chats(_) => "No saved chats yet.",
             PickerKind::Models => "fetching models…",
-            PickerKind::Agents(_) => "no agents",
         };
         print_text_with_coordinates(Text::new(empty).dim_range(..), 0, y, Some(cols), None);
         return;
@@ -1250,10 +1226,6 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: 
         // and the host clips to `cols`, so neither is repeated here.
         let selected = active && start + index == picker.selected;
         let text = match entry.kind {
-            // A header takes no marker column: nothing can land on it, and the
-            // indentation it carries is what shows the nesting.
-            RowKind::Project => Text::new(&entry.text).color_range(0, ..),
-            RowKind::Branch => Text::new(&entry.text).color_range(3, ..),
             RowKind::Item => {
                 let line = Text::new(format!(
                     "{} {}",
@@ -1292,11 +1264,7 @@ fn help_line(state: &State) -> &'static str {
     match state.picker.as_ref().map(|picker| &picker.kind) {
         Some(PickerKind::Chats(_)) => return "<↑↓> choose  <Enter> open  <Esc> back",
         Some(PickerKind::Models) => return "<↑↓> choose  <Enter> use  <Esc> back",
-        Some(PickerKind::Agents(_)) => return "<↑↓> choose  <Enter> focus  <Esc> back",
         None => {},
-    }
-    if state.agents_focused {
-        return "<↑↓> choose  <Enter> focus  <Esc> chat";
     }
     // Tools before the stream, matching what Esc actually does when both are
     // outstanding.

@@ -284,6 +284,9 @@ plugins {
     hocus-agentd location="zellij:hocus-agentd" {
         shared true
     }
+    hocus-agents location="zellij:hocus-agents" {
+        shared true
+    }
     hocus-ask location="zellij:hocus-ask"
     hocus-store location="zellij:hocus-store" {
         shared true

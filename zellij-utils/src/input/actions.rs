@@ -763,7 +763,11 @@ fn parse_global_pane_placement(
             if size.is_zero() {
                 return Err("Global pane size must be greater than zero".to_string());
             }
-            Ok(Some(GlobalPanePlacement { edge, size }))
+            Ok(Some(GlobalPanePlacement {
+                edge,
+                size,
+                length: None,
+            }))
         },
         _ => Err("--global, --edge and --size must be specified together".to_string()),
     }

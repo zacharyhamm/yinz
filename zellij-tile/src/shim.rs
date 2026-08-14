@@ -7,6 +7,7 @@ use std::{
 use zellij_utils::data::*;
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
+pub use zellij_utils::input::layout::PercentOrFixed;
 pub use zellij_utils::plugin_api;
 use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
 use zellij_utils::plugin_api::generated_api::api::plugin_command::{
@@ -3036,6 +3037,30 @@ pub fn set_floating_pane_pinned(pane_id: PaneId, should_be_pinned: bool) {
 
 pub fn set_global_pane_placement(pane_id: PaneId, placement: GlobalPanePlacement) {
     let plugin_command = PluginCommand::SetGlobalPanePlacement(pane_id, placement);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Launch `plugin_url` as a split of this plugin's own global pane (before it towards the strip's
+/// start when `before`, with an optional share of the strip's long axis), or reveal - and focus,
+/// when `should_focus` - an existing global pane for that plugin. No-op when the calling plugin is
+/// not a global pane.
+pub fn launch_or_focus_global_pane_split(
+    plugin_url: &str,
+    config: BTreeMap<String, String>,
+    before: bool,
+    length: Option<PercentOrFixed>,
+    should_focus: bool,
+) {
+    let plugin_command = PluginCommand::LaunchOrFocusGlobalPaneSplit {
+        plugin_url: plugin_url.to_owned(),
+        config,
+        before,
+        length,
+        should_focus,
+        skip_cache: false,
+    };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

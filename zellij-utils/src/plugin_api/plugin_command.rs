@@ -76,7 +76,7 @@ pub use super::generated_api::api::{
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
-        KillSessionsResponse as ProtobufKillSessionsResponse,
+        KillSessionsResponse as ProtobufKillSessionsResponse, LaunchOrFocusGlobalPaneSplitPayload,
         ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
         ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
         LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
@@ -2108,6 +2108,30 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetGlobalPanePlacement"),
             },
+            Some(CommandName::LaunchOrFocusGlobalPaneSplit) => {
+                match protobuf_plugin_command.payload {
+                    Some(Payload::LaunchOrFocusGlobalPaneSplitPayload(payload)) => {
+                        let length = payload
+                            .length
+                            .and_then(|length| length.size_type)
+                            .map(crate::plugin_api::action::global_pane_size_from_protobuf)
+                            .transpose()?;
+                        Ok(PluginCommand::LaunchOrFocusGlobalPaneSplit {
+                            plugin_url: payload.plugin_url,
+                            config: payload
+                                .plugin_configuration
+                                .into_iter()
+                                .map(|item| (item.name, item.value))
+                                .collect(),
+                            before: payload.before,
+                            length,
+                            should_focus: payload.should_focus,
+                            skip_cache: payload.skip_cache,
+                        })
+                    },
+                    _ => Err("Mismatched payload for LaunchOrFocusGlobalPaneSplit"),
+                }
+            },
             Some(CommandName::StackPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::StackPanesPayload(stack_panes_payload)) => {
                     Ok(PluginCommand::StackPanes(
@@ -4127,6 +4151,41 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
+            PluginCommand::LaunchOrFocusGlobalPaneSplit {
+                plugin_url,
+                config,
+                before,
+                length,
+                should_focus,
+                skip_cache,
+            } => {
+                use super::generated_api::api::action::GlobalPaneSize as ProtobufGlobalPaneSize;
+                let length = length
+                    .map(|length| {
+                        crate::plugin_api::action::global_pane_size_to_protobuf(length).map(
+                            |size_type| ProtobufGlobalPaneSize {
+                                size_type: Some(size_type),
+                            },
+                        )
+                    })
+                    .transpose()?;
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::LaunchOrFocusGlobalPaneSplit as i32,
+                    payload: Some(Payload::LaunchOrFocusGlobalPaneSplitPayload(
+                        LaunchOrFocusGlobalPaneSplitPayload {
+                            plugin_url,
+                            plugin_configuration: config
+                                .into_iter()
+                                .map(|(name, value)| ContextItem { name, value })
+                                .collect(),
+                            before,
+                            length,
+                            should_focus,
+                            skip_cache,
+                        },
+                    )),
+                })
+            },
             PluginCommand::StackPanes(pane_ids) => Ok(ProtobufPluginCommand {
                 name: CommandName::StackPanes as i32,
                 payload: Some(Payload::StackPanesPayload(StackPanesPayload {
@@ -5921,6 +5980,7 @@ mod tests {
         let placement = GlobalPanePlacement {
             edge: GlobalPaneEdge::Top,
             size: PercentOrFixed::Percent(20),
+            length: None,
         };
         let original = PluginCommand::SetGlobalPanePlacement(PaneId::Terminal(9), placement);
         let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");

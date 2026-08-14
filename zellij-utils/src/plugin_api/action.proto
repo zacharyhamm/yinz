@@ -567,6 +567,7 @@ message GlobalPaneSize {
 message GlobalPanePlacement {
   GlobalPaneEdge edge = 1;
   GlobalPaneSize size = 2;
+  optional GlobalPaneSize length = 3;
 }
 
 // FloatingPaneCoordinates specifies the position and size of a floating pane
