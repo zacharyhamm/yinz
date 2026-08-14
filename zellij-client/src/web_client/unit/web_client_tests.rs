@@ -2211,6 +2211,52 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    /// A client must not be able to open a terminal socket for a
+    /// web_client_id that belongs to somebody else's session token, and the
+    /// refusal must happen during the HTTP handshake rather than after the
+    /// socket has already been upgraded.
+    #[tokio::test]
+    #[serial]
+    async fn terminal_websocket_rejects_another_clients_id_before_upgrade() {
+        let owner_token_name = "ws_owner_token";
+        let intruder_token_name = "ws_intruder_token";
+        delete_db().ok();
+        let (owner_auth, _) = create_token(Some(owner_token_name.to_string()), false)
+            .expect("Failed to create owner token");
+        let (intruder_auth, _) = create_token(Some(intruder_token_name.to_string()), false)
+            .expect("Failed to create intruder token");
+
+        let session_manager = Arc::new(MockSessionManager::new());
+        let (port, server_handle) = spawn_test_server_with_session_manager(session_manager).await;
+
+        // The owner creates a session and gets a web_client_id.
+        let owner_session_token = login_and_get_session_token(port, &owner_auth).await;
+        let owner_web_client_id = create_client_session(port, &owner_session_token).await;
+
+        // The intruder logs in separately, then tries to use the owner's id.
+        let intruder_session_token = login_and_get_session_token(port, &intruder_auth).await;
+        let terminal_ws_url = format!(
+            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            port, owner_web_client_id
+        );
+        let result = timeout(
+            Duration::from_secs(5),
+            connect_async_with_cookie(&terminal_ws_url, &intruder_session_token),
+        )
+        .await
+        .expect("Terminal WebSocket connection attempt timed out");
+
+        assert!(
+            result.is_err(),
+            "terminal WebSocket handshake must fail for a web_client_id the caller does not own"
+        );
+
+        server_handle.abort();
+        let _ = revoke_token(owner_token_name);
+        let _ = revoke_token(intruder_token_name);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     async fn connect_async_with_cookie(
         url: &str,
         session_token: &str,
