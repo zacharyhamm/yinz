@@ -1,6 +1,6 @@
 //! Unit tests for the continuous host-reply parser.
 
-use super::{schedule_forward_timeout, HostReply, PendingPartial, StdinAnsiParser};
+use super::{schedule_timeout, ForwardKind, HostReply, PendingPartial, StdinAnsiParser};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -562,7 +562,7 @@ fn open_forward_debug_asserts_on_reentry() {
 }
 
 // =====================================================================
-// `schedule_forward_timeout` — async timer, driven by paused tokio clock
+// `schedule_timeout` — async timer, driven by paused tokio clock
 // =====================================================================
 
 /// Build a paused current-thread runtime with `enable_time()`. With
@@ -584,9 +584,10 @@ fn timer_fires_after_deadline_and_closes_slot() {
 
     let captured: CapturedForward = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
-    schedule_forward_timeout(
+    schedule_timeout(
         rt.handle(),
         parser.clone(),
+        ForwardKind::Barrier,
         7,
         Duration::from_millis(500),
         move |token, bytes| {
@@ -627,9 +628,10 @@ fn timer_is_noop_when_barrier_already_closed_the_slot() {
 
     let fired: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     let fired_clone = fired.clone();
-    schedule_forward_timeout(
+    schedule_timeout(
         rt.handle(),
         parser.clone(),
+        ForwardKind::Barrier,
         11,
         Duration::from_millis(500),
         move |_, _| {
@@ -675,9 +677,10 @@ fn timer_is_noop_when_slot_holds_a_different_token() {
 
     let fired: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     let fired_clone = fired.clone();
-    schedule_forward_timeout(
+    schedule_timeout(
         rt.handle(),
         parser.clone(),
+        ForwardKind::Barrier,
         1,
         Duration::from_millis(500),
         move |_, _| {
@@ -731,9 +734,10 @@ fn timer_preserves_accumulated_reply_bytes_on_timeout() {
 
     let captured: CapturedForward = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
-    schedule_forward_timeout(
+    schedule_timeout(
         rt.handle(),
         parser.clone(),
+        ForwardKind::Barrier,
         22,
         Duration::from_millis(500),
         move |t, b| {
