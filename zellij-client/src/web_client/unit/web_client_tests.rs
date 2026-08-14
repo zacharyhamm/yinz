@@ -32,6 +32,41 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
+    /// Bind an ephemeral port, start the web server on it, and wait until it
+    /// answers. Returns the port and the task handle so the test can abort it.
+    async fn start_test_server(
+        config: Config,
+        options: Options,
+        session_manager: Arc<MockSessionManager>,
+        client_os_api_factory: Arc<MockClientOsApiFactory>,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+
+        let server_handle = tokio::spawn(async move {
+            serve_web_client(
+                config,
+                options,
+                Some(temp_config_path),
+                listener,
+                None,
+                Some(session_manager),
+                Some(client_os_api_factory),
+                addr.ip(),
+                port,
+            )
+            .await;
+        });
+
+        wait_for_server(port, Duration::from_secs(5))
+            .await
+            .expect("Server failed to start");
+
+        (port, server_handle)
+    }
+
     async fn wait_for_server(port: u16, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
         let url = format!("http://127.0.0.1:{}/info/version", port);
@@ -72,27 +107,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-
-        let server_handle = tokio::spawn(serve_web_client(
-            config,
-            options,
-            Some(temp_config_path),
-            listener,
-            None,
-            Some(session_manager),
-            Some(client_os_api_factory),
-            addr.ip(),
-            port,
-        ));
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let url = format!("http://127.0.0.1:{}/info/version", port);
 
@@ -251,29 +267,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let login_url = format!("http://127.0.0.1:{}/command/login", port);
         let login_payload = serde_json::json!({
@@ -318,29 +313,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let login_url = format!("http://127.0.0.1:{}/command/login", port);
         let login_payload = serde_json::json!({
@@ -522,29 +496,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let login_url = format!("http://127.0.0.1:{}/command/login", port);
         let login_payload = serde_json::json!({
@@ -690,29 +643,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_url = format!("http://127.0.0.1:{}/session", port);
         let response = timeout(
@@ -740,29 +672,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_url = format!("http://127.0.0.1:{}/session", port);
         let response = timeout(
@@ -802,29 +713,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
@@ -940,29 +830,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
@@ -1110,29 +979,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
@@ -1246,29 +1094,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
@@ -1903,29 +1730,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
@@ -2080,29 +1886,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
@@ -2287,27 +2072,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-
-        let server_handle = tokio::spawn(serve_web_client(
-            config,
-            options,
-            Some(temp_config_path),
-            listener,
-            None,
-            Some(session_manager),
-            Some(client_os_api_factory),
-            addr.ip(),
-            port,
-        ));
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let url = format!("http://127.0.0.1:{}/info/version", port);
 
@@ -2385,29 +2151,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
@@ -2468,30 +2213,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let rw_session_token = login_and_get_session_token(port, &rw_token).await;
         let rw_web_client_id = create_client_session(port, &rw_session_token).await;
@@ -2549,30 +2272,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &rw_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
@@ -2643,30 +2344,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let rw_session_token = login_and_get_session_token(port, &rw_token).await;
         let rw_web_client_id = create_client_session(port, &rw_session_token).await;
