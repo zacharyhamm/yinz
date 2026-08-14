@@ -73,6 +73,13 @@ pub struct PollReply {
     /// Resolved agent CWD to its repository or plain-folder definition.
     #[serde(default)]
     pub repositories: BTreeMap<String, projects::Repository>,
+    /// The terminal pane the user is looking at, if it is one.
+    ///
+    /// Here rather than on `AgentPane` because it is a fact about the session, not
+    /// about a pane, and one field costs one place to set it. Only the daemon can
+    /// answer it: a global pane hears no `PaneUpdate` of its own.
+    #[serde(default)]
+    pub focused: Option<u32>,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the

@@ -97,22 +97,34 @@ impl std::fmt::Display for SessionEnded {
 
 impl std::error::Error for SessionEnded {}
 
-/// Read the one reply a cli-client request gets.
+/// Read the reply a cli-client request gets.
 ///
 /// `Log` is success and `LogError` is the reason it failed — the same protocol
 /// `zellij action` reads, which is why both directions of a warp can speak it.
+/// A raw session connection is also registered as a regular client, so it can
+/// receive an unrelated input-unblock broadcast before its action-specific
+/// reply. That control message says nothing about the warp and is skipped.
 fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Result<String> {
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
-    match receiver.recv_server_msg() {
-        Some((ServerToClientMsg::Log { lines }, _)) => Ok(lines.join(" ")),
-        Some((ServerToClientMsg::LogError { lines }, _)) => Err(anyhow!("{}", lines.join(" "))),
-        Some((ServerToClientMsg::Exit { .. }, _)) => Err(SessionEnded.into()),
-        Some((other, _)) => Err(anyhow!(
-            "unexpected reply from the other session: {other:?}"
-        )),
-        None => Err(anyhow!(
-            "the other session closed the connection without answering"
-        )),
+    loop {
+        match receiver.recv_server_msg() {
+            Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
+            Some((ServerToClientMsg::Log { lines }, _)) => return Ok(lines.join(" ")),
+            Some((ServerToClientMsg::LogError { lines }, _)) => {
+                return Err(anyhow!("{}", lines.join(" ")))
+            },
+            Some((ServerToClientMsg::Exit { .. }, _)) => return Err(SessionEnded.into()),
+            Some((other, _)) => {
+                return Err(anyhow!(
+                    "unexpected reply from the other session: {other:?}"
+                ))
+            },
+            None => {
+                return Err(anyhow!(
+                    "the other session closed the connection without answering"
+                ))
+            },
+        }
     }
 }
 

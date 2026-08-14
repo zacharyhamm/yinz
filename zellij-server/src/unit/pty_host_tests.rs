@@ -973,6 +973,11 @@ fn a_release_detaches_without_killing_the_child() {
     let (child_pid, master) = host.spawn(sh("sleep 60"));
 
     assert!(query_status(&control_socket).attached);
+    // Armed before the release, not after: macOS refuses `setsockopt` on a
+    // socketpair whose peer has already closed.
+    host.control
+        .set_read_timeout(Some(TEST_TIMEOUT))
+        .expect("set_read_timeout failed");
     host.send(&ServerToHostMsg::Release);
     wait_until(
         || !query_status(&control_socket).attached,
@@ -989,9 +994,6 @@ fn a_release_detaches_without_killing_the_child() {
     // Asserted by reading rather than writing: a write to a socket whose peer has
     // just closed succeeds once before `EPIPE`, whereas the EOF is unambiguous
     // the moment the FIN lands.
-    host.control
-        .set_read_timeout(Some(TEST_TIMEOUT))
-        .expect("set_read_timeout failed");
     assert!(
         matches!(read_msg::<HostToServerMsg, _>(&mut host.control), Ok(None)),
         "a released supervisor should have closed the old control channel"

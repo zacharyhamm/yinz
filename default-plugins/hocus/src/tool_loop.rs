@@ -522,7 +522,10 @@ impl State {
     }
 
     pub(crate) fn project_assign(&mut self, args: &tools::Args) -> String {
-        let tab_id = match args.tab_id.or_else(|| {
+        // The focused agent's tab before the active one: hocus is a global pane, so
+        // "the tab I am in" is a question it cannot answer about itself, and the
+        // agent the user was last looking at is the tab they mean.
+        let tab_id = match args.tab_id.or_else(|| self.focused_tab()).or_else(|| {
             self.tabs
                 .iter()
                 .find(|tab| tab.active)
@@ -769,6 +772,46 @@ impl State {
             .map(String::as_str)
     }
 
+    /// Take note of which pane the user is looking at.
+    ///
+    /// Only an agent pane is remembered. Anything else — the sidebar, a shell, an
+    /// editor — leaves the last agent standing, which is what makes the active
+    /// project survive the user coming here to ask about it.
+    pub(crate) fn note_focus(&mut self, focused: Option<u32>) {
+        if focused.is_some_and(|pane_id| self.is_agent(pane_id)) {
+            self.last_focused_agent = focused;
+        }
+        // A pane that closed names nothing. Same rule as the maps in `set_panes`.
+        self.last_focused_agent = self
+            .last_focused_agent
+            .filter(|pane_id| self.panes.iter().any(|pane| pane.pane_id == *pane_id));
+    }
+
+    /// The tab of the agent pane the user last had focused.
+    fn focused_tab(&self) -> Option<usize> {
+        let pane_id = self.last_focused_agent?;
+        let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+        pane.tab.as_ref().map(|(tab_id, _)| *tab_id)
+    }
+
+    /// The project of the agent pane the user last had focused.
+    ///
+    /// The tab's assignment first and the pane's folder second, so that the
+    /// precedence is the one `tab_project` already sets: what the user said by hand
+    /// outranks what was worked out from a checkout.
+    fn focused_project(&self) -> Option<String> {
+        let pane_id = self.last_focused_agent?;
+        let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+        pane.tab
+            .as_ref()
+            .and_then(|(tab_id, _)| self.tab_projects.get(tab_id))
+            .cloned()
+            .or_else(|| {
+                self.project_for_cwd(pane.cwd.as_deref()?)
+                    .map(|project| project.name.clone())
+            })
+    }
+
     /// Pane id to project name, for each agent whose folder a project owns.
     pub(crate) fn pane_projects(&self) -> BTreeMap<u32, String> {
         self.panes
@@ -857,19 +900,32 @@ impl State {
         }
     }
 
-    /// Work out the project of each tab again, and of the active tab with it.
+    /// Work out the project of each tab again, and the active project with it.
+    ///
+    /// The one place the active project is derived. The focused agent decides it;
+    /// the active tab is the fallback for a session where nobody has focused an
+    /// agent yet, and for a tab the user assigned by hand.
     pub(crate) fn refresh_tab_projects(&mut self) {
         let owners = self.pane_projects();
         self.auto_tab_projects = agents::tab_projects(&self.panes, &self.manual_kinds, &owners);
         // A tab the user assigned is left alone, so the two maps stay disjoint.
         self.auto_tab_projects
             .retain(|tab_id, _| !self.tab_projects.contains_key(tab_id));
-        self.active_project = self
-            .tabs
-            .iter()
-            .find(|tab| tab.active)
-            .and_then(|tab| self.tab_project(tab.tab_id))
-            .map(str::to_owned);
+        // A closed tab is still named by the panes of the last snapshot, so without
+        // this it comes straight back. Only when we have heard of any tab at all:
+        // an empty list is "nobody has told us" — hocus is a global pane and an
+        // older host sends it no `TabUpdate` — and is not the same as "no tabs".
+        if !self.tabs.is_empty() {
+            self.auto_tab_projects
+                .retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
+        }
+        self.active_project = self.focused_project().or_else(|| {
+            self.tabs
+                .iter()
+                .find(|tab| tab.active)
+                .and_then(|tab| self.tab_project(tab.tab_id))
+                .map(str::to_owned)
+        });
     }
 
     /// The snapshot every agent tool works from. Split out so the host calls in
@@ -1091,9 +1147,15 @@ impl State {
     }
 
     /// Merge an event-fed daemon snapshot.
-    pub(crate) fn apply_poll(&mut self, panes: Vec<agents::AgentPane>, activity: agents::Activity) {
+    pub(crate) fn apply_poll(
+        &mut self,
+        panes: Vec<agents::AgentPane>,
+        activity: agents::Activity,
+        focused: Option<u32>,
+    ) {
         self.activity = activity;
         let kinds_pruned = self.set_panes(panes);
+        self.note_focus(focused);
         // Project discovery used to run here off the same snapshot. It lives in
         // hocus-store now, which receives that snapshot directly and pushes the
         // registry back; `refresh_tab_projects` still runs against our copy.

@@ -1,21 +1,15 @@
 use super::*;
 
 use nix::pty::openpty;
-use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
 use nix::sys::stat::fstat;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, IntoRawFd};
 use std::time::{Duration, Instant};
 
 fn stream_pair() -> (UnixStream, UnixStream) {
-    let (a, b) = socketpair(
-        AddressFamily::Unix,
-        SockType::Stream,
-        None,
-        SockFlag::SOCK_CLOEXEC,
-    )
-    .expect("socketpair failed");
-    (UnixStream::from(a), UnixStream::from(b))
+    // `UnixStream::pair` sets FD_CLOEXEC on every platform, unlike
+    // `SockFlag::SOCK_CLOEXEC`, which does not exist on macOS.
+    UnixStream::pair().expect("socketpair failed")
 }
 
 fn is_cloexec(fd: RawFd) -> bool {

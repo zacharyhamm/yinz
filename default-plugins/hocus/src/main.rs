@@ -336,7 +336,16 @@ pub struct State {
     /// `active_project`. Last writer wins, deliberately: everyone attached
     /// shares the one conversation, so they share its project too.
     tabs: Vec<TabInfo>,
-    /// Derived from the active tab in `tabs`.
+    /// The agent pane the user last had focused, as the daemon reports focus.
+    ///
+    /// Sticky on purpose: focus lands on the sidebar the moment anyone types into
+    /// it, and on a shell or an editor for half the day. The question a project
+    /// answers is "what are you working on", and that is the last agent you looked
+    /// at, not the pane your cursor happens to be in. Cleared only when the pane
+    /// itself goes away.
+    last_focused_agent: Option<u32>,
+    /// The project of `last_focused_agent`, falling back to the active tab in
+    /// `tabs`.
     active_project: Option<String>,
 }
 
@@ -407,6 +416,7 @@ impl Default for State {
             tab_projects: BTreeMap::new(),
             auto_tab_projects: BTreeMap::new(),
             tabs: Vec::new(),
+            last_focused_agent: None,
             active_project: None,
         };
         // In a plugin this waits for `load`, which is where the host is ready to
@@ -560,7 +570,7 @@ impl ZellijPlugin for State {
         self.agent_seq = seq;
         self.repositories = reply.repositories;
         if let Some(panes) = reply.panes {
-            self.apply_poll(panes, reply.activity);
+            self.apply_poll(panes, reply.activity, reply.focused);
         }
         // This also answers the branch refresh the agents pane asks for.
         self.push_strip(false);
@@ -2355,6 +2365,7 @@ mod tests {
                             on_branch("/work/trees/topic", "topic"),
                         ),
                     ]),
+                    focused: None,
                 })
                 .expect("serialize"),
             ),
@@ -3058,7 +3069,22 @@ mod tests {
         panes: Vec<agents::AgentPane>,
         probe: fn(&str) -> projects::Repository,
     ) {
-        state.apply_poll(panes.clone(), agents::Activity::new());
+        poll_focus(state, panes, probe, None)
+    }
+
+    /// The same turn, with the pane the daemon says is focused.
+    fn poll_focused(state: &mut State, panes: Vec<agents::AgentPane>, focused: Option<u32>) {
+        poll_focus(state, panes, checkout, focused)
+    }
+
+    /// One daemon snapshot, in the order `pipe` applies one: the folders it
+    /// resolved, then the panes, then whatever the store made of them.
+    fn poll_focus(
+        state: &mut State,
+        panes: Vec<agents::AgentPane>,
+        probe: fn(&str) -> projects::Repository,
+        focused: Option<u32>,
+    ) {
         let repositories: Vec<projects::Repository> = panes
             .iter()
             .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
@@ -3068,6 +3094,7 @@ mod tests {
             .iter()
             .map(|repository| (repository.root.clone(), repository.clone()))
             .collect();
+        state.apply_poll(panes, agents::Activity::new(), focused);
         let mut registry = state.projects.clone();
         if projects::discover(&mut registry, &repositories).changed() {
             give_projects(state, registry);
@@ -3184,6 +3211,81 @@ mod tests {
             state.auto_tab_projects.is_empty(),
             "an assigned tab is left alone",
         );
+    }
+
+    /// hocus is a global pane, so it may never learn which tab is active. The
+    /// focused agent is the answer either way.
+    #[test]
+    fn the_focused_agent_names_the_project_with_no_tabs_at_all() {
+        let mut state = idle_state();
+        poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+
+        assert!(state.tabs.is_empty(), "no TabUpdate ever arrived");
+        assert_eq!(state.active_project.as_deref(), Some("hocus"));
+    }
+
+    #[test]
+    fn focusing_another_agent_moves_the_active_project() {
+        let mut state = idle_state();
+        let panes = vec![
+            agent_in(3, "/work/hocus", 9),
+            agent_in(4, "/other/pocus", 9),
+        ];
+        poll_focused(&mut state, panes.clone(), Some(3));
+        assert_eq!(state.active_project.as_deref(), Some("hocus"));
+
+        poll_focused(&mut state, panes, Some(4));
+        assert_eq!(state.active_project.as_deref(), Some("pocus"));
+    }
+
+    /// The sidebar, a shell, an editor — none of them is what the user is working
+    /// on, and the one they asked about must survive them.
+    #[test]
+    fn focus_on_a_pane_with_no_agent_leaves_the_project_alone() {
+        let mut state = idle_state();
+        let shell = agents::AgentPane {
+            title: "zsh".to_owned(),
+            command: Some("zsh".to_owned()),
+            ..agent_in(4, "/work/hocus", 9)
+        };
+        let panes = vec![agent_in(3, "/work/hocus", 9), shell];
+        poll_focused(&mut state, panes.clone(), Some(3));
+        assert_eq!(state.active_project.as_deref(), Some("hocus"));
+
+        poll_focused(&mut state, panes.clone(), Some(4));
+        assert_eq!(state.active_project.as_deref(), Some("hocus"), "the shell");
+
+        poll_focused(&mut state, panes, None);
+        assert_eq!(
+            state.active_project.as_deref(),
+            Some("hocus"),
+            "the sidebar"
+        );
+    }
+
+    #[test]
+    fn the_focused_agent_closing_drops_back_to_the_tab() {
+        let mut state = state_with_tab(9);
+        poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+        assert_eq!(state.last_focused_agent, Some(3));
+
+        poll_focused(&mut state, vec![agent_in(4, "/other/pocus", 9)], None);
+        assert_eq!(state.last_focused_agent, None);
+        assert_eq!(state.active_project.as_deref(), Some("pocus"), "by tab");
+    }
+
+    /// Same precedence `tab_project` sets: what the user said by hand outranks
+    /// what was worked out from a checkout.
+    #[test]
+    fn an_explicit_assignment_wins_over_the_focused_agents_folder() {
+        let mut state = state_with_tab(9);
+        state.run_local(&agent_call(
+            "project_assign",
+            r#"{"name":"named","root":"/work/named"}"#,
+        ));
+        poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+
+        assert_eq!(state.active_project.as_deref(), Some("named"));
     }
 
     #[test]
@@ -3961,8 +4063,8 @@ mod tests {
         let mut panes = panes_with_agent();
         panes[0].status = agents::AgentStatus::Exited;
 
-        state.apply_poll(panes, agents::Activity::new());
-        state.apply_poll(Vec::new(), agents::Activity::new());
+        state.apply_poll(panes, agents::Activity::new(), None);
+        state.apply_poll(Vec::new(), agents::Activity::new(), None);
 
         assert!(state.messages.is_empty());
     }
@@ -4021,12 +4123,14 @@ mod tests {
                     branch: Some("topic".to_owned()),
                 },
             )]),
+            focused: Some(7),
         };
         let json = serde_json::to_string(&reply).expect("serialize");
         let back: PollReply = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.panes, reply.panes);
         assert_eq!(back.activity, reply.activity);
         assert_eq!(back.repositories, reply.repositories);
+        assert_eq!(back.focused, reply.focused);
     }
 
     /// An empty snapshot carrying `seq`, as hocus-agentd sends it.
@@ -4040,6 +4144,7 @@ mod tests {
                     activity: agents::Activity::new(),
                     manual_kinds: BTreeMap::new(),
                     repositories: BTreeMap::new(),
+                    focused: None,
                 })
                 .expect("serialize"),
             ),
