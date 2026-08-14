@@ -120,7 +120,7 @@ impl From<std::io::Error> for RemoteClientError {
     }
 }
 
-use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
+use crate::stdin_ansi_parser::{AnsiStdinInstruction, ForwardKind, StdinAnsiParser, SyncOutput};
 use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
     os_input_output::ClientOsApi, stdin_handler::stdin_loop,
@@ -830,68 +830,31 @@ pub fn start_client(
             ClientInstruction::ForwardQueryToHost {
                 token,
                 query_bytes,
-                resolve_async: true,
+                resolve_async,
             } => {
-                {
-                    let mut stdin_ansi_parser = stdin_ansi_parser.lock().unwrap();
-                    if let Some((stale_token, stale_reply_bytes)) =
-                        stdin_ansi_parser.take_active_clipboard_forward()
-                    {
-                        log::warn!(
-                            "clipboard forward slot for token {} was still open when token {} was \
-                             dispatched ({} accumulated bytes); closing it out",
-                            stale_token,
-                            token,
-                            stale_reply_bytes.len(),
-                        );
-                        let _ = send_input_instructions.send(
-                            InputInstruction::ForwardedReplyFromHostComplete {
-                                token: stale_token,
-                                reply_bytes: stale_reply_bytes,
-                            },
-                        );
-                    }
-                    stdin_ansi_parser.open_clipboard_forward(token);
-                }
-                let runtime = stdin_ansi_parser::forward_timeout_runtime();
-                let parser_for_timer = stdin_ansi_parser.clone();
-                let sender_for_timer = send_input_instructions.clone();
-                stdin_ansi_parser::schedule_clipboard_forward_timeout(
-                    runtime.handle(),
-                    parser_for_timer,
-                    token,
-                    std::time::Duration::from_millis(
-                        stdin_ansi_parser::CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS,
-                    ),
-                    move |token, reply_bytes| {
-                        let _ = sender_for_timer.send(
-                            InputInstruction::ForwardedReplyFromHostComplete { token, reply_bytes },
-                        );
-                    },
-                );
-                let mut out = os_input.get_stdout_writer();
-                let _ = out.write_all(&query_bytes);
-                let _ = out.flush();
-            },
-            ClientInstruction::ForwardQueryToHost {
-                token, query_bytes, ..
-            } => {
-                // 1. Open a forwarding window on the parser so any reply
-                //    events that arrive before the barrier are captured.
-                //    A slot may still be open here: the server's backstop
-                //    timeout can give up on the previous token and dispatch
-                //    this one before this client's per-slot timer got to
-                //    run. Hand that slot over instead of clobbering it.
+                let kind = if resolve_async {
+                    ForwardKind::Clipboard
+                } else {
+                    ForwardKind::Barrier
+                };
+
+                // 1. Open a forwarding window on the parser so replies that
+                //    arrive before the closing signal are captured. A slot
+                //    may still be open: the server's backstop timeout can
+                //    give up on the previous token and dispatch this one
+                //    before this client's per-slot timer got to run. Hand
+                //    that slot over instead of clobbering it.
                 let stale_forward = {
-                    let mut stdin_ansi_parser = stdin_ansi_parser.lock().unwrap();
-                    let stale_forward = stdin_ansi_parser.take_active_forward();
-                    stdin_ansi_parser.open_forward(token);
+                    let mut parser = stdin_ansi_parser.lock().unwrap();
+                    let stale_forward = parser.take_active(kind);
+                    parser.open(kind, token);
                     stale_forward
                 };
                 if let Some((stale_token, stale_reply_bytes)) = stale_forward {
                     log::warn!(
-                        "forward slot for token {} was still open when token {} was dispatched \
+                        "{} slot for token {} was still open when token {} was dispatched \
                          ({} accumulated bytes); closing it out",
+                        kind.label(),
                         stale_token,
                         token,
                         stale_reply_bytes.len(),
@@ -903,33 +866,35 @@ pub fn start_client(
                         },
                     );
                 }
-                // 2. Spawn a per-forward timer on the dedicated async
-                //    runtime. When the deadline fires, the task closes
-                //    the slot (if it's still open for this token) and
-                //    relays `ForwardedReplyFromHostComplete` so the
-                //    server releases `forward_in_flight` and dispatches
-                //    the next queued forward.
+
+                // 2. Arm a per-forward deadline on the dedicated runtime.
+                //    When it fires, the task closes the slot (if it is
+                //    still open for this token) and relays
+                //    `ForwardedReplyFromHostComplete` so the server
+                //    releases `forward_in_flight` and dispatches the next
+                //    queued forward.
                 let runtime = stdin_ansi_parser::forward_timeout_runtime();
                 let parser_for_timer = stdin_ansi_parser.clone();
                 let sender_for_timer = send_input_instructions.clone();
-                stdin_ansi_parser::schedule_forward_timeout(
+                stdin_ansi_parser::schedule_timeout(
                     runtime.handle(),
                     parser_for_timer,
+                    kind,
                     token,
-                    std::time::Duration::from_millis(500),
+                    kind.timeout(),
                     move |token, reply_bytes| {
                         let _ = sender_for_timer.send(
                             InputInstruction::ForwardedReplyFromHostComplete { token, reply_bytes },
                         );
                     },
                 );
-                // 3. Write the query + Primary-DA barrier in a single
-                //    write_all. The barrier closes the window on the
-                //    parser side when its reply arrives — the timer
-                //    task's eventual wake-up finds an empty slot for
-                //    this token and no-ops.
+
+                // 3. Write the query, plus whatever provokes the closing
+                //    reply, in a single write_all. When that reply arrives
+                //    it closes the window parser-side, and the timer's
+                //    eventual wake-up finds an empty slot and no-ops.
                 let mut blob = query_bytes;
-                blob.extend_from_slice(b"\x1b[c");
+                blob.extend_from_slice(kind.barrier_suffix());
                 let mut out = os_input.get_stdout_writer();
                 let _ = out.write_all(&blob);
                 let _ = out.flush();

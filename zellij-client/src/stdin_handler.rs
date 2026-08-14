@@ -90,15 +90,12 @@ pub(crate) fn stdin_loop(
                                 InputInstruction::AnsiStdinInstructions(parse_output.replies),
                             );
                         }
-                        if let Some((token, reply_bytes)) = parse_output.completed_forward {
-                            let _ = send_input_instructions.send(
-                                InputInstruction::ForwardedReplyFromHostComplete {
-                                    token,
-                                    reply_bytes,
-                                },
-                            );
-                        }
-                        if let Some((token, reply_bytes)) = parse_output.completed_clipboard_forward
+                        // Either kind of forwarding window may have closed on
+                        // this chunk; both relay the same completion.
+                        for (token, reply_bytes) in parse_output
+                            .completed_forward
+                            .into_iter()
+                            .chain(parse_output.completed_clipboard_forward)
                         {
                             let _ = send_input_instructions.send(
                                 InputInstruction::ForwardedReplyFromHostComplete {

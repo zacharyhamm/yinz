@@ -194,6 +194,54 @@ pub struct ClipboardForwardSlot {
 }
 
 pub const CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS: u64 = 30_000;
+pub const CLIENT_BARRIER_FORWARD_TIMEOUT_MS: u64 = 500;
+
+/// Which of the two forwarding mechanisms a query uses.
+///
+/// The client can hold one window open per kind at a time, and they close
+/// on different signals, so the slots themselves are separate. What they do
+/// share is the orchestration around them — take over any stale slot, open
+/// a new one, arm a deadline, write the query — which is what this enum
+/// parameterises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardKind {
+    /// Closed by the Primary-DA reply acting as a serializing barrier,
+    /// accumulating every reply seen up to that point.
+    Barrier,
+    /// Closed by a single OSC 52 reply, or by any user input (the host
+    /// evidently isn't going to answer). Carries no accumulated bytes.
+    Clipboard,
+}
+
+impl ForwardKind {
+    /// How long to wait before giving up on the host and releasing the
+    /// server's in-flight slot.
+    pub fn timeout(&self) -> std::time::Duration {
+        let ms = match self {
+            ForwardKind::Barrier => CLIENT_BARRIER_FORWARD_TIMEOUT_MS,
+            ForwardKind::Clipboard => CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS,
+        };
+        std::time::Duration::from_millis(ms)
+    }
+
+    /// Bytes appended to the query to provoke the closing reply. The
+    /// clipboard kind is closed by the OSC 52 answer itself, so it needs
+    /// nothing extra.
+    pub fn barrier_suffix(&self) -> &'static [u8] {
+        match self {
+            ForwardKind::Barrier => b"\x1b[c",
+            ForwardKind::Clipboard => b"",
+        }
+    }
+
+    /// Human-readable name, used when reporting a slot we had to take over.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ForwardKind::Barrier => "forward",
+            ForwardKind::Clipboard => "clipboard forward",
+        }
+    }
+}
 
 /// Return value of `feed()`.
 #[derive(Debug, Clone, Default)]
@@ -401,6 +449,32 @@ impl StdinAnsiParser {
         self.active_forward
             .take()
             .map(|slot| (slot.token, slot.reply_bytes))
+    }
+
+    /// Open a forwarding window of `kind` for `token`.
+    pub fn open(&mut self, kind: ForwardKind, token: u32) {
+        match kind {
+            ForwardKind::Barrier => self.open_forward(token),
+            ForwardKind::Clipboard => self.open_clipboard_forward(token),
+        }
+    }
+
+    /// Close the `kind` window if it is still open for `token`, returning
+    /// whatever it accumulated. Token-guarded, so a timer that fires after
+    /// the window already closed finds nothing and does nothing.
+    pub fn close_on_timeout(&mut self, kind: ForwardKind, token: u32) -> Option<(u32, Vec<u8>)> {
+        match kind {
+            ForwardKind::Barrier => self.close_forward_on_timeout(token),
+            ForwardKind::Clipboard => self.close_clipboard_forward_on_timeout(token),
+        }
+    }
+
+    /// Close whatever `kind` window is open, whichever token it belongs to.
+    pub fn take_active(&mut self, kind: ForwardKind) -> Option<(u32, Vec<u8>)> {
+        match kind {
+            ForwardKind::Barrier => self.take_active_forward(),
+            ForwardKind::Clipboard => self.take_active_clipboard_forward(),
+        }
     }
 
     pub fn open_clipboard_forward(&mut self, token: u32) {
@@ -928,9 +1002,10 @@ pub fn forward_timeout_runtime() -> &'static Arc<tokio::runtime::Runtime> {
 /// Extracted as a free function so tests can drive it against a
 /// `tokio::time::pause()`-backed paused runtime without instantiating
 /// the full client.
-pub fn schedule_forward_timeout<F>(
+pub fn schedule_timeout<F>(
     runtime: &tokio::runtime::Handle,
     parser: Arc<Mutex<StdinAnsiParser>>,
+    kind: ForwardKind,
     token: u32,
     deadline: std::time::Duration,
     on_timeout: F,
@@ -939,28 +1014,7 @@ pub fn schedule_forward_timeout<F>(
 {
     runtime.spawn(async move {
         tokio::time::sleep(deadline).await;
-        let payload = parser.lock().unwrap().close_forward_on_timeout(token);
-        if let Some((t, bytes)) = payload {
-            on_timeout(t, bytes);
-        }
-    });
-}
-
-pub fn schedule_clipboard_forward_timeout<F>(
-    runtime: &tokio::runtime::Handle,
-    parser: Arc<Mutex<StdinAnsiParser>>,
-    token: u32,
-    deadline: std::time::Duration,
-    on_timeout: F,
-) where
-    F: FnOnce(u32, Vec<u8>) + Send + 'static,
-{
-    runtime.spawn(async move {
-        tokio::time::sleep(deadline).await;
-        let payload = parser
-            .lock()
-            .unwrap()
-            .close_clipboard_forward_on_timeout(token);
+        let payload = parser.lock().unwrap().close_on_timeout(kind, token);
         if let Some((t, bytes)) = payload {
             on_timeout(t, bytes);
         }
