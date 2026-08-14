@@ -72,6 +72,7 @@ fn build_tls_config(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_web_client(
     config: Config,
     config_options: Options,
