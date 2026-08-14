@@ -24,15 +24,33 @@ const GIT_RETRY_SECONDS: f64 = 30.0;
 /// blocking round-trip, and a pane that has none now will still have none next
 /// tick, so there is no reason to pay for them all at once.
 const CWD_REPAIRS_PER_TICK: usize = 4;
+/// How many panes one heartbeat will ask the host the running command of.
+///
+/// The same round-trip cost as `CWD_REPAIRS_PER_TICK`, and the same reason for a
+/// cap. Unlike a folder, though, a command that is right now can be wrong later,
+/// so this budget is spent on a rotation rather than only on the panes we know
+/// nothing about — see `repair_commands_with`.
+const COMMAND_REPAIRS_PER_TICK: usize = 4;
 
 #[derive(Default)]
 struct State {
     /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
     /// hocus stays authoritative; this is only an input to `classify`.
     manual_kinds: BTreeMap<u32, String>,
-    /// The event-fed terminal-pane snapshot. `None` means the startup scan could
-    /// not find the current session yet.
+    /// The event-fed terminal-pane snapshot. `None` means nothing has told us
+    /// about a pane yet.
     panes: Option<Vec<agents::AgentPane>>,
+    /// Whether the startup scan has found the current session and run. Kept
+    /// apart from `panes` because a manifest fills those without answering the
+    /// one question the scan exists for — see `needs_bootstrap`.
+    bootstrapped: bool,
+    /// Where the rotating command re-ask left off. See `repair_commands_with`.
+    command_cursor: usize,
+    /// Panes seen running an agent, and which one. See `AgentPane::detected`.
+    latched: BTreeMap<u32, String>,
+    /// Latches a non-foreground report has proposed dropping, waiting on a
+    /// direct ask to confirm. See `on_command`.
+    pending_release: BTreeSet<u32>,
     manifest: PaneManifest,
     tabs: Vec<TabInfo>,
     /// The terminal pane the user is looking at. Passed on rather than acted on:
@@ -106,15 +124,8 @@ impl ZellijPlugin for State {
                 self.rebuild_panes();
                 self.publish();
             },
-            Event::CommandChanged(PaneId::Terminal(id), command, _, _) => {
-                let command = (!command.is_empty()).then(|| command.join(" "));
-                if let Some(command) = &command {
-                    self.commands.insert(id, command.clone());
-                } else {
-                    self.commands.remove(&id);
-                }
-                self.update_pane(id, |pane| pane.command = command);
-                self.resolve_repositories();
+            Event::CommandChanged(PaneId::Terminal(id), command, is_foreground, _) => {
+                self.on_command(id, command, is_foreground);
                 self.publish();
             },
             Event::CwdChanged(PaneId::Terminal(id), cwd, _) => {
@@ -133,6 +144,7 @@ impl ZellijPlugin for State {
                     self.bootstrap();
                 }
                 self.observe_activity();
+                self.repair_commands();
                 self.repair_cwds();
                 self.expire_probe_backoff(elapsed);
                 self.git_refresh_elapsed += elapsed;
@@ -192,8 +204,15 @@ impl State {
     /// the end of it — the one scan never ran again, and every pane that
     /// predated the daemon stayed without a folder, so without a project, for
     /// the life of the session.
+    ///
+    /// This asks whether the scan *succeeded*, not whether we hold any panes.
+    /// Asking `self.panes.is_none()` meant a `PaneUpdate` — which arrives long
+    /// before the first heartbeat — filled `panes` and cancelled the retry, and
+    /// the manifest alone says only what a pane was *launched* with. So the
+    /// panes that most need the scan, the ones that predate the daemon, were
+    /// exactly the ones that never got it.
     fn needs_bootstrap(&self) -> bool {
-        self.panes.is_none()
+        !self.bootstrapped
     }
 
     fn bootstrap(&mut self) {
@@ -201,6 +220,7 @@ impl State {
             return;
         };
         self.focused = focused;
+        self.bootstrapped = true;
         for pane in &panes {
             if let Some(command) = &pane.command {
                 self.commands.insert(pane.pane_id, command.clone());
@@ -209,8 +229,17 @@ impl State {
                 self.record_cwd(pane.pane_id, &cwd);
             }
         }
+        // Now that the retry really happens, this can run after a manifest has
+        // already arrived — and the manifest, not this scan, is the live answer
+        // to which panes exist. What the scan alone can see is the running
+        // command and the folder, and those are already folded in above.
+        if self.panes.is_some() {
+            self.rebuild_panes();
+            return;
+        }
         self.panes = Some(panes);
         self.rejoin_cwds();
+        self.settle_latches();
         self.resolve_repositories();
     }
 
@@ -238,8 +267,91 @@ impl State {
         }
     }
 
+    /// What the host says a pane is running now.
+    ///
+    /// The command is recorded whatever `is_foreground` says, and that is
+    /// deliberate. A pane launched *as* a command — a layout `command="claude"` —
+    /// is its own foreground process, so `get_foreground_cmds` skips it and the
+    /// host reports its argv through the sysinfo fallback with the flag false.
+    /// Gating on the flag would unclassify every agent started that way.
+    ///
+    /// What the flag decides is only this: with nothing holding the tty
+    /// foreground, a command that names no agent means the agent this pane was
+    /// running has finished. Even that is a proposal rather than a verdict — a
+    /// `tcgetpgrp` that momentarily answers nothing looks exactly the same — so
+    /// the heartbeat confirms it with a direct ask before the latch goes.
+    fn on_command(&mut self, id: u32, command: Vec<String>, is_foreground: bool) {
+        let command = (!command.is_empty()).then(|| command.join(" "));
+        match &command {
+            Some(command) => {
+                self.commands.insert(id, command.clone());
+            },
+            None => {
+                self.commands.remove(&id);
+            },
+        }
+        let still_an_agent = command
+            .as_deref()
+            .and_then(agents::kind_from_command)
+            .is_some();
+        if !is_foreground && !still_an_agent && self.latched.contains_key(&id) {
+            self.pending_release.insert(id);
+        }
+        self.update_pane(id, |pane| pane.command = command);
+        self.settle_latches();
+        self.resolve_repositories();
+    }
+
+    /// Note every pane that is running an agent right now, and write what we
+    /// hold onto the panes.
+    ///
+    /// Latching on the *command* alone is what keeps the no-false-positive
+    /// guarantee: a pane can only be remembered as a kind it demonstrably ran. A
+    /// title that names an agent stays exactly as transient as it is today.
+    fn settle_latches(&mut self) {
+        let seen: Vec<(u32, String)> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter_map(|pane| {
+                let kind = agents::kind_from_command(pane.command.as_deref()?)?;
+                Some((pane.pane_id, kind.to_owned()))
+            })
+            .collect();
+        for (pane_id, kind) in seen {
+            self.latched.insert(pane_id, kind);
+            self.pending_release.remove(&pane_id);
+        }
+        let latched = self.latched.clone();
+        for pane in self.panes.iter_mut().flatten() {
+            pane.detected = latched.get(&pane.pane_id).cloned();
+        }
+    }
+
+    /// Put the commands we know onto the panes we hold, the way `rejoin_cwds`
+    /// does for folders.
+    fn rejoin_commands(&mut self) {
+        let commands = self.commands.clone();
+        for pane in self.panes.iter_mut().flatten() {
+            // Only ever set, never cleared — a pane we were told nothing about
+            // keeps whatever the manifest said it was launched with.
+            if let Some(command) = commands.get(&pane.pane_id) {
+                pane.command = Some(command.clone());
+            }
+        }
+    }
+
     fn rebuild_panes(&mut self) {
         self.focused = focused_pane(&self.manifest, &self.tabs);
+        // Read before `self.panes` is replaced below — it is what tells a re-run
+        // pane from one that was running all along.
+        let was_running: BTreeSet<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| pane.status == agents::AgentStatus::Running)
+            .map(|pane| pane.pane_id)
+            .collect();
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
         for pane in &mut panes {
             if let Some(command) = self.commands.get(&pane.pane_id) {
@@ -250,6 +362,22 @@ impl State {
             .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
         self.cwds
             .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
+        // A pane that closes stops being an agent because it stops being in the
+        // snapshot — the same rule as the two maps above, which is what keeps
+        // the latch from being one more thing that can go stale.
+        self.latched
+            .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
+        self.pending_release
+            .retain(|id| panes.iter().any(|pane| pane.pane_id == *id));
+        // A pane that has come back to life is running a new process, and has to
+        // earn its latch again rather than inherit the dead one's. `settle_latches`
+        // below re-earns it in the same breath if it really is running an agent.
+        for pane in &panes {
+            if pane.status == agents::AgentStatus::Running && !was_running.contains(&pane.pane_id) {
+                self.latched.remove(&pane.pane_id);
+                self.pending_release.remove(&pane.pane_id);
+            }
+        }
         // Anything the manifest itself carries is news, and worth taking before
         // the rejoin below writes what we already knew back over it.
         let reported: Vec<(u32, String)> = panes
@@ -261,6 +389,7 @@ impl State {
             self.record_cwd(pane_id, &cwd);
         }
         self.rejoin_cwds();
+        self.settle_latches();
         self.resolve_repositories();
     }
 
@@ -272,6 +401,88 @@ impl State {
     /// pane whose folder never arrived from being without one for good.
     fn repair_cwds(&mut self) {
         self.repair_cwds_with(poll::pane_cwd);
+    }
+
+    /// Ask the host directly what some panes are running.
+    ///
+    /// `CommandChanged` is the only other source, and the ticker behind it looks
+    /// only at panes that produced output since its last pass
+    /// (`pane_activity_flags` in `Pty::update_and_report_cwds`). An agent sitting
+    /// silent at its prompt produces none, so a command that never arrived never
+    /// arrives, and one that went stale stays stale — for the life of the pane.
+    /// This is the only thing that closes that gap.
+    fn repair_commands(&mut self) {
+        self.repair_commands_with(poll::pane_running_command);
+    }
+
+    fn repair_commands_with(&mut self, mut command_of: impl FnMut(u32) -> Option<String>) {
+        let running: Vec<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| pane.status == agents::AgentStatus::Running)
+            .map(|pane| pane.pane_id)
+            .collect();
+        if running.is_empty() {
+            return;
+        }
+        // Panes waiting on a release decision go first — an agent that has really
+        // finished should leave the list promptly. Then panes nothing has named a
+        // command for, which cannot be classified at all until something does.
+        // Whatever budget is left goes on a rotation over the rest, so every pane
+        // is revisited eventually without paying for all of them every tick.
+        let mut ask: Vec<u32> = Vec::with_capacity(COMMAND_REPAIRS_PER_TICK);
+        let claim = |ask: &mut Vec<u32>, pane_id: u32| {
+            if ask.len() < COMMAND_REPAIRS_PER_TICK && !ask.contains(&pane_id) {
+                ask.push(pane_id);
+            }
+        };
+        for pane_id in running.iter().copied() {
+            if self.pending_release.contains(&pane_id) {
+                claim(&mut ask, pane_id);
+            }
+        }
+        for pane_id in running.iter().copied() {
+            if !self.commands.contains_key(&pane_id) {
+                claim(&mut ask, pane_id);
+            }
+        }
+        for offset in 0..running.len() {
+            claim(
+                &mut ask,
+                running[(self.command_cursor + offset) % running.len()],
+            );
+        }
+        self.command_cursor = self.command_cursor.wrapping_add(ask.len()) % running.len();
+
+        let mut found_something_new = false;
+        for pane_id in ask {
+            // Only ever set, never cleared: a host call that answered nothing has
+            // not said the pane stopped running what it was running. Same reason
+            // `rejoin_cwds` never clears a folder — and the same reason a silent
+            // answer must not settle a pending release either.
+            let Some(command) = command_of(pane_id) else {
+                continue;
+            };
+            // The direct ask is the verdict `on_command` deferred to. It reads
+            // the foreground process and falls back to the pane's own, so an
+            // agent that is merely between tool runs still names itself here.
+            if self.pending_release.remove(&pane_id)
+                && agents::kind_from_command(&command).is_none()
+            {
+                self.latched.remove(&pane_id);
+                found_something_new = true;
+            }
+            if self.commands.get(&pane_id) != Some(&command) {
+                self.commands.insert(pane_id, command);
+                found_something_new = true;
+            }
+        }
+        if found_something_new {
+            self.rejoin_commands();
+            self.settle_latches();
+            self.resolve_repositories();
+        }
     }
 
     fn repair_cwds_with(&mut self, mut cwd_of: impl FnMut(u32) -> Option<String>) {
@@ -540,6 +751,7 @@ mod tests {
             cwd: Some(cwd.to_owned()),
             status: agents::AgentStatus::Running,
             tab: None,
+            detected: None,
         }
     }
 
@@ -707,6 +919,299 @@ mod tests {
         );
     }
 
+    /// A state holding one pane the daemon has seen running codex, built the way
+    /// the events would have built it.
+    fn ran_codex(pane_id: u32) -> State {
+        let mut state = State {
+            panes: Some(vec![pane(pane_id, "codex", "/work")]),
+            ..State::default()
+        };
+        state.on_command(pane_id, vec!["codex".to_owned()], true);
+        assert_eq!(
+            state.latched.get(&pane_id).map(String::as_str),
+            Some("codex"),
+            "the pane really did latch",
+        );
+        state
+    }
+
+    fn kind_of(state: &State, pane_id: u32) -> Option<&str> {
+        let pane = state
+            .panes
+            .as_ref()?
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)?;
+        agents::classify(pane, &state.manual_kinds).map(|(kind, _)| kind)
+    }
+
+    /// The flicker: an agent that shells out to a tool is reported as running
+    /// that tool, and used to drop out of every list until the tool finished.
+    #[test]
+    fn an_agent_that_shells_out_stays_an_agent() {
+        let mut state = ran_codex(7);
+
+        state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
+
+        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert!(
+            state.pending_release.is_empty(),
+            "something in the foreground is the agent working, not the agent leaving",
+        );
+    }
+
+    /// The idle counter is the other casualty: pruning it on a momentary
+    /// misclassification reset a long-idle agent to `busy` every time it moved.
+    #[test]
+    fn a_shell_out_does_not_reset_the_idle_count() {
+        let mut state = ran_codex(7);
+        state.observe_activity_with(|_| "same".to_owned());
+        state.observe_activity_with(|_| "same".to_owned());
+        assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
+
+        state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
+        state.observe_activity_with(|_| "same".to_owned());
+
+        assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(2));
+    }
+
+    /// Nothing in the foreground and no agent left in the command is the agent
+    /// having finished — but a `tcgetpgrp` that momentarily answers nothing looks
+    /// identical, so it is proposed and confirmed rather than acted on.
+    #[test]
+    fn a_pane_back_at_its_prompt_gives_up_its_latch_once_confirmed() {
+        let mut state = ran_codex(7);
+
+        state.on_command(7, vec!["zsh".to_owned()], false);
+        assert!(state.pending_release.contains(&7), "proposed");
+        assert_eq!(kind_of(&state, 7), Some("codex"), "but not yet acted on");
+
+        state.repair_commands_with(|_| Some("zsh".to_owned()));
+
+        assert!(state.pending_release.is_empty());
+        assert_eq!(kind_of(&state, 7), None, "confirmed, so the latch goes");
+    }
+
+    /// The reason the confirmation exists: one bad read must not cost an agent
+    /// its place in the list.
+    #[test]
+    fn a_momentary_bad_read_does_not_cost_a_latch() {
+        let mut state = ran_codex(7);
+        state.on_command(7, vec!["zsh".to_owned()], false);
+
+        state.repair_commands_with(|_| Some("codex".to_owned()));
+
+        assert!(state.pending_release.is_empty());
+        assert_eq!(kind_of(&state, 7), Some("codex"));
+    }
+
+    /// A host that answered nothing has said nothing, and must not settle the
+    /// question either way.
+    #[test]
+    fn an_unanswered_confirmation_leaves_the_release_pending() {
+        let mut state = ran_codex(7);
+        state.on_command(7, vec!["zsh".to_owned()], false);
+
+        state.repair_commands_with(|_| None);
+
+        assert!(state.pending_release.contains(&7));
+        assert_eq!(kind_of(&state, 7), Some("codex"));
+    }
+
+    /// A pane launched *as* a command is its own foreground process, so the host
+    /// reports its argv with the flag false. Reading that as "back at a prompt"
+    /// would unclassify every agent started from a layout.
+    #[test]
+    fn a_command_pane_is_not_mistaken_for_a_prompt() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "codex", "/work")]),
+            ..State::default()
+        };
+
+        state.on_command(7, vec!["codex".to_owned()], false);
+
+        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert!(state.pending_release.is_empty());
+    }
+
+    /// Only a command earns a latch. A title is free text the last program left
+    /// behind, and remembering it would make a pane an agent for good.
+    #[test]
+    fn a_title_alone_never_earns_a_latch() {
+        let mut state = State {
+            panes: Some(vec![agents::AgentPane {
+                title: "claude".to_owned(),
+                command: None,
+                ..pane(7, "claude", "/work")
+            }]),
+            ..State::default()
+        };
+
+        state.settle_latches();
+
+        assert!(state.latched.is_empty());
+    }
+
+    #[test]
+    fn a_latch_goes_when_its_pane_closes() {
+        let mut state = ran_codex(7);
+
+        state.rebuild_panes();
+
+        assert!(state.latched.is_empty(), "no manifest, so no pane");
+    }
+
+    /// A re-run pane is a new process and has to earn its latch again, or a
+    /// restarted shell would inherit the dead agent's name.
+    #[test]
+    fn a_rerun_pane_earns_its_latch_again() {
+        let mut state = ran_codex(7);
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "shell".to_owned(),
+                exited: true,
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+        assert_eq!(
+            state.latched.get(&7).map(String::as_str),
+            Some("codex"),
+            "a dead agent keeps its row, so `agent_control restart` can reach it",
+        );
+
+        // Re-run: the same pane id, running again, and `commands` went with the
+        // manifest's last word rather than the agent's.
+        state.commands.insert(7, "zsh".to_owned());
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "shell".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+
+        assert!(state.latched.is_empty());
+    }
+
+    /// The same sequence the integration test drives, with the manifest events
+    /// that only show up in a real session: a pane appears, runs an agent, then
+    /// shells out, with a `PaneUpdate` landing at every step.
+    #[test]
+    fn a_latch_survives_the_pane_updates_that_arrive_around_it() {
+        let mut state = State::default();
+        let manifest = |id: u32| {
+            let mut manifest = PaneManifest::default();
+            manifest.panes.insert(
+                0,
+                vec![PaneInfo {
+                    id,
+                    title: "Pane #1".to_owned(),
+                    ..PaneInfo::default()
+                }],
+            );
+            manifest
+        };
+
+        state.manifest = manifest(0);
+        state.rebuild_panes();
+        state.on_command(0, vec!["claude".to_owned()], true);
+        assert_eq!(kind_of(&state, 0), Some("claude"));
+
+        state.manifest = manifest(0);
+        state.rebuild_panes();
+        assert_eq!(kind_of(&state, 0), Some("claude"), "after a pane update");
+
+        state.on_command(0, vec!["git".to_owned(), "status".to_owned()], true);
+        assert_eq!(kind_of(&state, 0), Some("claude"), "after shelling out");
+
+        state.manifest = manifest(0);
+        state.rebuild_panes();
+        assert_eq!(
+            kind_of(&state, 0),
+            Some("claude"),
+            "and after the pane update that follows it",
+        );
+    }
+
+    /// The gap `CommandChanged` cannot close: its ticker only looks at panes that
+    /// produced output, so an agent sitting silent at its prompt is never asked
+    /// what it is running, and stays a pane that runs nothing.
+    #[test]
+    fn a_quiet_pane_is_asked_what_it_is_running() {
+        let mut state = State {
+            panes: Some(vec![agents::AgentPane {
+                command: None,
+                title: "shell".to_owned(),
+                ..pane(7, "shell", "/work")
+            }]),
+            ..State::default()
+        };
+        assert!(
+            agents::classify(&state.panes.as_ref().unwrap()[0], &state.manual_kinds).is_none(),
+            "nothing has said this pane runs an agent",
+        );
+
+        state.repair_commands_with(|_| Some("codex --resume".to_owned()));
+
+        assert_eq!(state.commands[&7], "codex --resume");
+        assert_eq!(
+            agents::classify(&state.panes.as_ref().unwrap()[0], &state.manual_kinds),
+            Some(("codex", "auto")),
+        );
+    }
+
+    /// A host call that answered nothing has not said the pane stopped running
+    /// what it was running.
+    #[test]
+    fn an_unanswered_command_ask_leaves_the_last_one_alone() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "codex", "/work")]),
+            commands: BTreeMap::from([(7, "codex".to_owned())]),
+            ..State::default()
+        };
+
+        state.repair_commands_with(|_| None);
+
+        assert_eq!(state.commands[&7], "codex");
+    }
+
+    /// Every pane gets revisited, but not all on one tick: a command that is
+    /// right now can be wrong later, so the budget goes on a rotation.
+    #[test]
+    fn command_asks_are_capped_and_rotate_over_the_panes() {
+        let panes = (0..COMMAND_REPAIRS_PER_TICK as u32 * 2)
+            .map(|id| pane(id, "codex", "/work"))
+            .collect();
+        let mut state = State {
+            panes: Some(panes),
+            commands: (0..COMMAND_REPAIRS_PER_TICK as u32 * 2)
+                .map(|id| (id, "codex".to_owned()))
+                .collect(),
+            ..State::default()
+        };
+
+        let mut asked = Vec::new();
+        state.repair_commands_with(|pane_id| {
+            asked.push(pane_id);
+            None
+        });
+        assert_eq!(asked.len(), COMMAND_REPAIRS_PER_TICK, "capped");
+
+        let mut asked_next = Vec::new();
+        state.repair_commands_with(|pane_id| {
+            asked_next.push(pane_id);
+            None
+        });
+        assert!(
+            asked_next.iter().all(|pane_id| !asked.contains(pane_id)),
+            "the next tick moves on: {asked:?} then {asked_next:?}",
+        );
+    }
+
     /// Each ask is a blocking round-trip, and a pane without a folder now will
     /// still be without one on the next heartbeat.
     #[test]
@@ -735,8 +1240,32 @@ mod tests {
     fn bootstrap_is_retried_until_the_session_answers() {
         let mut state = State::default();
         assert!(state.needs_bootstrap());
-        state.panes = Some(vec![]);
+        state.bootstrapped = true;
         assert!(!state.needs_bootstrap());
+    }
+
+    /// The startup scan is the only thing that reads a *live* running command for
+    /// panes that predate the daemon. It used to be cancelled by anything that
+    /// filled `panes` — and a `PaneUpdate` arrives long before the first
+    /// heartbeat, so a daemon that loaded before the session was ready never
+    /// scanned at all, and every pane already running an agent stayed a plain
+    /// shell for the life of the session.
+    #[test]
+    fn a_pane_update_does_not_cancel_the_bootstrap_retry() {
+        let mut state = State::default();
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "shell".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+
+        state.rebuild_panes();
+
+        assert!(state.panes.is_some(), "the manifest still lands");
+        assert!(state.needs_bootstrap(), "but the scan is still owed");
     }
 
     /// Nothing is cached for a probe that answered nothing, so only the wait

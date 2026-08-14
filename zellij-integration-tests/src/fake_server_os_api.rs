@@ -214,14 +214,43 @@ impl ServerOsApi for FakeServerOsApi {
         self.cwds.lock().unwrap().get(&pid).cloned()
     }
     fn get_cwds(&self, pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+        // A fake pane runs no process of its own, so both halves are answered from
+        // what it was spawned with rather than from the OS. The command half used
+        // to be left empty, which left every pane looking like it ran nothing —
+        // and agent detection reads exactly that.
+        let process_commands = self.shared_ptys.process_commands();
         let cwds = self.cwds.lock().unwrap();
-        let found = pids
-            .into_iter()
-            .filter_map(|pid| Some((pid, cwds.get(&pid)?.clone())))
-            .collect();
-        // A fake pane runs no process of its own, so there is no command to
-        // report alongside the folder.
-        (found, HashMap::new())
+        let mut found_cwds = HashMap::new();
+        let mut found_cmds = HashMap::new();
+        for pid in pids {
+            if let Some(cwd) = cwds.get(&pid) {
+                found_cwds.insert(pid, cwd.clone());
+            }
+            if let Some(command) = pid
+                .checked_sub(FAKE_PID_BASE)
+                .and_then(|terminal_id| process_commands.get(&terminal_id))
+            {
+                found_cmds.insert(pid, command.clone());
+            }
+        }
+        (found_cwds, found_cmds)
+    }
+
+    /// What holds each pane's tty foreground. Keyed by terminal id, as the real
+    /// one is — it reaches the foreground process group through `tcgetpgrp`, not
+    /// through the pane's own pid.
+    fn get_foreground_cmds(
+        &self,
+        panes: &[(u32, u32)],
+        _post_hook: &Option<String>,
+    ) -> HashMap<u32, Vec<String>> {
+        let foreground_commands = self.shared_ptys.foreground_commands();
+        panes
+            .iter()
+            .filter_map(|(terminal_id, _shell_pid)| {
+                Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
+            })
+            .collect()
     }
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
         if let Some(file) = file {

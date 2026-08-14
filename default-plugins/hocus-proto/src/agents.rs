@@ -61,6 +61,16 @@ pub struct AgentPane {
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
     pub tab: Option<(usize, String)>,
+    /// The kind this pane was last seen *running*, kept while the pane lives.
+    ///
+    /// `command` is the foreground command, so it stops naming the agent the moment
+    /// the agent shells out to `git` or runs a tool — and the pane would drop out of
+    /// every list until it came back. `hocus-agentd` is the only writer; it latches
+    /// this from the command alone and lets it go when the pane closes, is re-run, or
+    /// is confirmed back at its prompt. Everyone else reads it off the snapshot, so
+    /// no two readers can disagree about what is an agent.
+    #[serde(default)]
+    pub detected: Option<String>,
 }
 
 /// Every agent we know.
@@ -106,33 +116,81 @@ fn kind_of(word: &str) -> Option<&'static str> {
     .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
 }
 
-/// The agent kind a pane runs, from its command first and its title second.
+/// The agent kind a command line names, or `None`.
 ///
-/// Whole tokens on both paths, never a substring: `pi` against a substring would make
-/// every `pip install` shell an agent, and an agent is something the model may send
-/// input to.
-pub fn detect_kind(title: &str, command: Option<&str>) -> Option<&'static str> {
-    if let Some(command) = command {
-        let mut words = command.split_whitespace();
-        let first = words.next().unwrap_or_default();
-        if let Some(kind) = kind_of(first) {
+/// Whole tokens, never a substring: `pi` against a substring would make every `pip
+/// install` shell an agent, and an agent is something the model may send input to.
+///
+/// This is the half of detection that can be *trusted over time*: a pane that is
+/// running an agent right now is one, whatever it is called. `hocus-agentd` latches
+/// on this and nothing else.
+pub fn kind_from_command(command: &str) -> Option<&'static str> {
+    let mut words = command.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    if let Some(kind) = kind_of(first) {
+        return Some(kind);
+    }
+    // Later words count only behind an interpreter. Otherwise `git commit -m
+    // "ask claude"` would be an agent, which is the same reason detection is
+    // token-based rather than substring-based.
+    if INTERPRETERS.contains(&program(first).to_lowercase().as_str()) {
+        if let Some(kind) = words.find_map(kind_of) {
             return Some(kind);
         }
-        // Later words count only behind an interpreter. Otherwise `git commit -m
-        // "ask claude"` would be an agent, which is the same reason detection is
-        // token-based rather than substring-based.
-        if INTERPRETERS.contains(&program(first).to_lowercase().as_str()) {
-            if let Some(kind) = words.find_map(kind_of) {
-                return Some(kind);
-            }
-        }
     }
-    // A title is free text a program can set to anything, so only the canonical kind
-    // counts here, and only as a complete word.
+    None
+}
+
+/// The agent kind a pane title names, or `None`.
+///
+/// A title is free text a program can set to anything, so only the canonical kind
+/// counts here, and only as a complete word. Nothing resets a title when the program
+/// that set it exits, which is why this is a guess and never a latch.
+pub fn kind_from_title(title: &str) -> Option<&'static str> {
     let title = title.to_lowercase();
     title
         .split(|c: char| !c.is_ascii_alphanumeric())
         .find_map(|word| KINDS.iter().find(|kind| **kind == word).copied())
+}
+
+/// The agent kind a pane runs, from its command first and its title second.
+pub fn detect_kind(title: &str, command: Option<&str>) -> Option<&'static str> {
+    if let Some(kind) = command.and_then(kind_from_command) {
+        return Some(kind);
+    }
+    // A command that names a shell is the pane telling us it is at a prompt, and
+    // that outranks a title the last program left behind. Without this a pane
+    // that ran `claude` and returned to its shell stayed an agent for as long as
+    // it stayed open, because nothing ever rewrites a pane title.
+    if command.is_some_and(is_shell) {
+        return None;
+    }
+    kind_from_title(title)
+}
+
+/// Programs that are a prompt rather than a program at one.
+///
+/// Only used to decide that a title has been outlived — see `detect_kind`. Kept
+/// deliberately short: a name that is not here merely falls back to today's
+/// behaviour, while a wrong name here would hide a real agent.
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh",
+    "ash", "busybox",
+];
+
+/// Whether a command line is a shell sitting at its prompt.
+///
+/// The first word only, and the same filename-then-stem treatment `kind_of` gives —
+/// `/usr/bin/zsh` and `zsh -l` are both a shell, `zsh script.sh` is too, and nothing
+/// here is ever matched as a substring.
+pub fn is_shell(command: &str) -> bool {
+    let first = command.split_whitespace().next().unwrap_or_default();
+    let name = program(first).to_lowercase();
+    let stem = name.split('.').next().unwrap_or_default();
+    // A login shell is spelled `-zsh` in argv, which is not a dash-segment to
+    // strip but a marker to ignore.
+    let stem = stem.strip_prefix('-').unwrap_or(stem);
+    SHELLS.contains(&stem)
 }
 
 /// Whether a kind the user typed is one we will show to the model.
@@ -145,16 +203,25 @@ pub fn valid_kind(kind: &str) -> bool {
 
 /// The kind and source of one pane, or `None` when the pane is not an agent.
 ///
-/// A manual kind wins over detection: a user who registered a `codex` pane as
-/// `reviewer` said something the command name cannot.
+/// Precedence: the manual kind, then what the pane is running now, then what it was
+/// last seen running. A user who registered a `codex` pane as `reviewer` said
+/// something the command name cannot, so that wins; and what a pane is doing right
+/// now beats the memory of what it was doing, so a pane that has become a different
+/// agent is reported as the one it is.
+///
+/// The latch comes last and is the only part that survives a pane shelling out. It
+/// is `"auto"` like any other detection — `source` is a contract with the model in
+/// `list_json`, and a third value there would earn nothing.
 pub fn classify<'a>(
-    pane: &AgentPane,
+    pane: &'a AgentPane,
     manual: &'a BTreeMap<u32, String>,
 ) -> Option<(&'a str, &'static str)> {
-    match manual.get(&pane.pane_id) {
-        Some(kind) => Some((kind.as_str(), "manual")),
-        None => detect_kind(&pane.title, pane.command.as_deref()).map(|kind| (kind, "auto")),
+    if let Some(kind) = manual.get(&pane.pane_id) {
+        return Some((kind.as_str(), "manual"));
     }
+    detect_kind(&pane.title, pane.command.as_deref())
+        .map(|kind| (kind, "auto"))
+        .or_else(|| pane.detected.as_deref().map(|kind| (kind, "auto")))
 }
 
 /// Fold one poll's pane content into the activity map.
@@ -506,6 +573,16 @@ mod tests {
             cwd: None,
             status: AgentStatus::Running,
             tab: None,
+            detected: None,
+        }
+    }
+
+    /// A pane that has been seen running `kind` and is now running something else —
+    /// an agent that shelled out.
+    fn latched(pane_id: u32, kind: &str, command: &str) -> AgentPane {
+        AgentPane {
+            detected: Some(kind.to_owned()),
+            ..pane(pane_id, "zsh", Some(command))
         }
     }
 
@@ -650,6 +727,66 @@ mod tests {
             Some(("codex", "auto")),
         );
         assert_eq!(classify(&pane(5, "zsh", Some("zsh")), &manual), None);
+    }
+
+    /// The flicker the latch exists for: an agent that shells out is still an
+    /// agent, and the pane must not leave every list until the tool it ran
+    /// finishes.
+    #[test]
+    fn a_pane_that_shelled_out_keeps_the_kind_it_latched() {
+        let manual = manual(&[]);
+        assert_eq!(
+            classify(&latched(3, "codex", "git status"), &manual),
+            Some(("codex", "auto")),
+        );
+        // Even when what it is running is a shell of its own.
+        assert_eq!(
+            classify(&latched(3, "codex", "bash -c rg"), &manual),
+            Some(("codex", "auto")),
+        );
+    }
+
+    /// What a pane is doing now outranks what it was doing: a pane that has
+    /// become a different agent is reported as the one it is, and a manual kind
+    /// still beats both.
+    #[test]
+    fn the_latch_is_the_last_word_and_not_the_first() {
+        let running = AgentPane {
+            detected: Some("codex".to_owned()),
+            ..pane(3, "zsh", Some("claude"))
+        };
+        assert_eq!(classify(&running, &manual(&[])), Some(("claude", "auto")));
+        assert_eq!(
+            classify(&running, &manual(&[(3, "reviewer")])),
+            Some(("reviewer", "manual")),
+        );
+    }
+
+    /// Nothing rewrites a pane title when the program that set it exits, so a
+    /// pane that ran an agent and went back to its prompt used to stay an agent
+    /// for as long as it stayed open.
+    #[test]
+    fn a_shell_prompt_outranks_the_title_the_last_program_left() {
+        assert_eq!(detect_kind("claude", Some("zsh")), None);
+        assert_eq!(detect_kind("claude", Some("/usr/bin/zsh -l")), None);
+        assert_eq!(detect_kind("claude", Some("-zsh")), None);
+        // Still an agent while it is actually running one, and still detected by
+        // title when nothing has said what it runs.
+        assert_eq!(detect_kind("claude", Some("claude")), Some("claude"));
+        assert_eq!(detect_kind("claude", None), Some("claude"));
+        // A command that is neither a shell nor an agent leaves the title alone:
+        // a wrapper we do not recognise must not hide a real agent.
+        assert_eq!(detect_kind("claude", Some("mise exec")), Some("claude"));
+    }
+
+    #[test]
+    fn is_shell_reads_whole_program_names_only() {
+        assert!(is_shell("zsh"));
+        assert!(is_shell("/bin/bash --login"));
+        assert!(is_shell("-zsh"));
+        assert!(!is_shell("shellcheck"));
+        assert!(!is_shell("codex"));
+        assert!(!is_shell(""));
     }
 
     #[test]

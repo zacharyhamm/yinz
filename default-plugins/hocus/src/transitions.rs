@@ -241,18 +241,31 @@ impl State {
     ///
     /// Cheap and idempotent, so it is re-sent whenever `manual_kinds` changes
     /// rather than tracked; the daemon just records us as its subscriber again.
+    /// Subscribe to the daemon, and stop expecting its old numbering.
+    ///
+    /// Only for the moments we genuinely suspect a restarted daemon: our own
+    /// load, its `AGENT_HELLO`, and the permission grant that follows. A daemon
+    /// that was reloaded restarts its `seq` at one, and holding the old
+    /// high-water mark would drop every snapshot it ever sent again.
+    ///
+    /// Anything that merely has fresh overrides to send wants `send_manual_kinds`
+    /// instead. Resetting the watermark mid-stream is not free: it re-admits the
+    /// snapshots already in flight, and an older one still holding a pane that
+    /// has since closed will put it back on screen.
     pub(crate) fn subscribe_to_agentd(&mut self) {
+        self.agent_seq = 0;
+        self.send_manual_kinds();
+    }
+
+    /// Tell the daemon what the manual kinds are now. Same pipe, same reply — but
+    /// no claim that the numbering restarted, because it did not.
+    pub(crate) fn send_manual_kinds(&mut self) {
         let Ok(payload) = serde_json::to_string(&PollRequest {
             manual_kinds: self.manual_kinds.clone(),
             activity: self.activity.clone(),
         }) else {
             return;
         };
-        // Forget the watermark. A daemon that was reloaded restarts its `seq` at
-        // one, and holding the old high-water mark would drop every snapshot it
-        // ever sent again. Re-subscribing is exactly the moment we suspect that,
-        // so it is also the moment to stop expecting the old numbering.
-        self.agent_seq = 0;
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE).with_payload(payload));
     }
 

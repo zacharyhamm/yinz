@@ -3016,6 +3016,7 @@ mod tests {
             cwd: Some(cwd.to_owned()),
             status: agents::AgentStatus::Running,
             tab: Some((tab_id, format!("tab {tab_id}"))),
+            detected: None,
         }
     }
 
@@ -4057,6 +4058,26 @@ mod tests {
         assert!(!state.is_agent(3));
     }
 
+    /// What the latch changes for the tools, stated on purpose: an agent that is
+    /// busy shelling out is still an agent, so `agent_send` reaches it and the
+    /// keys land in whatever it is running. That is what a human at the keyboard
+    /// would get, and it is the only way to interrupt a tool run — losing that
+    /// would be worse than the surprise.
+    #[test]
+    fn a_shelled_out_agent_can_still_be_sent_to() {
+        let mut state = state_with_panes();
+        let shelled_out = agents::AgentPane {
+            title: "zsh".to_owned(),
+            command: Some("git status".to_owned()),
+            detected: Some("codex".to_owned()),
+            ..panes_with_agent()[0].clone()
+        };
+
+        state.set_panes(vec![shelled_out]);
+
+        assert!(state.is_agent(3));
+    }
+
     #[test]
     fn agent_changes_do_not_post_to_chat() {
         let mut state = state_with_panes();
@@ -4110,6 +4131,7 @@ mod tests {
                 status: agents::AgentStatus::Running,
                 tab: Some((2, "work".to_owned())),
                 cwd: Some("/tmp/work".to_owned()),
+                detected: None,
             }]),
             activity,
             manual_kinds: BTreeMap::new(),
@@ -4135,12 +4157,17 @@ mod tests {
 
     /// An empty snapshot carrying `seq`, as hocus-agentd sends it.
     fn agent_snapshot(seq: u64) -> PipeMessage {
+        agent_snapshot_with(seq, Vec::new())
+    }
+
+    /// A snapshot carrying `seq` and the panes it saw.
+    fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
         PipeMessage {
             source: PipeSource::Plugin(1),
             name: wire::AGENT_SNAPSHOT.to_owned(),
             payload: Some(
                 serde_json::to_string(&PollReply {
-                    panes: Some(Vec::new()),
+                    panes: Some(panes),
                     activity: agents::Activity::new(),
                     manual_kinds: BTreeMap::new(),
                     repositories: BTreeMap::new(),
@@ -4175,6 +4202,33 @@ mod tests {
         );
         assert!(!state.panes.is_empty());
         assert_eq!(state.agent_seq, 4);
+    }
+
+    /// The prune path used to reset the watermark on its way past, which threw
+    /// away the one defence against reordered delivery at exactly the moment it
+    /// was needed: a pane closes, its manual kind is pruned, and the older
+    /// snapshot still in flight — the one that predates the close — is admitted
+    /// and puts the agent back on screen.
+    #[test]
+    fn a_prune_does_not_reset_the_sequence_watermark() {
+        let mut state = state_with_panes();
+        state.run_local(&agent_call(
+            "agent_register",
+            r#"{"pane_id":4,"kind":"reviewer"}"#,
+        ));
+        assert!(state.manual_kinds.contains_key(&4));
+
+        // Pane 4 closed. Merging this prunes its registration.
+        state.pipe(agent_snapshot(5));
+        assert!(state.manual_kinds.is_empty(), "the prune really happened");
+        assert_eq!(state.agent_seq, 5, "the watermark survives it");
+
+        // The snapshot that was already in flight when it closed.
+        assert!(!state.pipe(agent_snapshot_with(4, panes_with_agent())));
+        assert!(
+            state.panes.is_empty(),
+            "a stale snapshot must not bring the closed pane back",
+        );
     }
 
     /// A reloaded daemon restarts its counter, so the watermark has to be
