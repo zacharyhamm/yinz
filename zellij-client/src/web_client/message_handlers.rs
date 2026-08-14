@@ -327,13 +327,7 @@ mod tests {
         fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
             None
         }
-        fn handle_signals(
-            &self,
-            _sigwinch_cb: Box<dyn Fn()>,
-            _quit_cb: Box<dyn Fn()>,
-            _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-        ) {
-        }
+        fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
         fn connect_to_server(&self, _path: &Path) {}
         fn load_palette(&self) -> Palette {
             Palette::default()

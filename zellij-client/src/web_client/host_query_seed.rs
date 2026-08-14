@@ -38,14 +38,14 @@ pub fn build_host_query_seed_msgs(
     if let Some(fg) = resolved
         .foreground
         .as_ref()
-        .and_then(|s| css_rgb_to_xparse(s))
+        .and_then(|s| css_rgb_to_xparse_color(s))
     {
         msgs.push(ClientToServerMsg::ForegroundColor { color: fg });
     }
     if let Some(bg) = resolved
         .background
         .as_ref()
-        .and_then(|s| css_rgb_to_xparse(s))
+        .and_then(|s| css_rgb_to_xparse_color(s))
     {
         msgs.push(ClientToServerMsg::BackgroundColor { color: bg });
     }
@@ -137,15 +137,11 @@ fn build_color_registers(resolved: &ResolvedTheme) -> Vec<ColorRegister> {
 /// produces, which is what `SetConfigPayload` ships to xterm.js) into the
 /// `rgb:RRRR/GGGG/BBBB` form `xparse_color` accepts, prefixed for
 /// `ClientToServerMsg::{Foreground,Background}Color`'s consumer.
-fn css_rgb_to_xparse(css: &str) -> Option<String> {
-    css_rgb_to_xparse_color(css)
-}
-
-/// Same as `css_rgb_to_xparse`. Kept as a separate alias to make the
-/// difference between OSC 10/11 (xparse-format string going into screen's
+///
+/// Used for both OSC 10/11 (xparse-format string going into screen's
 /// terminal_emulator_colors) and OSC 4 (color string going into
-/// terminal_emulator_color_codes) explicit at call sites — currently both
-/// consumers want the same `rgb:RRRR/GGGG/BBBB` shape.
+/// terminal_emulator_color_codes) — both consumers want the same
+/// `rgb:RRRR/GGGG/BBBB` shape.
 fn css_rgb_to_xparse_color(css: &str) -> Option<String> {
     let PaletteColor::Rgb((r, g, b)) = PaletteColor::from_rgb_str(css) else {
         return None;
@@ -258,7 +254,7 @@ mod tests {
         let g = tc.draw(generators::integers::<u8>());
         let b = tc.draw(generators::integers::<u8>());
         let css = PaletteColor::Rgb((r, g, b)).as_rgb_str();
-        let xparse = css_rgb_to_xparse(&css)
+        let xparse = css_rgb_to_xparse_color(&css)
             .unwrap_or_else(|| panic!("({}, {}, {}) -> {:?} was rejected", r, g, b, css));
         assert_eq!(
             parse_xparse(&xparse),
@@ -276,7 +272,7 @@ mod tests {
     fn css_rgb_to_xparse_is_total(tc: hegel::TestCase) {
         // Arbitrary Unicode: this string comes from user config.
         let s = tc.draw(generators::text());
-        if let Some(xparse) = css_rgb_to_xparse(&s) {
+        if let Some(xparse) = css_rgb_to_xparse_color(&s) {
             assert!(
                 parse_xparse(&xparse).is_some(),
                 "input {:?} produced malformed xparse string {:?}",
