@@ -136,7 +136,7 @@ pub async fn create_new_client(
         session_token_hash.0,
     );
 
-    let config = SetConfigPayload::from(&*state.config.lock().unwrap());
+    let config = SetConfigPayload::new(&state.config.lock().unwrap(), &state.config_options);
 
     Ok(Json(CreateClientIdResponse {
         web_client_id,
