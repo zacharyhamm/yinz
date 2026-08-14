@@ -7,7 +7,7 @@ use crate::web_client::message_handlers::{
     parse_stdin, render_to_client, send_control_messages_to_client, StdinSession,
 };
 use crate::web_client::server_listener::zellij_server_listener;
-use crate::web_client::types::{AppState, ControlParams, TerminalParams};
+use crate::web_client::types::{client_action, AppState, ControlParams, TerminalParams};
 
 use axum::{
     extract::{
@@ -303,46 +303,31 @@ fn control_payload_to_server_msg(
             } else {
                 PaneId::Terminal(pane_id)
             };
-            ClientToServerMsg::Action {
-                action: Action::FocusPaneByPaneId { pane_id },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            }
+            client_action(Action::FocusPaneByPaneId { pane_id })
         },
         WebClientToWebServerControlMessagePayload::NewPaneInTab { .. } => {
-            ClientToServerMsg::Action {
-                action: Action::NewTiledPane {
-                    direction: None,
-                    command: None,
-                    pane_name: None,
-                    near_current_pane: false,
-                    no_focus: false,
-                    borderless: None,
-                    tab_id: None,
-                    global_placement: None,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            }
+            client_action(Action::NewTiledPane {
+                direction: None,
+                command: None,
+                pane_name: None,
+                near_current_pane: false,
+                no_focus: false,
+                borderless: None,
+                tab_id: None,
+                global_placement: None,
+            })
         },
-        WebClientToWebServerControlMessagePayload::NewTab => ClientToServerMsg::Action {
-            action: Action::NewTab {
-                tiled_layout: None,
-                floating_layouts: vec![],
-                swap_tiled_layouts: None,
-                swap_floating_layouts: None,
-                tab_name: None,
-                should_change_focus_to_new_tab: true,
-                cwd: None,
-                initial_panes: None,
-                first_pane_unblock_condition: None,
-            },
-            terminal_id: None,
-            client_id: None,
-            is_cli_client: false,
-        },
+        WebClientToWebServerControlMessagePayload::NewTab => client_action(Action::NewTab {
+            tiled_layout: None,
+            floating_layouts: vec![],
+            swap_tiled_layouts: None,
+            swap_floating_layouts: None,
+            tab_name: None,
+            should_change_focus_to_new_tab: true,
+            cwd: None,
+            initial_panes: None,
+            first_pane_unblock_condition: None,
+        }),
         WebClientToWebServerControlMessagePayload::SetMobileRenderPreferences {
             single_pane,
             fit,

@@ -10,6 +10,7 @@ use crate::os_input_output::ClientOsApi;
 use crate::web_client::control_message::SetConfigPayload;
 use crate::web_client::session_management::spawn_new_session;
 use std::path::{Path, PathBuf};
+use zellij_utils::input::actions::Action;
 use zellij_utils::{
     input::{config::Config, options::Options},
     ipc::ClientToServerMsg,
@@ -306,3 +307,14 @@ pub struct LoginResponse {
 
 pub const BRACKETED_PASTE_START: [u8; 6] = [27, 91, 50, 48, 48, 126]; // \u{1b}[200~
 pub const BRACKETED_PASTE_END: [u8; 6] = [27, 91, 50, 48, 49, 126]; // \u{1b}[201~
+
+/// A plain action from a web client: not tied to a terminal, not attributed
+/// to a particular client id, and never from the CLI.
+pub fn client_action(action: Action) -> ClientToServerMsg {
+    ClientToServerMsg::Action {
+        action,
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    }
+}
