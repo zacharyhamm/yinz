@@ -15,6 +15,7 @@ mod nested_reannounce;
 pub mod remote_attach;
 mod stdin_ansi_parser;
 mod stdin_handler;
+mod terminal_escapes;
 #[cfg(feature = "web_server_capability")]
 pub mod web_client;
 
@@ -43,25 +44,10 @@ use crate::web_client::control_message::{
 static ASYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 use std::sync::OnceLock;
 
-const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
-const EXIT_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
-const ENABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004h";
-const RESET_STYLE: &str = "\u{1b}[m";
-const SHOW_CURSOR: &str = "\u{1b}[?25h";
-const ENTER_KITTY_KEYBOARD_MODE: &str = "\u{1b}[>1u";
-const EXIT_KITTY_KEYBOARD_MODE: &str = "\u{1b}[<1u";
-const CLEAR_CLIENT_TERMINAL_ATTRIBUTES: &str = "\u{1b}[?1l\u{1b}=\u{1b}[r\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?12l";
-/// Subscribe to host color-palette theme notifications (CSI 2031). Hosts
-/// that support it begin emitting unsolicited DSR 997 reports on theme
-/// change after this is sent.
-const ENABLE_HOST_THEME_NOTIFY: &str = "\u{1b}[?2031h";
-/// Cancel the CSI 2031 subscription (sent on detach / shutdown so we
-/// don't leave the host emitting DSR 997s into nothing).
-const DISABLE_HOST_THEME_NOTIFY: &str = "\u{1b}[?2031l";
-/// Actively query the current host theme (DSR 996). Reply arrives in the
-/// same `CSI ? 997 ; {1|2} n` form as unsolicited notifications, so the
-/// stdin parser handles both uniformly.
-const QUERY_HOST_THEME: &str = "\u{1b}[?996n";
+use crate::terminal_escapes::{
+    announce_nested, enter_terminal, say_bye, write_seqs, write_synchronised, ClientTeardown,
+    CLEAR_SCREEN, ENABLE_BRACKETED_PASTE,
+};
 
 /// Spawn an async runtime for this client instance.
 ///
@@ -315,40 +301,6 @@ fn check_ipc_pipe_length(ipc_pipe: &Path) {
     }
 }
 
-#[derive(Clone, Copy)]
-struct TerminalTeardown {
-    include_kitty_exit: bool,
-}
-
-fn exit_after_startup_error(teardown: Option<TerminalTeardown>, message: String) -> ! {
-    log::error!("{}", message);
-    match teardown {
-        Some(teardown) => {
-            let kitty_exit = if teardown.include_kitty_exit {
-                EXIT_KITTY_KEYBOARD_MODE
-            } else {
-                ""
-            };
-            let rendered = format!(
-                "{}{}{}{}{}\r\n{}\n",
-                kitty_exit,
-                DISABLE_HOST_THEME_NOTIFY,
-                EXIT_ALTERNATE_SCREEN,
-                RESET_STYLE,
-                SHOW_CURSOR,
-                message
-            );
-            let mut stdout = io::stdout();
-            let _ = stdout.write_all(rendered.as_bytes());
-            let _ = stdout.flush();
-        },
-        None => {
-            eprintln!("{}", message);
-        },
-    }
-    std::process::exit(1);
-}
-
 fn spawn_server_error_message(e: io::Error) -> String {
     format!(
         "Error: failed to start the Zellij server process:\n\n\
@@ -362,10 +314,10 @@ fn spawn_server_error_message(e: io::Error) -> String {
     )
 }
 
-fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
+fn create_ipc_pipe(teardown: Option<ClientTeardown>) -> PathBuf {
     let mut sock_dir = ZELLIJ_SOCK_DIR.clone();
     if let Err(e) = std::fs::create_dir_all(&sock_dir) {
-        exit_after_startup_error(
+        ClientTeardown::exit_after_startup_error(
             teardown,
             format!(
                 "Error: failed to create the Zellij socket directory:\n  {}\n\n\
@@ -381,7 +333,7 @@ fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
         );
     }
     if let Err(e) = set_permissions(&sock_dir, 0o700) {
-        exit_after_startup_error(
+        ClientTeardown::exit_after_startup_error(
             teardown,
             format!(
                 "Error: failed to set permissions (0700) on the Zellij socket directory:\n  {}\n\n\
@@ -574,17 +526,7 @@ pub async fn run_remote_client_terminal_loop(
                     if last_heard_from_host.elapsed()
                         >= std::time::Duration::from_millis(nested_session::reannounce_silence_ms())
                     {
-                        let announce = nested_session::NestedSessionMessage::Announce {
-                            session_name: session_name.clone(),
-                            capabilities: vec![nested_session::NestedSessionCapability::NestedControl],
-                        };
-                        let mut stdout = os_input.get_stdout_writer();
-                        if stdout
-                            .write_all(&nested_session::encode_frame(&announce))
-                            .is_ok()
-                        {
-                            let _ = stdout.flush();
-                        }
+                        announce_nested(&*os_input, session_name);
                     }
                 }
             }
@@ -610,37 +552,11 @@ pub async fn run_remote_client_terminal_loop(
                 match terminal_msg {
                     Some(Ok(Message::Text(text))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.start_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout
-                            .write_all(text.as_bytes())
-                            .expect("cannot write to stdout");
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.end_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout.flush().expect("could not flush");
+                        write_synchronised(&mut *stdout, synchronised_output, text.as_bytes());
                     }
                     Some(Ok(Message::Binary(data))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.start_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout
-                            .write_all(&data)
-                            .expect("cannot write to stdout");
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.end_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout.flush().expect("could not flush");
+                        write_synchronised(&mut *stdout, synchronised_output, &data);
                     }
                     Some(Ok(Message::Close(_))) => {
                         break;
@@ -753,34 +669,16 @@ pub fn start_remote_client(
     let reconnect_to_session = None;
     os_input.unset_raw_mode().unwrap();
 
-    let mut stdout = os_input.get_stdout_writer();
-    stdout.write_all(ENTER_ALTERNATE_SCREEN.as_bytes()).unwrap();
-    stdout
-        .write_all(CLEAR_CLIENT_TERMINAL_ATTRIBUTES.as_bytes())
-        .unwrap();
-    stdout
-        .write_all(ENTER_KITTY_KEYBOARD_MODE.as_bytes())
-        .unwrap();
-    stdout
-        .write_all(ENABLE_HOST_THEME_NOTIFY.as_bytes())
-        .unwrap();
-    stdout.write_all(QUERY_HOST_THEME.as_bytes()).unwrap();
+    enter_terminal(&*os_input, true);
 
     envs::set_zellij("0".to_string());
 
     let full_screen_ws = os_input.get_terminal_size();
 
     os_input.set_raw_mode();
-    stdout.write_all(ENABLE_BRACKETED_PASTE.as_bytes()).unwrap();
+    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
     if is_nested_inside_zellij_pane {
-        let announce = nested_session::NestedSessionMessage::Announce {
-            session_name: remote_session_name.clone(),
-            capabilities: vec![nested_session::NestedSessionCapability::NestedControl],
-        };
-        stdout
-            .write_all(&nested_session::encode_frame(&announce))
-            .unwrap();
-        let _ = stdout.flush();
+        announce_nested(&*os_input, &remote_session_name);
     }
 
     std::panic::set_hook({
@@ -794,20 +692,7 @@ pub fn start_remote_client(
         })
     });
 
-    let reset_controlling_terminal_state = |e: String, exit_status: i32| {
-        os_input.disable_mouse().non_fatal();
-        os_input.unset_raw_mode().unwrap();
-        let error = terminal_teardown_message(&e, full_screen_ws.rows, true);
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(error.as_bytes()).unwrap();
-        stdout.flush().unwrap();
-        if exit_status == 0 {
-            log::info!("{}", e);
-        } else {
-            log::error!("{}", e);
-        };
-        std::process::exit(exit_status);
-    };
+    let teardown = ClientTeardown::new(full_screen_ws.rows, true);
 
     let nested_session_name = if is_nested_inside_zellij_pane {
         Some(remote_session_name.clone())
@@ -821,23 +706,15 @@ pub fn start_remote_client(
     ))?;
 
     if is_nested_inside_zellij_pane {
-        let mut stdout = os_input.get_stdout_writer();
-        let _ = stdout.write_all(&nested_session::encode_frame(
-            &nested_session::NestedSessionMessage::Bye,
-        ));
-        let _ = stdout.flush();
+        say_bye(&*os_input);
     }
 
     let exit_msg = String::from("Bye from Zellij!");
 
     if reconnect_to_session.is_none() {
-        reset_controlling_terminal_state(exit_msg, 0);
-        std::process::exit(0);
+        teardown.tear_down(&*os_input, exit_msg, 0);
     } else {
-        let clear_screen = "\u{1b}[2J";
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(clear_screen.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_seqs(&*os_input, &[CLEAR_SCREEN]);
     }
 
     Ok(reconnect_to_session)
@@ -878,24 +755,7 @@ pub fn start_client(
     if !is_a_reconnect {
         // we don't do this for a reconnect because our controlling terminal already has the
         // attributes we want from it, and some terminals don't treat these atomically.
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(ENTER_ALTERNATE_SCREEN.as_bytes()).unwrap();
-        stdout
-            .write_all(CLEAR_CLIENT_TERMINAL_ATTRIBUTES.as_bytes())
-            .unwrap();
-        if !explicitly_disable_kitty_keyboard_protocol {
-            stdout
-                .write_all(ENTER_KITTY_KEYBOARD_MODE.as_bytes())
-                .unwrap();
-        }
-        // Subscribe to host CSI 2031 theme notifications and query the
-        // current mode. Sent right after CLEAR_CLIENT_TERMINAL_ATTRIBUTES
-        // so there's no window in which the host is unsubscribed.
-        // Hosts that don't support 2031 ignore both sequences.
-        stdout
-            .write_all(ENABLE_HOST_THEME_NOTIFY.as_bytes())
-            .unwrap();
-        stdout.write_all(QUERY_HOST_THEME.as_bytes()).unwrap();
+        enter_terminal(&*os_input, !explicitly_disable_kitty_keyboard_protocol);
     }
     envs::set_zellij("0".to_string());
     config.env.set_vars();
@@ -910,9 +770,7 @@ pub fn start_client(
         config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
     let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
 
-    let terminal_teardown = TerminalTeardown {
-        include_kitty_exit: !explicitly_disable_kitty_keyboard_protocol,
-    };
+    let terminal_teardown = ClientTeardown::at_startup(!explicitly_disable_kitty_keyboard_protocol);
 
     let (first_msg, ipc_pipe) = match info {
         ClientInfo::Attach(name, config_options) => {
@@ -1003,7 +861,10 @@ pub fn start_client(
             let ipc_pipe = create_ipc_pipe(Some(terminal_teardown));
 
             if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
-                exit_after_startup_error(Some(terminal_teardown), spawn_server_error_message(e));
+                ClientTeardown::exit_after_startup_error(
+                    Some(terminal_teardown),
+                    spawn_server_error_message(e),
+                );
             }
             if should_start_web_server {
                 if let Err(e) = spawn_web_server(&cli_args) {
@@ -1059,7 +920,10 @@ pub fn start_client(
             let ipc_pipe = create_ipc_pipe(Some(terminal_teardown));
 
             if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
-                exit_after_startup_error(Some(terminal_teardown), spawn_server_error_message(e));
+                ClientTeardown::exit_after_startup_error(
+                    Some(terminal_teardown),
+                    spawn_server_error_message(e),
+                );
             }
             if should_start_web_server {
                 if let Err(e) = spawn_web_server(&cli_args) {
@@ -1085,17 +949,9 @@ pub fn start_client(
     let mut command_is_executing = CommandIsExecuting::new();
 
     os_input.set_raw_mode();
-    let mut stdout = os_input.get_stdout_writer();
-    stdout.write_all(ENABLE_BRACKETED_PASTE.as_bytes()).unwrap();
+    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
     let nested_reannounce = if is_nested_inside_zellij_pane {
-        let announce = nested_session::NestedSessionMessage::Announce {
-            session_name: own_session_name.clone(),
-            capabilities: vec![nested_session::NestedSessionCapability::NestedControl],
-        };
-        stdout
-            .write_all(&nested_session::encode_frame(&announce))
-            .unwrap();
-        let _ = stdout.flush();
+        announce_nested(&*os_input, &own_session_name);
         Some(crate::nested_reannounce::NestedReannounce::spawn(
             os_input.clone(),
             own_session_name.clone(),
@@ -1260,19 +1116,11 @@ pub fn start_client(
         })
         .unwrap();
 
-    let handle_error = |backtrace: String| {
-        os_input.disable_mouse().non_fatal();
-        os_input.unset_raw_mode().unwrap();
-        let error = terminal_teardown_message(
-            &backtrace,
-            full_screen_ws.rows,
-            !explicitly_disable_kitty_keyboard_protocol,
-        );
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(error.as_bytes()).unwrap();
-        stdout.flush().unwrap();
-        std::process::exit(1);
-    };
+    let teardown = ClientTeardown::new(
+        full_screen_ws.rows,
+        !explicitly_disable_kitty_keyboard_protocol,
+    );
+    let handle_error = |backtrace: String| teardown.tear_down(&*os_input, backtrace, 1);
 
     let mut exit_msg = String::new();
     let mut synchronised_output = match os_input.env_variable("TERM").as_deref() {
@@ -1302,20 +1150,7 @@ pub fn start_client(
             },
             ClientInstruction::Render(output) => {
                 let mut stdout = os_input.get_stdout_writer();
-                if let Some(sync) = synchronised_output {
-                    stdout
-                        .write_all(sync.start_seq())
-                        .expect("cannot write to stdout");
-                }
-                stdout
-                    .write_all(output.as_bytes())
-                    .expect("cannot write to stdout");
-                if let Some(sync) = synchronised_output {
-                    stdout
-                        .write_all(sync.end_seq())
-                        .expect("cannot write to stdout");
-                }
-                stdout.flush().expect("could not flush");
+                write_synchronised(&mut *stdout, synchronised_output, output.as_bytes());
             },
             ClientInstruction::UnblockInputThread => {
                 command_is_executing.unblock_input_thread();
@@ -1490,31 +1325,14 @@ pub fn start_client(
     router_thread.join().unwrap();
 
     if is_nested_inside_zellij_pane {
-        let mut stdout = os_input.get_stdout_writer();
-        let _ = stdout.write_all(&nested_session::encode_frame(
-            &nested_session::NestedSessionMessage::Bye,
-        ));
-        let _ = stdout.flush();
+        say_bye(&*os_input);
     }
 
     if reconnect_to_session.is_none() {
-        let goodbye_message = terminal_teardown_message(
-            &exit_msg,
-            full_screen_ws.rows,
-            !explicitly_disable_kitty_keyboard_protocol,
-        );
-
-        os_input.disable_mouse().non_fatal();
         info!("{}", exit_msg);
-        os_input.unset_raw_mode().unwrap();
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(goodbye_message.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        teardown.restore(&*os_input, &exit_msg);
     } else {
-        let clear_screen = "\u{1b}[2J";
-        let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(clear_screen.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_seqs(&*os_input, &[CLEAR_SCREEN]);
     }
 
     let _ = send_input_instructions.send(InputInstruction::Exit);
@@ -1560,7 +1378,7 @@ pub fn start_server_detached(
             let ipc_pipe = create_ipc_pipe(None);
 
             if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
-                exit_after_startup_error(None, spawn_server_error_message(e));
+                ClientTeardown::exit_after_startup_error(None, spawn_server_error_message(e));
             }
             if should_start_web_server {
                 if let Err(e) = spawn_web_server(&cli_args) {
@@ -1617,7 +1435,7 @@ pub fn start_server_detached(
             let ipc_pipe = create_ipc_pipe(None);
 
             if let Err(e) = os_input.spawn_server(&ipc_pipe, cli_args.debug) {
-                exit_after_startup_error(None, spawn_server_error_message(e));
+                ClientTeardown::exit_after_startup_error(None, spawn_server_error_message(e));
             }
             if should_start_web_server {
                 if let Err(e) = spawn_web_server(&cli_args) {
@@ -1642,25 +1460,6 @@ pub fn start_server_detached(
 
     os_input.connect_to_server(&ipc_pipe);
     os_input.send_to_server(first_msg);
-}
-
-fn terminal_teardown_message(message: &str, rows: usize, include_kitty_exit: bool) -> String {
-    let goto_start_of_last_line = format!("\u{1b}[{};{}H", rows, 1);
-    let kitty_exit = if include_kitty_exit {
-        EXIT_KITTY_KEYBOARD_MODE
-    } else {
-        ""
-    };
-    format!(
-        "{}{}{}{}{}{}{}\n",
-        kitty_exit,
-        DISABLE_HOST_THEME_NOTIFY,
-        EXIT_ALTERNATE_SCREEN,
-        RESET_STYLE,
-        SHOW_CURSOR,
-        goto_start_of_last_line,
-        message
-    )
 }
 
 #[cfg(test)]
