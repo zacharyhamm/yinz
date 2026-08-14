@@ -1,31 +1,20 @@
-use super::config::{LOGIN_ENDPOINT, SESSION_ENDPOINT};
 use super::http_client::HttpClientWithCookies;
+use crate::web_protocol::endpoints::{LOGIN, SESSION};
+use crate::web_protocol::http::{CreateClientIdResponse, LoginRequest};
 use crate::RemoteClientError;
 use isahc::{AsyncReadResponseExt, Request};
-use serde::{Deserialize, Serialize};
 
 /// Identifies this client to the web server. Sent on every request.
 const USER_AGENT: &str = "http-terminal-client/1.0";
 
-#[derive(Serialize)]
-struct LoginRequest {
-    auth_token: String,
-    remember_me: bool,
-}
-
-#[derive(Deserialize)]
-pub struct SessionResponse {
-    pub web_client_id: String,
-}
-
 fn session_url(server_base_url: &str, session_name: &str) -> String {
     if session_name.is_empty() {
-        format!("{}{}", server_base_url, SESSION_ENDPOINT)
+        format!("{}{}", server_base_url, SESSION)
     } else {
         format!(
             "{}{}?session={}",
             server_base_url,
-            SESSION_ENDPOINT,
+            SESSION,
             urlencoding::encode(session_name)
         )
     }
@@ -78,7 +67,7 @@ async fn fetch_web_client_id(
     .await?;
 
     let body = response.text().await?;
-    let session_data: SessionResponse = serde_json::from_str(&body)?;
+    let session_data: CreateClientIdResponse = serde_json::from_str(&body)?;
     Ok(session_data.web_client_id)
 }
 
@@ -97,11 +86,11 @@ pub async fn authenticate(
 
     let login_request = LoginRequest {
         auth_token: auth_token.to_string(),
-        remember_me,
+        remember_me: Some(remember_me),
     };
     post_json(
         &http_client,
-        format!("{}{}", server_base_url, LOGIN_ENDPOINT),
+        format!("{}{}", server_base_url, LOGIN),
         serde_json::to_vec(&login_request)?,
         RemoteClientError::InvalidAuthToken,
     )

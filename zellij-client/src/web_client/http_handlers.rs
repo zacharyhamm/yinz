@@ -1,10 +1,10 @@
 use crate::web_client::authentication::{IsReadOnly, SessionTokenHash};
-use crate::web_client::control_message::SetConfigPayload;
-use crate::web_client::types::{
-    record_pending_welcome_session, AppState, CreateClientIdResponse, LoginRequest, LoginResponse,
-    SessionListResponse, SessionQuery,
-};
+use crate::web_client::types::{record_pending_welcome_session, AppState};
 use crate::web_client::utils::get_mime_type;
+use crate::web_protocol::control_message::SetConfigPayload;
+use crate::web_protocol::http::{
+    CreateClientIdResponse, LoginRequest, LoginResponse, SessionListResponse, SessionQuery,
+};
 use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{header, StatusCode},

@@ -1,13 +1,14 @@
 use crate::web_client::authentication::SessionTokenHash;
-use crate::web_client::control_message::{
-    TerminalMetricsPayload, WebClientToWebServerControlMessage,
-    WebClientToWebServerControlMessagePayload,
-};
 use crate::web_client::message_handlers::{
     parse_stdin, render_to_client, send_control_messages_to_client, StdinSession,
 };
 use crate::web_client::server_listener::zellij_server_listener;
-use crate::web_client::types::{client_action, AppState, ControlParams, TerminalParams};
+use crate::web_client::types::{client_action, AppState};
+use crate::web_protocol::control_message::{
+    TerminalMetricsPayload, WebClientToWebServerControlMessage,
+    WebClientToWebServerControlMessagePayload,
+};
+use crate::web_protocol::http::{ControlParams, TerminalParams};
 
 use axum::{
     extract::{

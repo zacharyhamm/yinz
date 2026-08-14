@@ -1,5 +1,4 @@
 use axum::extract::ws::Message;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,8 +6,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::os_input_output::ClientOsApi;
-use crate::web_client::control_message::SetConfigPayload;
 use crate::web_client::session_management::spawn_new_session;
+use crate::web_protocol::http::WebSessionInfo;
 use std::path::{Path, PathBuf};
 use zellij_utils::input::actions::Action;
 use zellij_utils::{
@@ -248,61 +247,6 @@ impl AppState {
             .unwrap()
             .verify_client_ownership(web_client_id, session_token_hash)
     }
-}
-
-#[derive(Serialize)]
-pub struct CreateClientIdResponse {
-    pub web_client_id: String,
-    pub is_read_only: bool,
-    pub session_name: String,
-    pub config: SetConfigPayload,
-}
-
-#[derive(Deserialize)]
-pub struct SessionQuery {
-    pub session: Option<String>,
-    pub welcome: Option<bool>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct WebSessionInfo {
-    pub name: String,
-    pub web_clients_allowed: bool,
-    pub tab_count: usize,
-    pub pane_count: usize,
-    pub connected_clients: usize,
-    pub creation_secs_ago: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct SessionListResponse {
-    pub sessions: Vec<WebSessionInfo>,
-}
-
-#[derive(Deserialize)]
-pub struct TerminalParams {
-    pub web_client_id: String,
-    pub rows: Option<u16>,
-    pub cols: Option<u16>,
-    pub cell_width: Option<u16>,
-    pub cell_height: Option<u16>,
-}
-
-#[derive(Deserialize)]
-pub struct ControlParams {
-    pub web_client_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    pub auth_token: String,
-    pub remember_me: Option<bool>,
-}
-
-#[derive(Serialize)]
-pub struct LoginResponse {
-    pub success: bool,
-    pub message: String,
 }
 
 pub const BRACKETED_PASTE_START: [u8; 6] = [27, 91, 50, 48, 48, 126]; // \u{1b}[200~

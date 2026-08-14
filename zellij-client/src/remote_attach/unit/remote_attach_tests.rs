@@ -18,10 +18,12 @@ mod mock_server {
         Json, Router,
     };
     use axum_extra::extract::cookie::{Cookie, CookieJar};
-    use serde::Deserialize;
-    use serde_json::json;
     use tokio::net::TcpListener;
     use uuid::Uuid;
+
+    use crate::web_protocol::control_message::SetConfigPayload;
+    use crate::web_protocol::endpoints;
+    use crate::web_protocol::http::{CreateClientIdResponse, LoginRequest, LoginResponse};
 
     #[derive(Clone)]
     pub struct MockRemoteServerState {
@@ -29,6 +31,8 @@ mod mock_server {
         pub session_tokens: Arc<Mutex<HashMap<String, String>>>, // token -> web_client_id
         pub endpoints_called: Arc<Mutex<Vec<String>>>,
         pub query_strings: Arc<Mutex<HashMap<String, String>>>,
+        /// The `remember_me` of every login seen, in order.
+        pub remember_me_asked_for: Arc<Mutex<Vec<Option<bool>>>>,
     }
 
     impl MockRemoteServerState {
@@ -38,7 +42,12 @@ mod mock_server {
                 session_tokens: Arc::new(Mutex::new(HashMap::new())),
                 endpoints_called: Arc::new(Mutex::new(Vec::new())),
                 query_strings: Arc::new(Mutex::new(HashMap::new())),
+                remember_me_asked_for: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        pub fn get_remember_me_asked_for(&self) -> Vec<Option<bool>> {
+            self.remember_me_asked_for.lock().unwrap().clone()
         }
 
         fn record_query(&self, endpoint: &str, query: Option<&str>) {
@@ -71,17 +80,17 @@ mod mock_server {
         }
     }
 
-    #[derive(Deserialize)]
-    pub struct LoginRequest {
-        pub auth_token: String,
-    }
-
     pub async fn handle_login(
         State(state): State<MockRemoteServerState>,
         jar: CookieJar,
         Json(payload): Json<LoginRequest>,
-    ) -> Result<(CookieJar, Json<serde_json::Value>), StatusCode> {
-        state.record_endpoint("/command/login");
+    ) -> Result<(CookieJar, Json<LoginResponse>), StatusCode> {
+        state.record_endpoint(endpoints::LOGIN);
+        state
+            .remember_me_asked_for
+            .lock()
+            .unwrap()
+            .push(payload.remember_me);
 
         let valid_tokens = state.valid_auth_tokens.lock().unwrap();
         if !valid_tokens.contains_key(&payload.auth_token) {
@@ -107,10 +116,10 @@ mod mock_server {
 
         Ok((
             jar,
-            Json(json!({
-                "success": true,
-                "message": "Login successful"
-            })),
+            Json(LoginResponse {
+                success: true,
+                message: "Login successful".to_string(),
+            }),
         ))
     }
 
@@ -118,9 +127,9 @@ mod mock_server {
         State(state): State<MockRemoteServerState>,
         uri: axum::http::Uri,
         jar: CookieJar,
-    ) -> Result<Json<serde_json::Value>, StatusCode> {
-        state.record_endpoint("/session");
-        state.record_query("/session", uri.query());
+    ) -> Result<Json<CreateClientIdResponse>, StatusCode> {
+        state.record_endpoint(endpoints::SESSION);
+        state.record_query(endpoints::SESSION, uri.query());
 
         let session_token = jar
             .get("session_token")
@@ -134,17 +143,15 @@ mod mock_server {
             .clone();
         drop(session_tokens);
 
-        Ok(Json(json!({
-            "web_client_id": web_client_id,
-            "is_read_only": false,
-            "session_name": "session-name",
-            "config": {
-                "font": "Monospace",
-                "theme": {},
-                "cursor_blink": false,
-                "mac_option_is_meta": false
-            }
-        })))
+        Ok(Json(CreateClientIdResponse {
+            web_client_id,
+            is_read_only: false,
+            session_name: "session-name".to_string(),
+            config: SetConfigPayload {
+                font: "Monospace".to_string(),
+                ..Default::default()
+            },
+        }))
     }
 
     pub async fn handle_ws_terminal(
@@ -153,8 +160,8 @@ mod mock_server {
         uri: axum::http::Uri,
         jar: CookieJar,
     ) -> Result<Response, StatusCode> {
-        state.record_endpoint("/ws/terminal");
-        state.record_query("/ws/terminal", uri.query());
+        state.record_endpoint(endpoints::WS_TERMINAL);
+        state.record_query(endpoints::WS_TERMINAL, uri.query());
 
         // Validate session token
         let session_token = jar
@@ -188,8 +195,8 @@ mod mock_server {
         uri: axum::http::Uri,
         jar: CookieJar,
     ) -> Result<Response, StatusCode> {
-        state.record_endpoint("/ws/control");
-        state.record_query("/ws/control", uri.query());
+        state.record_endpoint(endpoints::WS_CONTROL);
+        state.record_query(endpoints::WS_CONTROL, uri.query());
 
         // Validate session token
         let session_token = jar
@@ -221,11 +228,11 @@ mod mock_server {
         state: MockRemoteServerState,
     ) -> (u16, tokio::task::JoinHandle<()>) {
         let app = Router::new()
-            .route("/command/login", post(handle_login))
-            .route("/session", post(handle_session))
-            .route("/ws/terminal", get(handle_ws_terminal))
-            .route("/ws/terminal/{session_name}", get(handle_ws_terminal))
-            .route("/ws/control", get(handle_ws_control))
+            .route(endpoints::LOGIN, post(handle_login))
+            .route(endpoints::SESSION, post(handle_session))
+            .route(endpoints::WS_TERMINAL, get(handle_ws_terminal))
+            .route(endpoints::WS_TERMINAL_WITH_SESSION, get(handle_ws_terminal))
+            .route(endpoints::WS_CONTROL, get(handle_ws_control))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -521,6 +528,12 @@ mod tests {
 
         assert!(result.is_ok(), "Connection should succeed");
 
+        assert_eq!(
+            server_state.get_remember_me_asked_for(),
+            vec![Some(true)],
+            "The server should have been asked to remember this login"
+        );
+
         // Verify token was saved
         let saved_token = remote_session_tokens::get_session_token(&base_url);
         assert!(saved_token.is_ok());
@@ -555,6 +568,12 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "Connection should succeed");
+
+        assert_eq!(
+            server_state.get_remember_me_asked_for(),
+            vec![Some(false)],
+            "The server should not have been asked to remember this login"
+        );
 
         // Verify token was NOT saved
         let saved_token = remote_session_tokens::get_session_token(&base_url);

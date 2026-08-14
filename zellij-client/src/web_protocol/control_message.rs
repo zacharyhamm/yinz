@@ -61,7 +61,7 @@ pub enum WebServerToWebClientControlMessage {
     MobileState { payload: MobileStatePayload },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SetConfigPayload {
     pub font: String,
     pub theme: SetConfigPayloadTheme,

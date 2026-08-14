@@ -83,7 +83,7 @@ fn resolve_theme(config: &Config, config_options: &Options) -> ResolvedTheme {
         .and_then(|t| t.background.clone())
         .or_else(|| palette.map(|p| p.text_unselected.background.as_rgb_str()));
 
-    out.indexed = crate::web_client::control_message::indexed_theme_overrides(web_client_theme);
+    out.indexed = crate::web_protocol::control_message::indexed_theme_overrides(web_client_theme);
 
     out
 }
@@ -196,7 +196,7 @@ mod tests {
     /// with, or the two disagree about what the terminal looks like.
     #[test]
     fn cli_theme_override_drives_both_the_seed_and_the_browser_payload() {
-        use crate::web_client::control_message::SetConfigPayload;
+        use crate::web_protocol::control_message::SetConfigPayload;
 
         let cli_theme = (1u8, 2u8, 3u8);
         let mut config = config_with_named_theme("from-cli", cli_theme);

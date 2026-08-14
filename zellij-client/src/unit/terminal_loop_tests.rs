@@ -3,10 +3,11 @@ use crate::remote_attach::websockets::MaybeTls;
 use crate::remote_attach::WebSocketConnections;
 use crate::run_remote_client_terminal_loop;
 use crate::test_support::FakeClientOsApi;
-use crate::web_client::control_message::{
+use crate::web_protocol::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
     WebServerToWebClientControlMessage,
 };
+use crate::web_protocol::endpoints::{WS_CONTROL, WS_TERMINAL};
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use std::sync::{Arc, Mutex};
@@ -61,11 +62,11 @@ mod mock_ws_server {
 
             let app = Router::new()
                 .route(
-                    "/ws/terminal",
+                    WS_TERMINAL,
                     get(terminal_handler).with_state(terminal_state.clone()),
                 )
                 .route(
-                    "/ws/control",
+                    WS_CONTROL,
                     get(control_handler).with_state(control_state.clone()),
                 );
 
@@ -183,8 +184,8 @@ mod mock_ws_server {
 async fn test_stdin_forwarded_to_terminal_websocket() {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -257,8 +258,8 @@ async fn test_stdin_forwarded_to_terminal_websocket() {
 async fn test_terminal_output_written_to_stdout() {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -334,8 +335,8 @@ async fn test_terminal_output_written_to_stdout() {
 async fn test_resize_signal_sends_control_message() {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -427,8 +428,8 @@ async fn test_resize_signal_sends_control_message() {
 async fn test_quit_signal_exits_loop() {
     let (port, _server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -487,8 +488,8 @@ async fn test_quit_signal_exits_loop() {
 async fn test_websocket_close_exits_loop() {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -550,8 +551,8 @@ async fn test_websocket_close_exits_loop() {
 async fn test_control_message_handling() {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
 
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -657,8 +658,8 @@ async fn test_control_message_handling() {
 }
 
 async fn connect_mock_ws(port: u16) -> WebSocketConnections {
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
+    let terminal_url = format!("ws://127.0.0.1:{}{WS_TERMINAL}", port);
+    let control_url = format!("ws://127.0.0.1:{}{WS_CONTROL}", port);
     let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();

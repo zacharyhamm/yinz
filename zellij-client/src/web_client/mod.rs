@@ -1,5 +1,3 @@
-pub mod control_message;
-
 pub(crate) mod authentication;
 mod connection_manager;
 mod host_query_seed;
@@ -44,6 +42,7 @@ use http_handlers::{
 };
 use ipc_listener::listen_to_web_server_instructions;
 
+use crate::web_protocol::endpoints;
 use types::{
     AppState, ClientOsApiFactory, ConnectionTable, RealClientOsApiFactory, RealSessionManager,
     SessionManager,
@@ -228,17 +227,18 @@ pub async fn serve_web_client(
 
     let is_https = state.is_https;
     let app = Router::new()
-        .route("/ws/control", any(ws_handler_control))
-        .route("/ws/terminal", any(ws_handler_terminal))
-        .route("/ws/terminal/{session}", any(ws_handler_terminal))
-        .route("/session", post(create_new_client))
-        .route("/session-list", get(list_sessions_handler))
+        .route(endpoints::WS_CONTROL, any(ws_handler_control))
+        .route(endpoints::WS_TERMINAL, any(ws_handler_terminal))
+        .route(endpoints::WS_TERMINAL_WITH_SESSION, any(ws_handler_terminal))
+        .route(endpoints::SESSION, post(create_new_client))
+        .route(endpoints::SESSION_LIST, get(list_sessions_handler))
+        // Only the routes above this layer are authenticated.
         .route_layer(middleware::from_fn(auth_middleware))
-        .route("/", get(serve_html))
-        .route("/{session}", get(serve_html))
-        .route("/assets/{*path}", get(get_static_asset))
-        .route("/command/login", post(login_handler))
-        .route("/info/version", get(version_handler))
+        .route(endpoints::ROOT, get(serve_html))
+        .route(endpoints::SESSION_PAGE, get(serve_html))
+        .route(endpoints::STATIC_ASSETS, get(get_static_asset))
+        .route(endpoints::LOGIN, post(login_handler))
+        .route(endpoints::VERSION, get(version_handler))
         .with_state(state)
         .layer(axum::middleware::from_fn(move |request, next: axum::middleware::Next| {
             async move {
