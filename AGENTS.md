@@ -25,6 +25,36 @@ CI runs: `cargo x build`, `cargo x test`, `cargo x test --no-web`,
 `cargo x integration-test`, `cargo x assets --check`, `cargo x format --check`,
 `cargo test -p xtask` — on Linux and macOS.
 
+### Passing arguments
+
+xtask's own flags come first (`--no-web`, `--release`, …); everything after `--` is
+forwarded — but each command forwards to a different place:
+
+| command | trailing args land in |
+|---|---|
+| `x test` | libtest, in **every** crate's test binary (after `cargo test --`) |
+| `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
+| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build) |
+| `x run` | zellij itself (after `cargo run --`) |
+| `x ci e2e` | the e2e test runner |
+
+So `cargo x test -p zellij-server` is rejected by xtask (`unexpected flag: -p`), and
+`cargo x test -- -p zellij-server` reaches every plugin test binary as a libtest option,
+failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
+
+- **One test, every crate:** `cargo x test some_test_name` — a bare filter needs no `--`.
+  Harness flags do: `cargo x test -- --nocapture --test-threads=1`.
+- **One crate, inner loop:** bare cargo is fine here, and is exactly what the per-crate
+  phase runs — `cargo test -p zellij-server --all-features -- some_filter`, from the repo
+  root, never with `CARGO_TARGET_DIR` set. For a plugin crate add
+  `--target "$(rustc -vV | sed -n 's/^host: //p')"`: `default-plugins/*/.cargo/config.toml`
+  pins the build to wasm, and wasm tests can't run. Tests that load a plugin at runtime
+  need `cargo x build -p` (plugins only) first.
+- **Integration tests:** `cargo x integration-test -- -E 'test(resize)'` (nextest
+  expression), or a bare name filter, which works on either runner.
+
+Finish with a full `cargo x test` before calling work done — that's what CI runs.
+
 ## Layout
 
 | Path | What |
