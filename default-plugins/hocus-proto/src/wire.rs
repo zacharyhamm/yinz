@@ -27,6 +27,15 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 /// already probed changes the branch and nothing says so. Whoever shows a branch
 /// asks for this; the answer arrives as an ordinary snapshot.
 pub const AGENT_REFRESH: &str = "agent_refresh";
+/// hocus → hocus-agents: the agent strip as drawn rows (`Vec<agents::StripRow>`
+/// as JSON).
+///
+/// hocus stays the one place that knows which panes are agents, which project
+/// owns them and what branch they are on; the hocus-agents pane is a view over
+/// the finished rows, so the two can never disagree about a line.
+pub const AGENT_STRIP: &str = "agent_strip";
+/// hocus-agents → hocus: "I just loaded; send me the strip".
+pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.

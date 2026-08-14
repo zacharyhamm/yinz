@@ -965,6 +965,7 @@ pub(crate) fn route_action(
                 initially_hidden: false,
                 should_focus: !no_focus,
                 declaration_order: None,
+                split: None,
             });
             senders
                 .send_to_pty(PtyInstruction::SpawnTerminal(

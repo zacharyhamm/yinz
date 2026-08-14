@@ -872,10 +872,12 @@ mod tests {
         let left = GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Percent(25),
+            length: None,
         };
         let bottom = GlobalPanePlacement {
             edge: GlobalPaneEdge::Bottom,
             size: PercentOrFixed::Fixed(4),
+            length: None,
         };
         let mut command = RunCommand::new(PathBuf::from("tail"));
         command.args = vec!["-f".to_owned(), "/tmp/app.log".to_owned()];
@@ -946,6 +948,7 @@ mod tests {
         let placement = GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Fixed(8),
+            length: None,
         };
         let mut metadata = SessionLayoutMetadata::default();
         metadata.add_global_pane(PaneLayoutMetadata::new_global(

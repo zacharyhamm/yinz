@@ -335,6 +335,7 @@ impl State {
             }
         }
         self.refresh_tab_projects();
+        self.push_strip(false);
     }
 
     /// Apply a batch of writes to the shared namespace.

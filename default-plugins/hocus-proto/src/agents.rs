@@ -200,7 +200,11 @@ const BRANCH_INDENT: &str = "  ";
 ///
 /// A header is drawn and never selected, which is what lets the picker keep its
 /// pane ids parallel to its lines while still showing structure.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serialized: hocus computes these rows (it holds the snapshot, the project
+/// registry and the branch probes) and pipes them to the hocus-agents pane,
+/// which only draws them - see `wire::AGENT_STRIP`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StripRow {
     /// The project the agents below belong to.
     Project(String),

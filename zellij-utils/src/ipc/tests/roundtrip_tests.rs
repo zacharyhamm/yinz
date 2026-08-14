@@ -59,6 +59,7 @@ fn global_placement_ipc_rejects_invalid_sizes() {
             size: Some(ProtoGlobalPaneSize {
                 size_type: Some(size_type),
             }),
+            length: None,
         };
         assert!(GlobalPanePlacement::try_from(placement).is_err());
     }
@@ -67,6 +68,7 @@ fn global_placement_ipc_rejects_invalid_sizes() {
         let placement = GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size,
+            length: None,
         };
         assert!(ProtoGlobalPanePlacement::try_from(placement).is_err());
     }
@@ -75,6 +77,7 @@ fn global_placement_ipc_rejects_invalid_sizes() {
         let placement = GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Fixed(overflow),
+            length: None,
         };
         assert!(ProtoGlobalPanePlacement::try_from(placement).is_err());
     }
@@ -85,10 +88,12 @@ fn test_client_messages() {
     let fixed_global_placement = Some(GlobalPanePlacement {
         edge: GlobalPaneEdge::Right,
         size: PercentOrFixed::Fixed(12),
+        length: None,
     });
     let percent_global_placement = Some(GlobalPanePlacement {
         edge: GlobalPaneEdge::Bottom,
         size: PercentOrFixed::Percent(30),
+        length: None,
     });
     let mut demo_context = BTreeMap::new();
     demo_context.insert("demo_key1".to_owned(), "demo_value1".to_owned());
@@ -1346,6 +1351,7 @@ fn test_client_messages() {
             placement: GlobalPanePlacement {
                 edge: GlobalPaneEdge::Bottom,
                 size: PercentOrFixed::Percent(30),
+                length: None,
             },
         },
         terminal_id: Some(1),

@@ -1392,6 +1392,8 @@ pub struct GlobalPanePlacement {
     pub edge: i32,
     #[prost(message, optional, tag="2")]
     pub size: ::core::option::Option<GlobalPaneSize>,
+    #[prost(message, optional, tag="3")]
+    pub length: ::core::option::Option<GlobalPaneSize>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

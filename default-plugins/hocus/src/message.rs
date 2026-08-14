@@ -148,8 +148,8 @@ pub struct Job {
     pub auto_confirm: bool,
 }
 
-/// A list with a selected row. History and models use one modal instance; the
-/// agent strip keeps another visible above the conversation.
+/// A list with a selected row: the history and model browser. The agent list
+/// that used to share this type lives in the hocus-agents pane now.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Picker {
     /// What is shown, one row per entry.
@@ -159,10 +159,6 @@ pub struct Picker {
 }
 
 /// One line of a picker: what to draw, and whether the user can land on it.
-///
-/// A header is drawn and skipped over. That is what lets the agent list group
-/// its rows while keeping its pane ids parallel to its lines — a header simply
-/// has no id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PickerRow {
     pub text: String,
@@ -173,10 +169,6 @@ pub struct PickerRow {
 pub enum RowKind {
     /// A row the user can select.
     Item,
-    /// The project the rows below it belong to.
-    Project,
-    /// The branch the rows below it are checked out on, under a project header.
-    Branch,
 }
 
 impl PickerRow {
@@ -201,7 +193,4 @@ pub enum PickerKind {
     /// `entries` are model ids. Empty means the fetch is still in flight — every
     /// response either fills the list or closes the picker.
     Models,
-    /// `entries` are agent rows and the group headers over them; the pane ids
-    /// are parallel to them, and a header's is `None`. `Enter` focuses the pane.
-    Agents(Vec<Option<u32>>),
 }

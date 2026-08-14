@@ -480,6 +480,7 @@ impl State {
             // rather than delivered inline, so it arrives later.
             let mutations = projects::diff_mutations(&before, &self.projects);
             let _ = self.write_store(mutations);
+            self.push_strip(false);
             Ok(project)
         } else {
             self.projects.get(name).cloned().ok_or_else(|| {
@@ -589,6 +590,7 @@ impl State {
         // Rebuilds the tabs the poll worked out and the active project with
         // them, which is what the watch notification would do anyway.
         self.refresh_tab_projects();
+        self.push_strip(false);
         let _ = self.write_store(vec![projects::delete_mutation(name)]);
         projects::forgotten(&project)
     }

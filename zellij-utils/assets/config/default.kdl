@@ -286,6 +286,12 @@ plugins {
     hocus location="zellij:hocus" {
         shared true
     }
+    // The agent list, spawned by hocus itself as a split of its own global
+    // pane. Shared for the same reason hocus is: the strip it draws is pushed
+    // by the one hocus instance, and there is one strip per session.
+    hocus-agents location="zellij:hocus-agents" {
+        shared true
+    }
     // The one-line "ask hocus" popup, bound to Alt a above. Deliberately not
     // shared: each attached client gets its own prompt buffer. `x`/`y`/`width`/
     // `height` size it.

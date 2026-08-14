@@ -122,6 +122,15 @@ fn serialize_global_panes(
                 .entries_mut()
                 .push(KdlEntry::new_prop("size", format!("{size}%"))),
         }
+        match placement.length {
+            Some(PercentOrFixed::Fixed(length)) => pane_node.entries_mut().push(
+                KdlEntry::new_prop("length", KdlValue::Base10(length as i64)),
+            ),
+            Some(PercentOrFixed::Percent(length)) => pane_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("length", format!("{length}%"))),
+            None => {},
+        }
         if pane.is_hidden {
             pane_node
                 .entries_mut()
@@ -2194,6 +2203,7 @@ mod tests {
                 global_placement: Some(GlobalPanePlacement {
                     edge: GlobalPaneEdge::Left,
                     size: PercentOrFixed::Percent(25),
+                    length: None,
                 }),
                 is_hidden: true,
                 ..Default::default()
@@ -2203,6 +2213,63 @@ mod tests {
 
         let kdl = serialize_session_layout(global_layout_manifest).unwrap();
         assert_snapshot!(kdl.0);
+    }
+    #[test]
+    fn split_global_panes_round_trip_through_serialization() {
+        use crate::input::layout::Layout;
+        let global_layout_manifest = GlobalLayoutManifest {
+            global_panes: vec![
+                PaneLayoutManifest {
+                    run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
+                        RunPlugin::from_url("zellij:strider").unwrap(),
+                    ))),
+                    global_placement: Some(GlobalPanePlacement {
+                        edge: GlobalPaneEdge::Left,
+                        size: PercentOrFixed::Percent(25),
+                        length: Some(PercentOrFixed::Percent(30)),
+                    }),
+                    ..Default::default()
+                },
+                PaneLayoutManifest {
+                    global_placement: Some(GlobalPanePlacement {
+                        edge: GlobalPaneEdge::Left,
+                        size: PercentOrFixed::Percent(25),
+                        length: None,
+                    }),
+                    ..Default::default()
+                },
+                PaneLayoutManifest {
+                    global_placement: Some(GlobalPanePlacement {
+                        edge: GlobalPaneEdge::Bottom,
+                        size: PercentOrFixed::Fixed(5),
+                        length: Some(PercentOrFixed::Fixed(40)),
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (kdl, _pane_contents) = serialize_session_layout(global_layout_manifest).unwrap();
+        let parsed = Layout::from_kdl(&kdl, None, None, None).unwrap();
+        assert_eq!(parsed.global_panes.len(), 3);
+        assert_eq!(
+            parsed.global_panes[0].placement,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Percent(25),
+                length: Some(PercentOrFixed::Percent(30)),
+            }
+        );
+        assert_eq!(parsed.global_panes[1].placement.length, None);
+        assert_eq!(
+            parsed.global_panes[2].placement,
+            GlobalPanePlacement {
+                edge: GlobalPaneEdge::Bottom,
+                size: PercentOrFixed::Fixed(5),
+                length: Some(PercentOrFixed::Fixed(40)),
+            }
+        );
     }
     #[test]
     fn global_pane_manifest_requires_placement() {
