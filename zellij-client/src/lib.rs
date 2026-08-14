@@ -7,6 +7,7 @@ mod os_input_output_unix;
 compile_error!("Zellij does not support Windows");
 
 pub mod cli_client;
+mod client_loop;
 mod command_is_executing;
 mod input_handler;
 mod keyboard_parser;
@@ -17,6 +18,7 @@ pub mod remote_attach;
 mod remote_terminal_loop;
 #[cfg(feature = "web_server_capability")]
 pub use remote_terminal_loop::run_remote_client_terminal_loop;
+mod router;
 mod startup;
 mod stdin_ansi_parser;
 mod stdin_handler;
@@ -33,14 +35,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use zellij_utils::errors::FatalError;
-use zellij_utils::shared::web_server_base_url;
 
 static ASYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 use std::sync::OnceLock;
 
 use crate::terminal_escapes::{
-    announce_nested, enter_terminal, say_bye, write_seqs, write_synchronised, ClientTeardown,
-    CLEAR_SCREEN, ENABLE_BRACKETED_PASTE,
+    announce_nested, enter_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
+    ENABLE_BRACKETED_PASTE,
 };
 
 /// Spawn an async runtime for this client instance.
@@ -120,7 +121,7 @@ impl From<std::io::Error> for RemoteClientError {
     }
 }
 
-use crate::stdin_ansi_parser::{AnsiStdinInstruction, ForwardKind, StdinAnsiParser, SyncOutput};
+use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
 use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
     os_input_output::ClientOsApi, stdin_handler::stdin_loop,
@@ -131,10 +132,9 @@ use zellij_utils::{
     consts::{set_permissions, ZELLIJ_SOCK_DIR},
     data::{ClientId, ConnectToSession, KeyWithModifier, LayoutInfo},
     envs,
-    errors::{ClientContext, ContextType, ErrorInstruction},
+    errors::{ClientContext, ErrorInstruction},
     input::{config::Config, options::Options},
     ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
-    nested_session,
     vendored::termwiz::input::InputEvent,
 };
 
@@ -533,7 +533,6 @@ pub fn start_client(
         .support_kitty_graphics_protocol
         .unwrap_or(true);
     let should_start_web_server = config_options.web_server.unwrap_or(false);
-    let mut reconnect_to_session = None;
     os_input.unset_raw_mode().unwrap();
 
     if !is_a_reconnect {
@@ -706,215 +705,36 @@ pub fn start_client(
         })
         .unwrap();
 
-    let router_thread = thread::Builder::new()
-        .name("router".to_string())
-        .spawn({
-            let os_input = os_input.clone();
-            let mut should_break = false;
-            let mut consecutive_unknown_messages_received = 0;
-            move || loop {
-                match os_input.recv_from_server() {
-                    Some((instruction, err_ctx)) => {
-                        consecutive_unknown_messages_received = 0;
-                        err_ctx.update_thread_ctx();
-                        if let ServerToClientMsg::Exit { .. } = instruction {
-                            should_break = true;
-                        }
-                        send_client_instructions.send(instruction.into()).unwrap();
-                        if should_break {
-                            break;
-                        }
-                    },
-                    None => {
-                        consecutive_unknown_messages_received += 1;
-                        send_client_instructions
-                            .send(ClientInstruction::UnblockInputThread)
-                            .unwrap();
-                        log::error!("Received unknown message from server");
-                        if consecutive_unknown_messages_received >= 1000 {
-                            send_client_instructions
-                                .send(ClientInstruction::Error(
-                                    "Received empty unknown from server".to_string(),
-                                ))
-                                .unwrap();
-                            break;
-                        }
-                    },
-                }
-            }
-        })
-        .unwrap();
+    let router_thread = crate::router::spawn(os_input.clone(), send_client_instructions);
 
     let teardown = ClientTeardown::new(
         full_screen_ws.rows,
         !explicitly_disable_kitty_keyboard_protocol,
     );
-    let handle_error = |backtrace: String| teardown.tear_down(&*os_input, backtrace, 1);
 
-    let mut exit_msg = String::new();
-    let mut synchronised_output = match os_input.env_variable("TERM").as_deref() {
-        Some("alacritty") => Some(SyncOutput::DCS),
-        _ => None,
-    };
-
-    loop {
-        let (client_instruction, mut err_ctx) = receive_client_instructions
-            .recv()
-            .expect("failed to receive app instruction on channel");
-
-        err_ctx.add_call(ContextType::Client((&client_instruction).into()));
-
-        match client_instruction {
-            ClientInstruction::Exit(reason) => {
-                os_input.send_to_server(ClientToServerMsg::ClientExited);
-
-                if let ExitReason::Error(_) = reason {
-                    handle_error(reason.to_string());
-                }
-                exit_msg = reason.to_string();
-                break;
-            },
-            ClientInstruction::Error(backtrace) => {
-                handle_error(backtrace);
-            },
-            ClientInstruction::Render(output) => {
-                let mut stdout = os_input.get_stdout_writer();
-                write_synchronised(&mut *stdout, synchronised_output, output.as_bytes());
-            },
-            ClientInstruction::UnblockInputThread => {
-                command_is_executing.unblock_input_thread();
-            },
-            ClientInstruction::Log(lines_to_log) => {
-                for line in lines_to_log {
-                    log::info!("{line}");
-                }
-            },
-            ClientInstruction::LogError(lines_to_log) => {
-                for line in lines_to_log {
-                    log::error!("{line}");
-                }
-            },
-            ClientInstruction::SwitchSession(connect_to_session) => {
-                reconnect_to_session = Some(connect_to_session);
-                os_input.send_to_server(ClientToServerMsg::ClientExited);
-                break;
-            },
-            ClientInstruction::SetSynchronizedOutput(enabled) => {
-                synchronised_output = enabled;
-            },
-            ClientInstruction::QueryTerminalSize => {
-                os_input.send_to_server(ClientToServerMsg::TerminalResize {
-                    new_size: os_input.get_terminal_size(),
-                });
-            },
-            ClientInstruction::StartWebServer => {
-                let web_server_base_url = web_server_base_url(
-                    web_server_ip,
-                    web_server_port,
-                    has_certificate,
-                    enforce_https_for_localhost,
-                );
-                match spawn_web_server(&cli_args) {
-                    Ok(_) => {
-                        os_input.send_to_server(ClientToServerMsg::WebServerStarted {
-                            base_url: web_server_base_url,
-                        });
-                    },
-                    Err(e) => {
-                        log::error!("Failed to start web_server: {}", e);
-                        os_input
-                            .send_to_server(ClientToServerMsg::FailedToStartWebServer { error: e });
-                    },
-                }
-            },
-            ClientInstruction::ForwardQueryToHost {
-                token,
-                query_bytes,
-                resolve_async,
-            } => {
-                let kind = if resolve_async {
-                    ForwardKind::Clipboard
-                } else {
-                    ForwardKind::Barrier
-                };
-
-                // 1. Open a forwarding window on the parser so replies that
-                //    arrive before the closing signal are captured. A slot
-                //    may still be open: the server's backstop timeout can
-                //    give up on the previous token and dispatch this one
-                //    before this client's per-slot timer got to run. Hand
-                //    that slot over instead of clobbering it.
-                let stale_forward = {
-                    let mut parser = stdin_ansi_parser.lock().unwrap();
-                    let stale_forward = parser.take_active(kind);
-                    parser.open(kind, token);
-                    stale_forward
-                };
-                if let Some((stale_token, stale_reply_bytes)) = stale_forward {
-                    log::warn!(
-                        "{} slot for token {} was still open when token {} was dispatched \
-                         ({} accumulated bytes); closing it out",
-                        kind.label(),
-                        stale_token,
-                        token,
-                        stale_reply_bytes.len(),
-                    );
-                    let _ = send_input_instructions.send(
-                        InputInstruction::ForwardedReplyFromHostComplete {
-                            token: stale_token,
-                            reply_bytes: stale_reply_bytes,
-                        },
-                    );
-                }
-
-                // 2. Arm a per-forward deadline on the dedicated runtime.
-                //    When it fires, the task closes the slot (if it is
-                //    still open for this token) and relays
-                //    `ForwardedReplyFromHostComplete` so the server
-                //    releases `forward_in_flight` and dispatches the next
-                //    queued forward.
-                let runtime = stdin_ansi_parser::forward_timeout_runtime();
-                let parser_for_timer = stdin_ansi_parser.clone();
-                let sender_for_timer = send_input_instructions.clone();
-                stdin_ansi_parser::schedule_timeout(
-                    runtime.handle(),
-                    parser_for_timer,
-                    kind,
-                    token,
-                    kind.timeout(),
-                    move |token, reply_bytes| {
-                        let _ = sender_for_timer.send(
-                            InputInstruction::ForwardedReplyFromHostComplete { token, reply_bytes },
-                        );
-                    },
-                );
-
-                // 3. Write the query, plus whatever provokes the closing
-                //    reply, in a single write_all. When that reply arrives
-                //    it closes the window parser-side, and the timer's
-                //    eventual wake-up finds an empty slot and no-ops.
-                let mut blob = query_bytes;
-                blob.extend_from_slice(kind.barrier_suffix());
-                let mut out = os_input.get_stdout_writer();
-                let _ = out.write_all(&blob);
-                let _ = out.flush();
-            },
-            #[allow(clippy::collapsible_match)]
-            ClientInstruction::EmitNestedSessionFrame(payload_bytes) => {
-                if is_nested_inside_zellij_pane {
-                    let frame = nested_session::encode_frame_from_payload(&payload_bytes);
-                    let mut out = os_input.get_stdout_writer();
-                    let _ = out.write_all(&frame);
-                    let _ = out.flush();
-                }
-            },
-            _ => {},
-        }
+    let outcome = crate::client_loop::ClientLoop {
+        os_input: &os_input,
+        cli_args: &cli_args,
+        command_is_executing: &mut command_is_executing,
+        stdin_ansi_parser: &stdin_ansi_parser,
+        send_input_instructions: &send_input_instructions,
+        nested_reannounce: nested_reannounce.as_ref(),
+        is_nested_inside_zellij_pane,
+        web_server_address: crate::client_loop::WebServerAddress {
+            ip: web_server_ip,
+            port: web_server_port,
+            has_certificate,
+            enforce_https_for_localhost,
+        },
+        teardown,
+        synchronised_output: match os_input.env_variable("TERM").as_deref() {
+            Some("alacritty") => Some(SyncOutput::DCS),
+            _ => None,
+        },
     }
-
-    if let Some(nested_reannounce) = &nested_reannounce {
-        nested_reannounce.stop();
-    }
+    .run(&receive_client_instructions);
+    let exit_msg = outcome.exit_msg;
+    let reconnect_to_session = outcome.reconnect_to_session;
 
     router_thread.join().unwrap();
 
