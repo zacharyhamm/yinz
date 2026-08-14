@@ -59,9 +59,10 @@ impl HttpClientWithCookies {
 
         let response = self.client.send_async(req).await?;
 
-        // Extract and store cookies from response
-        if let Some(set_cookie_headers) = response.headers().get_all("set-cookie").iter().next() {
-            if let Ok(cookie_str) = set_cookie_headers.to_str() {
+        // Extract and store cookies from response. A response may carry
+        // several Set-Cookie headers, one per cookie.
+        for set_cookie in response.headers().get_all("set-cookie").iter() {
+            if let Ok(cookie_str) = set_cookie.to_str() {
                 self.parse_and_store_cookies(cookie_str);
             }
         }
