@@ -13,6 +13,7 @@ use crate::{
     pty_writer::PtyWriteInstruction,
     tab::Pane,
     thread_bus::ThreadSenders,
+    ui::boundaries::Boundaries,
     ui::pane_contents_and_ui::PaneContentsAndUi,
     ClientId,
 };
@@ -391,6 +392,8 @@ pub struct GlobalPaneManager {
     // the split separators last painted per client, so a quiet render tick re-emits nothing
     // (mirrors `Screen.unowned_strip_fill`)
     separator_paint: BTreeMap<ClientId, Vec<(usize, usize, usize, bool)>>,
+    // the pane boundaries last painted per client, so a quiet render tick re-emits nothing
+    boundary_paint: HashMap<ClientId, Boundaries>,
     area: Option<Viewport>,
     senders: ThreadSenders,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -421,6 +424,7 @@ impl GlobalPaneManager {
             focused_panes: BTreeMap::new(),
             selecting_with_mouse: BTreeMap::new(),
             separator_paint: BTreeMap::new(),
+            boundary_paint: HashMap::new(),
             resizing_with_mouse: BTreeMap::new(),
             area: None,
             chrome_rows: (0, 0),
@@ -524,7 +528,7 @@ impl GlobalPaneManager {
             self.pane_indices.insert(global_pane.pane.pid(), index);
         }
         if let Some(layout) = layout {
-            if let Err(error) = self.apply_layout(layout) {
+            if let Err(error) = self.apply_layout(layout, self.area.unwrap_or_default()) {
                 self.panes.remove(insertion_index);
                 self.pane_indices.remove(&pane_id);
                 for (index, global_pane) in self.panes.iter().enumerate().skip(insertion_index) {
@@ -643,7 +647,7 @@ impl GlobalPaneManager {
             self.pane_indices.insert(global_pane.pane.pid(), index);
         }
         if let Some(layout) = layout {
-            if let Err(error) = self.apply_layout(layout) {
+            if let Err(error) = self.apply_layout(layout, self.area.unwrap_or_default()) {
                 self.panes.remove(insertion_index);
                 self.pane_indices.remove(&pane_id);
                 for (index, global_pane) in self.panes.iter().enumerate().skip(insertion_index) {
@@ -662,6 +666,7 @@ impl GlobalPaneManager {
     pub fn remove(&mut self, pane_id: PaneId) -> Option<(Box<dyn Pane>, Option<PaneId>)> {
         let pane_index = self.pane_indices.remove(&pane_id)?;
         let removed = self.panes.remove(pane_index);
+        self.boundary_paint.clear();
         for (index, global_pane) in self.panes.iter().enumerate().skip(pane_index) {
             self.pane_indices.insert(global_pane.pane.pid(), index);
         }
@@ -733,10 +738,11 @@ impl GlobalPaneManager {
             None
         };
         if let Some(layout) = layout {
-            self.apply_layout(layout)?;
+            self.apply_layout(layout, self.area.unwrap_or_default())?;
         }
         self.panes[pane_index].hidden = true;
         self.panes[pane_index].hidden_by_strip = false;
+        self.boundary_paint.clear();
         self.focused_panes
             .retain(|_, focused_pane_id| *focused_pane_id != pane_id);
         self.selecting_with_mouse
@@ -761,9 +767,10 @@ impl GlobalPaneManager {
             .map(|global_pane| (global_pane.pane.pid().into(), global_pane.placement))
             .collect();
         let layout = allocate_global_panes(area, &candidate, false, self.chrome_rows)?;
-        self.apply_layout(layout)?;
+        self.apply_layout(layout, area)?;
         self.panes[pane_index].hidden = false;
         self.panes[pane_index].hidden_by_strip = false;
+        self.boundary_paint.clear();
         self.area = Some(area);
         Ok(())
     }
@@ -797,7 +804,7 @@ impl GlobalPaneManager {
             None
         };
         if let Some(layout) = layout {
-            self.apply_layout(layout)?;
+            self.apply_layout(layout, self.area.unwrap_or_default())?;
         }
         for pane_id in &to_hide {
             if let Ok(pane_index) = self.pane_index(*pane_id) {
@@ -811,6 +818,7 @@ impl GlobalPaneManager {
             self.resizing_with_mouse
                 .retain(|_, resizing_hit| resizing_hit.pane_id() != *pane_id);
         }
+        self.boundary_paint.clear();
         Ok(to_hide)
     }
 
@@ -846,13 +854,14 @@ impl GlobalPaneManager {
             .map(|global_pane| (global_pane.pane.pid().into(), global_pane.placement))
             .collect();
         let layout = allocate_global_panes(area, &candidate, false, self.chrome_rows)?;
-        self.apply_layout(layout)?;
+        self.apply_layout(layout, area)?;
         for pane_id in &to_show {
             if let Ok(pane_index) = self.pane_index(*pane_id) {
                 self.panes[pane_index].hidden = false;
                 self.panes[pane_index].hidden_by_strip = false;
             }
         }
+        self.boundary_paint.clear();
         self.area = Some(area);
         Ok(to_show)
     }
@@ -889,7 +898,7 @@ impl GlobalPaneManager {
         } else {
             candidate_layout
         };
-        self.apply_layout(layout)?;
+        self.apply_layout(layout, area)?;
         self.panes[pane_index].placement = placement;
         self.area = Some(area);
         Ok(())
@@ -969,6 +978,7 @@ impl GlobalPaneManager {
     /// groups, so the panes repaint every frame while that holds. Diff per group if it turns out
     /// to be a common setup rather than a transient one.
     pub fn set_positions(&mut self, layout: &AllocatedGlobalPanes) {
+        let mut moved_any_pane = false;
         for (pane_id, geom) in &layout.panes {
             let Some(pane_index) = self.pane_indices.get(&PaneId::from(*pane_id)).copied() else {
                 continue;
@@ -985,6 +995,10 @@ impl GlobalPaneManager {
             });
             pane.set_should_render(true);
             pane.render_full_viewport();
+            moved_any_pane = true;
+        }
+        if moved_any_pane {
+            self.boundary_paint.clear();
         }
     }
 
@@ -992,7 +1006,7 @@ impl GlobalPaneManager {
         let layout =
             allocate_global_panes(area, &self.visible_placements(), true, self.chrome_rows)?;
         let center = layout.center;
-        self.apply_layout(layout)?;
+        self.apply_layout(layout, area)?;
         self.area = Some(area);
         Ok(center)
     }
@@ -1021,6 +1035,7 @@ impl GlobalPaneManager {
         }
         // a forced render repaints everything, split separators included
         self.separator_paint.clear();
+        self.boundary_paint.clear();
     }
 
     pub fn visible_pane_ids(&self) -> HashSet<PaneId> {
@@ -1625,7 +1640,7 @@ impl GlobalPaneManager {
             })
             .collect();
         let layout = allocate_global_panes(area, &candidate, false, self.chrome_rows)?;
-        self.apply_layout(layout)?;
+        self.apply_layout(layout, area)?;
         for global_pane in self
             .panes
             .iter_mut()
@@ -1737,6 +1752,10 @@ impl GlobalPaneManager {
             .iter()
             .map(|(client_id, pane_id)| (*client_id, *pane_id))
             .collect();
+        let mut boundaries_by_client: HashMap<_, _> = client_ids
+            .iter()
+            .map(|client_id| (*client_id, Boundaries::new(self.area.unwrap_or_default())))
+            .collect();
 
         for global_pane in self
             .panes
@@ -1784,6 +1803,7 @@ impl GlobalPaneManager {
             }
 
             let pane_is_selectable = global_pane.pane.selectable();
+            let pane_is_borderless = global_pane.pane.borderless();
             let mut pane_contents_and_ui = PaneContentsAndUi::new(
                 &mut global_pane.pane,
                 output,
@@ -1819,6 +1839,18 @@ impl GlobalPaneManager {
                             pane_is_selectable,
                         )
                         .with_context(err_context)?;
+                }
+                if !self.pane_frame_style.draws_full_frames() || pane_is_borderless {
+                    if let Some(boundaries) = boundaries_by_client.get_mut(client_id) {
+                        pane_contents_and_ui.render_pane_boundaries(
+                            *client_id,
+                            client_mode,
+                            boundaries,
+                            session_is_mirrored,
+                            false,
+                            false,
+                        );
+                    }
                 }
                 // a fake cursor moves the host terminal cursor as a side effect, and global panes
                 // render after the tab positioned each client's cursor - bracket it with
@@ -1876,6 +1908,21 @@ impl GlobalPaneManager {
                     output.add_post_vte_instruction_to_client(*client_id, "\u{1b}[?25l");
                 }
             }
+        }
+        for client_id in client_ids {
+            let Some(boundaries) = boundaries_by_client.remove(client_id) else {
+                continue;
+            };
+            let boundary_chunks = boundaries
+                .render(self.boundary_paint.get(client_id))
+                .with_context(err_context)?
+                .into_iter()
+                .filter(|chunk| self.owns_boundary_cell(chunk.x, chunk.y))
+                .collect();
+            self.boundary_paint.insert(*client_id, boundaries);
+            output
+                .add_character_chunks_to_client(*client_id, boundary_chunks, None)
+                .with_context(err_context)?;
         }
         self.paint_split_separators(output, client_ids)
             .map_err(|error| anyhow!(error))
@@ -1997,7 +2044,29 @@ impl GlobalPaneManager {
             .collect()
     }
 
-    fn apply_layout(&mut self, layout: AllocatedGlobalPanes) -> Result<(), String> {
+    fn owns_boundary_cell(&self, x: usize, y: usize) -> bool {
+        self.panes
+            .iter()
+            .filter(|global_pane| !global_pane.hidden)
+            .any(|global_pane| {
+                let geom = global_pane.pane.position_and_size();
+                let inside = x >= geom.x
+                    && x < geom.x + geom.cols.as_usize()
+                    && y >= geom.y
+                    && y < geom.y + geom.rows.as_usize();
+                // The tab owns the shared edge for Left/Top panes, so its junctions must not be
+                // replaced by the global pane's duplicate boundary character.
+                let tab_facing_edge = match global_pane.placement.edge {
+                    GlobalPaneEdge::Left => x == geom.x + geom.cols.as_usize().saturating_sub(1),
+                    GlobalPaneEdge::Top => y == geom.y + geom.rows.as_usize().saturating_sub(1),
+                    GlobalPaneEdge::Right | GlobalPaneEdge::Bottom => false,
+                };
+                inside && !tab_facing_edge
+            })
+    }
+
+    fn apply_layout(&mut self, layout: AllocatedGlobalPanes, area: Viewport) -> Result<(), String> {
+        let area_changed = self.area != Some(area);
         // panes with a same-edge pane after them along the strip's long axis reserve their
         // trailing cell for the split separator `render` paints there
         let strip_followers: HashSet<ZellijUtilsPaneId> = self
@@ -2040,17 +2109,9 @@ impl GlobalPaneManager {
                             if self.pane_frame_style.draws_full_frames() && !borderless {
                                 Offset::frame(1)
                             } else {
-                                // Reserve the cell facing the tab area, so the boundary line the tab's
-                                // edge pane draws there (at `rect.x() - 1` / `rect.y() - 1`, see
-                                // `Boundaries::add_rect`) lands on a cell we are not writing content
-                                // into. Right and Bottom global panes need no reservation: there the
-                                // boundary falls on the tab pane's own last column/row, which its
-                                // `pane_content_offset` already reserves.
-                                //
-                                // `borderless` suppresses the pane's own frame, not the tab/global
-                                // separator: the tab grows its boundary viewport over every visible
-                                // strip (see `expand_viewport_over_global_panes`) and draws that line
-                                // regardless, so the cell is reserved either way.
+                                // Reserve every boundary cell inside the global pane. Boundaries
+                                // outside a global pane are owned by the tab or another strip and
+                                // are filtered when global panes render.
                                 let mut content_offset = Offset {
                                     top: if !borderless && self.pane_frame_style.draws_titles() {
                                         1
@@ -2059,10 +2120,11 @@ impl GlobalPaneManager {
                                     },
                                     ..Default::default()
                                 };
-                                match global_pane.placement.edge {
-                                    GlobalPaneEdge::Left => content_offset.right = 1,
-                                    GlobalPaneEdge::Top => content_offset.bottom = 1,
-                                    GlobalPaneEdge::Right | GlobalPaneEdge::Bottom => {},
+                                if geom.x + geom.cols.as_usize() < area.x + area.cols {
+                                    content_offset.right = 1;
+                                }
+                                if geom.y + geom.rows.as_usize() < area.y + area.rows {
+                                    content_offset.bottom = 1;
                                 }
                                 // and the trailing cell towards a same-edge pane after this one,
                                 // for the split separator between them
@@ -2110,6 +2172,7 @@ impl GlobalPaneManager {
             }
         }
 
+        let mut boundaries_changed = false;
         for (pane_index, geom, content_offset, size_changed, moved) in desired_layout {
             let global_pane = &mut self.panes[pane_index];
             let should_frame =
@@ -2117,13 +2180,18 @@ impl GlobalPaneManager {
             if global_pane.frame_applied != Some(should_frame) {
                 global_pane.pane.set_frame(should_frame);
                 global_pane.frame_applied = Some(should_frame);
+                boundaries_changed = true;
             }
             if size_changed || moved {
                 global_pane.pane.set_geom(geom);
                 global_pane.pane.set_content_offset(content_offset);
                 global_pane.pane.set_should_render(true);
                 global_pane.layout_applied = true;
+                boundaries_changed = true;
             }
+        }
+        if area_changed || boundaries_changed {
+            self.boundary_paint.clear();
         }
         Ok(())
     }
@@ -2177,11 +2245,16 @@ mod tests {
     use super::{allocate_global_panes, GlobalPaneManager};
     use crate::{
         channels::SenderWithContext,
+        output::Output,
         panes::{KittyImageStore, LinkHandler, PaneId, PluginPane, SixelImageStore},
         plugins::PluginInstruction,
         tab::Pane,
     };
-    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, HashMap, HashSet},
+        rc::Rc,
+    };
     use zellij_utils::data::{Palette, Style};
     use zellij_utils::{
         channels,
@@ -2943,6 +3016,226 @@ mod tests {
             Offset::shift_right_top_and_bottom(1, 1, 0)
         );
         assert_eq!(pane.get_content_rows(), 39);
+    }
+
+    #[test]
+    fn global_boundaries_reserve_inset_trailing_edges() {
+        let area = Viewport {
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::None,
+        );
+        manager.set_chrome_rows((2, 3));
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        let left = manager.pane(PaneId::Plugin(1)).unwrap();
+        let left_geom = left.position_and_size();
+        assert_eq!(
+            left.get_content_offset(),
+            Offset {
+                right: 1,
+                bottom: 1,
+                ..Default::default()
+            }
+        );
+        assert!(!manager.owns_boundary_cell(left_geom.x, left_geom.y - 1));
+        assert!(!manager.owns_boundary_cell(
+            left_geom.x + left_geom.cols.as_usize() - 1,
+            left_geom.y + left_geom.rows.as_usize() - 1,
+        ));
+        assert!(manager.owns_boundary_cell(
+            left_geom.x + left_geom.cols.as_usize() - 2,
+            left_geom.y + left_geom.rows.as_usize() - 1,
+        ));
+
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::None,
+        );
+        manager
+            .insert(
+                mock_pane(PaneId::Plugin(2)),
+                placement(GlobalPaneEdge::Right, PercentOrFixed::Percent(25)),
+                false,
+            )
+            .unwrap();
+        manager
+            .insert(
+                mock_pane(PaneId::Plugin(3)),
+                placement(GlobalPaneEdge::Top, PercentOrFixed::Percent(25)),
+                false,
+            )
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        assert_eq!(
+            manager
+                .pane(PaneId::Plugin(3))
+                .unwrap()
+                .get_content_offset(),
+            Offset {
+                right: 1,
+                bottom: 1,
+                ..Default::default()
+            }
+        );
+
+        let top_geom = manager.pane(PaneId::Plugin(3)).unwrap().position_and_size();
+        assert!(!manager.owns_boundary_cell(
+            top_geom.x + top_geom.cols.as_usize() - 1,
+            top_geom.y + top_geom.rows.as_usize() - 1,
+        ));
+    }
+
+    #[test]
+    fn quiet_global_pane_render_diffs_boundaries() {
+        let client_id = 1;
+        let area = Viewport {
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::None,
+        );
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager
+            .insert(mock_pane(PaneId::Plugin(2)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        let mut output = Output::new(
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(None)),
+            true,
+            true,
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+        );
+        output.add_clients(
+            &HashSet::from([client_id]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        let mode_info = BTreeMap::new();
+        let default_mode_info = ModeInfo::default();
+
+        manager
+            .render(
+                &mut output,
+                &[client_id],
+                &mode_info,
+                &default_mode_info,
+                Style::default(),
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(output.is_dirty());
+        output.serialize().unwrap();
+        output.add_clients(
+            &HashSet::from([client_id]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        manager.resize(area).unwrap();
+
+        manager
+            .render(
+                &mut output,
+                &[client_id],
+                &mode_info,
+                &default_mode_info,
+                Style::default(),
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(!output.is_dirty());
+
+        manager.set_force_render();
+        manager
+            .render(
+                &mut output,
+                &[client_id],
+                &mode_info,
+                &default_mode_info,
+                Style::default(),
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(output.is_dirty());
+    }
+
+    #[test]
+    fn borderless_full_global_panes_render_reserved_boundaries() {
+        let client_id = 1;
+        let area = Viewport {
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::Full,
+        );
+        manager.set_chrome_rows((2, 3));
+        let mut pane = mock_pane(PaneId::Plugin(1));
+        pane.set_borderless(true);
+        manager.insert(pane, left_percent(25), false).unwrap();
+        let mut second_pane = mock_pane(PaneId::Plugin(2));
+        second_pane.set_borderless(true);
+        manager
+            .insert(second_pane, left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        let mut output = Output::new(
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(None)),
+            true,
+            true,
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+        );
+        output.add_clients(
+            &HashSet::from([client_id]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+
+        manager
+            .render(
+                &mut output,
+                &[client_id],
+                &BTreeMap::new(),
+                &ModeInfo::default(),
+                Style::default(),
+                false,
+                false,
+            )
+            .unwrap();
+        let rendered = output.serialize().unwrap().remove(&client_id).unwrap();
+        assert!(rendered.contains('─'));
     }
 
     #[test]
