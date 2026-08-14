@@ -48,15 +48,12 @@ impl HttpClientWithCookies {
         let mut req = request.into();
 
         // Add cookies to request
-        if let Ok(cookies) = self.cookies.lock() {
-            if !cookies.is_empty() {
-                let cookie_header = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                req.headers_mut()
-                    .insert("cookie", cookie_header.parse().unwrap());
+        if let Some(cookie_header) = self.get_cookie_header() {
+            match cookie_header.parse() {
+                Ok(value) => {
+                    req.headers_mut().insert("cookie", value);
+                },
+                Err(e) => log::warn!("dropping unrepresentable cookie header: {}", e),
             }
         }
 
@@ -91,18 +88,20 @@ impl HttpClientWithCookies {
         }
     }
 
+    /// The stored cookies rendered as one `Cookie:` header value, or `None`
+    /// when there is nothing to send.
     pub fn get_cookie_header(&self) -> Option<String> {
-        if let Ok(cookies) = self.cookies.lock() {
-            if !cookies.is_empty() {
-                let cookie_header = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Some(cookie_header);
-            }
+        let cookies = self.cookies.lock().ok()?;
+        if cookies.is_empty() {
+            return None;
         }
-        None
+        Some(
+            cookies
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
 
     /// Extract a specific cookie value
