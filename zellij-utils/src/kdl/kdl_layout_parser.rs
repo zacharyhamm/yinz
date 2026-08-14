@@ -286,14 +286,14 @@ impl<'a> KdlLayoutParser<'a> {
                 )),
             }
         } else if let Some(size) = kdl_get_int_property_or_child_value!(kdl_node, value_name) {
-            if size == 0 && !can_be_zero {
+            if size < 0 || (size == 0 && !can_be_zero) {
                 return Err(kdl_parsing_error!(
                     format!("{} should be greater than 0", value_name),
                     kdl_node
                 ));
             }
             Ok(Some(PercentOrFixed::Fixed(size as usize)))
-        } else if let Some(node) = kdl_property_or_child_value_node!(kdl_node, "size") {
+        } else if let Some(node) = kdl_property_or_child_value_node!(kdl_node, value_name) {
             Err(kdl_parsing_error!(
                 format!(
                     "{} should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")",
@@ -301,7 +301,7 @@ impl<'a> KdlLayoutParser<'a> {
                 ),
                 node
             ))
-        } else if let Some(node) = kdl_child_with_name!(kdl_node, "size") {
+        } else if let Some(node) = kdl_child_with_name!(kdl_node, value_name) {
             Err(kdl_parsing_error!(
                 format!(
                     "{} cannot be bare, it should have a value (eg. 'size 1', or 'size \"50%\"')",
@@ -704,30 +704,21 @@ impl<'a> KdlLayoutParser<'a> {
                         child.span().len(),
                     ));
                 }
+                // panes sharing an edge form one strip and split its long axis in declaration
+                // order; `length` is a pane's share of that axis, `None` shares the remainder
+                let length = self.parse_percent_or_fixed(child, "length", false)?;
                 let mut run = self.parse_command_plugin_or_edit_block(child)?;
                 if let (Some(run), Some(global_cwd)) = (&mut run, &self.global_cwd) {
                     run.add_cwd(global_cwd);
                 }
                 let hidden = kdl_get_bool_property_or_child_value_with_error!(child, "hidden")
                     .unwrap_or(false);
-                if !hidden
-                    && global_panes.iter().any(|global_pane: &GlobalPaneLayout| {
-                        !global_pane.hidden && global_pane.placement.edge == edge
-                    })
-                {
-                    // one visible global pane per edge - same-edge panes have no separator geometry
-                    // between them (see GlobalPaneManager::reject_occupied_edge)
-                    return Err(ConfigError::new_layout_kdl_error(
-                        "a global pane is already docked to this edge".into(),
-                        child.span().offset(),
-                        child.span().len(),
-                    ));
-                }
                 global_panes.push(GlobalPaneLayout {
                     run,
                     placement: GlobalPanePlacement {
                         edge,
                         size: size.unwrap(),
+                        length,
                     },
                     borderless: kdl_get_bool_property_or_child_value_with_error!(
                         child,

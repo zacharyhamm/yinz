@@ -57,6 +57,16 @@ pub struct GlobalPaneSpawnContext {
     pub initially_hidden: bool,
     pub should_focus: bool,
     pub declaration_order: Option<usize>,
+    /// When set, the new pane splits this existing global pane's strip span instead of claiming
+    /// the whole edge. The anchor may close between spawn and arrival; Screen then falls back to
+    /// a plain edge insert with `placement`.
+    pub split: Option<GlobalSplitAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlobalSplitAnchor {
+    pub anchor: PaneId,
+    pub before: bool,
 }
 
 impl From<GlobalPanePlacement> for GlobalPaneSpawnContext {
@@ -67,6 +77,7 @@ impl From<GlobalPanePlacement> for GlobalPaneSpawnContext {
             initially_hidden: false,
             should_focus: true,
             declaration_order: None,
+            split: None,
         }
     }
 }
@@ -112,6 +123,7 @@ fn new_terminal_screen_instruction(
             completion_tx,
             set_blocking,
             declaration_order: context.declaration_order,
+            split: context.split,
         },
         None => ScreenInstruction::NewPane(
             pane_id,

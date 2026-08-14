@@ -91,22 +91,39 @@ fn global_panes_require_valid_edge_and_positive_size() {
 }
 
 #[test]
-fn global_panes_reject_a_second_visible_pane_on_the_same_edge() {
-    let source =
-        "layout {\nglobal_panes {\npane edge=\"left\" size=1\npane edge=\"left\" size=1\n}\ntab\n}";
-    let error = Layout::from_kdl(source, None, None, None).unwrap_err();
-    match error {
-        ConfigError::KdlError(error) => assert_eq!(
-            error.error_message,
-            "a global pane is already docked to this edge"
-        ),
-        error => panic!("{error:?}"),
-    }
-
-    // a hidden pane may be parked on an occupied edge (showing it is what gets rejected, at runtime)
-    let source = "layout {\nglobal_panes {\npane edge=\"left\" size=1\npane edge=\"left\" size=1 hidden=true\n}\ntab\n}";
+fn global_panes_on_the_same_edge_split_the_strip_in_declaration_order() {
+    // panes sharing an edge form one strip and split its long axis; `length` is a pane's
+    // share of that axis and `None` shares the remainder
+    let source = "layout {\nglobal_panes {\npane edge=\"left\" size=\"25%\" length=\"30%\"\npane edge=\"left\" size=\"25%\"\npane edge=\"left\" size=\"25%\" length=6 hidden=true\n}\ntab\n}";
     let layout = Layout::from_kdl(source, None, None, None).unwrap();
-    assert_eq!(layout.global_panes.len(), 2);
+    assert_eq!(layout.global_panes.len(), 3);
+    assert_eq!(layout.global_panes[0].placement.edge, GlobalPaneEdge::Left);
+    assert_eq!(
+        layout.global_panes[0].placement.length,
+        Some(PercentOrFixed::Percent(30))
+    );
+    assert_eq!(layout.global_panes[1].placement.length, None);
+    assert_eq!(
+        layout.global_panes[2].placement.length,
+        Some(PercentOrFixed::Fixed(6))
+    );
+    assert!(layout.global_panes[2].hidden);
+}
+
+#[test]
+fn global_pane_length_must_be_positive() {
+    for length in [0, -1] {
+        let source = format!(
+            "layout {{\nglobal_panes {{\npane edge=\"left\" size=1 length={length}\n}}\ntab\n}}"
+        );
+        let error = Layout::from_kdl(&source, None, None, None).unwrap_err();
+        match error {
+            ConfigError::KdlError(error) => {
+                assert_eq!(error.error_message, "length should be greater than 0")
+            },
+            error => panic!("{error:?}"),
+        }
+    }
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use crate::message::{Message, Picker, PickerKind, PickerRow, RowKind};
+use crate::message::{Message, Picker, PickerKind, PickerRow};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -186,53 +186,45 @@ impl State {
         });
     }
 
-    /// Ctrl-r's answer: hand the keyboard to the permanent agent strip.
+    /// Ctrl-r's answer: bring the agents pane into view and focus it, spawning
+    /// or adopting it as needed - the same call that spawns it on load, with
+    /// focus this time.
     ///
-    /// The branches the list groups by are the only part of a snapshot that goes
-    /// stale on its own — a checkout in an agent's folder changes one and no host
-    /// event says so — so opening the list asks for a fresh probe. The cached
-    /// answer is drawn now and `refresh_agent_picker` redraws the list when the
-    /// new one lands.
-    pub(crate) fn open_agent_picker(&mut self) -> bool {
+    /// The branches the list groups by are the only part of a snapshot that
+    /// goes stale on its own — a checkout in an agent's folder changes one and
+    /// no host event says so — so focusing the list asks for a fresh probe.
+    /// The answer arrives as an ordinary snapshot and is pushed to the pane.
+    pub(crate) fn focus_agents_pane(&mut self) -> bool {
         self.autosave();
-        self.picker = None;
-        self.agents_focused = true;
-        self.refresh_agent_picker();
+        // focus is leaving the conversation, so a temporary list would sit
+        // open with nobody holding it
+        let had_picker = self.picker.take().is_some();
+        Self::launch_agents_pane(true);
         Self::request_branch_refresh();
-        true
+        had_picker
     }
 
-    /// Rebuild an open agent list from the snapshot that just landed, staying on
-    /// the agent it was on. Whether anything about it changed.
+    /// Spawn the hocus-agents pane as a split above this pane in its own global
+    /// strip - or reveal the existing one. Idempotent server-side (an existing
+    /// hocus-agents global pane is adopted, not split again), and a no-op when
+    /// hocus is not running as a global pane.
     ///
-    /// Panes come and go and branches are re-read while the list is open, and
-    /// none of that would be visible otherwise. The selection follows the pane
-    /// rather than the row number, so a project appearing above it does not move
-    /// what `Enter` would focus.
-    pub(crate) fn refresh_agent_picker(&mut self) -> bool {
-        let was = match &self.agent_picker.kind {
-            PickerKind::Agents(ids) => ids.get(self.agent_picker.selected).copied().flatten(),
-            _ => None,
-        };
-        let (entries, ids) = self.agent_rows();
-        let selected = was
-            .and_then(|pane_id| ids.iter().position(|id| *id == Some(pane_id)))
-            // The pane it was on is gone: back to the top of the list.
-            .or_else(|| entries.iter().position(PickerRow::selectable))
-            .unwrap_or(0);
-        let picker = Picker {
-            entries,
-            selected,
-            kind: PickerKind::Agents(ids),
-        };
-        let changed = self.agent_picker != picker;
-        self.agent_picker = picker;
-        changed
+    /// One place for the call so the spawn on load and every later focus use
+    /// the same url and configuration — plugin identity is (location,
+    /// configuration), and two spellings would make two panes.
+    pub(crate) fn launch_agents_pane(should_focus: bool) {
+        launch_or_focus_global_pane_split(
+            "hocus-agents",
+            BTreeMap::new(),
+            // above the conversation, where the strip used to be drawn
+            true,
+            Some(PercentOrFixed::Percent(33)),
+            should_focus,
+        );
     }
 
-    /// The agent strip as picker rows, and the pane each row names — `None` for
-    /// the group headers, which are drawn and skipped over.
-    fn agent_rows(&self) -> (Vec<PickerRow>, Vec<Option<u32>>) {
+    /// The agent strip as the hocus-agents pane should draw it.
+    pub(crate) fn current_strip(&self) -> Vec<agents::StripRow> {
         agents::strip_rows(
             &self.panes,
             &self.manual_kinds,
@@ -240,35 +232,20 @@ impl State {
             &self.pane_projects(),
             &self.pane_branches(),
         )
-        .into_iter()
-        .map(|row| match row {
-            agents::StripRow::Project(text) => (
-                PickerRow {
-                    text,
-                    kind: RowKind::Project,
-                },
-                None,
-            ),
-            agents::StripRow::Branch(text) => (
-                PickerRow {
-                    text,
-                    kind: RowKind::Branch,
-                },
-                None,
-            ),
-            agents::StripRow::Agent { pane_id, text } => (PickerRow::item(text), Some(pane_id)),
-        })
-        .unzip()
     }
 
-    /// Bring an agent's pane into view, through the tool that already does it —
-    /// `focus` finds the pane's tab itself, so this works across tabs.
-    pub(crate) fn focus_agent(&self, pane_id: u32) {
-        tools::dispatch(&ToolCall {
-            id: String::new(),
-            name: "focus".to_owned(),
-            arguments: serde_json::json!({"pane_id": pane_id, "is_plugin": false}).to_string(),
-        });
+    /// Send the agent strip to the hocus-agents pane, unless nothing changed
+    /// since the last push. `force` sends regardless: the pane asking with
+    /// `AGENT_STRIP_HELLO` starts empty whatever was last sent.
+    pub(crate) fn push_strip(&mut self, force: bool) {
+        let rows = self.current_strip();
+        if !force && rows == self.last_strip {
+            return;
+        }
+        if let Ok(payload) = serde_json::to_string(&rows) {
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP).with_payload(payload));
+        }
+        self.last_strip = rows;
     }
 
     /// The deferred half of `show_models`. Returns whether this response was one:
@@ -359,12 +336,6 @@ impl State {
                             self.log_global("model_switch", serde_json::json!({"model": m}));
                         }
                     },
-                    // A header has no pane id, and movement never lands on one.
-                    PickerKind::Agents(ids) => {
-                        if let Some(id) = ids.get(picker.selected).copied().flatten() {
-                            self.focus_agent(id);
-                        }
-                    },
                 }
             },
             BareKey::Up | BareKey::Down => {
@@ -374,29 +345,6 @@ impl State {
                 picker.selected = step(&picker.entries, picker.selected, key.bare_key);
             },
             _ => return false,
-        }
-        true
-    }
-
-    /// Every key while the permanent agent strip has focus.
-    pub(crate) fn agent_key(&mut self, key: KeyWithModifier) -> bool {
-        match key.bare_key {
-            BareKey::Esc => self.agents_focused = false,
-            BareKey::Enter => {
-                if let PickerKind::Agents(ids) = &self.agent_picker.kind {
-                    if let Some(id) = ids.get(self.agent_picker.selected).copied().flatten() {
-                        self.focus_agent(id);
-                    }
-                }
-            },
-            BareKey::Up | BareKey::Down => {
-                self.agent_picker.selected = step(
-                    &self.agent_picker.entries,
-                    self.agent_picker.selected,
-                    key.bare_key,
-                );
-            },
-            _ => {},
         }
         true
     }

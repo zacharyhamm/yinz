@@ -99,6 +99,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: true,
             },
             WorkspaceMember {
+                crate_name: "default-plugins/hocus-agents",
+                build: true,
+            },
+            WorkspaceMember {
                 crate_name: "default-plugins/hocus-ask",
                 build: true,
             },

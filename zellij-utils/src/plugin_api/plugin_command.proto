@@ -235,6 +235,7 @@ enum CommandName {
   DataUnwatch = 243;
   WarpTabToSession = 244;
   WarpTabFromSession = 245;
+  LaunchOrFocusGlobalPaneSplit = 246;
 }
 
 message PluginCommand {
@@ -410,6 +411,7 @@ message PluginCommand {
     DataUnwatchPayload data_unwatch_payload = 184;
     WarpTabToSessionPayload warp_tab_to_session_payload = 185;
     WarpTabFromSessionPayload warp_tab_from_session_payload = 186;
+    LaunchOrFocusGlobalPaneSplitPayload launch_or_focus_global_pane_split_payload = 187;
   }
 }
 
@@ -708,6 +710,15 @@ message SetFloatingPanePinnedPayload {
 message SetGlobalPanePlacementPayload {
   PaneId pane_id = 1;
   action.GlobalPanePlacement placement = 2;
+}
+
+message LaunchOrFocusGlobalPaneSplitPayload {
+  string plugin_url = 1;
+  repeated ContextItem plugin_configuration = 2;
+  bool before = 3;
+  optional action.GlobalPaneSize length = 4;
+  bool should_focus = 5;
+  bool skip_cache = 6;
 }
 
 message TogglePaneBorderlessPayload {

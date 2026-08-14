@@ -463,7 +463,11 @@ fn parse_global_pane_placement(
                     action_node,
                 ));
             }
-            Ok(Some(GlobalPanePlacement { edge, size }))
+            Ok(Some(GlobalPanePlacement {
+                edge,
+                size,
+                length: None,
+            }))
         },
         _ => Err(global_pane_kdl_error(
             "global, edge and size must be specified together",
@@ -7002,6 +7006,18 @@ impl PaneInfo {
                 .and_then(|n| n.entries().first())
                 .and_then(|e| e.value().as_bool())
                 .unwrap_or(false);
+            let length = optional_int_node!("global_length", usize).map(|length| {
+                let length_is_percent = kdl_document
+                    .get("global_length_is_percent")
+                    .and_then(|n| n.entries().first())
+                    .and_then(|e| e.value().as_bool())
+                    .unwrap_or(false);
+                if length_is_percent {
+                    PercentOrFixed::Percent(length)
+                } else {
+                    PercentOrFixed::Fixed(length)
+                }
+            });
             Some(GlobalPanePlacement {
                 edge,
                 size: if is_percent {
@@ -7009,6 +7025,7 @@ impl PaneInfo {
                 } else {
                     PercentOrFixed::Fixed(size)
                 },
+                length,
             })
         });
         let is_hidden = kdl_document
@@ -7127,6 +7144,17 @@ impl PaneInfo {
                     bool_node!("global_size_is_percent", true);
                 },
             }
+            match placement.length {
+                Some(PercentOrFixed::Fixed(length)) => {
+                    int_node!("global_length", length);
+                    bool_node!("global_length_is_percent", false);
+                },
+                Some(PercentOrFixed::Percent(length)) => {
+                    int_node!("global_length", length);
+                    bool_node!("global_length_is_percent", true);
+                },
+                None => {},
+            }
             bool_node!("is_hidden", self.is_hidden);
         }
         kdl_doucment
@@ -7213,6 +7241,7 @@ fn launch_plugin_global_placement_kdl_round_trip() {
             global_placement: Some(GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Percent(25),
+                length: None
             }),
             ..
         })
@@ -7373,6 +7402,7 @@ fn serialize_and_deserialize_session_info_with_global_pane() {
         global_placement: Some(GlobalPanePlacement {
             edge: GlobalPaneEdge::Right,
             size: PercentOrFixed::Percent(30),
+            length: None,
         }),
         is_hidden: true,
         ..Default::default()
