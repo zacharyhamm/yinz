@@ -7,14 +7,21 @@
 //! all other bytes (keyboard input) pass through as a residue byte sequence
 //! that the caller feeds to the normal keyboard parser.
 
-use lazy_static::lazy_static;
-use regex::Regex;
+mod forward_timeout;
+mod host_reply;
+mod seq_scan;
+
+pub use forward_timeout::{forward_timeout_runtime, schedule_timeout};
+pub use host_reply::{AnsiStdinInstruction, HostReply};
+pub use seq_scan::PendingPartial;
+
+use seq_scan::{
+    apc_status, contains_subslice, csi_status, marker_match, osc_status, MarkerMatch, SeqStatus,
+    PARTIAL_BUFFER_CAP_BYTES, PASTE_END_MARKER, PASTE_START_MARKER,
+};
 use serde::{Deserialize, Serialize};
 use zellij_utils::{
-    data::HostTerminalThemeMode,
-    ipc::PixelDimensions,
     nested_session,
-    pane_size::SizeInPixels,
     vendored::termwiz::input::{InputEvent, InputParser},
 };
 
@@ -42,137 +49,6 @@ impl SyncOutput {
             SyncOutput::DCS => DCS_ESU_SEQ,
             SyncOutput::CSI => CSI_ESU_SEQ,
         }
-    }
-}
-
-/// A classified host-terminal reply received on stdin.
-///
-/// The variants track the reply types Zellij consumes for its own
-/// synchronous render hot-path (pixel dims, bg/fg, palette registers,
-/// sync-output support). Accumulated forwarded-query byte streams take
-/// a separate path: they ride `ParseOutput::completed_forward` through
-/// a dedicated input-instruction channel so they don't get co-mingled
-/// with semantically-typed state updates.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum HostReply {
-    PixelDimensions(PixelDimensions),
-    BackgroundColor(String),
-    ForegroundColor(String),
-    ColorRegisters(Vec<(usize, String)>),
-    SynchronizedOutput(Option<SyncOutput>),
-    /// DSR 997 reply / unsolicited notification reporting the host
-    /// terminal's color-palette theme mode (CSI 2031).
-    HostTerminalThemeChanged(HostTerminalThemeMode),
-    KittyGraphicsSupport(bool),
-    SixelSupport(bool),
-}
-
-/// Retained alias for the pre-refactor type name used by other modules in
-/// the client. New code should prefer `HostReply`; the alias keeps the
-/// existing `InputInstruction::AnsiStdinInstructions(Vec<...>)` plumbing
-/// stable during the migration.
-pub type AnsiStdinInstruction = HostReply;
-
-impl HostReply {
-    /// Classify an OSC payload (the bytes between the `ESC ]` prefix and
-    /// the ST/BEL terminator) into a known `HostReply`, if possible.
-    pub fn from_osc_payload(payload: &[u8]) -> Option<HostReply> {
-        lazy_static! {
-            // OSC 10 (foreground) / OSC 11 (background) answer form:
-            //   OSC 10 ; <color> ST        e.g. "10;rgb:ffff/ffff/ffff"
-            //   OSC 11 ; <color> ST
-            static ref FG_RE: Regex = Regex::new(r"^10;(.*)$").unwrap();
-            static ref BG_RE: Regex = Regex::new(r"^11;(.*)$").unwrap();
-            // OSC 4 ; N ; <color> — palette-register answer.
-            static ref COLOR_REGISTER_RE: Regex = Regex::new(r"^4;(\d+);(.*)$").unwrap();
-        }
-        let s = std::str::from_utf8(payload).ok()?;
-        if let Some(caps) = BG_RE.captures(s) {
-            return Some(HostReply::BackgroundColor(caps[1].to_string()));
-        }
-        if let Some(caps) = FG_RE.captures(s) {
-            return Some(HostReply::ForegroundColor(caps[1].to_string()));
-        }
-        if let Some(caps) = COLOR_REGISTER_RE.captures(s) {
-            let index: usize = caps[1].parse().ok()?;
-            let color = caps[2].to_string();
-            return Some(HostReply::ColorRegisters(vec![(index, color)]));
-        }
-        None
-    }
-
-    /// Classify a CSI-based report (the full raw sequence including the
-    /// leading `ESC [`) into a `HostReply`, if possible.
-    ///
-    /// Recognised final bytes: `t` (pixel-dims reply, `CSI 4/6 ; H ; W t`),
-    /// `y` (DECRPM reply to `CSI ?2026$p` — sync-output support
-    /// advertisement).
-    pub fn from_csi_report(raw: &[u8]) -> Option<HostReply> {
-        let s = std::str::from_utf8(raw).ok()?;
-        lazy_static! {
-            // <ESC>[4;H;Wt or <ESC>[6;H;Wt
-            static ref PIX_RE: Regex = Regex::new(r"^\u{1b}\[(\d+);(\d+);(\d+)t$").unwrap();
-            // <ESC>[?2026;Ny — DECRPM reply for sync-output (VT mode 2026)
-            static ref SYNC_RE: Regex = Regex::new(r"^\u{1b}\[\?2026;([0-4])\$y$").unwrap();
-            // <ESC>[?997;1n (dark) / <ESC>[?997;2n (light) — DSR 997 reply
-            // to CSI ?996n, or unsolicited host-theme notification when
-            // CSI ?2031h is enabled.
-            static ref THEME_RE: Regex = Regex::new(r"^\u{1b}\[\?997;([12])n$").unwrap();
-        }
-        if let Some(caps) = PIX_RE.captures(s) {
-            let which: usize = caps[1].parse().ok()?;
-            let first: usize = caps[2].parse().ok()?;
-            let second: usize = caps[3].parse().ok()?;
-            return match which {
-                4 => Some(HostReply::PixelDimensions(PixelDimensions {
-                    character_cell_size: None,
-                    text_area_size: Some(SizeInPixels {
-                        height: first,
-                        width: second,
-                    }),
-                })),
-                6 => Some(HostReply::PixelDimensions(PixelDimensions {
-                    character_cell_size: Some(SizeInPixels {
-                        height: first,
-                        width: second,
-                    }),
-                    text_area_size: None,
-                })),
-                _ => None,
-            };
-        }
-        if let Some(caps) = SYNC_RE.captures(s) {
-            let code: usize = caps[1].parse().ok()?;
-            return match code {
-                1..=3 => Some(HostReply::SynchronizedOutput(Some(SyncOutput::CSI))),
-                _ => Some(HostReply::SynchronizedOutput(None)),
-            };
-        }
-        if let Some(caps) = THEME_RE.captures(s) {
-            let mode = match &caps[1] {
-                "1" => HostTerminalThemeMode::Dark,
-                "2" => HostTerminalThemeMode::Light,
-                _ => return None,
-            };
-            return Some(HostReply::HostTerminalThemeChanged(mode));
-        }
-        None
-    }
-
-    /// Classify a Primary Device Attributes reply (`CSI ? Ps ; Ps ... c`)
-    /// into a Sixel-capability advertisement. Attribute `4` in the reply
-    /// means the host terminal supports Sixel graphics.
-    ///
-    /// Replies that are not a primary-DA form (eg. secondary-DA `CSI > ... c`)
-    /// yield `None` so they do not clobber the host capability state.
-    pub fn sixel_support_from_primary_da(raw: &[u8]) -> Option<HostReply> {
-        lazy_static! {
-            static ref PRIMARY_DA_RE: Regex = Regex::new(r"^\u{1b}\[\?([0-9;]*)c$").unwrap();
-        }
-        let s = std::str::from_utf8(raw).ok()?;
-        let caps = PRIMARY_DA_RE.captures(s)?;
-        let supports_sixel = caps[1].split(';').any(|attribute| attribute == "4");
-        Some(HostReply::SixelSupport(supports_sixel))
     }
 }
 
@@ -272,6 +148,19 @@ pub struct ParseOutput {
     pub has_partial_state: bool,
 }
 
+/// Hold an incomplete sequence over until the next chunk arrives.
+///
+/// Past `PARTIAL_BUFFER_CAP_BYTES` we stop believing a terminator is coming
+/// and flush the bytes to residue instead, so a runaway sequence is never
+/// silently swallowed.
+fn buffer_partial(slot: &mut Vec<u8>, tail: Vec<u8>, out: &mut Vec<u8>) {
+    if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+        out.extend_from_slice(&tail);
+    } else {
+        *slot = tail;
+    }
+}
+
 fn is_user_input(event: &InputEvent) -> bool {
     match event {
         InputEvent::Key(_) | InputEvent::Paste(_) => true,
@@ -279,63 +168,6 @@ fn is_user_input(event: &InputEvent) -> bool {
         InputEvent::PixelMouse(mouse_event) => !mouse_event.mouse_buttons.is_empty(),
         _ => false,
     }
-}
-
-/// Cap on the size of an in-flight partial OSC/CSI buffer. Sized to
-/// pass legitimate OSC 52 clipboard payloads, which carry the entire
-/// clipboard base64-encoded and have no protocol-level limit (images,
-/// multi-MB text dumps, etc.). Beyond this we assume a runaway or
-/// malformed sequence and flush the buffered bytes back to residue —
-/// same observable behaviour as today for unterminated OSC, just
-/// bounded.
-const PARTIAL_BUFFER_CAP_BYTES: usize = 100 * 1024 * 1024;
-
-const PASTE_START_MARKER: &[u8] = b"\x1b[200~";
-const PASTE_END_MARKER: &[u8] = b"\x1b[201~";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingPartial {
-    None,
-    LoneEsc,
-    ReplyInProgress,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MarkerMatch {
-    Complete,
-    Prefix,
-    No,
-}
-
-fn marker_match(buf: &[u8], marker: &[u8]) -> MarkerMatch {
-    if buf.len() >= marker.len() {
-        if &buf[..marker.len()] == marker {
-            MarkerMatch::Complete
-        } else {
-            MarkerMatch::No
-        }
-    } else if marker.starts_with(buf) {
-        MarkerMatch::Prefix
-    } else {
-        MarkerMatch::No
-    }
-}
-
-/// Outcome of a single OSC/CSI walk over a byte buffer. Distinguishing
-/// "needs more bytes" from "malformed" is what lets the residue
-/// scrubber buffer partial sequences across `feed()` calls instead of
-/// leaking their bytes into keyboard residue.
-#[derive(Debug, Clone, Copy)]
-enum SeqStatus {
-    /// Sequence is complete; consume `len` bytes from the head of buf.
-    Complete(usize),
-    /// Sequence is a valid prefix; caller should buffer these bytes
-    /// and prepend them to the next chunk.
-    NeedMore,
-    /// Sequence is malformed (bare ESC mid-payload, non-whitelisted
-    /// final byte, length cap hit). Caller should fall through to
-    /// emitting the leading byte as residue.
-    Malformed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -795,12 +627,7 @@ impl StdinAnsiParser {
                             continue;
                         },
                         MarkerMatch::Prefix => {
-                            let tail = rest.to_vec();
-                            if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
-                                out.extend_from_slice(&tail);
-                            } else {
-                                self.partial_paste = tail;
-                            }
+                            buffer_partial(&mut self.partial_paste, rest.to_vec(), &mut out);
                             return out;
                         },
                         MarkerMatch::No => {},
@@ -826,16 +653,7 @@ impl StdinAnsiParser {
                         continue;
                     },
                     SeqStatus::NeedMore => {
-                        let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
-                            // Cap exceeded: flush buffered bytes to
-                            // residue and reset, preserving the
-                            // semantic that unterminated bytes are not
-                            // silently swallowed.
-                            out.extend_from_slice(&tail);
-                        } else {
-                            self.partial_osc = tail;
-                        }
+                        buffer_partial(&mut self.partial_osc, rest.to_vec(), &mut out);
                         return out;
                     },
                     SeqStatus::Malformed => {
@@ -853,12 +671,7 @@ impl StdinAnsiParser {
                         continue;
                     },
                     SeqStatus::NeedMore => {
-                        let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
-                            out.extend_from_slice(&tail);
-                        } else {
-                            self.partial_csi = tail;
-                        }
+                        buffer_partial(&mut self.partial_csi, rest.to_vec(), &mut out);
                         return out;
                     },
                     SeqStatus::Malformed => {
@@ -885,141 +698,6 @@ impl StdinAnsiParser {
 
 /// Walk an OSC sequence starting at the head of `buf`. Returns whether
 /// the sequence is complete, needs more bytes, or is malformed.
-fn osc_status(buf: &[u8]) -> SeqStatus {
-    if buf.first() != Some(&0x1b) || buf.get(1) != Some(&b']') {
-        return SeqStatus::Malformed;
-    }
-    let mut i = 2;
-    while i < buf.len() {
-        match buf[i] {
-            0x07 => return SeqStatus::Complete(i + 1),
-            0x1b => match buf.get(i + 1) {
-                Some(&b'\\') => return SeqStatus::Complete(i + 2),
-                // Bare ESC followed by something other than `\` —
-                // malformed under the ST-only termination we accept.
-                Some(_) => return SeqStatus::Malformed,
-                // ESC at the very tail; the next chunk may bring `\`
-                // and finish the sequence.
-                None => return SeqStatus::NeedMore,
-            },
-            _ => i += 1,
-        }
-    }
-    SeqStatus::NeedMore
-}
-
-fn apc_status(buf: &[u8]) -> SeqStatus {
-    if buf.first() != Some(&0x1b) || buf.get(1) != Some(&b'_') {
-        return SeqStatus::Malformed;
-    }
-    let mut i = 2;
-    while i < buf.len() {
-        match buf[i] {
-            0x1b => match buf.get(i + 1) {
-                Some(&b'\\') => return SeqStatus::Complete(i + 2),
-                Some(_) => return SeqStatus::Malformed,
-                None => return SeqStatus::NeedMore,
-            },
-            _ => i += 1,
-        }
-    }
-    SeqStatus::NeedMore
-}
-
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-/// Walk a whitelisted CSI report starting at the head of `buf`.
-fn csi_status(buf: &[u8]) -> SeqStatus {
-    if buf.first() != Some(&0x1b) || buf.get(1) != Some(&b'[') {
-        return SeqStatus::Malformed;
-    }
-    let mut i = 2;
-    let max = 256;
-    while i < buf.len() && i < max {
-        let b = buf[i];
-        match b {
-            0x20..=0x3F => i += 1,
-            b't' | b'y' | b'c' | b'n' => return SeqStatus::Complete(i + 1),
-            0x40..=0x7E => return SeqStatus::Malformed, // non-whitelisted final
-            _ => return SeqStatus::Malformed,
-        }
-    }
-    if i >= max {
-        // CSI ran past the cap without terminating — treat as malformed
-        // so the leading byte falls through to residue and parsing
-        // resumes from the next position.
-        SeqStatus::Malformed
-    } else {
-        SeqStatus::NeedMore
-    }
-}
-
-// =====================================================================
-// Forward-slot timeout infrastructure
-// =====================================================================
-
-use std::sync::{Arc, Mutex, OnceLock};
-
-/// Dedicated, lazily-initialised runtime for driving forward-slot
-/// timeouts. A single current-thread executor runs on its own OS
-/// thread; timer tasks are `spawn`-ed onto it from the synchronous
-/// `ClientInstruction::ForwardQueryToHost` handler. One-thread model
-/// because timer tasks do no CPU work — they just sleep and perform a
-/// millisecond-scale mutex check on wake-up.
-static FORWARD_TIMEOUT_RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
-
-pub fn forward_timeout_runtime() -> &'static Arc<tokio::runtime::Runtime> {
-    FORWARD_TIMEOUT_RUNTIME.get_or_init(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("failed to build forward-timeout runtime");
-        let rt = Arc::new(rt);
-        let rt_for_driver = rt.clone();
-        // `block_on(pending())` keeps the executor loop alive forever
-        // on this thread; spawned timer tasks are polled as they
-        // become ready (on spawn, on wake from the time driver).
-        std::thread::Builder::new()
-            .name("zellij-client-forward-timeout".into())
-            .spawn(move || {
-                rt_for_driver.block_on(std::future::pending::<()>());
-            })
-            .expect("failed to spawn forward-timeout driver thread");
-        rt
-    })
-}
-
-/// Spawn a timer task that closes a forward slot after `deadline` and
-/// invokes `on_timeout(token, reply_bytes)` with whatever the slot
-/// accumulated. Token-guard idempotent: if the barrier (or a
-/// replacement forward) has already cleared the slot by the time the
-/// timer wakes, `close_forward_on_timeout(token)` returns `None` and
-/// `on_timeout` is never called — no explicit cancellation path
-/// required.
-///
-/// Extracted as a free function so tests can drive it against a
-/// `tokio::time::pause()`-backed paused runtime without instantiating
-/// the full client.
-pub fn schedule_timeout<F>(
-    runtime: &tokio::runtime::Handle,
-    parser: Arc<Mutex<StdinAnsiParser>>,
-    kind: ForwardKind,
-    token: u32,
-    deadline: std::time::Duration,
-    on_timeout: F,
-) where
-    F: FnOnce(u32, Vec<u8>) + Send + 'static,
-{
-    runtime.spawn(async move {
-        tokio::time::sleep(deadline).await;
-        let payload = parser.lock().unwrap().close_on_timeout(kind, token);
-        if let Some((t, bytes)) = payload {
-            on_timeout(t, bytes);
-        }
-    });
-}
 
 #[cfg(test)]
 #[path = "stdin_ansi_parser_tests.rs"]
