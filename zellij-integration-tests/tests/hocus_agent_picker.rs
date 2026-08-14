@@ -105,6 +105,9 @@ fn submit(zellij: &TestSession, line: &str) {
 #[test]
 fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     let repository = write_git_repository("hocus-project", "trunk");
+    // Deliberately *not* named after an agent: this pane is detected by what it
+    // is running, which is the path detection uses in earnest. The title path is
+    // covered by the test below.
     let layout = format!(
         r#"layout {{
     global_panes {{
@@ -112,7 +115,7 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
             plugin location="hocus"
         }}
     }}
-    pane name="claude" cwd="{}"
+    pane cwd="{}"
 }}
 "#,
         repository.display()
@@ -122,6 +125,7 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
     let agent = zellij.expect_pty_spawn();
+    agent.run_foreground(&["claude"]);
     agent.output(b"$ ");
 
     zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
@@ -160,6 +164,125 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
         "nothing fell back to the header that names nothing:\n{}",
         screen.text,
     );
+    zellij.quit();
+}
+
+/// Grant hocus its permissions and wait for the dialog to go.
+fn allow(zellij: &TestSession) {
+    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
+        grid_snapshot.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
+        !grid_snapshot.contains("Allow? (y/n)")
+    });
+}
+
+/// A sidebar beside two unnamed panes — nothing about either says "agent" until
+/// something runs in it.
+const UNNAMED_PANES_LAYOUT: &str = r#"layout {
+    global_panes {
+        pane edge="left" size="50%" focus=true {
+            plugin location="hocus"
+        }
+    }
+    pane
+    pane
+}
+"#;
+
+/// The reported symptom, end to end: an agent that shells out to a tool used to
+/// vanish from the list until the tool finished, because the only thing anyone
+/// looked at was the *foreground* command.
+///
+/// The whole chain is real here — `tcgetpgrp` and sysinfo faked at the OS
+/// boundary, `CommandChanged` off the pty ticker, the daemon's latch, hocus's
+/// strip, the agents pane drawing it.
+///
+/// The second pane is what makes the negative assertion mean anything. "The row
+/// is still there" proves nothing if nothing has looked yet, so the second agent
+/// starts *after* the first shells out: both changes travel the same ticker and
+/// the same snapshot, so by the time the second is on screen everything the
+/// daemon heard about the first has already been applied.
+#[test]
+fn an_agent_that_shells_out_stays_in_the_list_until_it_is_really_gone() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(UNNAMED_PANES_LAYOUT.to_owned()))
+        .start();
+    let first = zellij.expect_pty_spawn();
+    let second = zellij.expect_pty_spawn();
+    first.output(b"$ ");
+    second.output(b"$ ");
+    allow(&zellij);
+
+    first.run_foreground(&["claude"]);
+    zellij.wait_until("the agent is listed", |grid_snapshot| {
+        grid_snapshot.contains("0  claude")
+    });
+
+    // The agent runs a tool. It is the same agent doing the same work, and
+    // nothing on screen announces the change — so the second pane is the clock.
+    // Driving it through two further states guarantees the tick that carried the
+    // first pane's change has been all the way through the pipeline by the time
+    // we look, even if the two panes' changes straddled a ticker boundary.
+    first.run_foreground(&["git", "status"]);
+    second.run_foreground(&["aider"]);
+    zellij.wait_until("the second agent is listed", |grid_snapshot| {
+        grid_snapshot.contains("1  aider")
+    });
+    second.run_foreground(&["gemini"]);
+    zellij.wait_until("and the pipeline has turned over again", |grid_snapshot| {
+        grid_snapshot.contains("1  gemini")
+    });
+
+    let screen = zellij.snapshot();
+    assert!(
+        screen.text.contains("0  claude"),
+        "an agent that shelled out must not leave the list:\n{}",
+        screen.text,
+    );
+
+    // Now it really exits, and the pane is back at its own prompt.
+    first.return_to_shell();
+    zellij.wait_until("the finished agent is gone", |grid_snapshot| {
+        !grid_snapshot.contains("0  claude")
+    });
+    let screen = zellij.snapshot();
+    assert!(
+        screen.text.contains("1  gemini"),
+        "and only that one went:\n{}",
+        screen.text,
+    );
+    zellij.quit();
+}
+
+/// A pane launched *as* a command is its own foreground process, so the host
+/// reports its argv with `is_foreground` false. Reading that flag as "back at a
+/// prompt" would unclassify every agent started from a layout — and nothing but
+/// this test would say so.
+#[test]
+fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
+    let layout = r#"layout {
+    global_panes {
+        pane edge="left" size="50%" focus=true {
+            plugin location="hocus"
+        }
+    }
+    pane command="claude"
+}
+"#;
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout.to_owned()))
+        .start();
+    let agent = zellij.expect_pty_spawn();
+    agent.output(b"$ ");
+    allow(&zellij);
+
+    zellij.wait_until("the agent is listed", |grid_snapshot| {
+        grid_snapshot.contains("0  claude  running")
+    });
     zellij.quit();
 }
 

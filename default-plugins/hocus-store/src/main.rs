@@ -241,3 +241,124 @@ fn answer(source: PipeSource, _request_id: String, outcome: ops::OpResult) {
         PipeSource::Plugin(_) | PipeSource::Keybind => {},
     }
 }
+
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hocus_proto::store::Local;
+
+    /// A store with the shared entities declared, as a session has them.
+    ///
+    /// The real engine over a temporary file, so discovery below is a genuine
+    /// round trip rather than a check against a stub.
+    fn backend() -> Local {
+        let backend = Local::shared("hocus_store_discovery");
+        backend
+            .define_all(&store::shared_defs())
+            .expect("declared the shared entities");
+        backend
+    }
+
+    fn project_names(backend: &Local) -> Vec<String> {
+        let rows = backend
+            .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+            .expect("fetched the projects");
+        let mut names: Vec<String> = projects::from_rows(&rows).into_keys().collect();
+        names.sort();
+        names
+    }
+
+    fn checkout(root: &str) -> projects::Repository {
+        projects::Repository {
+            root: root.to_owned(),
+            remote: None,
+            worktree_status: Some(projects::WorktreeStatus::Primary),
+            common_dir: Some(format!("{root}/.git")),
+            branch: Some("main".to_owned()),
+        }
+    }
+
+    fn pane_in(pane_id: u32, title: &str, command: Option<&str>, cwd: &str) -> agents::AgentPane {
+        agents::AgentPane {
+            pane_id,
+            title: title.to_owned(),
+            command: command.map(str::to_owned),
+            cwd: Some(cwd.to_owned()),
+            status: agents::AgentStatus::Running,
+            tab: None,
+            detected: None,
+        }
+    }
+
+    /// A snapshot with one pane in one checkout, as the daemon sends it.
+    fn snapshot(pane: agents::AgentPane, manual_kinds: BTreeMap<u32, String>) -> String {
+        let cwd = pane.cwd.clone().expect("the pane is somewhere");
+        serde_json::to_string(&PollReply {
+            panes: Some(vec![pane]),
+            activity: agents::Activity::new(),
+            manual_kinds,
+            repositories: BTreeMap::from([(cwd.clone(), checkout(&cwd))]),
+        })
+        .expect("serialize")
+    }
+
+    /// The rule discovery exists to enforce: a folder becomes a project because
+    /// an *agent* is working in it, not because a shell happened to be there.
+    #[test]
+    fn only_an_agents_folder_becomes_a_project() {
+        let backend = backend();
+
+        discover_from(
+            &backend,
+            &snapshot(
+                pane_in(3, "zsh", Some("zsh"), "/tmp/plain"),
+                BTreeMap::new(),
+            ),
+        );
+        assert!(project_names(&backend).is_empty());
+
+        discover_from(
+            &backend,
+            &snapshot(
+                pane_in(4, "codex", Some("codex"), "/tmp/coded"),
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(project_names(&backend), vec!["coded"]);
+    }
+
+    /// A pane the user named by hand is an agent for this purpose too — the
+    /// snapshot carries the overrides for exactly that reason.
+    #[test]
+    fn a_manual_kind_from_the_snapshot_counts_as_an_agent() {
+        let backend = backend();
+
+        discover_from(
+            &backend,
+            &snapshot(
+                pane_in(3, "zsh", Some("zsh"), "/tmp/named"),
+                BTreeMap::from([(3, "reviewer".to_owned())]),
+            ),
+        );
+
+        assert_eq!(project_names(&backend), vec!["named"]);
+    }
+
+    /// The reason the latch is carried on the snapshot rather than derived at
+    /// each end: an agent that shells out must not stop being one *here* either,
+    /// or its project would come and go with every tool it ran.
+    #[test]
+    fn a_pane_that_shelled_out_still_names_its_project() {
+        let backend = backend();
+        let shelled_out = agents::AgentPane {
+            detected: Some("codex".to_owned()),
+            ..pane_in(3, "zsh", Some("git status"), "/tmp/latched")
+        };
+
+        discover_from(&backend, &snapshot(shelled_out, BTreeMap::new()));
+
+        assert_eq!(project_names(&backend), vec!["latched"]);
+    }
+}

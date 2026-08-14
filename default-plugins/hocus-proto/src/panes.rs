@@ -48,6 +48,9 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
             tab: position
                 .and_then(|position| by_position.get(&position))
                 .map(|(id, name)| (*id, (*name).to_owned())),
+            // A manifest says nothing about what a pane was running a moment ago.
+            // Only the daemon knows that, and it writes it back on afterwards.
+            detected: None,
         })
         .collect();
     // The manifest is a HashMap keyed by tab position, so its order is not stable.

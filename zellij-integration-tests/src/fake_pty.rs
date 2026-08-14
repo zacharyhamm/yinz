@@ -21,6 +21,14 @@ pub(crate) struct FakePtyState {
     pub exited: bool,
     pub echo: bool,
     pub stdin_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
+    /// The pane's own child process, as sysinfo would report it: the command the
+    /// pane was spawned with. A real `get_cwds` answers this for every pane, so a
+    /// fake that answered nothing left the whole command path dark.
+    pub process_command: Option<Vec<String>>,
+    /// What holds the tty foreground, as `tcgetpgrp` plus sysinfo would report it.
+    /// `None` is "nothing but the pane's own process", which is what a shell
+    /// sitting at its prompt looks like.
+    pub foreground_command: Option<Vec<String>>,
 }
 
 impl FakePtyState {
@@ -107,6 +115,14 @@ impl SharedPtys {
         quit_cb: Option<QuitCb>,
     ) -> Box<dyn AsyncReader> {
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
+        let process_command = match &terminal_action {
+            Some(TerminalAction::RunCommand(run_command)) => Some(
+                std::iter::once(run_command.command.to_string_lossy().into_owned())
+                    .chain(run_command.args.iter().cloned())
+                    .collect(),
+            ),
+            _ => None,
+        };
         self.mutate(|fake_pty_registry| {
             fake_pty_registry.fake_pty_states.insert(
                 terminal_id,
@@ -120,6 +136,8 @@ impl SharedPtys {
                     exited: false,
                     echo: true,
                     stdin_tap: None,
+                    process_command,
+                    foreground_command: None,
                 },
             );
             fake_pty_registry.spawn_queue.push_back(terminal_id);
@@ -190,6 +208,42 @@ impl SharedPtys {
         self.mutate(|fake_pty_registry| {
             if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
                 fake_pty_state.stdin_tap = Some(sender);
+            }
+        });
+    }
+
+    /// What each pane's own process is, keyed by terminal id — the fake's answer
+    /// to the sysinfo half of `get_cwds`.
+    pub(crate) fn process_commands(&self) -> HashMap<u32, Vec<String>> {
+        self.read(|fake_pty_registry| {
+            fake_pty_registry
+                .fake_pty_states
+                .iter()
+                .filter_map(|(terminal_id, fake_pty_state)| {
+                    Some((*terminal_id, fake_pty_state.process_command.clone()?))
+                })
+                .collect()
+        })
+    }
+
+    /// What holds each pane's tty foreground, keyed by terminal id — the fake's
+    /// answer to `get_foreground_cmds`.
+    pub(crate) fn foreground_commands(&self) -> HashMap<u32, Vec<String>> {
+        self.read(|fake_pty_registry| {
+            fake_pty_registry
+                .fake_pty_states
+                .iter()
+                .filter_map(|(terminal_id, fake_pty_state)| {
+                    Some((*terminal_id, fake_pty_state.foreground_command.clone()?))
+                })
+                .collect()
+        })
+    }
+
+    pub(crate) fn set_foreground_command(&self, terminal_id: u32, command: Option<Vec<String>>) {
+        self.mutate(|fake_pty_registry| {
+            if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
+                fake_pty_state.foreground_command = command;
             }
         });
     }
@@ -356,6 +410,38 @@ impl FakePtyHandle {
 
     pub fn try_output(&self, bytes: &[u8]) {
         self.shared_ptys.write_output(self.terminal_id, bytes);
+    }
+
+    /// Put a program in this pane's tty foreground, the way typing its name at a
+    /// shell prompt would — which is what agent detection reads.
+    ///
+    /// A byte of output goes with it, and has to: the server only re-reads a
+    /// pane's foreground command on a tick where that pane produced output
+    /// (`pane_activity_flags` in `Pty::update_and_report_cwds`), so a silent
+    /// change is a change nothing ever notices. The bytes are an SGR reset, which
+    /// the grid parses and draws nothing for.
+    pub fn run_foreground(&self, command: &[&str]) {
+        self.shared_ptys.set_foreground_command(
+            self.terminal_id,
+            Some(command.iter().map(|word| (*word).to_owned()).collect()),
+        );
+        self.stir();
+    }
+
+    /// Give the tty foreground back to the pane's own process — what the shell
+    /// prompt returning after a program exits looks like from the outside.
+    ///
+    /// Emits output for the same reason `run_foreground` does.
+    pub fn return_to_shell(&self) {
+        self.shared_ptys
+            .set_foreground_command(self.terminal_id, None);
+        self.stir();
+    }
+
+    /// A byte that changes nothing on screen, purely to raise the pane's activity
+    /// flag so the server's next tick looks at it.
+    fn stir(&self) {
+        self.shared_ptys.write_output(self.terminal_id, b"\x1b[0m");
     }
 
     pub fn tap_stdin(&self) -> crossbeam::channel::Receiver<Vec<u8>> {

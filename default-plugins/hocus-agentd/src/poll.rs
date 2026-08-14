@@ -24,7 +24,7 @@ fn current_session() -> Option<SessionInfo> {
 /// `PaneInfo.terminal_command` is only what a pane was *launched* with, so it is
 /// `None` for every pane the user opened as a shell. The host resolves this one from
 /// the pane's foreground process instead, which is what detection actually wants.
-fn pane_running_command(pane_id: u32) -> Option<String> {
+pub fn pane_running_command(pane_id: u32) -> Option<String> {
     get_pane_running_command(PaneId::Terminal(pane_id))
         .ok()
         .filter(|args| !args.is_empty())
