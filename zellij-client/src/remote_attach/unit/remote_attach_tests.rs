@@ -366,75 +366,6 @@ fn cleanup_test_db(server_url: &str) {
     let _ = remote_session_tokens::delete_session_token(server_url);
 }
 
-// Mock ClientOsApi for testing
-#[derive(Debug, Clone)]
-struct MockClientOsApi;
-
-impl crate::os_input_output::TtyControl for MockClientOsApi {
-    fn get_terminal_size(&self) -> zellij_utils::pane_size::Size {
-        zellij_utils::pane_size::Size { rows: 24, cols: 80 }
-    }
-
-    fn set_raw_mode(&mut self) {}
-
-    fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    fn load_palette(&self) -> zellij_utils::data::Palette {
-        zellij_utils::shared::default_palette()
-    }
-
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl crate::os_input_output::StdioAccess for MockClientOsApi {
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-
-    fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
-        Box::new(std::io::BufReader::new(std::io::empty()))
-    }
-
-    fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
-        Box::new(std::io::sink())
-    }
-}
-
-impl crate::os_input_output::ServerConnection for MockClientOsApi {
-    fn update_session_name(&mut self, _new_session_name: String) {}
-
-    fn send_to_server(&self, _msg: zellij_utils::ipc::ClientToServerMsg) {}
-
-    fn recv_from_server(
-        &self,
-    ) -> Option<(
-        zellij_utils::ipc::ServerToClientMsg,
-        zellij_utils::errors::ErrorContext,
-    )> {
-        None
-    }
-
-    fn connect_to_server(&self, _path: &std::path::Path) {}
-}
-
-impl crate::os_input_output::SignalSource for MockClientOsApi {
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-}
-
-impl crate::os_input_output::ClientOsApi for MockClientOsApi {
-    fn box_clone(&self) -> Box<dyn crate::os_input_output::ClientOsApi> {
-        Box::new(MockClientOsApi)
-    }
-}
-
 // Tests
 #[cfg(feature = "web_server_capability")]
 mod tests {
@@ -450,7 +381,8 @@ mod tests {
     ) -> Result<WebSocketConnections, RemoteClientError> {
         tokio::task::spawn_blocking(move || {
             let runtime = crate::async_runtime(None);
-            let os_input: Box<dyn crate::os_input_output::ClientOsApi> = Box::new(MockClientOsApi);
+            let os_input: Box<dyn crate::os_input_output::ClientOsApi> =
+                Box::new(crate::test_support::FakeClientOsApi::new());
             attach_to_remote_session(
                 runtime,
                 os_input,

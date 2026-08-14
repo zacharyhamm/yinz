@@ -220,77 +220,14 @@ impl ClientConnectionBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::os_input_output::{
-        ClientOsApi, ServerConnection, SignalSource, StdioAccess, TtyControl,
-    };
-    use std::io::{BufRead, Cursor, Write};
-    use std::path::Path;
+    use crate::test_support::FakeClientOsApi;
     use std::sync::Mutex;
-    use zellij_utils::{
-        data::Palette,
-        errors::ErrorContext,
-        ipc::{ClientToServerMsg, ServerToClientMsg},
-        pane_size::Size,
-    };
-
-    #[derive(Clone, Debug, Default)]
-    struct StubOsInput;
-
-    impl TtyControl for StubOsInput {
-        fn get_terminal_size(&self) -> Size {
-            Size::default()
-        }
-        fn set_raw_mode(&mut self) {}
-        fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-            Ok(())
-        }
-        fn load_palette(&self) -> Palette {
-            Palette::default()
-        }
-        fn enable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn disable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl StdioAccess for StubOsInput {
-        fn get_stdout_writer(&self) -> Box<dyn Write> {
-            Box::new(std::io::sink())
-        }
-        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
-            Box::new(Cursor::new(Vec::<u8>::new()))
-        }
-        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-            Ok(vec![])
-        }
-    }
-
-    impl ServerConnection for StubOsInput {
-        fn update_session_name(&mut self, _new_session_name: String) {}
-        fn send_to_server(&self, _msg: ClientToServerMsg) {}
-        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-            None
-        }
-        fn connect_to_server(&self, _path: &Path) {}
-    }
-
-    impl SignalSource for StubOsInput {
-        fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-    }
-
-    impl ClientOsApi for StubOsInput {
-        fn box_clone(&self) -> Box<dyn ClientOsApi> {
-            Box::new(self.clone())
-        }
-    }
 
     fn connection_table_with_client(client_id: &str) -> Arc<Mutex<ConnectionTable>> {
         let connection_table = Arc::new(Mutex::new(ConnectionTable::default()));
         connection_table.lock().unwrap().add_new_client(
             client_id.to_owned(),
-            Box::new(StubOsInput),
+            Box::new(FakeClientOsApi::new()),
             false,
             "token".to_owned(),
         );

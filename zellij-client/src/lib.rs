@@ -805,4 +805,6 @@ pub fn start_server_detached(
 }
 
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod unit;

@@ -249,86 +249,12 @@ pub fn parse_stdin(
 #[cfg(test)]
 mod tests {
     use super::parse_stdin;
-    use crate::os_input_output::{
-        ClientOsApi, ServerConnection, SignalSource, StdioAccess, TtyControl,
-    };
-    use std::io::{BufRead, Cursor, Write};
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use zellij_utils::{
-        data::Palette,
-        errors::ErrorContext,
-        input::mouse::MouseEvent,
-        ipc::{ClientToServerMsg, ServerToClientMsg},
-        pane_size::Size,
-    };
-
-    #[derive(Clone, Debug, Default)]
-    struct RecordingOsInput {
-        sent_messages: Arc<Mutex<Vec<ClientToServerMsg>>>,
-    }
-
-    impl RecordingOsInput {
-        fn take_sent_messages(&self) -> Vec<ClientToServerMsg> {
-            self.sent_messages.lock().unwrap().clone()
-        }
-    }
-
-    impl TtyControl for RecordingOsInput {
-        fn get_terminal_size(&self) -> Size {
-            Size::default()
-        }
-        fn set_raw_mode(&mut self) {}
-        fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-            Ok(())
-        }
-        fn load_palette(&self) -> Palette {
-            Palette::default()
-        }
-        fn enable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn disable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl StdioAccess for RecordingOsInput {
-        fn get_stdout_writer(&self) -> Box<dyn Write> {
-            Box::new(std::io::sink())
-        }
-        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
-            Box::new(Cursor::new(Vec::<u8>::new()))
-        }
-        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-            Ok(vec![])
-        }
-    }
-
-    impl ServerConnection for RecordingOsInput {
-        fn update_session_name(&mut self, _new_session_name: String) {}
-        fn send_to_server(&self, msg: ClientToServerMsg) {
-            self.sent_messages.lock().unwrap().push(msg);
-        }
-        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-            None
-        }
-        fn connect_to_server(&self, _path: &Path) {}
-    }
-
-    impl SignalSource for RecordingOsInput {
-        fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
-    }
-
-    impl ClientOsApi for RecordingOsInput {
-        fn box_clone(&self) -> Box<dyn ClientOsApi> {
-            Box::new(self.clone())
-        }
-    }
+    use crate::test_support::FakeClientOsApi;
+    use zellij_utils::{input::mouse::MouseEvent, ipc::ClientToServerMsg};
 
     #[test]
     fn ime_multi_char_input_uses_per_char_raw_bytes() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -339,7 +265,7 @@ mod tests {
             &mut session,
         );
 
-        let sent_messages = os_input.take_sent_messages();
+        let sent_messages = os_input.sent_messages();
         assert_eq!(sent_messages.len(), 2);
 
         let raw_bytes: Vec<Vec<u8>> = sent_messages
@@ -358,7 +284,7 @@ mod tests {
 
     #[test]
     fn single_char_input_keeps_original_raw_bytes() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -369,7 +295,7 @@ mod tests {
             &mut session,
         );
 
-        let sent_messages = os_input.take_sent_messages();
+        let sent_messages = os_input.sent_messages();
         assert_eq!(sent_messages.len(), 1);
 
         match &sent_messages[0] {
@@ -388,7 +314,7 @@ mod tests {
     #[test]
     fn fragmented_kitty_sequence_resolves_across_frames() {
         use zellij_utils::data::{BareKey, KeyWithModifier};
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -400,7 +326,7 @@ mod tests {
             &mut session,
         );
         assert!(
-            os_input.take_sent_messages().is_empty(),
+            os_input.sent_messages().is_empty(),
             "incomplete Kitty prefix must not emit a key on frame 1"
         );
 
@@ -411,7 +337,7 @@ mod tests {
             &mut mouse_old_event,
             &mut session,
         );
-        let sent = os_input.take_sent_messages();
+        let sent = os_input.sent_messages();
         assert_eq!(
             sent.len(),
             1,
@@ -440,7 +366,7 @@ mod tests {
     /// and reach the server as ordinary key events.
     #[test]
     fn non_kitty_bytes_pass_through_to_termwiz_path() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -451,7 +377,7 @@ mod tests {
             &mut session,
         );
 
-        let sent = os_input.take_sent_messages();
+        let sent = os_input.sent_messages();
         // Two Char events ('a', 'b'), both via the termwiz path.
         assert_eq!(sent.len(), 2);
         for msg in &sent {
