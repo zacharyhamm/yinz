@@ -2290,12 +2290,50 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
     }
 }
 
+pub(crate) fn global_pane_size_from_protobuf(
+    size: super::generated_api::api::action::global_pane_size::SizeType,
+) -> Result<PercentOrFixed, &'static str> {
+    use super::generated_api::api::action::global_pane_size::SizeType;
+    match size {
+        SizeType::Fixed(0) | SizeType::Percent(0) => {
+            Err("Global pane size must be greater than zero")
+        },
+        SizeType::Percent(size) if size > 100 => {
+            Err("Global pane percent must be between 1 and 100")
+        },
+        SizeType::Fixed(size) => Ok(PercentOrFixed::Fixed(
+            usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
+        )),
+        SizeType::Percent(size) => Ok(PercentOrFixed::Percent(
+            usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
+        )),
+    }
+}
+
+pub(crate) fn global_pane_size_to_protobuf(
+    size: PercentOrFixed,
+) -> Result<super::generated_api::api::action::global_pane_size::SizeType, &'static str> {
+    use super::generated_api::api::action::global_pane_size::SizeType;
+    match size {
+        PercentOrFixed::Fixed(0) | PercentOrFixed::Percent(0) => {
+            Err("Global pane size must be greater than zero")
+        },
+        PercentOrFixed::Percent(size) if size > 100 => {
+            Err("Global pane percent must be between 1 and 100")
+        },
+        PercentOrFixed::Fixed(size) => Ok(SizeType::Fixed(
+            u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
+        )),
+        PercentOrFixed::Percent(size) => Ok(SizeType::Percent(
+            u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
+        )),
+    }
+}
+
 impl TryFrom<ProtobufGlobalPanePlacement> for GlobalPanePlacement {
     type Error = &'static str;
 
     fn try_from(placement: ProtobufGlobalPanePlacement) -> Result<Self, Self::Error> {
-        use super::generated_api::api::action::global_pane_size::SizeType;
-
         let edge = match ProtobufGlobalPaneEdge::try_from(placement.edge) {
             Ok(ProtobufGlobalPaneEdge::Left) => GlobalPaneEdge::Left,
             Ok(ProtobufGlobalPaneEdge::Right) => GlobalPaneEdge::Right,
@@ -2303,25 +2341,18 @@ impl TryFrom<ProtobufGlobalPanePlacement> for GlobalPanePlacement {
             Ok(ProtobufGlobalPaneEdge::Bottom) => GlobalPaneEdge::Bottom,
             _ => return Err("Invalid global pane edge"),
         };
-        let size = match placement
-            .size
-            .and_then(|size| size.size_type)
-            .ok_or("Global pane placement missing size")?
-        {
-            SizeType::Fixed(0) | SizeType::Percent(0) => {
-                return Err("Global pane size must be greater than zero")
-            },
-            SizeType::Percent(size) if size > 100 => {
-                return Err("Global pane percent must be between 1 and 100")
-            },
-            SizeType::Fixed(size) => PercentOrFixed::Fixed(
-                usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
-            ),
-            SizeType::Percent(size) => PercentOrFixed::Percent(
-                usize::try_from(size).map_err(|_| "Global pane size does not fit usize")?,
-            ),
-        };
-        Ok(Self { edge, size })
+        let size = global_pane_size_from_protobuf(
+            placement
+                .size
+                .and_then(|size| size.size_type)
+                .ok_or("Global pane placement missing size")?,
+        )?;
+        let length = placement
+            .length
+            .and_then(|length| length.size_type)
+            .map(global_pane_size_from_protobuf)
+            .transpose()?;
+        Ok(Self { edge, size, length })
     }
 }
 
@@ -2329,33 +2360,27 @@ impl TryFrom<GlobalPanePlacement> for ProtobufGlobalPanePlacement {
     type Error = &'static str;
 
     fn try_from(placement: GlobalPanePlacement) -> Result<Self, Self::Error> {
-        use super::generated_api::api::action::global_pane_size::SizeType;
-
         let edge = match placement.edge {
             GlobalPaneEdge::Left => ProtobufGlobalPaneEdge::Left,
             GlobalPaneEdge::Right => ProtobufGlobalPaneEdge::Right,
             GlobalPaneEdge::Top => ProtobufGlobalPaneEdge::Top,
             GlobalPaneEdge::Bottom => ProtobufGlobalPaneEdge::Bottom,
         };
-        let size_type = match placement.size {
-            PercentOrFixed::Fixed(0) | PercentOrFixed::Percent(0) => {
-                return Err("Global pane size must be greater than zero")
-            },
-            PercentOrFixed::Percent(size) if size > 100 => {
-                return Err("Global pane percent must be between 1 and 100")
-            },
-            PercentOrFixed::Fixed(size) => SizeType::Fixed(
-                u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
-            ),
-            PercentOrFixed::Percent(size) => SizeType::Percent(
-                u32::try_from(size).map_err(|_| "Global pane size does not fit u32")?,
-            ),
-        };
+        let size_type = global_pane_size_to_protobuf(placement.size)?;
+        let length = placement
+            .length
+            .map(|length| {
+                global_pane_size_to_protobuf(length).map(|size_type| ProtobufGlobalPaneSize {
+                    size_type: Some(size_type),
+                })
+            })
+            .transpose()?;
         Ok(Self {
             edge: edge as i32,
             size: Some(ProtobufGlobalPaneSize {
                 size_type: Some(size_type),
             }),
+            length,
         })
     }
 }
@@ -3551,10 +3576,12 @@ mod tests {
         let fixed = Some(GlobalPanePlacement {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Fixed(12),
+            length: None,
         });
         let percent = Some(GlobalPanePlacement {
             edge: GlobalPaneEdge::Bottom,
             size: PercentOrFixed::Percent(25),
+            length: None,
         });
         let actions = vec![
             Action::NewPane {
@@ -3680,6 +3707,7 @@ mod tests {
                 size: Some(ProtobufGlobalPaneSize {
                     size_type: Some(size_type),
                 }),
+                length: None,
             };
             assert!(GlobalPanePlacement::try_from(placement).is_err());
         }
@@ -3688,6 +3716,7 @@ mod tests {
             let placement = GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size,
+                length: None,
             };
             assert!(ProtobufGlobalPanePlacement::try_from(placement).is_err());
         }
@@ -3696,6 +3725,7 @@ mod tests {
             let placement = GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Fixed(overflow),
+                length: None,
             };
             assert!(ProtobufGlobalPanePlacement::try_from(placement).is_err());
         }

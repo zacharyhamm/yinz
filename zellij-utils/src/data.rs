@@ -2955,7 +2955,13 @@ pub enum GlobalPaneEdge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GlobalPanePlacement {
     pub edge: GlobalPaneEdge,
+    /// The strip's thickness. Panes sharing an edge form one strip; the first visible pane's
+    /// size wins and joiners adopt it.
     pub size: PercentOrFixed,
+    /// This pane's share of the strip's long axis. `None` panes divide whatever the explicit
+    /// lengths leave over equally, so a lone pane spans the whole strip.
+    #[serde(default)]
+    pub length: Option<PercentOrFixed>,
 }
 
 impl Default for GlobalPanePlacement {
@@ -2963,6 +2969,7 @@ impl Default for GlobalPanePlacement {
         Self {
             edge: GlobalPaneEdge::Left,
             size: PercentOrFixed::Fixed(1),
+            length: None,
         }
     }
 }
@@ -3730,6 +3737,17 @@ pub enum PluginCommand {
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned
     SetGlobalPanePlacement(PaneId, GlobalPanePlacement),
+    /// Launch a plugin as a split of the calling plugin's own global pane (before it towards the
+    /// strip's start when `before`), or reveal and optionally focus it if a global pane for the
+    /// plugin already exists. No-op when the caller is not a global pane.
+    LaunchOrFocusGlobalPaneSplit {
+        plugin_url: String,
+        config: BTreeMap<String, String>,
+        before: bool,
+        length: Option<PercentOrFixed>,
+        should_focus: bool,
+        skip_cache: bool,
+    },
     StackPanes(Vec<PaneId>),
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     TogglePaneBorderless(PaneId),

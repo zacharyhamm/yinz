@@ -2684,6 +2684,7 @@ fn serialize_pane_update_event() {
             global_placement: Some(GlobalPanePlacement {
                 edge: GlobalPaneEdge::Left,
                 size: PercentOrFixed::Percent(25),
+                length: None,
             }),
             is_hidden: true,
             ..Default::default()
@@ -2996,6 +2997,7 @@ fn serialize_session_update_event_with_non_default_values() {
                 global_placement: Some(GlobalPanePlacement {
                     edge: GlobalPaneEdge::Bottom,
                     size: PercentOrFixed::Fixed(4),
+                    length: None,
                 }),
                 is_hidden: true,
                 ..Default::default()

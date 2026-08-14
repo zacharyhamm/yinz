@@ -252,10 +252,11 @@ pub struct State {
     parked: Vec<Chat>,
     /// The archive or model browser, when it is open.
     pub picker: Option<Picker>,
-    /// The agent strip that is always drawn above the conversation.
-    pub agent_picker: Picker,
-    /// Whether keys belong to the agent strip rather than the conversation.
-    pub agents_focused: bool,
+    /// The agent strip as last pushed to the hocus-agents pane, so a snapshot
+    /// that changes no row sends nothing. hocus owns the data (the agentd
+    /// snapshot, the project registry, the branch probes); the strip itself is
+    /// a separate global pane split off above this one, and it only draws.
+    last_strip: Vec<agents::StripRow>,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
     /// Questions from the `hocus-ask` popup that arrived while hocus was busy,
@@ -378,12 +379,7 @@ impl Default for State {
             saved: (0, 0),
             parked: Vec::new(),
             picker: None,
-            agent_picker: Picker {
-                entries: Vec::new(),
-                selected: 0,
-                kind: PickerKind::Agents(Vec::new()),
-            },
-            agents_focused: false,
+            last_strip: Vec::new(),
             jobs: Vec::new(),
             asks: VecDeque::new(),
             job_seq: 0,
@@ -491,6 +487,14 @@ impl ZellijPlugin for State {
             // wasm anyway (see `BUILTIN_PLUGIN_DEV_DIRS`), so a `file:` load is
             // a thing you have to go out of your way to do.
         ]);
+
+        // The agent list is its own pane, split off above this one in the same
+        // global strip. Idempotent server-side: an existing hocus-agents global
+        // pane (a reload, a session restore) is adopted rather than split
+        // again, and a hocus that is not a global pane spawns nothing. Fire-
+        // and-forget, so calling it before the permission grant resolves is
+        // fine - and a builtin is exempt from the gate anyway.
+        Self::launch_agents_pane(false);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -523,6 +527,12 @@ impl ZellijPlugin for State {
                 self.subscribe_to_agentd();
                 return false;
             },
+            wire::AGENT_STRIP_HELLO => {
+                // a freshly loaded (or restored) hocus-agents pane asking for
+                // the current rows
+                self.push_strip(true);
+                return false;
+            },
             wire::ASK => return self.on_ask(&pipe_message),
             wire::AGENT_SNAPSHOT => {},
             _ => return false,
@@ -552,9 +562,9 @@ impl ZellijPlugin for State {
         if let Some(panes) = reply.panes {
             self.apply_poll(panes, reply.activity);
         }
-        // This also answers the branch refresh requested when the permanent
-        // agent strip gains focus.
-        self.refresh_agent_picker()
+        // This also answers the branch refresh the agents pane asks for.
+        self.push_strip(false);
+        false
     }
 }
 
@@ -1918,12 +1928,16 @@ mod tests {
             .collect()
     }
 
-    fn agent_entry_texts(state: &State) -> Vec<&str> {
+    /// The agent strip as it would be pushed to the hocus-agents pane, as
+    /// plain lines.
+    fn agent_entry_texts(state: &State) -> Vec<String> {
         state
-            .agent_picker
-            .entries
-            .iter()
-            .map(|row| row.text.as_str())
+            .current_strip()
+            .into_iter()
+            .map(|row| match row {
+                agents::StripRow::Project(text) | agents::StripRow::Branch(text) => text,
+                agents::StripRow::Agent { text, .. } => text,
+            })
             .collect()
     }
 
@@ -2168,10 +2182,9 @@ mod tests {
     /// Agent focus drives the session, not the conversation, so an arriving
     /// reply is no reason to refuse it — and the reply keeps arriving behind it.
     #[test]
-    fn the_agent_strip_focuses_over_an_arriving_reply() {
+    fn focusing_the_agents_pane_leaves_an_arriving_reply_alone() {
         let mut state = ready_state();
-        assert!(state.open_agent_picker());
-        assert!(state.agents_focused);
+        state.focus_agents_pane();
 
         state.on_chunk(
             "hocus-1",
@@ -2261,15 +2274,14 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
         assert!(
             state.picker.is_none(),
-            "agent focus dismisses the temporary list"
+            "handing focus to the agents pane dismisses the temporary list"
         );
-        assert!(state.agents_focused);
     }
 
-    /// The strip is present before Ctrl-r; the key only focuses it. While
-    /// focused it swallows text, and Esc hands input back to the conversation.
+    /// The strip rows hocus pushes to the agents pane: agents grouped under the
+    /// project and branch headers, computed from the snapshot it holds.
     #[test]
-    fn ctrl_r_focuses_the_permanent_agent_strip() {
+    fn the_strip_groups_agents_under_their_headers() {
         let mut state = state_with_panes();
         settle(&mut state);
 
@@ -2277,27 +2289,10 @@ mod tests {
             agent_entry_texts(&state),
             ["no project", "  no branch", "  3  codex  running"]
         );
-        assert!(
-            matches!(state.agent_picker.kind, PickerKind::Agents(ref ids) if ids == &vec![None, None, Some(3)])
-        );
-        // Past the two headers, which nothing can land on.
-        assert_eq!(state.agent_picker.selected, 2);
-        assert!(!state.agents_focused);
-
-        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
-        assert!(state.agents_focused);
-
-        state.on_key(KeyWithModifier::new(BareKey::Char('x')));
-        assert_eq!(state.input.get_text(), "", "focused strip swallows text");
-        assert!(!state.on_paste("pasted".to_owned()));
-
-        state.on_key(KeyWithModifier::new(BareKey::Enter));
-        assert!(state.picker.is_none());
-        assert!(state.agents_focused, "focus survives leaving for the pane");
-
-        state.on_key(KeyWithModifier::new(BareKey::Esc));
-        assert!(!state.agents_focused);
-        assert_eq!(agent_entry_texts(&state).len(), 3, "strip stays visible");
+        assert!(matches!(
+            state.current_strip()[2],
+            agents::StripRow::Agent { pane_id: 3, .. }
+        ));
     }
 
     /// Two agents in two worktrees of one repository — the case the branch
@@ -2316,25 +2311,16 @@ mod tests {
                 on_branch("/work/trees/topic", "topic"),
             ),
         ]);
-        state.refresh_agent_picker();
         state
     }
 
-    /// The pane the focused agent strip would open.
-    fn selected_pane(state: &State) -> Option<u32> {
-        match &state.agent_picker.kind {
-            PickerKind::Agents(ids) => ids.get(state.agent_picker.selected).copied().flatten(),
-            _ => None,
-        }
-    }
-
-    /// Arrow keys step over the headers, so every landing is an agent and there
-    /// is never a selection that `Enter` could do nothing with.
+    /// Two worktrees of one repository — the case the branch headers exist for.
+    /// Stepping over the headers is the hocus-agents pane's job and is tested
+    /// there; hocus's half of the deal is producing rows in this shape.
     #[test]
-    fn the_agent_picker_never_lands_on_a_header() {
+    fn worktree_agents_group_under_their_branch_headers() {
         let mut state = state_with_worktrees();
         settle(&mut state);
-        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
 
         assert_eq!(
             agent_entry_texts(&state),
@@ -2345,20 +2331,6 @@ mod tests {
                 "  topic",
                 "  5  codex  running  tab 2",
             ]
-        );
-        assert_eq!(selected_pane(&state), Some(3), "opens on the first agent");
-
-        state.agent_key(KeyWithModifier::new(BareKey::Down));
-        assert_eq!(selected_pane(&state), Some(5), "over the branch header");
-        state.agent_key(KeyWithModifier::new(BareKey::Down));
-        assert_eq!(selected_pane(&state), Some(5), "and stops at the last");
-        state.agent_key(KeyWithModifier::new(BareKey::Up));
-        assert_eq!(selected_pane(&state), Some(3));
-        state.agent_key(KeyWithModifier::new(BareKey::Up));
-        assert_eq!(
-            selected_pane(&state),
-            Some(3),
-            "the headers above are not rows to climb onto"
         );
     }
 
@@ -2391,19 +2363,17 @@ mod tests {
         }
     }
 
-    /// Opening the picker asks for the branches to be re-read, so the snapshot
-    /// that answers has to reach the open list. The selection follows the pane,
-    /// not the row number — the re-read moved every row here.
+    /// Focusing the agents pane asks for the branches to be re-read, so the
+    /// snapshot that answers has to update the strip. Following the selected
+    /// pane through the reshuffle is the hocus-agents pane's job.
     #[test]
-    fn a_snapshot_rebuilds_the_open_agent_picker_and_keeps_the_pane() {
+    fn a_snapshot_rebuilds_the_strip() {
         let mut state = state_with_worktrees();
         settle(&mut state);
-        state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
-        state.agent_key(KeyWithModifier::new(BareKey::Down));
-        assert_eq!(selected_pane(&state), Some(5));
 
-        // Pane 3 turns out to be on `zzz`, which sorts it below pane 5.
-        assert!(state.pipe(worktree_snapshot(7, "zzz")), "asks to redraw");
+        // Pane 3 turns out to be on `zzz`, which sorts it below pane 5. The
+        // strip goes to the agents pane, so hocus itself has nothing to redraw.
+        assert!(!state.pipe(worktree_snapshot(7, "zzz")));
 
         assert_eq!(
             agent_entry_texts(&state),
@@ -2415,7 +2385,6 @@ mod tests {
                 "  3  codex  running  tab 1",
             ]
         );
-        assert_eq!(selected_pane(&state), Some(5), "still on the same agent");
     }
 
     /// The list is also a display of where you are, so it must open on the model
@@ -3243,6 +3212,31 @@ mod tests {
         assert_eq!(state.active_project.as_deref(), Some("pocus"));
     }
 
+    #[test]
+    fn project_changes_push_the_strip_immediately() {
+        let mut state = state_with_tab(9);
+        poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+        assert!(matches!(
+            &state.last_strip[0],
+            agents::StripRow::Project(name) if name == "hocus"
+        ));
+
+        state.run_local(&agent_call(
+            "project_assign",
+            r#"{"name":"pocus","root":"/work/hocus"}"#,
+        ));
+        assert!(matches!(
+            &state.last_strip[0],
+            agents::StripRow::Project(name) if name == "pocus"
+        ));
+
+        state.run_local(&agent_call("project_forget", r#"{"name":"pocus"}"#));
+        assert!(matches!(
+            &state.last_strip[0],
+            agents::StripRow::Project(name) if name == "no project"
+        ));
+    }
+
     /// The case the rename bookkeeping exists for: a tab points at a project a
     /// later poll absorbs, and must follow it rather than name nothing.
     #[test]
@@ -3677,7 +3671,6 @@ mod tests {
             ]),
             &[],
         ));
-        state.refresh_agent_picker();
         state
     }
 
@@ -4056,8 +4049,10 @@ mod tests {
     fn an_out_of_order_agent_snapshot_is_dropped() {
         let mut state = state_with_panes();
 
-        assert!(state.pipe(agent_snapshot(4)), "a newer snapshot merges");
-        assert!(state.panes.is_empty());
+        // merging never repaints hocus itself - the strip lives in the
+        // hocus-agents pane now
+        assert!(!state.pipe(agent_snapshot(4)));
+        assert!(state.panes.is_empty(), "a newer snapshot merges");
         assert_eq!(state.agent_seq, 4);
 
         state.set_panes(panes_with_agent());

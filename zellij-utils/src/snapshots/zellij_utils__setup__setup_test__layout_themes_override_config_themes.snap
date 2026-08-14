@@ -8759,6 +8759,20 @@ Config {
                 ),
                 initial_cwd: None,
             },
+            "hocus-agents": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-agents",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+            },
             "hocus-ask": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(

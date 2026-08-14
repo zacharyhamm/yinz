@@ -91,15 +91,15 @@ use zellij_utils::ipc::{
     ExitReason, MobileActivePanePayload, MobilePanePayload, MobileSessionPayload,
     MobileSizePayload, MobileStatePayload, MobileTabPayload, ServerToClientMsg,
 };
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
+use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_utils::shared::{clean_string_from_control_and_linebreak, detect_theme_hue};
 use zellij_utils::{
     consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR},
     envs::set_session_name,
     input::command::TerminalAction,
     input::layout::{
-        FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-        TabLayoutInfo, TiledPaneLayout,
+        FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPluginOrAlias, SwapFloatingLayout,
+        SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
     },
     input::parse_keys,
     position::Position,
@@ -119,8 +119,8 @@ use zellij_utils::warped_tab::layout_for_warped_tab;
 
 use crate::{
     global_panes::{
-        unowned_strip_rows, AllocatedGlobalPanes, GlobalPaneManager, GlobalPaneMouseEffect,
-        GlobalPaneStrip,
+        unowned_strip_rows, AllocatedGlobalPanes, GlobalBorderHit, GlobalPaneManager,
+        GlobalPaneMouseEffect, GlobalPaneStrip,
     },
     nested_guest::NestedGuestTracker,
     output::{CharacterChunk, HostKittyState, Output},
@@ -130,7 +130,8 @@ use crate::{
     plugins::{DumpSessionLayoutResponse, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{
         get_default_shell, AdoptedPane, AdoptedTabPanes, AdoptedTabTerminal,
-        ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction, VteBytes,
+        ClientTabIndexOrPaneId, GlobalPaneSpawnContext, GlobalSplitAnchor, PtyInstruction,
+        VteBytes,
     },
     pty_writer::PtyWriteInstruction,
     tab::{
@@ -424,6 +425,19 @@ pub enum ScreenInstruction {
         completion_tx: Option<NotificationEnd>,
         set_blocking: bool,
         declaration_order: Option<usize>,
+        split: Option<GlobalSplitAnchor>,
+    },
+    /// Launch a plugin as a split of `anchor`'s global pane, or reveal (and optionally focus) an
+    /// existing global pane for that plugin - the plugin-facing sibling of LaunchOrFocusPlugin's
+    /// global branch, anchored to the calling plugin's own pane.
+    LaunchOrFocusGlobalPaneSplit {
+        run_plugin: RunPluginOrAlias,
+        anchor: PaneId,
+        before: bool,
+        length: Option<PercentOrFixed>,
+        should_focus: bool,
+        skip_cache: bool,
+        client_id: ClientId,
     },
     OpenInPlaceEditor(PaneId, ClientTabIndexOrPaneId),
     TogglePaneEmbedOrFloating(ClientId, Option<NotificationEnd>),
@@ -1090,6 +1104,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::RenderToClients => ScreenContext::RenderToClients,
             ScreenInstruction::NewPane(..) => ScreenContext::NewPane,
             ScreenInstruction::NewGlobalPane { .. } => ScreenContext::NewPane,
+            ScreenInstruction::LaunchOrFocusGlobalPaneSplit { .. } => {
+                ScreenContext::LaunchOrFocusPlugin
+            },
             ScreenInstruction::OpenInPlaceEditor(..) => ScreenContext::OpenInPlaceEditor,
             ScreenInstruction::TogglePaneEmbedOrFloating(..) => {
                 ScreenContext::TogglePaneEmbedOrFloating
@@ -1835,6 +1852,9 @@ pub(crate) struct Screen {
     pane_output_activity: HashMap<PaneId, Instant>,
     layout_global_panes_started: bool,
     suspended_global_focus: HashMap<ClientId, (usize, PaneId)>,
+    /// A layout-declared global pane with `focus=true` that spawned before any client attached -
+    /// the focus lands on the first client to arrive instead of being dropped.
+    pending_global_pane_focus: Option<PaneId>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
 }
 
@@ -2052,6 +2072,7 @@ impl Screen {
             pane_output_activity: HashMap::new(),
             layout_global_panes_started: false,
             suspended_global_focus: HashMap::new(),
+            pending_global_pane_focus: None,
             mobile_web_prefs: HashMap::new(),
         }
     }
@@ -2636,20 +2657,38 @@ impl Screen {
     }
 
     /// The strips a tab must leave to the global panes for the supplied layout.
+    /// One strip per edge: the union of that edge's pane geometries. Panes sharing an edge split
+    /// one strip among themselves, and everything tab-side - boundary growth
+    /// (`expand_viewport_over_global_panes`), the unowned-row fill (`unowned_strip_rows`), ui pane
+    /// widening - reasons about the strip as a single rectangle. Per-pane strips here would make
+    /// each same-edge pane's span look "unowned" from its sibling's strip and get blanked over.
     fn strips_from_layout(&self, layout: &AllocatedGlobalPanes) -> Vec<GlobalPaneStrip> {
-        self.global_panes
-            .panes()
-            .filter(|(_pane, _placement, hidden)| !hidden)
-            .filter_map(|(pane, placement, _hidden)| {
-                layout
-                    .panes
-                    .get(&pane.pid().into())
-                    .map(|geom| GlobalPaneStrip {
-                        geom: *geom,
-                        edge: placement.edge,
-                    })
-            })
-            .collect()
+        let mut strips: Vec<GlobalPaneStrip> = vec![];
+        for (pane, placement, hidden) in self.global_panes.panes() {
+            if hidden {
+                continue;
+            }
+            let Some(geom) = layout.panes.get(&pane.pid().into()) else {
+                continue;
+            };
+            match strips.iter_mut().find(|strip| strip.edge == placement.edge) {
+                Some(strip) => {
+                    let right = (strip.geom.x + strip.geom.cols.as_usize())
+                        .max(geom.x + geom.cols.as_usize());
+                    let bottom = (strip.geom.y + strip.geom.rows.as_usize())
+                        .max(geom.y + geom.rows.as_usize());
+                    strip.geom.x = strip.geom.x.min(geom.x);
+                    strip.geom.y = strip.geom.y.min(geom.y);
+                    strip.geom.cols = Dimension::fixed(right - strip.geom.x);
+                    strip.geom.rows = Dimension::fixed(bottom - strip.geom.y);
+                },
+                None => strips.push(GlobalPaneStrip {
+                    geom: *geom,
+                    edge: placement.edge,
+                }),
+            }
+        }
+        strips
     }
 
     /// Paint the strip cells tab `tab_id` leaves unowned (see `unowned_strip_rows`) for the clients
@@ -2978,16 +3017,32 @@ impl Screen {
         }
     }
 
-    /// Focus the global pane sitting on the edge we're moving towards, if there is one.
+    /// Focus the global pane sitting on the edge we're moving towards, if there is one. With
+    /// several panes splitting that edge's strip, the one whose span overlaps the client's active
+    /// tab pane wins, so the move lands where the eye expects.
     fn enter_global_pane_in_direction(
         &mut self,
         direction: Direction,
         client_id: ClientId,
     ) -> bool {
-        let Some(pane_id) = self
-            .global_panes
-            .pane_id_on_edge(global_pane_edge_for_direction(direction))
-        else {
+        let edge = global_pane_edge_for_direction(direction);
+        let cross_axis_pos = self
+            .get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane(client_id))
+            .map(|pane| {
+                let geom = pane.position_and_size();
+                match edge {
+                    GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
+                        geom.y + geom.rows.as_usize() / 2
+                    },
+                    GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
+                        geom.x + geom.cols.as_usize() / 2
+                    },
+                }
+            })
+            .unwrap_or(0);
+        let Some(pane_id) = self.global_panes.pane_on_edge_nearest(edge, cross_axis_pos) else {
             return false;
         };
         if let Err(error) = self.focus_global_pane(pane_id, client_id) {
@@ -3008,6 +3063,28 @@ impl Screen {
             .placement(focused_pane_id)
             .map(|placement| placement.edge)
         {
+            let along_strip = match edge {
+                GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
+                    matches!(direction, Direction::Up | Direction::Down)
+                },
+                GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
+                    matches!(direction, Direction::Left | Direction::Right)
+                },
+            };
+            if along_strip {
+                // moving within the strip lands on the same-edge neighbor; off the strip's end,
+                // fall through to the perpendicular hop below, same as before splits existed
+                let towards_strip_end = matches!(direction, Direction::Down | Direction::Right);
+                if let Some(neighbor_id) = self
+                    .global_panes
+                    .neighbor_in_strip(focused_pane_id, towards_strip_end)
+                {
+                    if let Err(error) = self.focus_global_pane(neighbor_id, client_id) {
+                        log::error!("{error}");
+                    }
+                    return true;
+                }
+            }
             if global_pane_edge_for_direction(direction) == edge {
                 // moving further outwards - this is the session boundary, same as a tab edge
                 self.bubble_focus_to_host(client_id, direction);
@@ -3037,9 +3114,24 @@ impl Screen {
         let Some(direction) = strategy.direction else {
             return Ok(false);
         };
-        let Some(global_pane_id) = self
-            .global_panes
-            .pane_id_on_edge(global_pane_edge_for_direction(direction))
+        let edge = global_pane_edge_for_direction(direction);
+        let cross_axis_pos = self
+            .get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane(client_id))
+            .map(|pane| {
+                let geom = pane.position_and_size();
+                match edge {
+                    GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
+                        geom.y + geom.rows.as_usize() / 2
+                    },
+                    GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
+                        geom.x + geom.cols.as_usize() / 2
+                    },
+                }
+            })
+            .unwrap_or(0);
+        let Some(global_pane_id) = self.global_panes.pane_on_edge_nearest(edge, cross_axis_pos)
         else {
             return Ok(false);
         };
@@ -3058,17 +3150,30 @@ impl Screen {
         Ok(true)
     }
 
+    /// Hide the whole strip `pane_id` belongs to - panes sharing an edge (a hocus-style sidebar
+    /// and its agent list, say) hide and show as one unit.
     fn hide_pane(&mut self, pane_id: PaneId) -> Result<()> {
+        let edge = self
+            .global_panes
+            .placement(pane_id)
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
+            .edge;
         self.global_panes
-            .hide(pane_id)
+            .hide_edge(edge)
             .map_err(|error| anyhow!(error))?;
         self.reflow_global_panes()
     }
 
+    /// Show the whole strip `pane_id` belongs to, restoring its split geometry.
     fn show_pane(&mut self, pane_id: PaneId) -> Result<()> {
+        let edge = self
+            .global_panes
+            .placement(pane_id)
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
+            .edge;
         let surface = self.surface_size();
         self.global_panes
-            .show(pane_id, surface.into())
+            .show_edge(edge, pane_id, surface.into())
             .map_err(|error| anyhow!(error))?;
         self.reflow_global_panes()
     }
@@ -6049,6 +6154,13 @@ impl Screen {
         // the tab force-renders itself for the new client (see Tab::add_client), but global panes
         // render diff-based and would otherwise emit nothing for a client that hasn't seen them
         self.global_panes.set_force_render();
+        // a layout global pane asked for focus before any client existed - this is that client
+        if let Some(global_pane_id) = self.pending_global_pane_focus.take() {
+            if self.global_panes.pane(global_pane_id).is_some() {
+                self.focus_global_pane(global_pane_id, client_id)
+                    .non_fatal();
+            }
+        }
         self.recompute_tab_size(tab_index)
             .with_context(|| err_context(tab_index))?;
         if !self.nested_ancestry.is_empty() || !self.host_descend_keys.is_empty() {
@@ -7220,11 +7332,13 @@ impl Screen {
                 plugin_ids.extend(tab.get_plugin_ids());
             }
         }
-        if event_type == EventType::ModeUpdate {
-            for plugin_id in self.global_panes.plugin_ids() {
-                if !plugin_ids.contains(&plugin_id) {
-                    plugin_ids.push(plugin_id);
-                }
+        // Global-pane plugins are in no tab but are part of every client's session, so events
+        // reach them like any active-tab plugin (the plugin thread drops event types a plugin
+        // is not subscribed to) - a hocus sidebar that never learns which tab is active cannot
+        // assign a project to it
+        for plugin_id in self.global_panes.plugin_ids() {
+            if !plugin_ids.contains(&plugin_id) {
+                plugin_ids.push(plugin_id);
             }
         }
         // Background plugins subscribed to this event type
@@ -7468,13 +7582,177 @@ impl Screen {
         Ok(true)
     }
 
+    /// A `NewPane` issued while the client is focused on a global pane splits that pane's strip
+    /// span instead of opening a pane in the tab behind it. A direction along the strip's long
+    /// axis picks the side (up/left insert before the anchor); one across the strip is rejected -
+    /// the strip has no room on that axis. Floating, in-place and stacked placements fall through
+    /// to the tab as before. Returns whether the request was consumed here.
+    #[allow(clippy::too_many_arguments)]
+    fn split_focused_global_pane(
+        &mut self,
+        anchor: PaneId,
+        pane_id: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        hold_for_command: HoldForCommand,
+        placement: &NewPanePlacement,
+        should_focus: bool,
+        client_id: ClientId,
+        blocking_notification: &mut Option<NotificationEnd>,
+    ) -> Result<bool> {
+        let Some(anchor_placement) = self.global_panes.placement(anchor) else {
+            return Ok(false);
+        };
+        let fail = |screen: &mut Self,
+                    blocking_notification: &mut Option<NotificationEnd>,
+                    message: String| {
+            if let Some(completion) = blocking_notification.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message(message.clone());
+            }
+            blocking_notification.take();
+            screen
+                .bus
+                .senders
+                .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+                .non_fatal();
+            log::error!("failed to split global pane {anchor:?}: {message}");
+        };
+        let before = match placement {
+            NewPanePlacement::NoPreference { .. }
+            | NewPanePlacement::Tiled {
+                direction: None, ..
+            } => false,
+            NewPanePlacement::Tiled {
+                direction: Some(direction),
+                ..
+            } => {
+                let along_strip = match anchor_placement.edge {
+                    GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
+                        matches!(direction, Direction::Up | Direction::Down)
+                    },
+                    GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
+                        matches!(direction, Direction::Left | Direction::Right)
+                    },
+                };
+                if !along_strip {
+                    let (edge_name, allowed) = match anchor_placement.edge {
+                        GlobalPaneEdge::Left => ("left", "up or down"),
+                        GlobalPaneEdge::Right => ("right", "up or down"),
+                        GlobalPaneEdge::Top => ("top", "left or right"),
+                        GlobalPaneEdge::Bottom => ("bottom", "left or right"),
+                    };
+                    fail(
+                        self,
+                        blocking_notification,
+                        format!("a {edge_name} global pane can only be split {allowed}"),
+                    );
+                    return Ok(true);
+                }
+                matches!(direction, Direction::Up | Direction::Left)
+            },
+            _ => return Ok(false),
+        };
+        let mut pane =
+            self.build_global_pane_box(pane_id, initial_pane_title, invoked_with, None)?;
+        if let Some(run_command) = hold_for_command {
+            pane.hold(None, true, run_command);
+        }
+        if let Err(error) = self.global_panes.insert_split(pane, anchor, before, None) {
+            fail(self, blocking_notification, error);
+            return Ok(true);
+        }
+        if let Some(completion) = blocking_notification.as_mut() {
+            completion.set_affected_pane_id(pane_id);
+        }
+        if let Some(pane) = self.global_panes.pane_mut(pane_id) {
+            pane.set_notification_end(blocking_notification.take());
+        }
+        if should_focus {
+            self.focus_global_pane(pane_id, client_id)?;
+        }
+        self.reflow_global_panes()?;
+        Ok(true)
+    }
+
+    /// Build the `Box<dyn Pane>` for a global pane - shared between the NewGlobalPane arm and
+    /// the split-on-NewPane path.
+    fn build_global_pane_box(
+        &mut self,
+        pane_id: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        blocking_notification: Option<NotificationEnd>,
+    ) -> Result<Box<dyn Pane>> {
+        Ok(match pane_id {
+            PaneId::Terminal(terminal_id) => PaneFactory::terminal(
+                terminal_id,
+                PaneGeom::default(),
+                self.style,
+                self.global_panes.terminal_pane_count() + 1,
+                initial_pane_title.clone().unwrap_or_default(),
+                Rc::new(RefCell::new(LinkHandler::new())),
+                self.character_cell_size.clone(),
+                self.sixel_image_store.clone(),
+                self.kitty_image_store.clone(),
+                self.terminal_emulator_colors.clone(),
+                self.terminal_emulator_color_codes.clone(),
+                initial_pane_title,
+                invoked_with,
+                self.debug,
+                self.arrow_fonts,
+                self.styled_underlines,
+                self.osc8_hyperlinks,
+                self.explicitly_disable_kitty_keyboard_protocol,
+                blocking_notification,
+            ),
+            PaneId::Plugin(plugin_id) => PaneFactory::plugin(
+                plugin_id,
+                PaneGeom::default(),
+                self.bus
+                    .senders
+                    .to_plugin
+                    .as_ref()
+                    .context("missing plugin sender for global pane")?
+                    .clone(),
+                initial_pane_title.clone().unwrap_or_default(),
+                String::new(),
+                self.sixel_image_store.clone(),
+                self.kitty_image_store.clone(),
+                self.terminal_emulator_colors.clone(),
+                self.terminal_emulator_color_codes.clone(),
+                Rc::new(RefCell::new(LinkHandler::new())),
+                self.character_cell_size.clone(),
+                self.connected_clients.borrow().keys().copied().collect(),
+                self.style,
+                invoked_with,
+                self.debug,
+                self.arrow_fonts,
+                self.styled_underlines,
+            ),
+        })
+    }
+
     fn close_global_pane(
         &mut self,
         pane_id: PaneId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<bool> {
-        if self.global_panes.remove(pane_id).is_none() {
+        let displaced: Vec<ClientId> = self
+            .global_panes
+            .focused_clients()
+            .into_iter()
+            .filter(|client_id| self.global_panes.focused_pane_id(*client_id) == Some(pane_id))
+            .collect();
+        let Some((_removed, strip_neighbor)) = self.global_panes.remove(pane_id) else {
             return Ok(false);
+        };
+        // clients that were on the closed pane land on its strip neighbor, the pane that
+        // inherited its cells - matching how closing a tab pane focuses an adjacent one
+        if let Some(neighbor_id) = strip_neighbor {
+            for client_id in displaced {
+                self.focus_global_pane(neighbor_id, client_id).non_fatal();
+            }
         }
         let cleanup_result = self
             .bus
@@ -7503,6 +7781,7 @@ impl Screen {
                 initially_hidden: global_pane.hidden,
                 should_focus: global_pane.focus,
                 declaration_order: Some(declaration_order),
+                split: None,
             };
             match global_pane.run.clone() {
                 Some(Run::Plugin(run_plugin)) => {
@@ -9208,15 +9487,19 @@ impl Screen {
     /// `apply_layout`) - hit-testing the position instead of the pane makes all four edges behave
     /// the same. Returns whether the event was consumed by a drag.
     fn handle_global_pane_border_drag(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
-        if let Some(pane_id) = self.global_panes.mouse_resize_pane_id(client_id) {
+        if let Some(border) = self.global_panes.mouse_resize_border(client_id) {
             let surface = self.surface_size();
             match event.event_type {
                 MouseEventType::Motion if event.left => {
-                    match self.global_panes.resize_pane_to_position(
-                        pane_id,
-                        &event.position,
-                        surface.into(),
-                    ) {
+                    let resized = match border {
+                        GlobalBorderHit::Thickness(pane_id) => self
+                            .global_panes
+                            .resize_pane_to_position(pane_id, &event.position, surface.into()),
+                        GlobalBorderHit::Split { earlier } => self
+                            .global_panes
+                            .resize_split_to_position(earlier, &event.position, surface.into()),
+                    };
+                    match resized {
                         // an over-far drag is simply not applied, the pane keeps its last valid size
                         Ok(false) | Err(_) => {},
                         Ok(true) => {
@@ -9241,8 +9524,8 @@ impl Screen {
                 .map(|tab| tab.position_is_on_ui_pane(&event.position))
                 .unwrap_or(false);
             if !is_on_tab_chrome {
-                if let Some(pane_id) = self.global_panes.border_pane_id_at(&event.position) {
-                    self.global_panes.start_mouse_resize(pane_id, client_id);
+                if let Some(border) = self.global_panes.border_hit_at(&event.position) {
+                    self.global_panes.start_mouse_resize(border, client_id);
                     return true;
                 }
             }
@@ -10637,8 +10920,38 @@ pub(crate) fn screen_thread_main(
                 mut completion_tx,
                 set_blocking,
                 declaration_order,
+                split,
             } => {
                 let pane_id_was_available = screen.global_panes.pane(pane_id).is_none();
+                let existing_split_plugin = split.and_then(|_| {
+                    invoked_with.as_ref().and_then(|run| match run {
+                        Run::Plugin(run_plugin) => screen.global_panes.find_plugin(run_plugin),
+                        _ => None,
+                    })
+                });
+                if let Some(existing) = existing_split_plugin {
+                    pending_events_waiting_for_pane.remove(&pane_id);
+                    screen.show_pane(existing)?;
+                    let client_id = client_id
+                        .filter(|client_id| screen.active_tab_ids.contains_key(client_id))
+                        .or_else(|| screen.get_first_client_id());
+                    if let Some(client_id) = client_id.filter(|_| should_focus) {
+                        screen.focus_global_pane(existing, client_id)?;
+                    }
+                    if let Some(completion) = completion_tx.as_mut() {
+                        completion.set_affected_pane_id(existing);
+                    }
+                    if pane_id_was_available {
+                        screen
+                            .bus
+                            .senders
+                            .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+                            .non_fatal();
+                    }
+                    screen.log_and_report_session_state()?;
+                    screen.render(None)?;
+                    continue;
+                }
                 let mut inserted = false;
                 let creation_result: Result<()> = (|| {
                     let blocking_notification = if set_blocking {
@@ -10646,69 +10959,45 @@ pub(crate) fn screen_thread_main(
                     } else {
                         None
                     };
-                    let mut pane = match pane_id {
-                        PaneId::Terminal(terminal_id) => PaneFactory::terminal(
-                            terminal_id,
-                            PaneGeom::default(),
-                            screen.style,
-                            screen.global_panes.terminal_pane_count() + 1,
-                            initial_pane_title.clone().unwrap_or_default(),
-                            Rc::new(RefCell::new(LinkHandler::new())),
-                            screen.character_cell_size.clone(),
-                            screen.sixel_image_store.clone(),
-                            screen.kitty_image_store.clone(),
-                            screen.terminal_emulator_colors.clone(),
-                            screen.terminal_emulator_color_codes.clone(),
-                            initial_pane_title,
-                            invoked_with,
-                            screen.debug,
-                            screen.arrow_fonts,
-                            screen.styled_underlines,
-                            screen.osc8_hyperlinks,
-                            screen.explicitly_disable_kitty_keyboard_protocol,
-                            blocking_notification,
-                        ),
-                        PaneId::Plugin(plugin_id) => PaneFactory::plugin(
-                            plugin_id,
-                            PaneGeom::default(),
-                            screen
-                                .bus
-                                .senders
-                                .to_plugin
-                                .as_ref()
-                                .context("missing plugin sender for global pane")?
-                                .clone(),
-                            initial_pane_title.clone().unwrap_or_default(),
-                            String::new(),
-                            screen.sixel_image_store.clone(),
-                            screen.kitty_image_store.clone(),
-                            screen.terminal_emulator_colors.clone(),
-                            screen.terminal_emulator_color_codes.clone(),
-                            Rc::new(RefCell::new(LinkHandler::new())),
-                            screen.character_cell_size.clone(),
-                            screen.connected_clients.borrow().keys().copied().collect(),
-                            screen.style,
-                            invoked_with,
-                            screen.debug,
-                            screen.arrow_fonts,
-                            screen.styled_underlines,
-                        ),
-                    };
+                    let mut pane = screen.build_global_pane_box(
+                        pane_id,
+                        initial_pane_title,
+                        invoked_with,
+                        blocking_notification,
+                    )?;
                     pane.set_borderless(borderless);
                     if let Some(run_command) = hold_for_command {
                         pane.hold(None, true, run_command);
                     }
-                    screen
-                        .global_panes
-                        .insert_with_order(pane, placement, initially_hidden, declaration_order)
-                        .map_err(|error| anyhow!(error))?;
+                    // a split anchor that closed while the pane was spawning falls back to a
+                    // plain edge insert with the carried placement
+                    let live_anchor = split.filter(|split| {
+                        !initially_hidden && screen.global_panes.pane(split.anchor).is_some()
+                    });
+                    match live_anchor {
+                        Some(GlobalSplitAnchor { anchor, before }) => screen
+                            .global_panes
+                            .insert_split(pane, anchor, before, placement.length)
+                            .map_err(|error| anyhow!(error))?,
+                        None => screen
+                            .global_panes
+                            .insert_with_order(pane, placement, initially_hidden, declaration_order)
+                            .map_err(|error| anyhow!(error))?,
+                    }
                     inserted = true;
                     if should_focus && !initially_hidden {
                         let client_id = client_id
                             .filter(|client_id| screen.active_tab_ids.contains_key(client_id))
                             .or_else(|| screen.get_first_client_id());
-                        if let Some(client_id) = client_id {
-                            screen.focus_global_pane(pane_id, client_id)?;
+                        match client_id {
+                            Some(client_id) => {
+                                screen.focus_global_pane(pane_id, client_id)?;
+                            },
+                            // a layout global pane can spawn before the first client finishes
+                            // attaching; park the focus for AddClient rather than dropping it
+                            None => {
+                                screen.pending_global_pane_focus = Some(pane_id);
+                            },
                         }
                     }
                     screen.reflow_global_panes()
@@ -10752,6 +11041,84 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;
             },
+            ScreenInstruction::LaunchOrFocusGlobalPaneSplit {
+                run_plugin,
+                anchor,
+                before,
+                length,
+                should_focus,
+                skip_cache,
+                client_id,
+            } => {
+                if let Some(existing) = screen.global_panes.find_plugin(&run_plugin) {
+                    // adopt: the plugin already has a global pane (possibly hidden after a
+                    // restart or a strip-wide hide) - reveal its strip rather than split again
+                    screen.show_pane(existing)?;
+                    if should_focus && screen.active_tab_ids.contains_key(&client_id) {
+                        screen.focus_global_pane(existing, client_id)?;
+                    }
+                    screen.log_and_report_session_state()?;
+                    screen.render(None)?;
+                } else if screen.global_panes.placement(anchor).is_some() {
+                    let tab_index = screen
+                        .active_tab_ids
+                        .get(&client_id)
+                        .copied()
+                        .or_else(|| screen.active_tab_ids.values().next().copied())
+                        .or_else(|| screen.tabs.keys().next().copied());
+                    match tab_index {
+                        Some(tab_index) => {
+                            // placement details are derived from the anchor at insertion time;
+                            // this placement only carries the requested length and a sane
+                            // fallback should the anchor close mid-flight
+                            let anchor_placement = screen
+                                .global_panes
+                                .placement(anchor)
+                                .expect("checked above");
+                            let placement = GlobalPanePlacement {
+                                edge: anchor_placement.edge,
+                                size: anchor_placement.size,
+                                length,
+                            };
+                            let context = GlobalPaneSpawnContext {
+                                placement,
+                                borderless: false,
+                                initially_hidden: false,
+                                should_focus,
+                                declaration_order: None,
+                                split: Some(GlobalSplitAnchor { anchor, before }),
+                            };
+                            screen
+                                .bus
+                                .senders
+                                .send_to_pty(PtyInstruction::FillPluginCwd(
+                                    Some(false),
+                                    false,
+                                    false,
+                                    None,
+                                    run_plugin,
+                                    tab_index,
+                                    None,
+                                    client_id,
+                                    Size::default(),
+                                    skip_cache,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    Some(context),
+                                ))?;
+                        },
+                        None => {
+                            log::error!("no tab found to launch a global pane split into");
+                        },
+                    }
+                } else {
+                    log::error!(
+                        "cannot split global pane {anchor:?}: the caller is not a global pane"
+                    );
+                }
+            },
             ScreenInstruction::NewPane(
                 pid,
                 initial_pane_title,
@@ -10772,7 +11139,30 @@ pub(crate) fn screen_thread_main(
                     | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
                         let should_focus_pane =
                             matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
-                        active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
+                        let mut blocking_notification = blocking_notification;
+                        // a client focused on a global pane splits it instead of opening a pane
+                        // in the tab behind it
+                        let split_anchor = if start_suppressed {
+                            None
+                        } else {
+                            screen.global_panes.focused_pane_id(client_id)
+                        };
+                        let handled_as_global_split = match split_anchor {
+                            Some(anchor) => screen.split_focused_global_pane(
+                                anchor,
+                                pid,
+                                initial_pane_title.clone(),
+                                invoked_with.clone(),
+                                hold_for_command.clone(),
+                                &new_pane_placement,
+                                should_focus_pane,
+                                client_id,
+                                &mut blocking_notification,
+                            )?,
+                            None => false,
+                        };
+                        if !handled_as_global_split {
+                            active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
                             tab.new_pane(pid,
                                initial_pane_title,
                                invoked_with,
@@ -10783,21 +11173,22 @@ pub(crate) fn screen_thread_main(
                                blocking_notification
                            )
                         }, ?);
-                        if let Some(hold_for_command) = hold_for_command {
-                            let is_first_run = true;
-                            active_tab_and_connected_client_id_with_first_tab_fallback!(
-                                screen,
-                                client_id,
-                                |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
-                                    pid,
-                                    None,
-                                    is_first_run,
-                                    hold_for_command
+                            if let Some(hold_for_command) = hold_for_command {
+                                let is_first_run = true;
+                                active_tab_and_connected_client_id_with_first_tab_fallback!(
+                                    screen,
+                                    client_id,
+                                    |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
+                                        pid,
+                                        None,
+                                        is_first_run,
+                                        hold_for_command
+                                    )
                                 )
-                            )
-                        }
-                        if should_focus_pane {
-                            screen.sync_scroll_mode_on_focus(client_id)?;
+                            }
+                            if should_focus_pane {
+                                screen.sync_scroll_mode_on_focus(client_id)?;
+                            }
                         }
                     },
                     ClientTabIndexOrPaneId::TabIndex(tab_index)
@@ -12846,12 +13237,26 @@ pub(crate) fn screen_thread_main(
                 pane_id_to_focus,
             ) => {
                 screen.set_client_size(client_id, client_size);
-                screen.add_client(client_id, is_web_client)?;
                 // the new client can shrink the shared surface, so every tab is reflowed - but
                 // only the reflow: this handler reports and renders on its own way out.
-                // A client whose size leaves nothing to lay out keeps the previous layout and
-                // attaches to it; ending the session would take every other client with it.
-                screen.reflow_global_panes().non_fatal();
+                // Reject a client whose size leaves nothing to lay out: keeping its size in the
+                // shared minimum would make every later render fail for all clients.
+                let attach_result = screen
+                    .add_client(client_id, is_web_client)
+                    .and_then(|_| screen.reflow_global_panes());
+                if let Err(error) = attach_result {
+                    Err::<(), _>(error)
+                        .context("failed to attach client at its reported size")
+                        .non_fatal();
+                    screen.remove_client(client_id).non_fatal();
+                    screen.resize_to_clients().non_fatal();
+                    screen
+                        .bus
+                        .senders
+                        .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                        .non_fatal();
+                    continue;
+                }
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
                     if is_plugin {
                         PaneId::Plugin(pane_id)
