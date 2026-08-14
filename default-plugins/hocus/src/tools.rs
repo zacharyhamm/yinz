@@ -6,6 +6,10 @@
 //! is a no-op on non-wasm32 targets, and most value-returning shims `.unwrap()`
 //! the protobuf decode, so calling one from a host-triple test panics.
 
+// Most of the pure half exists for `mod host`, which only compiles on wasm32 - so linting this
+// crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+
 use hocus_proto::paths;
 use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
@@ -3097,7 +3101,7 @@ mod tests {
         );
 
         assert_eq!(
-            plan_swap(&[source.clone()], source.id, target.id).unwrap_err(),
+            plan_swap(std::slice::from_ref(&source), source.id, target.id).unwrap_err(),
             "pane is not in the current session; call list_session again"
         );
 
@@ -3166,7 +3170,12 @@ mod tests {
         );
 
         assert_eq!(
-            plan_move(&[source.clone()], source.id, PaneDirection::Right).unwrap_err(),
+            plan_move(
+                std::slice::from_ref(&source),
+                source.id,
+                PaneDirection::Right
+            )
+            .unwrap_err(),
             "there is no adjacent pane in that direction"
         );
 

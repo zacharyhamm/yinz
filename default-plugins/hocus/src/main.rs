@@ -2497,9 +2497,11 @@ mod tests {
     /// apart by client or one person reading back drags everyone with them.
     #[test]
     fn each_client_scrolls_its_own_copy() {
-        let mut state = State::default();
+        let mut state = State {
+            client: 1,
+            ..Default::default()
+        };
 
-        state.client = 1;
         state.scroll_up(4);
         state.client = 2;
         state.scroll_up(9);
@@ -2549,9 +2551,11 @@ mod tests {
     /// left behind would hold whatever slid into the removed message's place.
     #[test]
     fn dropping_the_placeholder_drops_the_anchor_with_it() {
-        let mut state = State::default();
-        state.messages = vec![Message::user("hi"), Message::assistant("")];
-        state.reply_at = Some(1);
+        let mut state = State {
+            messages: vec![Message::user("hi"), Message::assistant("")],
+            reply_at: Some(1),
+            ..Default::default()
+        };
         state.view.anchor = Some(1);
 
         state.pop_empty_placeholder();
@@ -2564,9 +2568,11 @@ mod tests {
     /// anchor — still hold. Cancelling one part way leaves its opening on screen.
     #[test]
     fn a_reply_cut_short_keeps_its_anchor() {
-        let mut state = State::default();
-        state.messages = vec![Message::user("hi"), Message::assistant("half a th")];
-        state.reply_at = Some(1);
+        let mut state = State {
+            messages: vec![Message::user("hi"), Message::assistant("half a th")],
+            reply_at: Some(1),
+            ..Default::default()
+        };
         state.view.anchor = Some(1);
 
         state.pop_empty_placeholder();
@@ -2921,7 +2927,7 @@ mod tests {
             .repositories
             .insert("/work/hocus".to_owned(), checkout("/work/hocus"));
 
-        assert!(state.pane_projects().get(&3).is_none());
+        assert!(!state.pane_projects().contains_key(&3));
     }
 
     /// A project root that merely contains the folder is a proxy for "this is

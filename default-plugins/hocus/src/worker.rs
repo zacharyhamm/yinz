@@ -22,12 +22,11 @@ impl ZellijWorker<'_> for IoWorker {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
             return;
         };
-        match message.as_str() {
-            "log" => log::write_line(
+        if message.as_str() == "log" {
+            log::write_line(
                 v["chat_id"].as_u64(),
                 v["line"].as_str().unwrap_or_default(),
-            ),
-            _ => {},
+            )
         }
     }
 }

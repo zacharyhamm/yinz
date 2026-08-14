@@ -7,6 +7,14 @@ use zellij_tile::prelude::actions::Action;
 use zellij_tile::prelude::*;
 use zellij_tile_utils::style;
 
+/// The rendered tab line plus the ranges the new-tab button and the active tab occupy in it, for
+/// hover and click hit-testing.
+type TabLineWithButtonRanges = (
+    Vec<LinePart>,
+    Option<(usize, usize)>,
+    Option<(usize, usize)>,
+);
+
 fn get_current_title_len(current_title: &[LinePart]) -> usize {
     current_title.iter().map(|p| p.len).sum()
 }
@@ -296,6 +304,8 @@ pub fn tab_separator(capabilities: PluginCapabilities) -> &'static str {
     }
 }
 
+// the render inputs of the whole tab line - grouping them into a struct would just move the list
+#[allow(clippy::too_many_arguments)]
 pub fn tab_line(
     hostname: &str,
     session_name: Option<&str>,
@@ -315,11 +325,7 @@ pub fn tab_line(
     new_tab_button_is_hovered: bool,
     dimmed: bool,
     breadcrumb_ancestry: &[String],
-) -> (
-    Vec<LinePart>,
-    Option<(usize, usize)>,
-    Option<(usize, usize)>,
-) {
+) -> TabLineWithButtonRanges {
     let mut tabs_after_active = all_tabs.split_off(active_tab_index);
     let mut tabs_before_active = all_tabs;
     let active_tab = if !tabs_after_active.is_empty() {
@@ -629,7 +635,7 @@ pub fn style_key_with_modifier(
             ..Default::default()
         }
     } else {
-        let key_string_without_modifier = format!("{}", key.join(key_separator));
+        let key_string_without_modifier = key.join(key_separator).to_string();
         let key_string_text = format!(" {} <{}> ", modifier_str, key_string_without_modifier);
         let text = if dimmed {
             Text::new(&key_string_text).disabled().opaque()

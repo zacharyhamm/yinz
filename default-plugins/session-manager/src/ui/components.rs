@@ -403,8 +403,9 @@ impl UiSpan {
 }
 
 #[allow(dead_code)] // in the future this will be moved to be its own component
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum SpanStyle {
+    #[default]
     None,
     Bold,
     Foreground(PaletteColor),
@@ -433,12 +434,6 @@ impl SpanStyle {
                 },
             },
         }
-    }
-}
-
-impl Default for SpanStyle {
-    fn default() -> Self {
-        SpanStyle::None
     }
 }
 
@@ -640,7 +635,7 @@ pub fn build_session_ui_line(session_ui_info: &SessionUiInfo, colors: Colors) ->
     let connected_users_styled = colors.connected_users(&connected_users);
     let session_bullet_span =
         UiSpan::UiSpanTelescope(UiSpanTelescope::new(vec![StringAndLength::new(
-            format!(" > "),
+            " > ".to_string(),
             3,
         )]));
     let session_name_span = UiSpan::TruncatableUiSpan(TruncatableUiSpan::new(
@@ -673,12 +668,9 @@ pub fn build_session_ui_line(session_ui_info: &SessionUiInfo, colors: Colors) ->
     ui_spans.push(connected_users_count);
     if session_ui_info.is_current_session {
         let current_session_indication = UiSpan::UiSpanTelescope(UiSpanTelescope::new(vec![
-            StringAndLength::new(
-                colors.current_session_marker(&format!(" <CURRENT SESSION>")),
-                18,
-            ),
-            StringAndLength::new(colors.current_session_marker(&format!(" <CURRENT>")), 10),
-            StringAndLength::new(colors.current_session_marker(&format!(" <C>")), 4),
+            StringAndLength::new(colors.current_session_marker(" <CURRENT SESSION>"), 18),
+            StringAndLength::new(colors.current_session_marker(" <CURRENT>"), 10),
+            StringAndLength::new(colors.current_session_marker(" <C>"), 4),
         ]));
         ui_spans.push(current_session_indication);
     }
@@ -693,7 +685,7 @@ pub fn build_tab_ui_line(tab_ui_info: &TabUiInfo, colors: Colors) -> Vec<UiSpan>
     let pane_count_styled = colors.pane_count(&pane_count);
     let tab_bullet_span =
         UiSpan::UiSpanTelescope(UiSpanTelescope::new(vec![StringAndLength::new(
-            format!("  - "),
+            "  - ".to_string(),
             4,
         )]));
     let tab_name_span = UiSpan::TruncatableUiSpan(TruncatableUiSpan::new(
@@ -721,16 +713,16 @@ pub fn build_pane_ui_line(pane_ui_info: &PaneUiInfo, colors: Colors) -> Vec<UiSp
     let pane_name = pane_ui_info.name.clone();
     let exit_code = pane_ui_info.exit_code.map(|exit_code_number| {
         let exit_code = format!("{}", exit_code_number);
-        let exit_code = if exit_code_number == 0 {
+
+        if exit_code_number == 0 {
             colors.session_and_folder_entry(&exit_code)
         } else {
             colors.exit_code_error(&exit_code)
-        };
-        exit_code
+        }
     });
     let pane_bullet_span =
         UiSpan::UiSpanTelescope(UiSpanTelescope::new(vec![StringAndLength::new(
-            format!("    > "),
+            "    > ".to_string(),
             6,
         )]));
     ui_spans.push(pane_bullet_span);
@@ -772,7 +764,7 @@ pub fn minimize_lines(
 }
 
 pub fn render_prompt(search_term: &str, colors: Colors, x: usize, y: usize) {
-    let prompt = colors.session_and_folder_entry(&format!("Search:"));
+    let prompt = colors.session_and_folder_entry("Search:");
     let search_term = colors.bold(&format!("{}_", search_term));
     println!(
         "\u{1b}[{};{}H\u{1b}[0m{} {}\n",
@@ -1000,8 +992,8 @@ pub fn render_unified_results(
                 (&above_summary_full, above_active, above_resurrectable)
             };
             Text::new(summary_text)
-                .color_substring(2, &format!("+{}", active_count))
-                .color_substring(2, &format!("+{}", resurrectable_count))
+                .color_substring(2, format!("+{}", active_count))
+                .color_substring(2, format!("+{}", resurrectable_count))
         } else if row_index == 0 && selected_index.is_none() {
             let tab_hint_text = if abbreviate_fourth_col {
                 tab_header_short
@@ -1016,8 +1008,8 @@ pub fn render_unified_results(
                 (&below_summary_full, below_active, below_resurrectable)
             };
             Text::new(summary_text)
-                .color_substring(2, &format!("+{}", active_count))
-                .color_substring(2, &format!("+{}", resurrectable_count))
+                .color_substring(2, format!("+{}", active_count))
+                .color_substring(2, format!("+{}", resurrectable_count))
         } else {
             Text::new(" ")
         };
@@ -1130,7 +1122,7 @@ fn render_new_session_folder_prompt(
             let new_session_path = new_session_folder.clone();
             let new_session_folder = new_session_folder.display().to_string();
             let change_folder_shortcut_text = "<Ctrl f>";
-            let change_folder_shortcut = colors.shortcuts(&change_folder_shortcut_text);
+            let change_folder_shortcut = colors.shortcuts(change_folder_shortcut_text);
             let to_change = "to change";
             let reset_folder_shortcut_text = "<Ctrl c>";
             let reset_folder_shortcut = colors.shortcuts(reset_folder_shortcut_text);
@@ -1145,8 +1137,9 @@ fn render_new_session_folder_prompt(
                     + 8
             {
                 print!(
-                    "\u{1b}[m{}{} {} ({} {}, {} {})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} {} ({} {}, {} {})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(folder_prompt),
                     colors.session_and_folder_entry(&new_session_folder),
                     change_folder_shortcut,
@@ -1164,8 +1157,9 @@ fn render_new_session_folder_prompt(
                     + 8
             {
                 print!(
-                    "\u{1b}[m{}{} {} ({} {}, {} {})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} {} ({} {}, {} {})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(short_folder_prompt),
                     colors.session_and_folder_entry(&new_session_folder),
                     change_folder_shortcut,
@@ -1181,8 +1175,9 @@ fn render_new_session_folder_prompt(
                     + 5
             {
                 print!(
-                    "\u{1b}[m{}{} {} ({}/{})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} {} ({}/{})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(short_folder_prompt),
                     colors.session_and_folder_entry(&new_session_folder),
                     change_folder_shortcut,
@@ -1199,8 +1194,9 @@ fn render_new_session_folder_prompt(
                     new_session_folder.width().saturating_sub(max_path_len),
                 );
                 print!(
-                    "\u{1b}[m{}{} {} ({}/{})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} {} ({}/{})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(short_folder_prompt),
                     colors.session_and_folder_entry(&truncated_path),
                     change_folder_shortcut,
@@ -1219,8 +1215,9 @@ fn render_new_session_folder_prompt(
                 >= folder_prompt.width() + change_folder_shortcut_text.width() + to_set.width() + 4
             {
                 print!(
-                    "\u{1b}[m{}{} ({} {})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} ({} {})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(folder_prompt),
                     change_folder_shortcut,
                     to_set,
@@ -1232,16 +1229,18 @@ fn render_new_session_folder_prompt(
                     + 4
             {
                 print!(
-                    "\u{1b}[m{}{} ({} {})",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} ({} {})",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(short_folder_prompt),
                     change_folder_shortcut,
                     to_set,
                 );
             } else {
                 print!(
-                    "\u{1b}[m{}{} {}",
-                    format!("\u{1b}[{};{}H", y + 1, x + 1),
+                    "\u{1b}[m\u{1b}[{};{}H{} {}",
+                    y + 1,
+                    x + 1,
                     colors.session_name_prompt(short_folder_prompt),
                     change_folder_shortcut,
                 );
@@ -1267,10 +1266,11 @@ pub fn render_new_session_block(
             > prompt.width() + long_instruction.width() + new_session_name.width() + 15
         {
             println!(
-                "\u{1b}[m{}{} {}_ ({} {})",
-                format!("\u{1b}[{};{}H", y + 1, x + 1),
+                "\u{1b}[m\u{1b}[{};{}H{} {}_ ({} {})",
+                y + 1,
+                x + 1,
                 colors.session_name_prompt(prompt),
-                colors.session_and_folder_entry(&new_session_name),
+                colors.session_and_folder_entry(new_session_name),
                 enter,
                 long_instruction,
             );
@@ -1293,8 +1293,9 @@ pub fn render_new_session_block(
                 new_session_name.to_owned()
             };
             println!(
-                "\u{1b}[m{}{} {}_ {}",
-                format!("\u{1b}[{};{}H", y + 1, x + 1),
+                "\u{1b}[m\u{1b}[{};{}H{} {}_ {}",
+                y + 1,
+                x + 1,
                 colors.session_name_prompt(prompt),
                 colors.session_and_folder_entry(&new_session_name),
                 enter,
@@ -1313,16 +1314,18 @@ pub fn render_new_session_block(
             > prompt.width() + long_instruction.width() + new_session_name.width() + 15
         {
             println!(
-                "\u{1b}[m{}{}: {} ({} to correct)",
-                format!("\u{1b}[{};{}H", y + 1, x + 1),
+                "\u{1b}[m\u{1b}[{};{}H{}: {} ({} to correct)",
+                y + 1,
+                x + 1,
                 colors.session_name_prompt(prompt),
                 colors.session_and_folder_entry(new_session_name),
                 esc,
             );
         } else {
             println!(
-                "\u{1b}[m{}{}: {} {}",
-                format!("\u{1b}[{};{}H", y + 1, x + 1),
+                "\u{1b}[m\u{1b}[{};{}H{}: {} {}",
+                y + 1,
+                x + 1,
                 colors.session_name_prompt("New session name"),
                 colors.session_and_folder_entry(new_session_name),
                 esc,
@@ -1391,7 +1394,7 @@ pub fn render_layout_selection_list(
                     .color_range(0, layout_name_len + 1..)
                     .color_indices(3, indices)
             } else {
-                Text::new(format!("{}", layout_name))
+                Text::new(layout_name.to_string())
                     .color_range(1, ..)
                     .color_indices(3, indices)
             };
@@ -1399,9 +1402,9 @@ pub fn render_layout_selection_list(
                 layout_cell = layout_cell.selected();
             }
             let arrow_cell = if is_selected {
-                Text::new(format!("<↓↑>")).selected().color_range(3, ..)
+                Text::new("<↓↑>".to_string()).selected().color_range(3, ..)
             } else {
-                Text::new(format!("    ")).color_range(3, ..)
+                Text::new("    ".to_string()).color_range(3, ..)
             };
             table = table.add_styled_row(vec![arrow_cell, layout_cell]);
         }
@@ -1599,7 +1602,7 @@ fn format_elapsed_time(elapsed_millis: u64) -> String {
         }
     }
     if formatted_duration.is_empty() {
-        format!("just now")
+        "just now".to_string()
     } else {
         format!("{} ago", formatted_duration)
     }

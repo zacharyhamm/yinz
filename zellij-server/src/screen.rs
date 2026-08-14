@@ -8382,10 +8382,7 @@ impl Screen {
         let invoked_with = Some(Run::Command(cmd.clone()));
         // A pane whose child is already gone should arrive held, showing its exit
         // status, rather than pretending to run.
-        let hold_for_command = match child_exit_status {
-            Some(_) => Some(cmd.clone()),
-            None => None,
-        };
+        let hold_for_command = child_exit_status.map(|_| cmd.clone());
 
         let (placement, tab_target) = match placement {
             WarpPlacement::Floating => (

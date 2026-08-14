@@ -93,15 +93,13 @@ impl<'a> LayoutDetail<'a> {
         let full_text = format!("{} is a built-in layout. Create your own layouts to automate or share workspace setup.", name);
         let wrapped_lines = wrap_text_to_width(&full_text, max_cols);
 
-        let mut current_y = y;
-        for line in wrapped_lines.iter().take(max_rows) {
+        for (current_y, line) in (y..).zip(wrapped_lines.iter().take(max_rows)) {
             let text = if line.contains(name) {
                 Text::new(line).color_substring(1, name)
             } else {
                 Text::new(line)
             };
             print_text_with_coordinates(text, x, current_y, None, None);
-            current_y += 1;
         }
     }
 

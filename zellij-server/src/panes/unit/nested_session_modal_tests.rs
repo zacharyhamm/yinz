@@ -120,7 +120,8 @@ fn options_are_left_justified_within_the_centered_block() {
         "block must be centered with a left pad before the marker"
     );
 
-    for (number, needle) in [("2.", "2.")] {
+    {
+        let (number, needle) = ("2.", "2.");
         let line = lines
             .iter()
             .find(|line| line.trim_start().starts_with(needle))

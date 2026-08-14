@@ -35,7 +35,7 @@ impl ZellijPlugin for State {
         ]);
         self.file_list_view.clear_selected();
 
-        match configuration.get("caller_cwd").map(|c| PathBuf::from(c)) {
+        match configuration.get("caller_cwd").map(PathBuf::from) {
             Some(caller_cwd) => {
                 self.file_list_view.path = caller_cwd;
             },
@@ -121,11 +121,9 @@ impl ZellijPlugin for State {
                     self.handle_left_click(line);
                     should_render = true;
                 },
-                Mouse::Hover(line, _) => {
-                    if line >= 0 {
-                        self.handle_mouse_hover(line);
-                        should_render = true;
-                    }
+                Mouse::Hover(line, _) if line >= 0 => {
+                    self.handle_mouse_hover(line);
+                    should_render = true;
                 },
                 _ => {},
             },

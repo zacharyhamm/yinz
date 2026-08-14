@@ -22,7 +22,7 @@ fn read_fixture(fixture_name: &str) -> Vec<u8> {
     path_to_file.push("fixtures");
     path_to_file.push(fixture_name);
     std::fs::read(path_to_file)
-        .unwrap_or_else(|_| panic!("could not read fixture {:?}", &fixture_name))
+        .unwrap_or_else(|_| panic!("could not read fixture {:?}", fixture_name))
 }
 
 #[test]

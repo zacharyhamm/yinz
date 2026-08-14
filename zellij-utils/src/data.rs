@@ -957,6 +957,10 @@ pub struct StyledText {
 
 /// These events can be subscribed to with subscribe method exported by `zellij-tile`.
 /// Once subscribed to, they will trigger the `update` method of the `ZellijPlugin` trait.
+// `ModeUpdate` is the widest variant, but this enum is the plugin-facing event API and is
+// mirrored in the protobuf contract: boxing a variant would break the `update()` match arm of
+// every plugin built against it, in and out of this repo.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
 #[strum_discriminants(derive(EnumString, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(EventType))]
@@ -1867,7 +1871,8 @@ pub struct LayoutWithError {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub enum LayoutParsingError {
     KdlError {
-        kdl_error: KdlError,
+        // boxed to keep this variant from making every `Result<_, LayoutParsingError>` wide
+        kdl_error: Box<KdlError>,
         file_name: String,
         source_code: String,
     },
@@ -4010,19 +4015,19 @@ pub type OpenPluginPaneFloatingResponse = Option<PaneId>;
 pub fn can_parse_unicode_bare_keys() {
     let key = "1087"; // п
     assert_eq!(
-        BareKey::from_bytes_with_u(&key.as_bytes()),
+        BareKey::from_bytes_with_u(key.as_bytes()),
         Some(BareKey::Char('п')),
         "Can parse a bare 'п' keypress"
     );
     let key = "1255"; // ӧ
     assert_eq!(
-        BareKey::from_bytes_with_u(&key.as_bytes()),
+        BareKey::from_bytes_with_u(key.as_bytes()),
         Some(BareKey::Char('ӧ')),
         "Can parse a bare 'ӧ' keypress"
     );
     let key = "1098"; // ъ
     assert_eq!(
-        BareKey::from_bytes_with_u(&key.as_bytes()),
+        BareKey::from_bytes_with_u(key.as_bytes()),
         Some(BareKey::Char('ъ')),
         "Can parse a bare 'ъ' keypress"
     );

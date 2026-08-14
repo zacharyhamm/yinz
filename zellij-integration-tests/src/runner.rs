@@ -493,7 +493,7 @@ impl TestSession {
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
             if let Ok(layout) = std::fs::read_to_string(&layout_path) {
-                let referenced_contents_files_exist = session_dir.as_ref().map_or(true, |dir| {
+                let referenced_contents_files_exist = session_dir.as_ref().is_none_or(|dir| {
                     referenced_contents_files(&layout).all(|name| dir.join(name).exists())
                 });
                 if referenced_contents_files_exist {

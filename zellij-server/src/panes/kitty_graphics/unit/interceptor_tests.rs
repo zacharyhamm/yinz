@@ -178,7 +178,7 @@ fn esc_inside_payload_stays_in_capture_buffer() {
 fn oversized_sequence_is_discarded_and_stream_recovers() {
     let mut input = Vec::new();
     input.extend_from_slice(b"\x1b_G");
-    input.extend(std::iter::repeat(b'j').take(1_048_577));
+    input.extend(std::iter::repeat_n(b'j', 1_048_577));
     input.extend_from_slice(b"\x1b\\OK");
     let (captured, performer) = run_through_interceptor(&input, usize::MAX);
     assert!(captured.is_empty());

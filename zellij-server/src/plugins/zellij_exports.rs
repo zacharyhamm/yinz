@@ -1471,7 +1471,7 @@ fn parse_layout(env: &PluginEnv, layout_string: String) {
 
             let error = match config_error {
                 ConfigError::KdlError(kdl_err) => LayoutParsingError::KdlError {
-                    kdl_error: kdl_err,
+                    kdl_error: Box::new(kdl_err),
                     file_name,
                     source_code,
                 },

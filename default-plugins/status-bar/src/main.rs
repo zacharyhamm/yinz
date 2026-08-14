@@ -296,9 +296,7 @@ impl ZellijPlugin for State {
                 self.display_system_clipboard_failure = true;
             },
             Event::InputReceived => {
-                if self.text_copy_destination.is_some()
-                    || self.display_system_clipboard_failure == true
-                {
+                if self.text_copy_destination.is_some() || self.display_system_clipboard_failure {
                     should_render = true;
                 }
                 self.text_copy_destination = None;
@@ -700,7 +698,7 @@ pub mod tests {
 
     #[test]
     fn common_modifier_with_ctrl_keys() {
-        let keyvec = vec![
+        let keyvec = [
             KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier(),
             KeyWithModifier::new(BareKey::Char('b')).with_ctrl_modifier(),
             KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier(),
@@ -711,7 +709,7 @@ pub mod tests {
 
     #[test]
     fn common_modifier_with_alt_keys_chars() {
-        let keyvec = vec![
+        let keyvec = [
             KeyWithModifier::new(BareKey::Char('1')).with_alt_modifier(),
             KeyWithModifier::new(BareKey::Char('t')).with_alt_modifier(),
             KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),
@@ -722,7 +720,7 @@ pub mod tests {
 
     #[test]
     fn common_modifier_with_mixed_alt_ctrl_keys() {
-        let keyvec = vec![
+        let keyvec = [
             KeyWithModifier::new(BareKey::Char('1')).with_ctrl_modifier(),
             KeyWithModifier::new(BareKey::Char('t')).with_alt_modifier(),
             KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),
@@ -733,7 +731,7 @@ pub mod tests {
 
     #[test]
     fn common_modifier_with_any_keys() {
-        let keyvec = vec![
+        let keyvec = [
             KeyWithModifier::new(BareKey::Char('1')),
             KeyWithModifier::new(BareKey::Char('t')).with_alt_modifier(),
             KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),

@@ -173,9 +173,11 @@ mod tests {
             dropped: Arc::new(AtomicUsize::new(0)),
         };
         // create thread senders with recorder
-        let mut senders = ThreadSenders::default();
-        senders.session_recorder = Some(handle);
-        senders.should_silently_fail = true;
+        let senders = ThreadSenders {
+            session_recorder: Some(handle),
+            should_silently_fail: true,
+            ..Default::default()
+        };
         let mut terminal_bytes = TerminalBytes::new(
             1,
             Box::new(FakeReader {

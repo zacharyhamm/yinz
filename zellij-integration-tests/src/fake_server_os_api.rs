@@ -38,6 +38,9 @@ impl NonBlockingClientSender {
     }
 }
 
+/// The last resize each fake pty was told about, mirroring the real server's cache.
+type CachedResizes = Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>;
+
 #[derive(Clone, Default)]
 pub struct FakeServerOsApi {
     pub shared_ptys: SharedPtys,
@@ -45,7 +48,7 @@ pub struct FakeServerOsApi {
     fake_filesystem: Arc<Mutex<HashMap<String, String>>>,
     // mirrors the resize caching of the real ServerOsInputOutput, so that tests see the same
     // resizes a real pane's pty would
-    cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>,
+    cached_resizes: CachedResizes,
     /// The folder each fake pane was spawned in, keyed by its child pid, so that
     /// `get_cwd` answers the way a real one does. Without it every pane looks
     /// like it is nowhere, and anything that reads a pane's folder — project

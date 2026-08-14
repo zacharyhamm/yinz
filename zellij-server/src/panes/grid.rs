@@ -808,7 +808,7 @@ fn osc_color_reply_body((r, g, b): (u8, u8, u8)) -> String {
 }
 
 fn decode_hex_ascii(hex: &[u8]) -> Option<String> {
-    if hex.is_empty() || hex.len() % 2 != 0 {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut out = String::with_capacity(hex.len() / 2);
@@ -3258,8 +3258,8 @@ impl Grid {
         }
         let first_line = -(self.lines_above.len() as isize);
         let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
-        let clicked_line = position.line.0 as isize;
-        let clicked_column = position.column.0 as usize;
+        let clicked_line = position.line.0;
+        let clicked_column = position.column.0;
         let marker_position = |line: isize, column: usize| {
             Position::new(line as i32, column.min(u16::MAX as usize) as u16)
         };

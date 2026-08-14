@@ -4,6 +4,12 @@ use super::{schedule_forward_timeout, HostReply, PendingPartial, StdinAnsiParser
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// What a forward-timeout test captures: the pane the bytes were forwarded to, and the bytes.
+type CapturedForward = Arc<Mutex<Option<(u32, Vec<u8>)>>>;
+
+/// One host-reply case: the bytes to feed, a predicate over the reply, and a label.
+type HostReplyCase = (&'static [u8], fn(&HostReply) -> bool, &'static str);
+
 /// Helper: collect replies and residue from a single `feed` call.
 fn feed_once(parser: &mut StdinAnsiParser, bytes: &[u8]) -> (Vec<HostReply>, Vec<u8>) {
     let out = parser.feed(bytes);
@@ -446,7 +452,7 @@ fn double_dispatch_matrix_with_forward_active() {
     // covered by `forwarding_window_accumulates_and_barrier_closes`;
     // this test sweeps OSC 10, OSC 4, CSI 14t / 16t replies, and
     // DECRPM 2026.
-    let cases: Vec<(&[u8], fn(&HostReply) -> bool, &str)> = vec![
+    let cases: Vec<HostReplyCase> = vec![
         (
             b"\x1b]10;rgb:1111/2222/3333\x1b\\",
             |r| matches!(r, HostReply::ForegroundColor(_)),
@@ -576,7 +582,7 @@ fn timer_fires_after_deadline_and_closes_slot() {
     let parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
     parser.lock().unwrap().open_forward(7);
 
-    let captured: Arc<Mutex<Option<(u32, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+    let captured: CapturedForward = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
     schedule_forward_timeout(
         rt.handle(),
@@ -723,7 +729,7 @@ fn timer_preserves_accumulated_reply_bytes_on_timeout() {
         let _ = p.feed(b"\x1b]11;rgb:1234/5678/9abc\x1b\\");
     }
 
-    let captured: Arc<Mutex<Option<(u32, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+    let captured: CapturedForward = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
     schedule_forward_timeout(
         rt.handle(),
@@ -1151,7 +1157,8 @@ fn paste_embedded_osc_is_not_eaten_when_fragmented() {
 
 #[test]
 fn paste_markers_fragmented_still_toggle_paste_mode() {
-    for (head, tail) in [(b"\x1b[20".as_ref(), b"0~".as_ref())] {
+    {
+        let (head, tail) = (b"\x1b[20".as_ref(), b"0~".as_ref());
         let mut p = StdinAnsiParser::new();
         let r1 = p.feed(head);
         assert!(r1.residue.is_empty(), "fragmented start marker is held");
@@ -1167,7 +1174,8 @@ fn paste_markers_fragmented_still_toggle_paste_mode() {
         assert_eq!(body.residue, b"\x1b]0;x\x1b\\");
         assert!(body.replies.is_empty());
     }
-    for (head, tail) in [(b"\x1b[20".as_ref(), b"1~".as_ref())] {
+    {
+        let (head, tail) = (b"\x1b[20".as_ref(), b"1~".as_ref());
         let mut p = StdinAnsiParser::new();
         let _ = p.feed(b"\x1b[200~body");
         let r1 = p.feed(head);

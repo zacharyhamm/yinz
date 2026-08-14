@@ -296,12 +296,7 @@ fn bringing_a_tab_from_an_unreachable_session_reports_which_one() {
 fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
     let harness = harness();
 
-    let result = adopt_tab_here(
-        &harness.senders,
-        1,
-        Box::new(WarpedTab::default()),
-        TEST_TIMEOUT,
-    );
+    let result = adopt_tab_here(&harness.senders, 1, Box::default(), TEST_TIMEOUT);
 
     assert_eq!(result, Err("timed out adopting the tab".to_owned()));
     // It did ask, though — the timeout is the pty thread failing to answer, not
@@ -332,12 +327,7 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
         }
     });
 
-    let result = adopt_tab_here(
-        &senders,
-        1,
-        Box::new(WarpedTab::default()),
-        Duration::from_secs(5),
-    );
+    let result = adopt_tab_here(&senders, 1, Box::default(), Duration::from_secs(5));
     responder.join().expect("the responder should not panic");
 
     assert_eq!(

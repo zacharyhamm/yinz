@@ -164,12 +164,16 @@ impl WorktreeStatus {
             WorktreeStatus::Linked => "linked",
         }
     }
+}
 
-    pub fn from_str(text: &str) -> Option<Self> {
+impl std::str::FromStr for WorktreeStatus {
+    type Err = ();
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
         match text {
-            "primary" => Some(WorktreeStatus::Primary),
-            "linked" => Some(WorktreeStatus::Linked),
-            _ => None,
+            "primary" => Ok(WorktreeStatus::Primary),
+            "linked" => Ok(WorktreeStatus::Linked),
+            _ => Err(()),
         }
     }
 }
@@ -202,7 +206,7 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                     remote: text_at(rows, row, "remote"),
                     worktree_status: text_at(rows, row, "worktree_status")
                         .as_deref()
-                        .and_then(WorktreeStatus::from_str),
+                        .and_then(|status| status.parse().ok()),
                     common_dir: text_at(rows, row, "common_dir"),
                     discovered: matches!(rows.get(row, "discovered"), Some(DataValue::Bool(true))),
                 },
@@ -582,9 +586,9 @@ mod tests {
     #[test]
     fn both_worktree_statuses_survive_the_text_column() {
         for status in [WorktreeStatus::Primary, WorktreeStatus::Linked] {
-            assert_eq!(WorktreeStatus::from_str(status.as_str()), Some(status));
+            assert_eq!(status.as_str().parse(), Ok(status));
         }
-        assert_eq!(WorktreeStatus::from_str("something else"), None);
+        assert_eq!("something else".parse::<WorktreeStatus>(), Err(()));
     }
 
     /// An upsert writes only the attributes it names, so a put that skipped the

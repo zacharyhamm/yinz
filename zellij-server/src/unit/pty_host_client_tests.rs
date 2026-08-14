@@ -1216,9 +1216,8 @@ fn a_released_pane_can_be_attached_by_another_server() {
     let second_reports: Reports = Arc::default();
     let attached = pending.finish(recording_quit_cb(&second_reports));
     assert_eq!(attached.child_pid, child_pid);
-    assert_eq!(
+    assert!(
         String::from_utf8_lossy(&attached.buffered).contains("got:during-the-gap"),
-        true,
         "output produced during the hand-off should arrive with the attach, got {:?}",
         String::from_utf8_lossy(&attached.buffered)
     );

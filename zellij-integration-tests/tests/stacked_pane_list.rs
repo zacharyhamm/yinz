@@ -711,7 +711,7 @@ fn resizing_the_visible_member_keeps_the_list() {
                 .lines()
                 .iter()
                 .position(|line| line.contains(&selected_entry("Pane #3")))
-                .map_or(false, |entry_row| entry_row < entry_row_before)
+                .is_some_and(|entry_row| entry_row < entry_row_before)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

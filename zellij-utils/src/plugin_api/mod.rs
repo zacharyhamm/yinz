@@ -24,6 +24,13 @@ pub mod style;
 //pub mod generated_api {
 //    include!(concat!(env!("OUT_DIR"), "/generated_plugin_api.rs"));
 //}
+// prost writes these, `cargo x proto` regenerates them and `cargo x assets --check` compares
+// them byte for byte - lint them as the generated artifacts they are
+#[allow(
+    clippy::module_inception,
+    clippy::large_enum_variant,
+    clippy::len_without_is_empty
+)]
 pub mod generated_api {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -614,7 +614,7 @@ fn temp_file_transmission_probe_and_image_reach_the_client() {
         .rand_bytes(1)
         .tempfile()
         .unwrap();
-    image_file.write_all(&vec![0xffu8; 2 * 2 * 4]).unwrap();
+    image_file.write_all(&[0xffu8; 2 * 2 * 4]).unwrap();
     image_file.flush().unwrap();
     let image_path = image_file.path().to_str().unwrap().to_string();
     terminal.output(

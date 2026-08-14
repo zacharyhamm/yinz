@@ -7,16 +7,11 @@ use crate::new_session_info::LayoutList;
 use crate::ui::components::UnifiedResultsRenderCache;
 use crate::ui::SessionUiInfo;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum SingleScreenMode {
+    #[default]
     SearchAndSelect,
     SelectingLayout,
-}
-
-impl Default for SingleScreenMode {
-    fn default() -> Self {
-        SingleScreenMode::SearchAndSelect
-    }
 }
 
 #[derive(Debug)]
@@ -394,8 +389,10 @@ mod tests {
 
     #[test]
     fn test_1_5_pane_counts_reflect_tab_structure() {
-        let mut state = SingleScreenState::default();
-        state.search_term = String::new();
+        let mut state = SingleScreenState {
+            search_term: String::new(),
+            ..Default::default()
+        };
         let active = vec![make_active_session("sess", 3, 2, 1, false, 100)];
         state.update_search_term(&active, &[]);
         assert_eq!(state.unified_results.len(), 1);
@@ -571,9 +568,11 @@ mod tests {
 
     #[test]
     fn test_5_1_transition_to_layout_selection() {
-        let mut state = SingleScreenState::default();
-        state.mode = SingleScreenMode::SearchAndSelect;
-        state.search_term = "my-session".to_string();
+        let mut state = SingleScreenState {
+            mode: SingleScreenMode::SearchAndSelect,
+            search_term: "my-session".to_string(),
+            ..Default::default()
+        };
         state.transition_to_layout_selection();
         assert_eq!(state.mode, SingleScreenMode::SelectingLayout);
         assert_eq!(state.search_term, "my-session"); // preserved
@@ -581,8 +580,10 @@ mod tests {
 
     #[test]
     fn test_5_2_transition_back_to_search() {
-        let mut state = SingleScreenState::default();
-        state.mode = SingleScreenMode::SelectingLayout;
+        let mut state = SingleScreenState {
+            mode: SingleScreenMode::SelectingLayout,
+            ..Default::default()
+        };
         state.layout_list.layout_search_term = "some-layout".to_string();
         state.layout_list.selected_layout_index = 3;
         state.transition_to_search();
@@ -593,9 +594,11 @@ mod tests {
 
     #[test]
     fn test_5_3_round_trip_transition_preserves_search_term() {
-        let mut state = SingleScreenState::default();
-        state.search_term = "my-new-session".to_string();
-        state.mode = SingleScreenMode::SearchAndSelect;
+        let mut state = SingleScreenState {
+            search_term: "my-new-session".to_string(),
+            mode: SingleScreenMode::SearchAndSelect,
+            ..Default::default()
+        };
         state.transition_to_layout_selection();
         assert_eq!(state.mode, SingleScreenMode::SelectingLayout);
         state.transition_to_search();
@@ -650,9 +653,10 @@ mod tests {
         }
 
         fn state_with(flags: &[bool]) -> SingleScreenState {
-            let mut state = SingleScreenState::default();
-            state.unified_results = build_results(flags);
-            state
+            SingleScreenState {
+                unified_results: build_results(flags),
+                ..Default::default()
+            }
         }
 
         /// Replaces `test_3_1_down_from_none_selects_first_non_current`,

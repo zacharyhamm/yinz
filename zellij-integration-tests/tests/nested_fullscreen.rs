@@ -21,7 +21,7 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
     grid_snapshot
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains(needle))
+        .is_some_and(|last_line| last_line.contains(needle))
 }
 
 fn session_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
@@ -33,7 +33,7 @@ fn pane_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
 }
 
 fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
-    guest_grid.lines().last().map_or(false, |last_line| {
+    guest_grid.lines().last().is_some_and(|last_line| {
         if last_line.contains("LOCK") {
             return true;
         }
@@ -52,15 +52,16 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
     let lines = guest_grid.lines();
     lines
         .first()
-        .map_or(false, |first_line| first_line.contains("Tab #1"))
+        .is_some_and(|first_line| first_line.contains("Tab #1"))
         && last_line_contains(guest_grid, "Ctrl +")
         && guest_normal_mode_bar_settled(guest_grid)
 }
 
 fn guest_fullscreen_breadcrumb_line(guest_grid: &GridSnapshot) -> bool {
-    guest_grid.lines().first().map_or(false, |first_line| {
-        first_line.contains('▸') && first_line.contains('(')
-    })
+    guest_grid
+        .lines()
+        .first()
+        .is_some_and(|first_line| first_line.contains('▸') && first_line.contains('('))
 }
 
 fn breadcrumb_for(ancestry: &[&str], name: &str) -> String {
@@ -149,7 +150,7 @@ fn guest_fullscreen_fills_the_host_display_and_hides_chrome() {
         |host_grid| {
             host_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(host_grid, &host_session_name)
-                && host_grid.lines().first().map_or(false, |first_line| {
+                && host_grid.lines().first().is_some_and(|first_line| {
                     first_line.contains(&expected_breadcrumb) && first_line.contains("Tab #1")
                 })
                 && host_grid.cursor_is_at(col(0).row(1))
@@ -240,7 +241,7 @@ fn toggle_off_restores_the_host_layout_exactly() {
         after_fullscreen
             .lines()
             .first()
-            .map_or(false, |first_line| !first_line.contains('▸')),
+            .is_some_and(|first_line| !first_line.contains('▸')),
         "breadcrumb gone from the host tab-bar after fullscreen exit"
     );
 }
@@ -314,7 +315,7 @@ fn breadcrumb_is_present_only_while_fullscreened() {
             && before
                 .lines()
                 .first()
-                .map_or(true, |first_line| !first_line.contains('▸')),
+                .is_none_or(|first_line| !first_line.contains('▸')),
         "no breadcrumb on the guest tab-bar before fullscreen"
     );
 
@@ -324,9 +325,10 @@ fn breadcrumb_is_present_only_while_fullscreened() {
     let fullscreened = nested.guest.wait_until(
         "guest tab-bar shows the breadcrumb while fullscreened",
         |guest_grid| {
-            guest_grid.lines().first().map_or(false, |first_line| {
-                first_line.contains(&expected_breadcrumb)
-            })
+            guest_grid
+                .lines()
+                .first()
+                .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
     let first_line = fullscreened.lines().into_iter().next().unwrap();
@@ -377,7 +379,7 @@ fn breadcrumb_is_present_only_while_fullscreened() {
             guest_grid
                 .lines()
                 .first()
-                .map_or(false, |first_line| !first_line.contains('▸'))
+                .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
 }
@@ -395,7 +397,7 @@ fn nested_but_tiled_guest_shows_no_breadcrumb() {
         tiled
             .lines()
             .first()
-            .map_or(true, |first_line| { !first_line.contains('▸') }),
+            .is_none_or(|first_line| { !first_line.contains('▸') }),
         "a nested but not fullscreened guest shows no breadcrumb"
     );
 }
@@ -479,7 +481,7 @@ fn innermost_fullscreen_fills_the_whole_outer_terminal_and_zooms_the_chain() {
             outer_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(outer_grid, &outer_session_name)
                 && !host_own_name_present(outer_grid, &middle_session_name)
-                && outer_grid.lines().first().map_or(false, |first_line| {
+                && outer_grid.lines().first().is_some_and(|first_line| {
                     first_line.contains(&expected_breadcrumb) && first_line.contains("Tab #1")
                 })
                 && outer_grid.cursor_is_at(col(0).row(1))
@@ -894,7 +896,7 @@ fn restoring_the_innermost_fullscreen_unzooms_the_whole_chain() {
                 && outer_grid
                     .lines()
                     .first()
-                    .map_or(false, |first_line| !first_line.contains('▸'))
+                    .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
     nested.middle.wait_until(
@@ -904,7 +906,7 @@ fn restoring_the_innermost_fullscreen_unzooms_the_whole_chain() {
                 && middle_grid
                     .lines()
                     .first()
-                    .map_or(false, |first_line| !first_line.contains('▸'))
+                    .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
 }
@@ -926,9 +928,10 @@ fn clicking_the_ancestor_breadcrumb_segment_ascends_out_of_the_guest() {
     let fullscreen_grid = nested.host.wait_until(
         "guest fullscreened with the breadcrumb visible before clicking",
         |host_grid| {
-            host_grid.lines().first().map_or(false, |first_line| {
-                first_line.contains(&expected_breadcrumb)
-            })
+            host_grid
+                .lines()
+                .first()
+                .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
     let first_line = fullscreen_grid.lines().into_iter().next().unwrap();
@@ -944,7 +947,7 @@ fn clicking_the_ancestor_breadcrumb_segment_ascends_out_of_the_guest() {
         .send_stdin(&format!("\u{1b}[<0;{};1m", name_column).into_bytes());
     nested.guest.wait_until(
         "guest still fullscreened after a non-ancestor click",
-        |guest_grid| guest_ui_settled(guest_grid),
+        guest_ui_settled,
     );
     assert_eq!(
         nested.guest_to_host().count(|message| matches!(
@@ -1040,7 +1043,7 @@ fn host_manually_breaking_fullscreen_drifts_the_guest_to_not_fullscreen() {
             guest_grid
                 .lines()
                 .first()
-                .map_or(false, |first_line| !first_line.contains('▸'))
+                .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
     nested.host.wait_until(
@@ -1091,7 +1094,7 @@ fn guest_killed_while_fullscreened_unzooms_the_host_after_liveness_timeout() {
                 && host_grid
                     .lines()
                     .first()
-                    .map_or(false, |first_line| !first_line.contains('▸'))
+                    .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
 }
@@ -1109,9 +1112,10 @@ fn fullscreen_breadcrumb_has_no_nested_marker_and_an_emphasized_own_name() {
     let fullscreened = nested.guest.wait_until(
         "guest tab-bar shows the breadcrumb while fullscreened",
         |guest_grid| {
-            guest_grid.lines().first().map_or(false, |first_line| {
-                first_line.contains(&expected_breadcrumb)
-            })
+            guest_grid
+                .lines()
+                .first()
+                .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
 

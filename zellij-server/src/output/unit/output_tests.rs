@@ -651,7 +651,7 @@ fn test_character_chunk_new() {
 
 mod character_chunk_props {
     use super::*;
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
     use unicode_width::UnicodeWidthChar;
 
     #[hegel::composite]
@@ -818,7 +818,7 @@ fn test_visible_character_chunks_partially_covered_left() {
     let visible = stack.visible_character_chunks(chunks, Some(0)).unwrap();
 
     // Should retain the right part
-    assert!(visible.len() > 0, "Should have visible chunks");
+    assert!(!visible.is_empty(), "Should have visible chunks");
     if !visible.is_empty() {
         assert!(
             visible[0].x >= 10,
@@ -840,7 +840,7 @@ fn test_visible_character_chunks_partially_covered_right() {
     let visible = stack.visible_character_chunks(chunks, Some(0)).unwrap();
 
     // Should retain the left part
-    assert!(visible.len() > 0, "Should have visible chunks");
+    assert!(!visible.is_empty(), "Should have visible chunks");
     if !visible.is_empty() {
         assert_eq!(visible[0].x, 5, "Visible chunk should start at original x");
         assert!(
@@ -894,7 +894,7 @@ fn test_visible_character_chunks_middle_covered() {
 
     // Should return two chunks (left and right parts)
     assert!(
-        visible.len() >= 1,
+        !visible.is_empty(),
         "Should have at least one visible chunk when middle is covered"
     );
 }
@@ -1493,7 +1493,7 @@ fn kitty_occlusion_crops_exclude_covered_quarter() {
             .collect();
     assert_eq!(crop_set, expected_crop_set);
     let image_area = 40 * 80;
-    let covered_area = (4 - 2) * 10 * ((2 - 0) * 20);
+    let covered_area = (4 - 2) * 10 * (2 * 20);
     let union_area: usize = crops.iter().map(|(_, _, _, _, w, h)| w * h).sum();
     assert_eq!(union_area, image_area - covered_area);
     let covered_x_range = 20..40;

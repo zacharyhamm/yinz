@@ -27,7 +27,7 @@ fn split_focused_pane_down(zellij: &TestSession) -> FakePtyHandle {
     terminal.output(PROMPT);
     zellij.wait_until(
         "newly split lower pane focused below the middle pane",
-        |grid| grid.status_bar_appears() && grid.cursor.map_or(false, |cursor| cursor.y > 13),
+        |grid| grid.status_bar_appears() && grid.cursor.is_some_and(|cursor| cursor.y > 13),
     );
     terminal
 }
@@ -76,7 +76,7 @@ fn focus_last_pane_refills_after_cycling_focus() {
 
     zellij.send_stdin(&keys::alt('.'));
     zellij.wait_until("focus cycled away from the right pane", |grid| {
-        grid.status_bar_appears() && grid.cursor.map_or(false, |cursor| cursor.x < 60)
+        grid.status_bar_appears() && grid.cursor.is_some_and(|cursor| cursor.x < 60)
     });
 
     zellij.send_stdin(&keys::alt('m'));
@@ -100,11 +100,12 @@ fn focus_last_pane_refills_after_cycling_focus() {
 /// is after it" is `"$ █"` ending at the cursor. That keeps this free of any hardcoded
 /// geometry, which matters because floating panes are staggered.
 fn prompt_cursor_settled(grid: &GridSnapshot) -> bool {
-    grid.cursor.map_or(false, |cursor| {
+    grid.cursor.is_some_and(|cursor| {
         cursor.x >= 2
-            && grid.lines().get(cursor.y).map_or(false, |line| {
-                line.chars().skip(cursor.x - 2).take(3).eq("$ █".chars())
-            })
+            && grid
+                .lines()
+                .get(cursor.y)
+                .is_some_and(|line| line.chars().skip(cursor.x - 2).take(3).eq("$ █".chars()))
     })
 }
 
@@ -119,7 +120,7 @@ fn open_floating_pane_below(
         prompt_cursor_settled(grid)
             && grid
                 .cursor
-                .map_or(false, |cursor| cursor.y > previous_cursor_row)
+                .is_some_and(|cursor| cursor.y > previous_cursor_row)
     });
     (terminal, grid.cursor.unwrap().y)
 }
@@ -156,7 +157,7 @@ fn focus_last_floating_pane_returns_to_earlier_pane_after_closing_focused_pane()
         "closing the focused floating pane returns focus to the previous floating pane",
         |grid| {
             grid.cursor
-                .map_or(false, |cursor| cursor.y == second_floating_row)
+                .is_some_and(|cursor| cursor.y == second_floating_row)
         },
     );
 

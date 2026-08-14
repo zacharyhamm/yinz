@@ -14,7 +14,7 @@ pub fn format_kdl_error(error: LayoutParsingError) -> String {
 
             kdl_error.help_message =
                 Some("https://zellij.dev/documentation/creating-a-layout.html".to_owned());
-            let report: Report = kdl_error.into();
+            let report: Report = (*kdl_error).into();
             let report = report.with_source_code(NamedSource::new(file_name, source_code));
 
             let handler = GraphicalReportHandler::new();

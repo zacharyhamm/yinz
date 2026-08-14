@@ -134,7 +134,7 @@ fn a_handoff_that_carries_no_descriptor_is_reported() {
 fn send_two_fds(sock: &UnixStream, first: RawFd, second: RawFd) {
     let fds = [first, second];
     let cmsgs = [ControlMessage::ScmRights(&fds)];
-    let payload = [b'F'];
+    let payload = *b"F";
     let iov = [IoSlice::new(&payload)];
     sendmsg::<()>(sock.as_raw_fd(), &iov, &cmsgs, MsgFlags::empty(), None)
         .expect("sendmsg with two descriptors failed");

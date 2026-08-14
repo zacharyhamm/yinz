@@ -200,7 +200,6 @@ fn cli_recordings_export_non_numeric_id_fails() {
 
 #[test]
 fn cli_recordings_export_with_output_parses() {
-    use std::path::PathBuf;
     let args = try_parse_cli([
         "zellij",
         "recordings",
@@ -214,7 +213,7 @@ fn cli_recordings_export_with_output_parses() {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
             recording_id: 42,
             output: Some(path),
-        })) if path == PathBuf::from("pane.cast") => {},
+        })) if path == *"pane.cast" => {},
         _ => panic!("Expected Recordings::Export with output"),
     }
 }

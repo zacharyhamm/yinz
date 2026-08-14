@@ -436,8 +436,10 @@ mod tests {
     /// A popup that has been opened and focused, as every real one has been by
     /// the time a focus reading reaches it.
     fn open_popup() -> State {
-        let mut state = State::default();
-        state.plugin_id = 7;
+        let mut state = State {
+            plugin_id: 7,
+            ..Default::default()
+        };
         assert_eq!(
             state.focus_verdict(Some(PaneId::Plugin(7))),
             Verdict::Wait,
@@ -523,8 +525,10 @@ mod tests {
     /// deadline and no way out but Esc.
     #[test]
     fn an_unreadable_acknowledgement_leaves_the_wait_running() {
-        let mut state = State::default();
-        state.phase = Phase::Sending { remaining: 1.0 };
+        let mut state = State {
+            phase: Phase::Sending { remaining: 1.0 },
+            ..Default::default()
+        };
 
         assert!(!state.pipe(ack("not json")));
         assert_eq!(state.phase, Phase::Sending { remaining: 1.0 });
@@ -532,8 +536,10 @@ mod tests {
 
     #[test]
     fn a_message_that_is_not_an_acknowledgement_is_ignored() {
-        let mut state = State::default();
-        state.phase = Phase::Sending { remaining: 1.0 };
+        let mut state = State {
+            phase: Phase::Sending { remaining: 1.0 },
+            ..Default::default()
+        };
 
         let mut other = ack(r#"{"outcome":"Sent"}"#);
         other.name = wire::AGENT_SNAPSHOT.to_owned();
@@ -566,8 +572,10 @@ mod tests {
     /// the box the other client is typing into.
     #[test]
     fn an_instance_that_never_had_focus_dismisses_nothing() {
-        let mut state = State::default();
-        state.plugin_id = 7;
+        let mut state = State {
+            plugin_id: 7,
+            ..Default::default()
+        };
 
         assert_eq!(
             state.focus_verdict(Some(PaneId::Terminal(1))),
@@ -616,9 +624,11 @@ mod tests {
     /// Typing is how you answer a complaint about what you typed.
     #[test]
     fn editing_after_a_refusal_retires_the_note() {
-        let mut state = State::default();
-        state.phase = Phase::Editing {
-            note: Some("hocus is busy".to_owned()),
+        let mut state = State {
+            phase: Phase::Editing {
+                note: Some("hocus is busy".to_owned()),
+            },
+            ..Default::default()
         };
 
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('x'))));

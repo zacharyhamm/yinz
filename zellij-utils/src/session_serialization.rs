@@ -2295,9 +2295,10 @@ mod tests {
             FloatingPaneLayout::default(),
             FloatingPaneLayout::default(),
         ];
-        let mut default_layout = Layout::default();
-        default_layout.template = Some((tiled_panes_layout, floating_panes_layout));
-        let default_layout = Box::new(default_layout);
+        let default_layout = Box::new(Layout {
+            template: Some((tiled_panes_layout, floating_panes_layout)),
+            ..Default::default()
+        });
         let global_layout_manifest = GlobalLayoutManifest {
             default_layout,
             ..Default::default()

@@ -302,7 +302,7 @@ fn crop_rgba_never_panics(tc: hegel::TestCase) {
     let h = tc.draw(generators::integers::<usize>().max_value(64));
     let out = crop_rgba(&src, src_w, src_h, x, y, w, h);
     assert!(
-        out.len() % 4 == 0,
+        out.len().is_multiple_of(4),
         "crop_rgba(src.len()={}, src_w={}, src_h={}, x={}, y={}, w={}, h={}) returned {} bytes, \
          not a whole number of rgba pixels",
         src.len(),

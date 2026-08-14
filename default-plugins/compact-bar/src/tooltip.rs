@@ -1,6 +1,9 @@
 use crate::keybind_utils::KeybindProcessor;
 use zellij_tile::prelude::*;
 
+/// One tooltip cell: the key text, the action text, and the x/y it renders at.
+type TooltipComponent = (Text, Text, usize, usize);
+
 pub struct TooltipRenderer<'a> {
     mode_info: &'a ModeInfo,
 }
@@ -73,7 +76,7 @@ impl<'a> TooltipRenderer<'a> {
     fn normal_mode_tooltip(
         &self,
         current_mode: InputMode,
-    ) -> (Vec<(Text, Text, usize, usize)>, usize, usize) {
+    ) -> (Vec<TooltipComponent>, usize, usize) {
         let actions = KeybindProcessor::get_predetermined_actions(self.mode_info, current_mode);
         let y = 0;
         let mut running_x = 0;
@@ -83,9 +86,9 @@ impl<'a> TooltipRenderer<'a> {
         let mut is_first = true;
         for (key, description) in actions {
             let text = if is_first {
-                Text::new(format!("{} ", &key)).color_all(3).opaque()
+                Text::new(format!("{} ", key)).color_all(3).opaque()
             } else {
-                Text::new(format!(" {} ", &key)).color_all(3).opaque()
+                Text::new(format!(" {} ", key)).color_all(3).opaque()
             };
             let ribbon = Text::new(&description);
 

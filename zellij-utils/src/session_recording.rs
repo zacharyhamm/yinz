@@ -644,6 +644,10 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     Ok(results)
 }
 
+/// The joined pane/session row `export_recording` reads: pane id, session id, initial cols and
+/// rows, elapsed micros at pane start, session name, tab name, session start micros, pane title.
+type RecordedPaneRow = (i64, i64, i64, i64, i64, String, String, i64, String);
+
 pub fn export_recording(
     data_dir: &Path,
     recording_id: i64,
@@ -657,7 +661,7 @@ pub fn export_recording(
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // get pane and session
-    let pane: Option<(i64, i64, i64, i64, i64, String, String, i64, String)> = {
+    let pane: Option<RecordedPaneRow> = {
         let mut stmt = conn.prepare(
             "SELECT p.id, p.session_id, p.initial_cols, p.initial_rows, p.started_elapsed_us, s.name, p.tab_name, s.started_at_us, p.title FROM recording_panes p JOIN recording_sessions s ON p.session_id = s.id WHERE p.id = ?1",
         )?;

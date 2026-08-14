@@ -200,13 +200,13 @@ mod tests {
         let one = Path::new("/foo/bar/baz/one.txt");
         let two = Path::new("/foo/bar/quux/quuux/two.txt");
         let result = Path::new("/foo/bar");
-        assert_eq!(common_path(&one, &two).unwrap(), result.to_path_buf())
+        assert_eq!(common_path(one, two).unwrap(), result.to_path_buf())
     }
 
     #[test]
     fn no_common_path() {
         let one = Path::new("/foo/bar");
         let two = Path::new("./baz/quux");
-        assert!(common_path(&one, &two).is_none());
+        assert!(common_path(one, two).is_none());
     }
 }

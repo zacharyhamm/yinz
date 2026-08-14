@@ -1320,7 +1320,7 @@ impl Layout {
                                 let error = match config_error {
                                     ConfigError::KdlError(kdl_err) => {
                                         LayoutParsingError::KdlError {
-                                            kdl_error: kdl_err,
+                                            kdl_error: Box::new(kdl_err),
                                             file_name,
                                             source_code,
                                         }
@@ -1536,9 +1536,9 @@ impl Layout {
     }
     #[cfg(target_family = "wasm")]
     pub fn from_url(_url: &str, _config: Config) -> Result<(Layout, Config), ConfigError> {
-        Err(ConfigError::DownloadError(format!(
-            "Unsupported platform, cannot download layout from the web"
-        )))
+        Err(ConfigError::DownloadError(
+            "Unsupported platform, cannot download layout from the web".to_owned(),
+        ))
     }
     #[allow(clippy::result_large_err)]
     pub fn from_path_or_default_without_config(

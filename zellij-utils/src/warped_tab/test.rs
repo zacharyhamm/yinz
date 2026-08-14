@@ -60,7 +60,7 @@ fn tab_arrangement(
 ) -> Vec<PaneLayoutManifest> {
     let mut layout = TiledPaneLayout::default();
     let depth = tc.draw(generators::integers::<usize>().min_value(0).max_value(3));
-    split(&tc, &mut layout, depth, plugin_panes);
+    split(tc, &mut layout, depth, plugin_panes);
 
     let positioned = layout
         .position_panes_in_space(&space(viewport), None, false, false)
@@ -327,17 +327,19 @@ fn panes_running_the_same_command_are_still_told_apart() {
     // by what they are running, and matching on that would put them in
     // arbitrary slots.
     let viewport = Size { cols: 80, rows: 24 };
-    let mut layout = TiledPaneLayout::default();
-    layout.children_split_direction = SplitDirection::Vertical;
-    layout.children = (0..4)
-        .map(|_| TiledPaneLayout {
-            run: Some(Run::Command(RunCommand {
-                command: "sh".into(),
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: (0..4)
+            .map(|_| TiledPaneLayout {
+                run: Some(Run::Command(RunCommand {
+                    command: "sh".into(),
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
-            ..Default::default()
-        })
-        .collect();
+            })
+            .collect(),
+        ..Default::default()
+    };
 
     let tiled: Vec<PaneLayoutManifest> = layout
         .position_panes_in_space(&space(viewport), None, false, false)

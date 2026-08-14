@@ -12,7 +12,7 @@ use crate::runner::{GuestResizer, TestRunner, TestSession};
 use crate::Size;
 
 pub fn host_chrome_undimmed_after_guest_exit(host_grid: &GridSnapshot) -> bool {
-    !host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").map_or(true, |dim| !dim)
+    !host_grid.line_has_dim("Pane #2") && host_grid.char_dim_of("test-").is_none_or(|dim| !dim)
 }
 
 pub fn composite_contains_settled_guest_grid(
@@ -41,9 +41,9 @@ pub fn composite_contains_settled_guest_grid(
             for (guest_row, guest_line) in guest_lines.iter().enumerate() {
                 let host_line = &host_lines[row_offset + guest_row];
                 for (guest_col, guest_char) in guest_line.iter().enumerate() {
-                    let guest_cell_is_cursor = guest_grid.cursor.map_or(false, |cursor| {
-                        cursor.x == guest_col && cursor.y == guest_row
-                    });
+                    let guest_cell_is_cursor = guest_grid
+                        .cursor
+                        .is_some_and(|cursor| cursor.x == guest_col && cursor.y == guest_row);
                     if guest_cell_is_cursor {
                         continue;
                     }
@@ -66,20 +66,21 @@ pub fn host_descended_bar_settled(host_grid: &GridSnapshot) -> bool {
     host_grid
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains("Ascend:"))
+        .is_some_and(|last_line| last_line.contains("Ascend:"))
 }
 
 pub fn host_descended_bar_with_ascend_keys_settled(host_grid: &GridSnapshot) -> bool {
-    host_grid.lines().last().map_or(false, |last_line| {
-        last_line.contains("Ascend:") && !last_line.contains("<unbound>")
-    })
+    host_grid
+        .lines()
+        .last()
+        .is_some_and(|last_line| last_line.contains("Ascend:") && !last_line.contains("<unbound>"))
 }
 
 pub fn guest_ascended_bar_settled(guest_grid: &GridSnapshot) -> bool {
     guest_grid
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains("Descend:"))
+        .is_some_and(|last_line| last_line.contains("Descend:"))
 }
 
 pub fn wait_for_settled_composite(
@@ -144,7 +145,7 @@ impl FrameLog {
         let deadline = Instant::now() + crate::default_timeout();
         let mut messages = self.inner.messages.lock().unwrap();
         loop {
-            if messages.iter().skip(since).any(|message| matcher(message)) {
+            if messages.iter().skip(since).any(&mut matcher) {
                 return;
             }
             let now = Instant::now();

@@ -1509,7 +1509,7 @@ fn test_apply_layout_with_floating_panes() {
         )
         .unwrap();
 
-    assert_eq!(should_show_floating, true);
+    assert!(should_show_floating);
 
     assert_snapshot!(take_pane_state_snapshot(
         &tiled_panes,
@@ -1713,7 +1713,7 @@ fn test_apply_layout_with_mixed_tiled_and_floating_panes() {
         )
         .unwrap();
 
-    assert_eq!(should_show_floating, true);
+    assert!(should_show_floating);
 
     // Snapshot should show:
     // - 3 tiled panes with correct geometries, commands, and names
@@ -2944,7 +2944,7 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
         .unwrap();
 
     // Should show floating panes
-    assert_eq!(should_show_floating, true);
+    assert!(should_show_floating);
 
     // Verify close messages were sent for vim (Terminal(2)) and tail (Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
@@ -3088,7 +3088,7 @@ fn test_override_layout_hide_floating_panes_true() {
         .unwrap();
 
     // Should NOT show floating panes because of hide_floating_panes
-    assert_eq!(should_show_floating, false);
+    assert!(!should_show_floating);
 
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 0);
@@ -3218,7 +3218,7 @@ fn test_override_layout_show_floating_panes() {
         .unwrap();
 
     // Should show floating panes
-    assert_eq!(should_show_floating, true);
+    assert!(should_show_floating);
 
     // Verify close message was sent for one tiled pane (Terminal(2))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
@@ -5033,7 +5033,7 @@ fn test_override_floating_return_value_has_panes() {
         .unwrap();
 
     // Function should return true because layout has floating panes
-    assert_eq!(has_floating_panes, true);
+    assert!(has_floating_panes);
 
     assert_snapshot!(take_pane_state_snapshot(
         &tiled_panes,
@@ -5150,7 +5150,7 @@ fn test_override_floating_return_value_no_panes() {
         .unwrap();
 
     // Function should return false because layout has no floating panes
-    assert_eq!(has_floating_panes, false);
+    assert!(!has_floating_panes);
 
     // Verify close message was sent for floating pane (Terminal(2))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
@@ -5445,7 +5445,7 @@ fn test_override_viewport_adjustment_with_borderless() {
     // Verify close message was sent for at least the extra pane (Terminal(3))
     // Generic panes without commands don't match exactly, so all 3 may be closed
     let closed_panes = collect_close_pane_messages(&pty_receiver);
-    assert!(closed_panes.len() >= 1);
+    assert!(!closed_panes.is_empty());
     assert!(closed_panes.contains(&PaneId::Terminal(3)));
 
     // No plugins should be unloaded

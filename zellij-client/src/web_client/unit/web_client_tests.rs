@@ -27,7 +27,7 @@ use zellij_utils::{
 
 use serial_test::serial;
 
-mod web_client_tests {
+mod tests {
     use super::*;
 
     use std::time::{Duration, Instant};
@@ -460,28 +460,31 @@ mod web_client_tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
         let mut found_resize = false;
         let mut found_terminal_input = false;
 
-        for (_, mock_api) in mock_apis.iter() {
-            let messages = mock_api.get_sent_messages();
-            for msg in messages {
-                match msg {
-                    ClientToServerMsg::TerminalResize { .. } => {
-                        found_resize = true;
-                    },
-                    ClientToServerMsg::Key { .. }
-                    | ClientToServerMsg::Action {
-                        action: _,
-                        terminal_id: _,
-                        client_id: _,
-                        is_cli_client: _,
-                    } => {
-                        found_terminal_input = true;
-                    },
-                    _ => {},
-                }
+        for msg in sent_messages {
+            match msg {
+                ClientToServerMsg::TerminalResize { .. } => {
+                    found_resize = true;
+                },
+                ClientToServerMsg::Key { .. }
+                | ClientToServerMsg::Action {
+                    action: _,
+                    terminal_id: _,
+                    client_id: _,
+                    is_cli_client: _,
+                } => {
+                    found_terminal_input = true;
+                },
+                _ => {},
             }
         }
 
@@ -641,16 +644,16 @@ mod web_client_tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        let mut found_pixel_dims: Option<ClientToServerMsg> = None;
-        for (_, mock_api) in mock_apis.iter() {
-            for msg in mock_api.get_sent_messages() {
-                if matches!(msg, ClientToServerMsg::TerminalPixelDimensions { .. }) {
-                    found_pixel_dims = Some(msg);
-                    break;
-                }
-            }
-        }
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
+        let found_pixel_dims = sent_messages
+            .into_iter()
+            .find(|msg| matches!(msg, ClientToServerMsg::TerminalPixelDimensions { .. }));
         let pixel_dims = found_pixel_dims
             .expect("TerminalMetrics did not reach the server as TerminalPixelDimensions");
         match pixel_dims {
@@ -669,7 +672,6 @@ mod web_client_tests {
             other => panic!("unexpected msg variant: {:?}", other),
         }
 
-        drop(mock_apis);
         let _ = control_sink.close().await;
         server_handle.abort();
 
@@ -1069,17 +1071,17 @@ mod web_client_tests {
             Err(e) => println!("Client 2 send failed (may be expected): {:?}", e),
         }
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        let mut total_resize_messages: usize = 0;
-
-        for (_, mock_api) in mock_apis.iter() {
-            let messages = mock_api.get_sent_messages();
-            for msg in messages {
-                if matches!(msg, ClientToServerMsg::TerminalResize { .. }) {
-                    total_resize_messages = total_resize_messages.saturating_add(1);
-                }
-            }
-        }
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
+        let total_resize_messages = sent_messages
+            .iter()
+            .filter(|msg| matches!(msg, ClientToServerMsg::TerminalResize { .. }))
+            .count();
 
         assert!(
             total_resize_messages >= 2,
@@ -1292,15 +1294,16 @@ mod web_client_tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        if let Some((_, mock_api)) = mock_apis.iter().next() {
-            mock_api
-                .messages_to_server
-                .lock()
-                .unwrap()
-                .push(ClientToServerMsg::ClientExited);
+        {
+            let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
+            if let Some((_, mock_api)) = mock_apis.iter().next() {
+                mock_api
+                    .messages_to_server
+                    .lock()
+                    .unwrap()
+                    .push(ClientToServerMsg::ClientExited);
+            }
         }
-        drop(mock_apis);
 
         let _ = terminal_sink.close().await;
 
@@ -1323,18 +1326,16 @@ mod web_client_tests {
             },
         }
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        let mut found_client_exited = false;
-
-        for (_, mock_api) in mock_apis.iter() {
-            let messages = mock_api.get_sent_messages();
-            for msg in messages {
-                if matches!(msg, ClientToServerMsg::ClientExited) {
-                    found_client_exited = true;
-                    break;
-                }
-            }
-        }
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
+        let found_client_exited = sent_messages
+            .iter()
+            .any(|msg| matches!(msg, ClientToServerMsg::ClientExited));
 
         assert!(
             found_client_exited,
@@ -1415,7 +1416,7 @@ mod web_client_tests {
         let is_read_only = client_data["is_read_only"].as_bool().unwrap();
         let web_client_id = client_data["web_client_id"].as_str().unwrap().to_string();
 
-        assert_eq!(is_read_only, true, "Client should be marked as read-only");
+        assert!(is_read_only, "Client should be marked as read-only");
 
         let control_ws_url = format!(
             "ws://127.0.0.1:{}/ws/control?web_client_id={}",
@@ -1679,28 +1680,30 @@ mod web_client_tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let all_messages = session_manager_for_verification
-            .first_messages_sent
-            .lock()
-            .unwrap();
+        {
+            let all_messages = session_manager_for_verification
+                .first_messages_sent
+                .lock()
+                .unwrap();
 
-        let msg = all_messages
-            .first()
-            .map(|(_, msg)| msg)
-            .expect("Should have at least one message");
+            let msg = all_messages
+                .first()
+                .map(|(_, msg)| msg)
+                .expect("Should have at least one message");
+
+            assert!(
+                matches!(msg, ClientToServerMsg::FirstClientConnected { .. }),
+                "Regular client creating new session should use FirstClientConnected, got {:?}",
+                msg
+            );
+        }
 
         assert!(
-            matches!(msg, ClientToServerMsg::FirstClientConnected { .. }),
-            "Regular client creating new session should use FirstClientConnected, got {:?}",
-            msg
-        );
-
-        let sessions_created = session_manager_for_verification
-            .sessions_created
-            .lock()
-            .unwrap();
-        assert!(
-            !sessions_created.is_empty(),
+            !session_manager_for_verification
+                .sessions_created
+                .lock()
+                .unwrap()
+                .is_empty(),
             "Session should be created by regular client"
         );
 
@@ -1802,13 +1805,13 @@ mod web_client_tests {
             serde_json::from_str(&readonly_response.text().unwrap()).unwrap();
         let readonly_is_read_only = readonly_client_data["is_read_only"].as_bool().unwrap();
 
-        assert_eq!(
-            regular_is_read_only, false,
+        assert!(
+            !regular_is_read_only,
             "Regular client should not be read-only"
         );
 
-        assert_eq!(
-            readonly_is_read_only, true,
+        assert!(
+            readonly_is_read_only,
             "Read-only client should be read-only"
         );
 
@@ -2471,18 +2474,19 @@ mod web_client_tests {
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        for (_, mock_api) in mock_apis.iter() {
-            let messages = mock_api.get_sent_messages();
-            for msg in &messages {
-                if matches!(msg, ClientToServerMsg::TerminalResize { .. }) {
-                    panic!(
-                        "TerminalResize should NOT have been forwarded for a foreign web_client_id"
-                    );
-                }
-            }
-        }
-        drop(mock_apis);
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
+        assert!(
+            !sent_messages
+                .iter()
+                .any(|msg| matches!(msg, ClientToServerMsg::TerminalResize { .. })),
+            "TerminalResize should NOT have been forwarded for a foreign web_client_id"
+        );
 
         server_handle.abort();
         let _ = delete_db();
@@ -2562,16 +2566,16 @@ mod web_client_tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-        let mut found_resize = false;
-        for (_, mock_api) in mock_apis.iter() {
-            let messages = mock_api.get_sent_messages();
-            for msg in messages {
-                if matches!(msg, ClientToServerMsg::TerminalResize { .. }) {
-                    found_resize = true;
-                }
-            }
-        }
+        let sent_messages: Vec<ClientToServerMsg> = factory_for_verification
+            .mock_apis
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .collect();
+        let found_resize = sent_messages
+            .iter()
+            .any(|msg| matches!(msg, ClientToServerMsg::TerminalResize { .. }));
         assert!(
             found_resize,
             "TerminalResize should be forwarded when using own web_client_id"

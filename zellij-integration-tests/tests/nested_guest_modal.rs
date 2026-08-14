@@ -11,7 +11,7 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
     grid_snapshot
         .lines()
         .last()
-        .map_or(false, |last_line| last_line.contains(needle))
+        .is_some_and(|last_line| last_line.contains(needle))
 }
 
 fn modal_visible(grid_snapshot: &GridSnapshot) -> bool {

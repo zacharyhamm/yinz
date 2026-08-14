@@ -56,7 +56,7 @@ impl KeyShortcut {
             KeyAction::Tmux => String::from("TMUX"),
         }
     }
-    pub fn with_shortened_modifiers(&self, common_modifiers: &Vec<KeyModifier>) -> String {
+    pub fn with_shortened_modifiers(&self, common_modifiers: &[KeyModifier]) -> String {
         let key = match &self.key {
             Some(k) => k.strip_common_modifiers(common_modifiers),
             None => return String::from("?"),
@@ -78,7 +78,7 @@ impl KeyShortcut {
             format!("{} {}", shortened_modifiers, key.bare_key)
         }
     }
-    pub fn letter_shortcut(&self, common_modifiers: &Vec<KeyModifier>) -> String {
+    pub fn letter_shortcut(&self, common_modifiers: &[KeyModifier]) -> String {
         let key = match &self.key {
             Some(k) => k.strip_common_modifiers(common_modifiers),
             None => return String::from("?"),
@@ -95,10 +95,7 @@ impl KeyShortcut {
         self.action
     }
     pub fn is_selected(&self) -> bool {
-        match self.mode {
-            KeyMode::Selected => true,
-            _ => false,
-        }
+        matches!(self.mode, KeyMode::Selected)
     }
     pub fn short_text(&self) -> String {
         match self.action {
@@ -139,7 +136,7 @@ fn long_mode_shortcut(
     key: &KeyShortcut,
     palette: ColoredElements,
     separator: &str,
-    common_modifiers: &Vec<KeyModifier>,
+    common_modifiers: &[KeyModifier],
     first_tile: bool,
 ) -> LinePart {
     let key_hint = key.full_text();
@@ -191,7 +188,7 @@ fn shortened_modifier_shortcut(
     key: &KeyShortcut,
     palette: ColoredElements,
     separator: &str,
-    common_modifiers: &Vec<KeyModifier>,
+    common_modifiers: &[KeyModifier],
     first_tile: bool,
 ) -> LinePart {
     let key_hint = key.full_text();
@@ -261,7 +258,7 @@ fn short_mode_shortcut(
     key: &KeyShortcut,
     palette: ColoredElements,
     separator: &str,
-    common_modifiers: &Vec<KeyModifier>,
+    common_modifiers: &[KeyModifier],
     first_tile: bool,
 ) -> LinePart {
     let has_common_modifiers = !common_modifiers.is_empty();
@@ -598,12 +595,9 @@ fn get_key_shortcut_for_mode<'a>(
         InputMode::Scroll | InputMode::Search | InputMode::EnterSearch => KeyAction::Search,
         InputMode::Session => KeyAction::Session,
     };
-    for shortcut in shortcuts.iter_mut() {
-        if shortcut.action == key_action {
-            return Some(shortcut);
-        }
-    }
-    None
+    shortcuts
+        .iter_mut()
+        .find(|shortcut| shortcut.action == key_action)
 }
 
 pub fn first_line(
@@ -899,7 +893,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -915,7 +909,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -931,7 +925,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -943,7 +937,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::Selected, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "".to_string());
@@ -959,7 +953,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], true);
+        let ret = long_mode_shortcut(&key, color, "+", &[], true);
         let ret = unstyle(ret);
 
         assert_eq!(ret, " <0> SESSION +".to_string());
@@ -975,7 +969,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![KeyModifier::Ctrl], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[KeyModifier::Ctrl], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -991,7 +985,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <Ctrl 0> SESSION +".to_string());
@@ -1007,7 +1001,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -1019,7 +1013,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::Disabled, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <> SESSION +".to_string());
@@ -1037,7 +1031,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = long_mode_shortcut(&key, color, "+", &vec![KeyModifier::Ctrl], true);
+        let ret = long_mode_shortcut(&key, color, "+", &[KeyModifier::Ctrl], true);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ <0> SESSION +".to_string());
@@ -1052,7 +1046,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ 0 +".to_string());
@@ -1067,7 +1061,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ Ctrl 0 +".to_string());
@@ -1082,7 +1076,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![KeyModifier::Ctrl], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[KeyModifier::Ctrl], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ 0 +".to_string());
@@ -1097,7 +1091,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], true);
+        let ret = short_mode_shortcut(&key, color, "+", &[], true);
         let ret = unstyle(ret);
 
         assert_eq!(ret, " 0 +".to_string());
@@ -1112,7 +1106,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ 0 +".to_string());
@@ -1127,7 +1121,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ 0 +".to_string());
@@ -1142,7 +1136,7 @@ mod tests {
         );
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "+ 0 +".to_string());
@@ -1153,7 +1147,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::Selected, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "".to_string());
@@ -1164,7 +1158,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::Unselected, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "".to_string());
@@ -1175,7 +1169,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::UnselectedAlternate, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "".to_string());
@@ -1186,7 +1180,7 @@ mod tests {
         let key = KeyShortcut::new(KeyMode::Selected, KeyAction::Session, None);
         let color = colored_elements();
 
-        let ret = short_mode_shortcut(&key, color, "+", &vec![], false);
+        let ret = short_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
         assert_eq!(ret, "".to_string());
