@@ -1288,6 +1288,29 @@ impl Tab {
             })
             .map(|(pane_id, _)| *pane_id)
     }
+    /// The scrollback editor, if any, standing in for `pane_id` while its
+    /// scrollback is being edited.
+    ///
+    /// The inverse of `scrollback_editor_subject`, and the question anything
+    /// taking `pane_id` out of the tab has to ask: an editor whose subject has
+    /// gone is editing a dump of a pane that no longer exists.
+    pub fn scrollback_editor_standing_in_for(&self, pane_id: PaneId) -> Option<PaneId> {
+        self.suppressed_panes
+            .get(&pane_id)
+            .and_then(|suppressed| suppressed.restored_by)
+            .filter(|stand_in| stand_in.is_scrollback_editor)
+            .map(|stand_in| stand_in.pane_id)
+    }
+    /// Suppressed panes with a process in them, which are panes the session still
+    /// has even though nothing on screen shows them.
+    pub fn suppressed_selectable_terminal_count(&self) -> usize {
+        self.suppressed_panes
+            .iter()
+            .filter(|(pane_id, suppressed)| {
+                matches!(pane_id, PaneId::Terminal(_)) && suppressed.pane.selectable()
+            })
+            .count()
+    }
     /// The pane whose scrollback `stand_in` is editing.
     fn scrollback_editor_subject(&self, stand_in: PaneId) -> Option<&SuppressedPane> {
         self.suppressed_panes.values().find(|suppressed| {

@@ -8085,62 +8085,62 @@ impl Screen {
             },
         };
 
-        let mut found = false;
-        for tab in self.tabs.values() {
-            if tab.get_all_pane_ids().contains(&pane_id) {
-                // Both halves of a scrollback-editor pair are refused, and for
-                // different reasons. Warping the visible one makes
-                // `Tab::close_pane` swap the hidden pane back in rather than
-                // remove it, handing over the wrong pty. Warping the hidden one is
-                // worse: it passes every check here, and only
-                // `take_released_pane_for_warp` discovers there is nothing at that
-                // id to serialize — by which point the supervisor has been
-                // released and the pane has no owner.
-                if tab.get_suppressed_panes().any(|(id, suppressed)| {
-                    *id == pane_id
-                        || suppressed.restored_by.map(|stand_in| stand_in.pane_id) == Some(pane_id)
-                }) {
-                    return Err(
-                        "this pane has a scrollback editor open; close it before moving the pane"
-                            .to_owned(),
-                    );
-                }
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Err(format!("there is no pane {terminal_id} in this session"));
-        }
+        // `get_pane_with_id` rather than a walk of the ids, because it is what
+        // `take_released_pane_for_warp` looks the pane up with once the supervisor
+        // is gone. Any pane found here is findable then, suppressed or not - which
+        // is the whole reason a suppressed pane can be moved at all.
+        let panes_leaving = match self
+            .tabs
+            .values()
+            .find(|tab| tab.get_pane_with_id(pane_id).is_some())
+        {
+            // A scrollback editor goes with the pane it is editing: it would
+            // otherwise be left holding a dump of a pane that is in another
+            // session now, and restoring nothing when closed.
+            Some(tab) => 1 + usize::from(tab.scrollback_editor_standing_in_for(pane_id).is_some()),
+            None => return Err(format!("there is no pane {terminal_id} in this session")),
+        };
 
-        // Warping the session's only pane would end the session, which is not
-        // what moving a pane should mean. A tab's last pane is fine — the render
-        // pass sweeps tabs with nothing selectable left in them.
-        if self.selectable_terminal_pane_count() <= 1 {
-            return Err(
-                "this is the session's only pane; moving it would close the session".to_owned(),
-            );
+        // Warping the session's last pane would end the session, which is not what
+        // moving a pane should mean. A tab's last pane is fine — the render pass
+        // sweeps tabs with nothing selectable left in them.
+        if self.selectable_terminal_pane_count() <= panes_leaving {
+            return Err(if panes_leaving > 1 {
+                "this pane and the scrollback editor open on it are the session's last panes; \
+                 moving it would close the session"
+                    .to_owned()
+            } else {
+                "this is the session's only pane; moving it would close the session".to_owned()
+            });
         }
         Ok(terminal_id)
     }
 
+    /// Panes with a process in them, whether or not anything on screen shows them.
+    ///
+    /// Suppressed panes count: a pane hidden behind a scrollback editor, or parked
+    /// as a stack-list member, is still a pane this session would be left with.
     fn selectable_terminal_pane_count(&self) -> usize {
         self.tabs
             .values()
             .map(|tab| {
                 tab.get_selectable_tiled_panes_count()
                     + tab.get_visible_selectable_floating_panes_count()
+                    + tab.suppressed_selectable_terminal_count()
             })
             .sum()
     }
 
     /// Serialize the released pane and take it out of its tab.
     ///
-    /// Note what is *not* here: `PtyInstruction::ClosePane`. That is what the
-    /// `ScreenInstruction::ClosePane` handler sends, and it SIGHUPs the child and
-    /// terminates the supervisor. `Tab::close_pane` itself touches nothing on the
-    /// pty thread — it just tidies the tab up, moves clients off the pane and
-    /// relayouts, which is exactly what is wanted when a pane leaves.
+    /// Note what is *not* here for the warped pane: `PtyInstruction::ClosePane`.
+    /// That is what the `ScreenInstruction::ClosePane` handler sends, and it
+    /// SIGHUPs the child and terminates the supervisor. `Tab::close_pane` itself
+    /// touches nothing on the pty thread — it just tidies the tab up, moves
+    /// clients off the pane and relayouts, which is exactly what is wanted when a
+    /// pane leaves. A scrollback editor left behind by the pane it was editing is
+    /// the exception: that one is being closed rather than moved, so it is closed
+    /// the way anything else is.
     fn take_released_pane_for_warp(
         &mut self,
         terminal_id: u32,
@@ -8159,10 +8159,8 @@ impl Screen {
         let pane_id = PaneId::Terminal(terminal_id);
 
         let mut payload = None;
+        let mut editor_left_behind = None;
         for tab in self.tabs.values_mut() {
-            if !tab.get_all_pane_ids().contains(&pane_id) {
-                continue;
-            }
             let scrollback_lines = self.scrollback_lines_to_serialize;
             let Some(pane) = tab.get_pane_with_id(pane_id) else {
                 continue;
@@ -8175,7 +8173,14 @@ impl Screen {
                 .map(Self::fit_to_warp_budget);
             let title = Some(pane.current_title());
             let borderless = pane.borderless();
+            // Asked before the pane goes, closed after: while the pane is still
+            // suppressed behind it, closing the editor would swap the pane back
+            // into the grid rather than close anything.
+            editor_left_behind = tab.scrollback_editor_standing_in_for(pane_id);
             tab.close_pane(pane_id, false, None);
+            if let Some(editor_pane_id) = editor_left_behind {
+                tab.close_pane(editor_pane_id, false, None);
+            }
             payload = Some(Box::new(WarpedPane {
                 host_id: released.host_id.clone(),
                 control_socket: control_socket.clone(),
@@ -8184,6 +8189,13 @@ impl Screen {
                 borderless,
             }));
             break;
+        }
+        if let Some(editor_pane_id) = editor_left_behind {
+            let _ = self
+                .bus
+                .senders
+                .send_to_pty(PtyInstruction::ClosePane(editor_pane_id, None));
+            self.clear_nested_guest(editor_pane_id);
         }
         self.clear_nested_guest(pane_id);
         payload.ok_or_else(|| {
