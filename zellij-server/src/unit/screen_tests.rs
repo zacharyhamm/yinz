@@ -16425,6 +16425,36 @@ fn gp_try_insert_global_pane(
     )
 }
 
+/// Split a terminal off an existing global pane, the way a strip grows a second
+/// pane. The split is a global pane in its own right, sharing the anchor's edge.
+fn gp_insert_global_split(screen: &mut Screen, id: u32, anchor: PaneId) {
+    let split = PaneFactory::terminal(
+        id,
+        Default::default(),
+        screen.style,
+        1,
+        "global split".to_owned(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Some("global split".to_owned()),
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    screen
+        .global_panes
+        .insert_split(split, anchor, true, None)
+        .expect("TEST");
+}
+
 fn gp_drain_client_1_snapshot(
     server_receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
     grid: &mut Grid,
@@ -17970,6 +18000,102 @@ fn a_pane_from_another_session_cannot_be_warped() {
     assert_eq!(
         screen.check_pane_can_be_warped(Some(PaneId::Terminal(99)), 1),
         Err("there is no pane 99 in this session".to_owned())
+    );
+}
+
+/// What a global pane is told when someone tries to move it out of the session.
+///
+/// Its own constant because four tests assert it, and the wording is the whole
+/// point: "there is no pane 99 in this session" was true of the tab lookup and
+/// useless to the person reading it.
+const GLOBAL_PANE_WARP_REFUSAL: &str = "this is a global pane; it belongs to the whole session \
+                                        rather than to a tab, so there is no other session to \
+                                        move it into";
+
+#[test]
+fn a_global_pane_cannot_be_warped() {
+    // A global pane is docked to the session, not held by a tab, so there is
+    // nothing about it that could arrive somewhere else.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(99)), 1),
+        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
+    );
+}
+
+#[test]
+fn a_split_inside_a_global_pane_cannot_be_warped() {
+    // A split of a global pane is itself a global pane, so one predicate has to
+    // cover both - which is why this asks about the split rather than the anchor.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    gp_insert_global_split(&mut screen, 98, PaneId::Terminal(99));
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(98)), 1),
+        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
+    );
+}
+
+#[test]
+fn a_client_focused_on_a_global_pane_warps_nothing_by_accident() {
+    // The dangerous one. Asked for "the focused pane" with a global pane focused,
+    // resolving focus through the tab answers with a pane the user is not even
+    // looking at - and warping it moves it to another session for them.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.focus_global_pane(PaneId::Terminal(99), 1).expect("TEST");
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(None, 1),
+        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
+    );
+}
+
+#[test]
+fn a_global_plugin_pane_is_refused_as_a_global_pane_not_as_a_plugin() {
+    // Most global panes are plugin panes, so the order of the two guards decides
+    // which explanation the user gets. "it has no process" is true and unhelpful:
+    // it suggests the pane is the wrong kind, when the problem is where it lives.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/hocus.wasm", &None, None, None).unwrap();
+    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Plugin(77)), 1),
+        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
     );
 }
 
