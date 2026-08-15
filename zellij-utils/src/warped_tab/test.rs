@@ -58,9 +58,26 @@ fn tab_arrangement(
     viewport: Size,
     plugin_panes: bool,
 ) -> Vec<PaneLayoutManifest> {
+    tc.draw(tab_arrangement_maybe_stacked(viewport, plugin_panes, false))
+}
+
+/// The same, with stacks in it.
+///
+/// A stack is what a tab holding a stacked pane list travels as: the members
+/// share a `stacked` id, all but one are a single row, and the expanded one takes
+/// what is left. That is the geometry `Tab::stack_list_serialization_geoms`
+/// synthesises for the hidden members, so generating it here is generating the
+/// shape a warped stack list actually arrives in.
+#[hegel::composite]
+fn tab_arrangement_maybe_stacked(
+    tc: &hegel::TestCase,
+    viewport: Size,
+    plugin_panes: bool,
+    stacks: bool,
+) -> Vec<PaneLayoutManifest> {
     let mut layout = TiledPaneLayout::default();
     let depth = tc.draw(generators::integers::<usize>().min_value(0).max_value(3));
-    split(tc, &mut layout, depth, plugin_panes);
+    split(tc, &mut layout, depth, plugin_panes, stacks);
 
     let positioned = layout
         .position_panes_in_space(&space(viewport), None, false, false)
@@ -75,12 +92,39 @@ fn tab_arrangement(
         .collect()
 }
 
-fn split(tc: &hegel::TestCase, node: &mut TiledPaneLayout, depth: usize, plugin_panes: bool) {
+fn split(
+    tc: &hegel::TestCase,
+    node: &mut TiledPaneLayout,
+    depth: usize,
+    plugin_panes: bool,
+    stacks: bool,
+) {
     let children = if depth == 0 {
         0
     } else {
         tc.draw(generators::integers::<usize>().min_value(0).max_value(3))
     };
+    // A stack needs something to stack, so only nodes with more than one child
+    // can be one. Its members are leaves: a stack of subdivisions is not a shape
+    // a tab can be in.
+    if stacks && children > 1 && tc.draw(generators::booleans()) {
+        node.children_are_stacked = true;
+        node.children_split_direction = SplitDirection::Horizontal;
+        let expanded = tc.draw(
+            generators::integers::<usize>()
+                .min_value(0)
+                .max_value(children - 1),
+        );
+        node.children = (0..children)
+            .map(|index| {
+                let mut child = TiledPaneLayout::default();
+                split(tc, &mut child, 0, plugin_panes, false);
+                child.is_expanded_in_stack = index == expanded;
+                child
+            })
+            .collect();
+        return;
+    }
     if children == 0 {
         // Every leaf gets a run, and some of them get a plugin, because a slot
         // holding a plugin is the one kind the receiving side does *not* take a
@@ -106,7 +150,7 @@ fn split(tc: &hegel::TestCase, node: &mut TiledPaneLayout, depth: usize, plugin_
     node.children = (0..children)
         .map(|_| {
             let mut child = TiledPaneLayout::default();
-            split(tc, &mut child, depth - 1, plugin_panes);
+            split(tc, &mut child, depth - 1, plugin_panes, stacks);
             child
         })
         .collect();
@@ -368,6 +412,128 @@ fn panes_running_the_same_command_are_still_told_apart() {
             "identical shells were shuffled between slots"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tabs holding a stack
+// ---------------------------------------------------------------------------
+//
+// A stacked pane list travels as an ordinary in-grid stack: its hidden members
+// are one row each, its visible one takes the rest, and they share a `stacked`
+// id. The properties worth pinning down are the ones about the *queue* - that
+// every member travels once and the slots waiting for them are exactly as many.
+// Deliberately not the "no two panes would be better off swapped" property:
+// stacked members are a single row apart, which is nearer than the rounding a
+// reconstructed layout is allowed, so distance stops being evidence there.
+
+#[hegel::test]
+fn every_member_of_a_stack_travels_exactly_once(tc: hegel::TestCase) {
+    let viewport = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, true, true));
+
+    let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
+        return;
+    };
+
+    let mut seen = arrangement.tiled_order.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), arrangement.tiled_order.len());
+
+    let expected: Vec<usize> = tiled
+        .iter()
+        .enumerate()
+        .filter(|(_, pane)| !is_plugin_manifest(pane))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(seen, expected);
+}
+
+#[hegel::test]
+fn a_stack_arrives_with_as_many_slots_as_it_had_members(tc: hegel::TestCase) {
+    let viewport = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, true, true));
+
+    let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
+        return;
+    };
+
+    let Some(positioned) = position_as_the_receiver_does(&arrangement.tiled_layout, viewport)
+    else {
+        return;
+    };
+    let slots = positioned
+        .iter()
+        .filter(|(layout, _)| !matches!(layout.run, Some(Run::Plugin(_))))
+        .count();
+    assert_eq!(slots, arrangement.tiled_order.len());
+}
+
+#[test]
+fn a_stacks_members_travel_top_to_bottom_and_keep_which_one_was_open() {
+    // The shape a warped stacked pane list is in: three members sharing a stack,
+    // the middle one expanded and the other two collapsed to their title row.
+    // Both halves have to survive - the order, or the panes arrive under each
+    // other's titles, and the expansion, or the tab arrives showing the wrong one.
+    let viewport = Size { cols: 80, rows: 24 };
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children_are_stacked: true,
+        children: (0..3)
+            .map(|index| TiledPaneLayout {
+                run: Some(Run::Command(RunCommand {
+                    command: "sh".into(),
+                    ..Default::default()
+                })),
+                is_expanded_in_stack: index == 1,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+
+    let tiled: Vec<PaneLayoutManifest> = layout
+        .position_panes_in_space(&space(viewport), None, false, false)
+        .unwrap()
+        .into_iter()
+        .map(|(layout, geom)| PaneLayoutManifest {
+            geom,
+            run: layout.run,
+            ..Default::default()
+        })
+        .collect();
+    assert_eq!(tiled.len(), 3);
+
+    let arrangement = layout_for_warped_tab(&tiled, &[], viewport).unwrap();
+    assert_eq!(
+        arrangement.tiled_order,
+        vec![0, 1, 2],
+        "a stack's members are queued in the order they are stacked",
+    );
+
+    let filled = slots_as_the_receiver_fills_them(&arrangement, &arrangement.tiled_order, viewport)
+        .expect("an 80x24 terminal has room for a stack of three");
+    let mut by_y: Vec<(usize, usize, usize)> = filled
+        .iter()
+        .map(|(pane, geom)| (geom.y, *pane, geom.rows.as_usize()))
+        .collect();
+    by_y.sort_unstable();
+    assert_eq!(
+        by_y.iter().map(|(_, pane, _)| *pane).collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "members landed in each other's rows",
+    );
+    assert_eq!(
+        by_y.iter().map(|(_, _, rows)| *rows).collect::<Vec<_>>(),
+        vec![1, 22, 1],
+        "the open member should arrive open and the rest collapsed",
+    );
 }
 
 #[hegel::test]

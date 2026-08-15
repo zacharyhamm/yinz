@@ -8069,9 +8069,11 @@ impl Screen {
         // it is not the kind of pane that is wrong, it is where it lives. This
         // also covers a split inside a global pane, which is a global pane itself.
         if self.global_panes.pane(pane_id).is_some() {
-            return Err("this is a global pane; it belongs to the whole session rather than to a \
+            return Err(
+                "this is a global pane; it belongs to the whole session rather than to a \
                         tab, so there is no other session to move it into"
-                .to_owned());
+                    .to_owned(),
+            );
         }
         let terminal_id = match pane_id {
             PaneId::Terminal(terminal_id) => terminal_id,
