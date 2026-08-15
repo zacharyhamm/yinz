@@ -18408,6 +18408,150 @@ fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
 }
 
 // ---------------------------------------------------------------------------
+// Warping a tab that holds a stack list
+// ---------------------------------------------------------------------------
+//
+// A stack list keeps all but its visible member in `suppressed_panes`, the same
+// place a scrollback editor parks the pane it is editing. Refusing every tab
+// with a hidden terminal in it therefore refused every tab with a stack in it,
+// which is most of them once the mode is on. The members are ordinary panes with
+// ordinary processes and they already have a place in the layout the tab travels
+// as - so what has to be told apart is not "hidden" but *how* it is hidden.
+
+/// A session whose first tab holds a three-member stack list, plus a second tab
+/// so the session is never down to its last pane.
+///
+/// Terminal 1 is the tab's original pane; 2 and 3 are stacked onto it, leaving 3
+/// visible and 1 and 2 parked in `suppressed_panes` under their own ids.
+fn screen_with_a_stack_list() -> Screen {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    // terminal 9, so that a member left behind in this tab cannot be mistaken
+    // for a pane that was always here
+    new_tab(&mut screen, 9, 1);
+    *screen.stacked_pane_list.borrow_mut() = true;
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: None,
+                borderless: None,
+            },
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    }
+    assert!(
+        tab.has_stack_lists(),
+        "the fixture should have formed a stack list",
+    );
+    screen
+}
+
+#[test]
+fn a_tab_with_a_stack_list_can_be_warped() {
+    let mut screen = screen_with_a_stack_list();
+
+    let (tab_index, mut terminal_ids, _) = screen
+        .check_tab_can_be_warped(Some(0), 1)
+        .expect("a tab holding a stack list should be movable");
+    terminal_ids.sort_unstable();
+    assert_eq!(
+        (tab_index, terminal_ids),
+        (0, vec![1, 2, 3]),
+        "every member travels, including the ones hidden behind the visible one",
+    );
+}
+
+#[test]
+fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
+    // The invariant that makes the warp safe: a released supervisor with no slot
+    // in the layout is a process nobody would be holding at the far end.
+    let mut screen = screen_with_a_stack_list();
+
+    let (_, terminal_ids, prepared) = screen
+        .check_tab_can_be_warped(Some(0), 1)
+        .expect("a tab holding a stack list should be movable");
+    assert_eq!(
+        prepared.tiled_panes.len(),
+        terminal_ids.len(),
+        "every terminal that would be released should already have a slot",
+    );
+    for member in [PaneId::Terminal(1), PaneId::Terminal(2), PaneId::Terminal(3)] {
+        assert!(
+            prepared.tiled_panes.contains(&member),
+            "{member:?} should have a slot in the warped layout",
+        );
+    }
+}
+
+#[test]
+fn warping_a_tab_does_not_kill_the_children_of_its_hidden_stack_list_members() {
+    // The whole point of emptying a tab before closing it: `close_tab_by_id` ends
+    // by telling the pty thread to close whatever panes are left, and that SIGHUPs
+    // their children. A hidden stack-list member left parked would be in that
+    // list - and its child is a process this session has just handed to another
+    // one, so killing it kills a pane the far end is about to show.
+    let mut screen = screen_with_a_stack_list();
+    let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+    screen.empty_and_close_tab(0);
+
+    let closed_by_pty: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(pane_ids) => pane_ids,
+            PtyInstruction::ClosePane(pane_id, _) => vec![pane_id],
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(
+        closed_by_pty,
+        Vec::<PaneId>::new(),
+        "a warped tab hands its processes over; none of them may be closed here",
+    );
+}
+
+#[test]
+fn a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped() {
+    // The pair this refusal is really about, and the one an `is_scrollback_editor`
+    // check would let through: `suppress_pane_and_replace_with_pid` sets that flag
+    // to `false` while parking the hidden pane under the *visible* pane's id, so
+    // closing the tab swaps it back in rather than removing it.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .suppress_pane_and_replace_with_pid(
+            PaneId::Terminal(1),
+            PaneId::Terminal(9),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("TEST");
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some(
+            "this tab has a pane hidden behind another one; close it before moving the tab"
+                .to_owned()
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Warp scrollback budget
 // ---------------------------------------------------------------------------
 
