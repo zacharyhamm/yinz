@@ -8056,12 +8056,23 @@ impl Screen {
     ) -> Result<u32, String> {
         let pane_id = match pane_id {
             Some(pane_id) => pane_id,
+            // `active_pane_id` rather than the tab's own active pane: a client
+            // focused on a global pane is looking at something this refuses
+            // below, and asking the tab instead would answer with a pane the
+            // user is not even looking at - which the warp would then move.
             None => self
-                .get_active_tab(client_id)
-                .ok()
-                .and_then(|tab| tab.get_active_pane_id(client_id))
+                .active_pane_id(client_id)
                 .ok_or_else(|| "no pane is focused".to_owned())?,
         };
+        // Before the plugin check, because most global panes are plugin panes and
+        // "it has no process" would send the user looking for the wrong problem:
+        // it is not the kind of pane that is wrong, it is where it lives. This
+        // also covers a split inside a global pane, which is a global pane itself.
+        if self.global_panes.pane(pane_id).is_some() {
+            return Err("this is a global pane; it belongs to the whole session rather than to a \
+                        tab, so there is no other session to move it into"
+                .to_owned());
+        }
         let terminal_id = match pane_id {
             PaneId::Terminal(terminal_id) => terminal_id,
             PaneId::Plugin(_) => {
