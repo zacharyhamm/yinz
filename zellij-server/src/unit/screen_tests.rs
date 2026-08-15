@@ -18099,6 +18099,112 @@ fn a_global_plugin_pane_is_refused_as_a_global_pane_not_as_a_plugin() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Where an adopted pane lands
+// ---------------------------------------------------------------------------
+//
+// A pane arriving from another session is placed by `NewPane`, which reads
+// `ClientTabIndexOrPaneId::ClientId` as "wherever the client is". For a client
+// focused on a global pane that means *inside* the global pane - a session-wide
+// strip that a pane from somewhere else has no business in.
+
+/// Adopt a pane with the given placement and return the `NewPane` it asks for.
+fn adopted_pane_placement_target(
+    screen: &mut Screen,
+    placement: zellij_utils::data::WarpPlacement,
+    client_id: ClientId,
+) -> ClientTabIndexOrPaneId {
+    use zellij_utils::data::WarpedPane;
+
+    let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen
+        .place_adopted_pane(
+            50,
+            WarpedPane::default(),
+            placement,
+            client_id,
+            RunCommand::default(),
+            vec![],
+            None,
+        )
+        .expect("TEST");
+    screen_receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ScreenInstruction::NewPane(_, _, _, _, _, _, target, _, _) => Some(target),
+            _ => None,
+        })
+        .expect("the adopted pane should have asked for a pane")
+}
+
+#[test]
+fn an_adopted_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen
+        .focus_global_pane(PaneId::Terminal(99), client_id)
+        .expect("TEST");
+
+    assert_eq!(
+        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::FocusedTab, client_id),
+        ClientTabIndexOrPaneId::TabIndex(0),
+        "an adopted pane must name the tab rather than the client, or it splits the global pane",
+    );
+}
+
+#[test]
+fn an_adopted_floating_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
+    // Floating panes escape the global split today only because
+    // `split_focused_global_pane` has no arm for them. Pinned here so that
+    // staying out of a global pane does not depend on that.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen
+        .focus_global_pane(PaneId::Terminal(99), client_id)
+        .expect("TEST");
+
+    assert_eq!(
+        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::Floating, client_id),
+        ClientTabIndexOrPaneId::TabIndex(0),
+    );
+}
+
+#[test]
+fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
+    // The fallback is only for a client parked on a global pane. Everyone else
+    // keeps the placement they had, which is what makes the pane arrive in the
+    // tab they are actually looking at rather than the one they started in.
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+
+    assert_eq!(
+        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::FocusedTab, client_id),
+        ClientTabIndexOrPaneId::ClientId(client_id),
+    );
+}
+
 /// A tab where terminal 1 has been replaced by a scrollback editor (terminal 9)
 /// and is now suppressed behind it, plus a second tab so the session is never
 /// down to its last pane.

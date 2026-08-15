@@ -8424,6 +8424,26 @@ impl Screen {
         self.close_tab_by_id(tab_index).non_fatal();
     }
 
+    /// Which tab an adopted pane is asked for, for the placements that follow the
+    /// client rather than naming a tab themselves.
+    ///
+    /// `NewPane` reads `ClientTabIndexOrPaneId::ClientId` as "put this wherever
+    /// the client is", and for a client focused on a global pane that means
+    /// *inside* the global pane - a strip belonging to the whole session, which a
+    /// pane from another session has no business joining. Naming the tab is what
+    /// takes that reading away; the pane lands in the tab behind the global pane,
+    /// which is the tab the user asked to warp into.
+    fn adopted_pane_tab_target(&self, client_id: ClientId) -> ClientTabIndexOrPaneId {
+        if self.global_panes.focused_pane_id(client_id).is_none() {
+            return ClientTabIndexOrPaneId::ClientId(client_id);
+        }
+        match self.active_tab_ids.get(&client_id).copied() {
+            Some(tab_index) => ClientTabIndexOrPaneId::TabIndex(tab_index),
+            // No tab to name and no better answer than the one we had.
+            None => ClientTabIndexOrPaneId::ClientId(client_id),
+        }
+    }
+
     /// Give an adopted supervisor a pane in this session.
     ///
     /// Deliberately expressed as the ordinary pane-creation instructions rather
@@ -8450,14 +8470,14 @@ impl Screen {
         let (placement, tab_target) = match placement {
             WarpPlacement::Floating => (
                 NewPanePlacement::Floating(None),
-                ClientTabIndexOrPaneId::ClientId(client_id),
+                self.adopted_pane_tab_target(client_id),
             ),
             WarpPlacement::FocusedTab => (
                 NewPanePlacement::Tiled {
                     direction: None,
                     borderless: Some(payload.borderless),
                 },
-                ClientTabIndexOrPaneId::ClientId(client_id),
+                self.adopted_pane_tab_target(client_id),
             ),
             WarpPlacement::NewTab => {
                 let tab_index = self.new_tab_for_adopted_pane(invoked_with.clone(), client_id)?;
@@ -8470,6 +8490,10 @@ impl Screen {
                 )
             },
         };
+        // After the target is worked out, which is what reads the global focus:
+        // the pane is about to land in a tab and take the focus with it, and a
+        // client left on a global pane would be looking elsewhere when it did.
+        self.defocus_global_pane(client_id);
 
         self.bus
             .senders
@@ -8579,6 +8603,10 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed to place an adopted tab".to_string();
+        // A whole tab is arriving and the client is about to be moved into it; a
+        // client left focused on a global pane would be looking elsewhere while
+        // that happened. No-op unless a global pane is focused.
+        self.defocus_global_pane(client_id);
         let tab_index = self.get_new_tab_id();
         let default_layout = self.default_layout.clone();
         let swap_layouts = (
