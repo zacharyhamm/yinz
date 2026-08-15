@@ -173,6 +173,69 @@ fn cancelling_the_finder_dismisses_the_overlay() {
     zellij.quit();
 }
 
+/// The finder is an overlay: placed against the whole surface, so its cells land on the global
+/// pane, outside the viewport of every tab including its own. Unlike the ask popup it does not
+/// dismiss itself when its tab goes away, so it is the case that says whether anything paints
+/// over what an overlay left on a global pane once its client is looking at another tab.
+#[test]
+fn a_finder_over_a_global_pane_is_gone_from_another_tab() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"first tab shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    });
+
+    // Tab mode, then `n` for a new tab - which spawns a shell of its own. Made before the finder
+    // is opened: switching to a tab that already exists is a lighter path than creating one, and
+    // it is the one that has to clean up after the overlay.
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"n");
+    let second_shell = zellij.expect_pty_spawn();
+    second_shell.output(b"second tab shell");
+    second_shell.output(PROMPT);
+    zellij.wait_until("the second tab is up", |snapshot| {
+        snapshot.contains("second tab shell")
+    });
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"h");
+    zellij.wait_until("the first tab is back", |snapshot| {
+        snapshot.contains("first tab shell")
+    });
+
+    let (finder, _selection_file) = open_finder(&zellij);
+    finder.output(b"FINDING");
+    zellij.wait_until("the finder is drawing over the global pane", |snapshot| {
+        snapshot.contains("FINDING")
+    });
+    // by cli action rather than by keystroke: the finder pane has the keyboard, and would eat
+    // the tab-mode binding itself
+    zellij.run_cli_action(zellij_utils::cli::CliAction::GoToTab { index: 2 });
+    zellij.wait_until("the second tab is in view again", |snapshot| {
+        snapshot.contains("second tab shell")
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        !snapshot.contains(FINDER_TITLE) && !snapshot.contains("FINDING"),
+        "the finder belongs to the tab that was left behind, got:\n{snapshot}"
+    );
+
+    // and the tab it does belong to still has it, frame and contents, over the global pane
+    zellij.run_cli_action(zellij_utils::cli::CliAction::GoToTab { index: 1 });
+    zellij.wait_until("the finder is back with its tab", |snapshot| {
+        snapshot.contains(FINDER_TITLE) && snapshot.contains("FINDING")
+    });
+
+    zellij.quit();
+}
+
 #[test]
 fn finder_from_a_global_pane_covers_it_and_returns_focus() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)

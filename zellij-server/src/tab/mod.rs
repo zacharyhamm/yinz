@@ -4860,6 +4860,13 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.floating_panes.is_overlay(pane_id)
     }
+    /// Whether this tab is currently painting an overlay - a floating pane placed against the
+    /// whole surface, so its cells can land outside the tab's own viewport and onto the global
+    /// panes. The one thing a tab draws that the tab cannot clean up after by repainting itself.
+    pub fn has_visible_overlays(&self) -> bool {
+        self.floating_panes.has_overlays()
+            && (self.floating_panes.panes_are_visible() || self.floating_panes.has_pinned_panes())
+    }
     /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
     /// for callers outside the tab's own render (eg. the global panes, which paint after every
     /// tab has had its turn).
@@ -5033,9 +5040,7 @@ impl Tab {
         client_id_override: Option<ClientId>,
         inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
-        if !self.floating_panes.has_overlays()
-            || (!self.floating_panes.panes_are_visible() && !self.floating_panes.has_pinned_panes())
-        {
+        if !self.has_visible_overlays() {
             return Ok(());
         }
         self.floating_panes.render(
