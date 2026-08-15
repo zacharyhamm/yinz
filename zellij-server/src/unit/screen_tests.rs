@@ -18074,7 +18074,9 @@ fn a_client_focused_on_a_global_pane_warps_nothing_by_accident() {
         PercentOrFixed::Fixed(8),
         false,
     );
-    screen.focus_global_pane(PaneId::Terminal(99), 1).expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
 
     assert_eq!(
         screen.check_pane_can_be_warped(None, 1),
@@ -18157,7 +18159,11 @@ fn an_adopted_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
         .expect("TEST");
 
     assert_eq!(
-        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::FocusedTab, client_id),
+        adopted_pane_placement_target(
+            &mut screen,
+            zellij_utils::data::WarpPlacement::FocusedTab,
+            client_id
+        ),
         ClientTabIndexOrPaneId::TabIndex(0),
         "an adopted pane must name the tab rather than the client, or it splits the global pane",
     );
@@ -18185,7 +18191,11 @@ fn an_adopted_floating_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane
         .expect("TEST");
 
     assert_eq!(
-        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::Floating, client_id),
+        adopted_pane_placement_target(
+            &mut screen,
+            zellij_utils::data::WarpPlacement::Floating,
+            client_id
+        ),
         ClientTabIndexOrPaneId::TabIndex(0),
     );
 }
@@ -18200,7 +18210,11 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     new_tab(&mut screen, 1, 0);
 
     assert_eq!(
-        adopted_pane_placement_target(&mut screen, zellij_utils::data::WarpPlacement::FocusedTab, client_id),
+        adopted_pane_placement_target(
+            &mut screen,
+            zellij_utils::data::WarpPlacement::FocusedTab,
+            client_id
+        ),
         ClientTabIndexOrPaneId::ClientId(client_id),
     );
 }
@@ -18483,7 +18497,11 @@ fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
         terminal_ids.len(),
         "every terminal that would be released should already have a slot",
     );
-    for member in [PaneId::Terminal(1), PaneId::Terminal(2), PaneId::Terminal(3)] {
+    for member in [
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    ] {
         assert!(
             prepared.tiled_panes.contains(&member),
             "{member:?} should have a slot in the warped layout",
