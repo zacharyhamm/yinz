@@ -48,6 +48,14 @@ impl BoundarySymbol {
         self.color = color;
         *self
     }
+    /// Take `color` if it outranks the one already here, the way `combine_symbols` resolves two
+    /// panes' colours on a shared cell - but without touching the glyph.
+    pub fn contribute_color(&mut self, color: (PaletteColor, usize)) {
+        match self.color {
+            Some(current) if current.1 >= color.1 => {},
+            _ => self.color = Some(color),
+        }
+    }
     pub fn as_terminal_character(&self) -> Result<TerminalCharacter> {
         let tc = if self.invisible {
             EMPTY_TERMINAL_CHARACTER
@@ -581,6 +589,39 @@ impl Boundaries {
             }
         }
     }
+    /// Give `color` to a line these boundaries *already* drew, leaving every glyph as it is.
+    ///
+    /// This is how a global pane's focus reaches the boundary cell it shares with a tab. The tab owns
+    /// that cell - it grew its viewport over the strip to reach it
+    /// (`expand_viewport_over_global_panes`) and `GlobalPaneManager::owns_boundary_cell` filters it
+    /// out of the global panes' own render, so the tab keeps the junctions where its internal splits
+    /// meet the edge. Contributing only the colour keeps those junctions untouched, and resolves
+    /// against the tab's own colour by the same precedence rule `combine_symbols` uses: a focused
+    /// global pane (precedence 3) wins over an unfocused tab pane (0) and loses to a focused one.
+    ///
+    /// Cells with no boundary character are left empty on purpose. Somewhere between a strip and a
+    /// tab there are cells nothing draws today - a strip with chrome between it and the tab never
+    /// grew the viewport, and a borderless global pane under `Full` frames cedes a cell the tab draws
+    /// no boundary on - and a highlight must not be what starts drawing a line there.
+    pub fn contribute_color_to_line(
+        &mut self,
+        x: usize,
+        y: usize,
+        length: usize,
+        vertical: bool,
+        color: (PaletteColor, usize),
+    ) {
+        for offset in 0..length {
+            let coordinates = if vertical {
+                Coordinates::new(x, y + offset)
+            } else {
+                Coordinates::new(x + offset, y)
+            };
+            if let Some(symbol) = self.boundary_characters.get_mut(&coordinates) {
+                symbol.contribute_color(color);
+            }
+        }
+    }
     pub fn render(
         &self,
         existing_boundaries_on_screen: Option<&Boundaries>,
@@ -654,5 +695,91 @@ impl Boundaries {
             && rect.x() + rect.cols() <= self.viewport.x + self.viewport.cols
             && rect.y() >= self.viewport.y
             && rect.y() + rect.rows() <= self.viewport.y + self.viewport.rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GREEN: PaletteColor = PaletteColor::EightBit(154);
+    const ORANGE: PaletteColor = PaletteColor::EightBit(166);
+
+    fn boundaries_with(
+        boundary_type: BoundaryType,
+        color: Option<(PaletteColor, usize)>,
+    ) -> Boundaries {
+        let mut boundaries = Boundaries::new(Viewport {
+            x: 0,
+            y: 0,
+            cols: 20,
+            rows: 20,
+        });
+        boundaries.boundary_characters.insert(
+            Coordinates::new(5, 3),
+            BoundarySymbol::new(boundary_type).color(color),
+        );
+        boundaries
+    }
+
+    fn symbol_at(boundaries: &Boundaries, x: usize, y: usize) -> Option<BoundarySymbol> {
+        boundaries
+            .boundary_characters
+            .get(&Coordinates::new(x, y))
+            .copied()
+    }
+
+    #[test]
+    fn contributing_a_colour_keeps_the_glyph() {
+        // the junction a tab pane's split makes with the edge it shares with a global pane
+        let mut boundaries = boundaries_with(boundary_type::VERTICAL_RIGHT, None);
+        boundaries.contribute_color_to_line(5, 0, 20, true, (GREEN, 3));
+        assert_eq!(
+            symbol_at(&boundaries, 5, 3),
+            Some(BoundarySymbol::new(boundary_type::VERTICAL_RIGHT).color(Some((GREEN, 3))))
+        );
+    }
+
+    #[test]
+    fn a_lower_precedence_contribution_loses() {
+        for existing in [1, 3] {
+            let mut boundaries = boundaries_with(boundary_type::VERTICAL, Some((ORANGE, existing)));
+            boundaries.contribute_color_to_line(5, 0, 20, true, (GREEN, 0));
+            assert_eq!(
+                symbol_at(&boundaries, 5, 3),
+                Some(BoundarySymbol::new(boundary_type::VERTICAL).color(Some((ORANGE, existing))))
+            );
+        }
+    }
+
+    #[test]
+    fn a_tie_keeps_the_colour_already_there() {
+        // `combine_symbols` resolves ties the same way, so a focused tab pane keeps the cell
+        let mut boundaries = boundaries_with(boundary_type::VERTICAL, Some((ORANGE, 3)));
+        boundaries.contribute_color_to_line(5, 0, 20, true, (GREEN, 3));
+        assert_eq!(
+            symbol_at(&boundaries, 5, 3),
+            Some(BoundarySymbol::new(boundary_type::VERTICAL).color(Some((ORANGE, 3))))
+        );
+    }
+
+    #[test]
+    fn contributing_to_a_cell_with_no_boundary_draws_nothing() {
+        // some cells between a strip and a tab have no writer at all - a highlight must not become
+        // the thing that starts drawing a line there
+        let mut boundaries = boundaries_with(boundary_type::VERTICAL, None);
+        boundaries.contribute_color_to_line(9, 0, 20, true, (GREEN, 3));
+        assert_eq!(boundaries.boundary_characters.len(), 1);
+        assert_eq!(symbol_at(&boundaries, 9, 3), None);
+    }
+
+    #[test]
+    fn a_horizontal_contribution_walks_columns() {
+        let mut boundaries = boundaries_with(boundary_type::HORIZONTAL, None);
+        boundaries.contribute_color_to_line(0, 3, 20, false, (GREEN, 3));
+        assert_eq!(
+            symbol_at(&boundaries, 5, 3),
+            Some(BoundarySymbol::new(boundary_type::HORIZONTAL).color(Some((GREEN, 3))))
+        );
     }
 }
