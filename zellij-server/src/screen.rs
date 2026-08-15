@@ -2246,6 +2246,9 @@ impl Screen {
         match self.active_tab_ids.remove(&client_id) {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
+                if old_active_index != new_tab_index {
+                    self.repaint_after_overlay_in(old_active_index, client_id);
+                }
                 let client_tab_history = self.tab_history.entry(client_id).or_default();
                 client_tab_history.retain(|&e| e != new_tab_index);
                 client_tab_history.push(old_active_index);
@@ -2255,6 +2258,29 @@ impl Screen {
             },
         }
         self.clear_bell_for_focused_pane(client_id);
+    }
+
+    /// Repaint the surface a client is about to stop seeing `tab_id` from, if that tab was
+    /// painting an overlay.
+    ///
+    /// An overlay is placed against the whole surface, so unlike every other pane its cells can
+    /// land on the global panes - outside the viewport of every tab, its own included. The tab
+    /// the client leaves stops rendering the moment its last client is gone, which is right: the
+    /// popup belongs to that tab and nobody looking elsewhere should see it. But nothing else
+    /// owns those cells either. The tab being entered repaints only its own centre, and the
+    /// global panes and the strip rows no pane owns are both diffed - neither changed, so neither
+    /// emits anything, and the popup stays on the host terminal over a tab it is not in.
+    fn repaint_after_overlay_in(&mut self, tab_id: usize, client_id: ClientId) {
+        if !self
+            .tabs
+            .get(&tab_id)
+            .map(|tab| tab.has_visible_overlays())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.global_panes.set_force_render();
+        self.unowned_strip_fill.remove(&client_id);
     }
 
     /// A helper function to switch to a new tab at specified position.
