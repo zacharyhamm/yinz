@@ -18469,6 +18469,52 @@ fn screen_with_a_stack_list() -> Screen {
 }
 
 #[test]
+fn a_stack_list_member_and_the_pane_it_stands_in_for_are_each_keyed_by_themselves() {
+    // The case `suppressed_panes` used to need a side table for: a scrollback
+    // editor is opened on a member, which makes the editor's id the member id, and
+    // then another member is selected, so the editor is suppressed while still
+    // standing in for the pane it is editing. Both are in the map at once, and
+    // each is under its own id - the association is in `restored_by`, so neither
+    // has to be re-keyed when either of them moves.
+    let mut screen = screen_with_a_stack_list();
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.replace_pane_with_editor_pane(PaneId::Terminal(8), PaneId::Terminal(3))
+        .expect("TEST");
+    tab.focus_hidden_stack_list_member(PaneId::Terminal(1), 1);
+
+    let suppressed: HashMap<PaneId, Option<PaneId>> = tab
+        .get_suppressed_panes()
+        .map(|(pane_id, suppressed)| {
+            assert_eq!(
+                *pane_id,
+                suppressed.pane.pid(),
+                "every suppressed pane is keyed by its own id",
+            );
+            (
+                *pane_id,
+                suppressed.restored_by.map(|stand_in| stand_in.pane_id),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        suppressed.get(&PaneId::Terminal(8)),
+        Some(&None),
+        "the editor took the member's place in the list and is parked as a member",
+    );
+    assert_eq!(
+        suppressed.get(&PaneId::Terminal(3)),
+        Some(&Some(PaneId::Terminal(8))),
+        "the pane being edited is suppressed behind the editor, wherever the editor is",
+    );
+    assert!(
+        tab.pane_is_stack_list_member(&PaneId::Terminal(8))
+            && !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "the editor is the member; the pane behind it is not",
+    );
+}
+
+#[test]
 fn a_tab_with_a_stack_list_can_be_warped() {
     let mut screen = screen_with_a_stack_list();
 
