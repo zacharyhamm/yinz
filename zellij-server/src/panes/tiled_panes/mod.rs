@@ -22,7 +22,7 @@ use crate::resize_pty;
 use tiled_pane_grid::{split, TiledPaneGrid, RESIZE_PERCENT};
 
 use crate::{
-    global_panes::{expand_viewport_over_global_panes, GlobalPaneStrip},
+    global_panes::{expand_viewport_over_global_panes, GlobalPaneBorder, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
     panes::{ActivePanes, PaneId},
@@ -108,6 +108,9 @@ pub struct TiledPanes {
     display_area_origin: Rc<RefCell<(usize, usize)>>,
     viewport: Rc<RefCell<Viewport>>,
     global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
+    // one per global pane rather than per edge, so the boundary each of them shares with this tab
+    // can be drawn in that pane's own frame colour (see `Boundaries::contribute_color_to_line`)
+    global_pane_borders: Rc<RefCell<Vec<GlobalPaneBorder>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -138,6 +141,7 @@ impl TiledPanes {
         display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
         global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
+        global_pane_borders: Rc<RefCell<Vec<GlobalPaneBorder>>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -159,6 +163,7 @@ impl TiledPanes {
             display_area_origin,
             viewport,
             global_pane_strips,
+            global_pane_borders,
             connected_clients,
             connected_clients_in_app,
             mode_info,
@@ -1473,6 +1478,17 @@ impl TiledPanes {
                                 .with_context(err_context)?;
                         }
                     }
+                }
+            }
+        }
+        // a focused global pane's highlight has to reach the boundary it shares with this tab, which
+        // the tab draws and the strip cedes (see `Boundaries::contribute_color_to_line`). `get_mut`
+        // rather than `entry`: a cell no pane drew a boundary on must stay empty.
+        for border in self.global_pane_borders.borrow().iter() {
+            let (x, y, length, vertical) = border.tab_facing_line();
+            for (client_id, color) in &border.colors {
+                if let Some(boundaries) = client_id_to_boundaries.get_mut(client_id) {
+                    boundaries.contribute_color_to_line(x, y, length, vertical, *color);
                 }
             }
         }

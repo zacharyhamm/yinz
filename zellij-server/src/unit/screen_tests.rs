@@ -55,6 +55,7 @@ use zellij_utils::{
 use crate::panes::grid::Grid;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::sixel::SixelImageStore;
+use crate::panes::terminal_character::AnsiCode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -2349,6 +2350,130 @@ fn insert_global_pane_on_edge(
             false,
         )
         .unwrap();
+}
+
+/// The colour of every cell in column `x`, over `rows`, as the client sees it.
+fn column_foregrounds(
+    rendered: &str,
+    size: Size,
+    x: usize,
+    rows: std::ops::Range<usize>,
+) -> Vec<Option<AnsiCode>> {
+    let mut grid = grid_for_render_snapshot(size);
+    take_snapshot_and_cursor_coordinates(rendered, &mut grid);
+    rows.map(|y| grid.viewport[y].columns[x].styles.foreground)
+        .collect()
+}
+
+#[test]
+fn focusing_a_global_pane_highlights_the_border_it_shares_with_the_tab() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 10);
+
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let next_client_1_render = || loop {
+        let (instruction, _) = server_receiver.recv().expect("render instruction");
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            return rendered_clients.remove(&1).expect("client 1 output");
+        }
+    };
+
+    // the shared column is the strip's last one: the strip cedes it, the tab's edge pane draws it
+    let shared_column = 9;
+    let tab_rows = {
+        let viewport = screen.tabs.get(&0).unwrap().get_viewport();
+        viewport.y..viewport.y + viewport.rows
+    };
+
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let focused = column_foregrounds(
+        &next_client_1_render(),
+        size,
+        shared_column,
+        tab_rows.clone(),
+    );
+    assert!(
+        focused
+            .iter()
+            .all(|color| *color == Some(AnsiCode::ColorIndex(154))),
+        "every cell of the border shared with the tab should carry the focused frame colour, got {focused:?}"
+    );
+
+    // and back: focus returns to the tab pane, which owns the colour again
+    screen.defocus_global_pane(1);
+    screen.render_to_clients().expect("TEST");
+    let defocused = column_foregrounds(&next_client_1_render(), size, shared_column, tab_rows);
+    assert!(
+        defocused
+            .iter()
+            .all(|color| *color == Some(AnsiCode::ColorIndex(154))),
+        "the tab pane is focused now, so the shared border is still highlighted, got {defocused:?}"
+    );
+}
+
+#[test]
+fn only_the_focused_global_panes_own_rows_are_highlighted() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 40, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    // two panes splitting one Left strip, as the hocus sidebar does
+    insert_global_pane_on_edge(&mut screen, 98, GlobalPaneEdge::Left, 10);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 10);
+
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    // nobody is focused on the tab, so its pane cannot be the one colouring the column
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    let rendered = loop {
+        let (instruction, _) = server_receiver.recv().expect("render instruction");
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            break rendered_clients.remove(&1).expect("client 1 output");
+        }
+    };
+
+    let lower = screen.global_panes.pane(PaneId::Terminal(99)).unwrap();
+    let lower_geom = lower.position_and_size();
+    let viewport = screen.tabs.get(&0).unwrap().get_viewport();
+    let shared_column = 9;
+    let colors = column_foregrounds(
+        &rendered,
+        size,
+        shared_column,
+        viewport.y..viewport.y + viewport.rows,
+    );
+
+    for (offset, color) in colors.iter().enumerate() {
+        let y = viewport.y + offset;
+        let inside_focused_pane =
+            y >= lower_geom.y && y < lower_geom.y + lower_geom.rows.as_usize();
+        if inside_focused_pane {
+            assert_eq!(
+                *color,
+                Some(AnsiCode::ColorIndex(154)),
+                "row {y} abuts the focused global pane and should be highlighted"
+            );
+        } else {
+            assert_ne!(
+                *color,
+                Some(AnsiCode::ColorIndex(154)),
+                "row {y} abuts the unfocused global pane and should not be highlighted"
+            );
+        }
+    }
 }
 
 #[test]

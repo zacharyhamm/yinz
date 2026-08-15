@@ -5224,9 +5224,24 @@ impl Screen {
                 rows: center.rows,
             };
             let strips = self.strips_from_layout(&layout);
+            let borders = {
+                let client_ids: Vec<ClientId> =
+                    self.connected_clients.borrow().keys().copied().collect();
+                let multiple_users_exist_in_session = client_ids.len() > 1;
+                self.global_panes.tab_facing_borders(
+                    &layout,
+                    &client_ids,
+                    &self.mode_info,
+                    &self.default_mode_info,
+                    self.style,
+                    self.session_is_mirrored,
+                    multiple_users_exist_in_session,
+                )
+            };
             let Some(tab) = self.tabs.get_mut(&tab_id) else {
                 continue;
             };
+            tab.set_global_pane_borders(&borders);
             let strips_changed = tab.set_global_pane_strips(&strips);
             if strips_changed {
                 tab.set_force_render();
