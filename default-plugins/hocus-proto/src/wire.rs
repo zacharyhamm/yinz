@@ -27,8 +27,8 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 /// already probed changes the branch and nothing says so. Whoever shows a branch
 /// asks for this; the answer arrives as an ordinary snapshot.
 pub const AGENT_REFRESH: &str = "agent_refresh";
-/// hocus → hocus-agents: the agent strip as drawn rows (`Vec<agents::StripRow>`
-/// as JSON).
+/// hocus → hocus-agents: the agent strip as drawn rows, with the focused pane
+/// (`agents::Strip` as JSON).
 ///
 /// hocus stays the one place that knows which panes are agents, which project
 /// owns them and what branch they are on; the hocus-agents pane is a view over
