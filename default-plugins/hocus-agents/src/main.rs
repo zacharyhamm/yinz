@@ -119,6 +119,12 @@ impl State {
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_REFRESH));
             return false;
         }
+        if let Some(motion) = motion(&key) {
+            let next = step(&self.rows, self.selected, motion);
+            let moved = next != self.selected;
+            self.selected = next;
+            return moved;
+        }
         match key.bare_key {
             BareKey::Esc => {
                 hide_self();
@@ -131,12 +137,6 @@ impl State {
                     focus_terminal_pane(*pane_id, false, false);
                 }
                 false
-            },
-            BareKey::Up | BareKey::Down => {
-                let next = step(&self.rows, self.selected, key.bare_key);
-                let moved = next != self.selected;
-                self.selected = next;
-                moved
             },
             _ => false,
         }
@@ -169,13 +169,34 @@ fn selectable(row: &StripRow) -> bool {
     matches!(row, StripRow::Agent { .. })
 }
 
-/// The row one arrow key lands on: the next selectable one in that direction,
+/// Which way a keypress moves the selection.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Motion {
+    Up,
+    Down,
+}
+
+/// The motion a key asks for, if any. `j`/`k` are the vim spelling of the
+/// arrows: this pane is a list and never a text field, so the letters are free
+/// to take. They want the letter on its own, leaving `Ctrl j` and friends to
+/// whatever binds them; the arrows stay modifier-agnostic as they always were.
+fn motion(key: &KeyWithModifier) -> Option<Motion> {
+    match key.bare_key {
+        BareKey::Up => Some(Motion::Up),
+        BareKey::Down => Some(Motion::Down),
+        BareKey::Char('k') if key.has_no_modifiers() => Some(Motion::Up),
+        BareKey::Char('j') if key.has_no_modifiers() => Some(Motion::Down),
+        _ => None,
+    }
+}
+
+/// The row one motion lands on: the next selectable one in that direction,
 /// stepping over the headers between. Staying put when there is none makes
 /// `Up` on the first agent a no-op rather than a jump onto a header.
-fn step(rows: &[StripRow], selected: usize, direction: BareKey) -> usize {
-    let next = match direction {
-        BareKey::Up => (0..selected).rev().find(|at| selectable(&rows[*at])),
-        _ => (selected.saturating_add(1)..rows.len()).find(|at| selectable(&rows[*at])),
+fn step(rows: &[StripRow], selected: usize, motion: Motion) -> usize {
+    let next = match motion {
+        Motion::Up => (0..selected).rev().find(|at| selectable(&rows[*at])),
+        Motion::Down => (selected.saturating_add(1)..rows.len()).find(|at| selectable(&rows[*at])),
     };
     next.unwrap_or(selected)
 }
@@ -213,15 +234,60 @@ mod tests {
     fn stepping_skips_headers_in_both_directions() {
         let mut state = State::default();
         state.set_rows(strip());
-        state.selected = step(&state.rows, state.selected, BareKey::Down);
+        state.selected = step(&state.rows, state.selected, Motion::Down);
         assert_eq!(state.selected, 3);
-        state.selected = step(&state.rows, state.selected, BareKey::Down);
+        state.selected = step(&state.rows, state.selected, Motion::Down);
         assert_eq!(state.selected, 5, "down from 7 steps over the header to 9");
-        state.selected = step(&state.rows, state.selected, BareKey::Up);
+        state.selected = step(&state.rows, state.selected, Motion::Up);
         assert_eq!(state.selected, 3);
-        state.selected = step(&state.rows, state.selected, BareKey::Up);
-        state.selected = step(&state.rows, state.selected, BareKey::Up);
+        state.selected = step(&state.rows, state.selected, Motion::Up);
+        state.selected = step(&state.rows, state.selected, Motion::Up);
         assert_eq!(state.selected, 2, "up from the first agent stays put");
+    }
+
+    #[test]
+    fn j_and_k_are_the_arrows() {
+        assert_eq!(
+            motion(&KeyWithModifier::new(BareKey::Down)),
+            Some(Motion::Down)
+        );
+        assert_eq!(motion(&KeyWithModifier::new(BareKey::Up)), Some(Motion::Up));
+        assert_eq!(
+            motion(&KeyWithModifier::new(BareKey::Char('j'))),
+            Some(Motion::Down)
+        );
+        assert_eq!(
+            motion(&KeyWithModifier::new(BareKey::Char('k'))),
+            Some(Motion::Up)
+        );
+    }
+
+    #[test]
+    fn a_modified_or_unrelated_letter_is_not_a_motion() {
+        assert_eq!(
+            motion(&KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier()),
+            None
+        );
+        assert_eq!(
+            motion(&KeyWithModifier::new(BareKey::Char('k')).with_alt_modifier()),
+            None
+        );
+        assert_eq!(motion(&KeyWithModifier::new(BareKey::Char('x'))), None);
+    }
+
+    #[test]
+    fn jk_walk_the_selection_the_way_the_arrows_do() {
+        let mut state = State::default();
+        state.set_rows(strip());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert_eq!(state.selected, 3);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
+        assert_eq!(state.selected, 2);
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Char('k'))),
+            "no move means nothing to redraw"
+        );
+        assert_eq!(state.selected, 2);
     }
 
     #[test]

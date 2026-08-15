@@ -343,6 +343,54 @@ fn focusing_another_pane_dismisses_the_popup() {
     zellij.quit();
 }
 
+/// An overlay is the one pane placed against the whole surface, so it is the one pane whose cells
+/// can land on a global pane - outside the viewport of every tab, including its own. The tab it
+/// lives in stops painting the moment its last client leaves it, so nothing draws the popup for a
+/// client looking at another tab; the question is whether anything paints over what it left there.
+#[test]
+fn a_popup_over_a_global_pane_is_gone_from_another_tab() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(ASK_ONLY)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let first_shell = zellij.expect_pty_spawn();
+    first_shell.output(b"first tab shell");
+    first_shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    });
+
+    open_popup(&zellij);
+    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
+    zellij.send_stdin(b"abandoned question");
+    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
+    zellij.wait_until("the question is on screen", |snapshot| {
+        snapshot.contains("abandoned question")
+    });
+
+    // Tab mode, then `n` for a new tab - which spawns a shell of its own.
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"n");
+    let second_shell = zellij.expect_pty_spawn();
+    second_shell.output(b"second tab shell");
+    second_shell.output(PROMPT);
+    zellij.wait_until("the second tab is up", |snapshot| {
+        snapshot.contains("second tab shell")
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        !snapshot.contains(POPUP_TITLE)
+            && !snapshot.contains(POPUP_PROMPT)
+            && !snapshot.contains("abandoned question"),
+        "the popup belongs to the tab that was left behind, got:\n{snapshot}"
+    );
+
+    zellij.quit();
+}
+
 /// Leaving the tab counts too, and reaches the popup by a different route:
 /// `PaneUpdate` is only delivered to plugins in the client's active tab, so
 /// nothing but `Event::Visible` says that the tab itself went away.
