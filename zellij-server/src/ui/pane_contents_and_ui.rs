@@ -470,47 +470,79 @@ impl<'a> PaneContentsAndUi<'a> {
         mode: InputMode,
         session_is_mirrored: bool,
     ) -> Option<(PaletteColor, usize)> {
-        // (color, color_precedence) (the color_precedence is used
-        // for the no-pane-frames mode)
-        let pane_focused_for_client_id = self.focused_clients.contains(&client_id);
-        let pane_is_in_group = self
-            .current_pane_group
-            .get(&client_id)
-            .map(|p| p.contains(&self.pane.pid()))
-            .unwrap_or(false);
-        if self.pane.frame_color_override().is_some() && !pane_is_in_group {
-            self.pane
-                .frame_color_override()
-                .map(|override_color| (override_color, 4))
-        } else if pane_is_in_group && !pane_focused_for_client_id {
-            Some((self.style.colors.frame_highlight.emphasis_0, 2))
-        } else if pane_is_in_group && pane_focused_for_client_id {
-            Some((self.style.colors.frame_highlight.emphasis_1, 3))
-        } else if pane_focused_for_client_id {
-            match mode {
-                InputMode::Normal | InputMode::Locked => {
-                    if session_is_mirrored || !self.multiple_users_exist_in_session {
-                        Some((self.style.colors.frame_selected.base, 3))
-                    } else {
-                        let colors = client_id_to_colors(
-                            client_id,
-                            self.style.colors.multiplayer_user_colors,
-                        );
-                        colors.map(|colors| (colors.0, 3))
-                    }
-                },
-                _ => Some((self.style.colors.frame_highlight.base, 3)),
-            }
-        } else if self
-            .mouse_is_hovering_over_pane_for_clients
-            .contains(&client_id)
-        {
-            Some((self.style.colors.frame_highlight.base, 1))
-        } else {
-            self.style
-                .colors
-                .frame_unselected
-                .map(|frame| (frame.base, 0))
+        frame_color(
+            &self.style,
+            FrameColorState {
+                frame_color_override: self.pane.frame_color_override(),
+                pane_is_focused: self.focused_clients.contains(&client_id),
+                pane_is_in_group: self
+                    .current_pane_group
+                    .get(&client_id)
+                    .map(|p| p.contains(&self.pane.pid()))
+                    .unwrap_or(false),
+                mouse_is_hovering_over_pane: self
+                    .mouse_is_hovering_over_pane_for_clients
+                    .contains(&client_id),
+                multiple_users_exist_in_session: self.multiple_users_exist_in_session,
+            },
+            client_id,
+            mode,
+            session_is_mirrored,
+        )
+    }
+}
+
+/// Everything about one pane, for one client, that decides the colour of that pane's frame.
+pub struct FrameColorState {
+    pub frame_color_override: Option<PaletteColor>,
+    pub pane_is_focused: bool,
+    pub pane_is_in_group: bool,
+    pub mouse_is_hovering_over_pane: bool,
+    pub multiple_users_exist_in_session: bool,
+}
+
+/// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins
+/// with where two panes share one boundary cell (see `Boundaries::add_rect` and `combine_symbols`).
+///
+/// A free function because the boundary a global pane shares with a tab is drawn by the *tab*, so
+/// `GlobalPaneManager::tab_facing_borders` has to arrive at the same answer for a pane the tab does
+/// not own (see `Boundaries::contribute_color_to_line`).
+pub fn frame_color(
+    style: &Style,
+    state: FrameColorState,
+    client_id: ClientId,
+    mode: InputMode,
+    session_is_mirrored: bool,
+) -> Option<(PaletteColor, usize)> {
+    let FrameColorState {
+        frame_color_override,
+        pane_is_focused,
+        pane_is_in_group,
+        mouse_is_hovering_over_pane,
+        multiple_users_exist_in_session,
+    } = state;
+    if frame_color_override.is_some() && !pane_is_in_group {
+        frame_color_override.map(|override_color| (override_color, 4))
+    } else if pane_is_in_group && !pane_is_focused {
+        Some((style.colors.frame_highlight.emphasis_0, 2))
+    } else if pane_is_in_group && pane_is_focused {
+        Some((style.colors.frame_highlight.emphasis_1, 3))
+    } else if pane_is_focused {
+        match mode {
+            InputMode::Normal | InputMode::Locked => {
+                if session_is_mirrored || !multiple_users_exist_in_session {
+                    Some((style.colors.frame_selected.base, 3))
+                } else {
+                    let colors =
+                        client_id_to_colors(client_id, style.colors.multiplayer_user_colors);
+                    colors.map(|colors| (colors.0, 3))
+                }
+            },
+            _ => Some((style.colors.frame_highlight.base, 3)),
         }
+    } else if mouse_is_hovering_over_pane {
+        Some((style.colors.frame_highlight.base, 1))
+    } else {
+        style.colors.frame_unselected.map(|frame| (frame.base, 0))
     }
 }

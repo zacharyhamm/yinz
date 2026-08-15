@@ -57,7 +57,7 @@ use swap_layouts::SwapLayouts;
 use self::clipboard::ClipboardProvider;
 use crate::route::NotificationEnd;
 use crate::{
-    global_panes::GlobalPaneStrip,
+    global_panes::{GlobalPaneBorder, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{CharacterChunk, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
@@ -234,6 +234,9 @@ pub(crate) struct Tab {
     // the visible global panes surrounding this tab, shared with `tiled_panes` so it can widen its
     // boundary viewport over them (see `expand_viewport_over_global_panes`)
     global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
+    // the same panes one entry each rather than one per edge, carrying the colour each client's focus
+    // gives the boundary it shares with this tab (see `Boundaries::contribute_color_to_line`)
+    global_pane_borders: Rc<RefCell<Vec<GlobalPaneBorder>>>,
     display_area: Rc<RefCell<Size>>, // includes all panes (including eg. the status bar and tab bar in the default layout)
     // where the display area starts on screen, shared with `tiled_panes` and `floating_panes` (both
     // position panes from it) - non-zero when global panes are docked to the left or top
@@ -936,6 +939,7 @@ impl Tab {
         let fullscreen_covers_ui = Rc::new(RefCell::new(false));
 
         let global_pane_strips = Rc::new(RefCell::new(Vec::new()));
+        let global_pane_borders = Rc::new(RefCell::new(Vec::new()));
         // the origin the tab's display area was placed at, non-zero when global panes are docked to
         // the left or top of the screen
         let display_area_origin = Rc::new(RefCell::new((0, 0)));
@@ -944,6 +948,7 @@ impl Tab {
             display_area_origin.clone(),
             viewport.clone(),
             global_pane_strips.clone(),
+            global_pane_borders.clone(),
             connected_clients.clone(),
             connected_clients_in_app.clone(),
             mode_info.clone(),
@@ -1003,6 +1008,7 @@ impl Tab {
             max_panes,
             viewport,
             global_pane_strips,
+            global_pane_borders,
             display_area,
             display_area_origin,
             character_cell_size,
@@ -4839,6 +4845,17 @@ impl Tab {
         drop(own_strips);
         self.floating_panes.reapply_overlay_coordinates();
         true
+    }
+    /// The colour each global pane wants for the boundary it shares with this tab.
+    ///
+    /// Returns nothing on purpose, unlike `set_global_pane_strips`: this changes with focus and input
+    /// mode, and a "changed" answer there is what drives a whole-tab repaint and a content-offset
+    /// re-solve. The boundary diff picks the new colour up on its own.
+    pub fn set_global_pane_borders(&mut self, global_pane_borders: &[GlobalPaneBorder]) {
+        let mut own_borders = self.global_pane_borders.borrow_mut();
+        if *own_borders != global_pane_borders {
+            *own_borders = global_pane_borders.to_vec();
+        }
     }
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.floating_panes.is_overlay(pane_id)
