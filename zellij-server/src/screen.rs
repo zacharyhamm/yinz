@@ -8223,38 +8223,37 @@ impl Screen {
             .get(&tab_index)
             .ok_or_else(|| format!("there is no tab {tab_index} in this session"))?;
 
-        // Refused for the same reason a single pane with a scrollback editor
-        // open is: `suppressed_panes` is keyed by the *visible* pane, so closing
-        // the pair swaps the hidden one back in rather than removing it, and the
-        // tab would be dismantled around a pty nobody released.
+        // A hidden terminal is refused unless it is a stack-list member. The
+        // distinction is not whether it is hidden but *how*: an entry keyed by
+        // some other pane is one half of a pair — a scrollback editor, or a pane
+        // replaced in place — and closing the tab swaps the hidden one back in
+        // rather than removing it, dismantling the tab around a pty nobody
+        // released. A stack-list member is parked under its own id, has a slot in
+        // the layout the tab travels as (see `stack_list_serialization_geoms`),
+        // and is taken out by `empty_and_close_tab` with everything else.
         //
-        // Keyed on whether the hidden pane is a terminal rather than on whether
-        // it is a scrollback editor, because this fork also parks its global
-        // plugin panes here — in every tab. Those are fine: they have no process
-        // to strand, and `close_tab_by_id` re-homes them into another tab.
-        if tab
-            .get_suppressed_panes()
-            .any(|(_, (_, suppressed))| matches!(suppressed.pid(), PaneId::Terminal(_)))
-        {
+        // Hidden *plugin* panes are exempt throughout: they have no process to
+        // strand, and `close_tab_by_id` re-homes them into another tab.
+        if tab.get_suppressed_panes().any(|(key, (_, suppressed))| {
+            let hidden = suppressed.pid();
+            matches!(hidden, PaneId::Terminal(_))
+                && !(*key == hidden && tab.pane_is_stack_list_member(&hidden))
+        }) {
             return Err(
                 "this tab has a pane hidden behind another one; close it before moving the tab"
                     .to_owned(),
             );
         }
 
-        let terminal_ids: Vec<u32> = tab
+        // Asked of the tab, and asked first: a tab with no process in it is not a
+        // tab worth moving, and saying so is more use than the layout complaint
+        // an empty tab would otherwise earn. What actually gets released is
+        // decided further down, from the slots.
+        if !tab
             .get_all_pane_ids()
-            .into_iter()
-            .filter_map(|pane_id| match pane_id {
-                PaneId::Terminal(terminal_id) => Some(terminal_id),
-                // Plugin panes are not refused the way they are for a single
-                // pane warp. They have no process to hand over, but they do have
-                // a `Run::Plugin` in the layout, so the receiving session can
-                // build the same tab by starting them afresh.
-                PaneId::Plugin(_) => None,
-            })
-            .collect();
-        if terminal_ids.is_empty() {
+            .iter()
+            .any(|pane_id| matches!(pane_id, PaneId::Terminal(_)))
+        {
             return Err("this tab has no panes with a process to move".to_owned());
         }
 
@@ -8304,6 +8303,26 @@ impl Screen {
         let in_slot_order = |panes: &[(PaneId, PaneLayoutManifest)], order: &[usize]| {
             order.iter().map(|index| panes[*index].0).collect()
         };
+        let tiled_panes: Vec<PaneId> = in_slot_order(&tiled, &arrangement.tiled_order);
+        let floating_panes: Vec<PaneId> = in_slot_order(&floating, &arrangement.floating_order);
+
+        // Released from the slots rather than from the tab's pane ids, so that the
+        // two sets cannot drift apart. `take_released_tab_for_warp` builds the
+        // payload by walking the slots, so a terminal released without one would
+        // be handed over to nobody — and by then it is too late to say so.
+        //
+        // Plugin panes have no slot here on purpose. They have no process to hand
+        // over, but they do have a `Run::Plugin` in the layout, so the receiving
+        // session builds the same tab by starting them afresh.
+        let terminal_ids: Vec<u32> = tiled_panes
+            .iter()
+            .chain(floating_panes.iter())
+            .filter_map(|pane_id| match pane_id {
+                PaneId::Terminal(terminal_id) => Some(*terminal_id),
+                PaneId::Plugin(_) => None,
+            })
+            .collect();
+
         Ok((
             tab_index,
             terminal_ids,
@@ -8311,8 +8330,8 @@ impl Screen {
                 name,
                 tiled_layout: arrangement.tiled_layout,
                 floating_layout: arrangement.floating_layout,
-                tiled_panes: in_slot_order(&tiled, &arrangement.tiled_order),
-                floating_panes: in_slot_order(&floating, &arrangement.floating_order),
+                tiled_panes,
+                floating_panes,
                 hide_floating_panes,
             },
         ))
@@ -8406,13 +8425,29 @@ impl Screen {
     /// whole point of moving it. Emptying the tab first leaves that instruction
     /// with nothing to act on.
     ///
-    /// Only the tab's *own* panes, though — not `get_all_pane_ids`, which also
-    /// reports the suppressed ones, and in this fork that means the global
-    /// plugin panes every tab holds. Closing those would take them away from the
-    /// whole session; `close_tab_by_id` already knows to re-home them instead.
+    /// The tab's own panes, which is not the same as `get_all_pane_ids`: that also
+    /// reports the suppressed *plugin* panes, and closing one would take it away
+    /// from the whole session rather than from this tab. `close_tab_by_id` already
+    /// knows to re-home those. The suppressed panes that do have to go are the
+    /// hidden members of the tab's stack lists — they are travelling, and being
+    /// re-homed would leave them in another tab with their supervisors handed away.
     fn empty_and_close_tab(&mut self, tab_index: usize) {
         let mut emptied = vec![];
         if let Some(tab) = self.tabs.get_mut(&tab_index) {
+            // Hidden stack-list members first: closing a list's *visible* member
+            // promotes a hidden one into the grid, so sweeping the tiled panes
+            // while members were still parked would keep handing the sweep panes
+            // it had already passed. `close_pane` routes each one through
+            // `close_stack_list_member`, which does the list's bookkeeping and,
+            // like the rest of this function, tells the pty thread nothing.
+            let hidden_members: Vec<PaneId> = tab
+                .suppressed_stack_list_members()
+                .map(|(pane_id, _)| *pane_id)
+                .collect();
+            for pane_id in hidden_members {
+                tab.close_pane(pane_id, false, None);
+                emptied.push(pane_id);
+            }
             for pane_id in tab.get_static_and_floating_pane_ids() {
                 tab.close_pane(pane_id, false, None);
                 emptied.push(pane_id);
