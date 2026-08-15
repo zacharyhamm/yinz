@@ -1163,6 +1163,7 @@ impl State {
         self.activity = activity;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
+        self.focused_pane = focused;
         // Project discovery used to run here off the same snapshot. It lives in
         // hocus-store now, which receives that snapshot directly and pushes the
         // registry back; `refresh_tab_projects` still runs against our copy.

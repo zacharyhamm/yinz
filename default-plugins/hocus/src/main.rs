@@ -256,7 +256,7 @@ pub struct State {
     /// that changes no row sends nothing. hocus owns the data (the agentd
     /// snapshot, the project registry, the branch probes); the strip itself is
     /// a separate global pane split off above this one, and it only draws.
-    last_strip: Vec<agents::StripRow>,
+    last_strip: agents::Strip,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
     /// Questions from the `hocus-ask` popup that arrived while hocus was busy,
@@ -344,6 +344,12 @@ pub struct State {
     /// at, not the pane your cursor happens to be in. Cleared only when the pane
     /// itself goes away.
     last_focused_agent: Option<u32>,
+    /// The pane the daemon last reported focused, agent or not.
+    ///
+    /// The unsticky twin of `last_focused_agent`, kept for the agents pane: that
+    /// one can say which agent to put the cursor on, but never that the cursor is
+    /// somewhere the user no longer is, which is the difference the pane draws.
+    focused_pane: Option<u32>,
     /// The project of `last_focused_agent`, falling back to the active tab in
     /// `tabs`.
     active_project: Option<String>,
@@ -388,7 +394,7 @@ impl Default for State {
             saved: (0, 0),
             parked: Vec::new(),
             picker: None,
-            last_strip: Vec::new(),
+            last_strip: agents::Strip::default(),
             jobs: Vec::new(),
             asks: VecDeque::new(),
             job_seq: 0,
@@ -417,6 +423,7 @@ impl Default for State {
             auto_tab_projects: BTreeMap::new(),
             tabs: Vec::new(),
             last_focused_agent: None,
+            focused_pane: None,
             active_project: None,
         };
         // In a plugin this waits for `load`, which is where the host is ready to
@@ -1943,6 +1950,7 @@ mod tests {
     fn agent_entry_texts(state: &State) -> Vec<String> {
         state
             .current_strip()
+            .rows
             .into_iter()
             .map(|row| match row {
                 agents::StripRow::Project(text) | agents::StripRow::Branch(text) => text,
@@ -2300,7 +2308,7 @@ mod tests {
             ["no project", "  no branch", "  3  codex  running"]
         );
         assert!(matches!(
-            state.current_strip()[2],
+            state.current_strip().rows[2],
             agents::StripRow::Agent { pane_id: 3, .. }
         ));
     }
@@ -3096,6 +3104,10 @@ mod tests {
             .map(|repository| (repository.root.clone(), repository.clone()))
             .collect();
         state.apply_poll(panes, agents::Activity::new(), focused);
+        // The snapshot handler pushes the strip on every snapshot, not only the
+        // ones that move a project; without this the helper would only ever push
+        // through `give_projects` below.
+        state.push_strip(false);
         let mut registry = state.projects.clone();
         if projects::discover(&mut registry, &repositories).changed() {
             give_projects(state, registry);
@@ -3326,7 +3338,7 @@ mod tests {
         let mut state = state_with_tab(9);
         poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
         assert!(matches!(
-            &state.last_strip[0],
+            &state.last_strip.rows[0],
             agents::StripRow::Project(name) if name == "hocus"
         ));
 
@@ -3335,15 +3347,49 @@ mod tests {
             r#"{"name":"pocus","root":"/work/hocus"}"#,
         ));
         assert!(matches!(
-            &state.last_strip[0],
+            &state.last_strip.rows[0],
             agents::StripRow::Project(name) if name == "pocus"
         ));
 
         state.run_local(&agent_call("project_forget", r#"{"name":"pocus"}"#));
         assert!(matches!(
-            &state.last_strip[0],
+            &state.last_strip.rows[0],
             agents::StripRow::Project(name) if name == "no project"
         ));
+    }
+
+    /// The strip carries the focused pane, raw: the agents pane puts its cursor
+    /// on the agent the user walked into, and dims it when they walk off onto
+    /// something that is no agent at all. `last_focused_agent` is sticky and
+    /// could only ever say the first of those.
+    #[test]
+    fn the_strip_carries_the_focused_pane_agent_or_not() {
+        let mut state = state_with_tab(9);
+        let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+
+        poll_focused(&mut state, panes.clone(), Some(7));
+        assert_eq!(state.last_strip.focused, Some(7));
+
+        // pane 4 is a shell: the strip says so, even as the active project goes
+        // on answering "pane 7"
+        poll_focused(&mut state, panes.clone(), Some(4));
+        assert_eq!(state.last_strip.focused, Some(4));
+        assert_eq!(state.last_focused_agent, Some(7));
+    }
+
+    /// A push is owed for a focus change alone. Walking from one agent to
+    /// another leaves every row identical, and the dedupe used to compare only
+    /// rows - which would have left the cursor behind.
+    #[test]
+    fn walking_between_agents_pushes_a_strip_of_identical_rows() {
+        let mut state = state_with_tab(9);
+        let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+        poll_focused(&mut state, panes.clone(), Some(3));
+        let rows = state.last_strip.rows.clone();
+
+        poll_focused(&mut state, panes.clone(), Some(7));
+        assert_eq!(state.last_strip.rows, rows, "nothing about a row changed");
+        assert_eq!(state.last_strip.focused, Some(7), "but the push happened");
     }
 
     /// The case the rename bookkeeping exists for: a tab points at a project a
