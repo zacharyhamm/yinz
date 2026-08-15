@@ -165,6 +165,23 @@ pub fn unowned_strip_rows(
     rects
 }
 
+/// Whether another global pane starts on the row directly below `geom` and shares columns with it -
+/// that is, whether the line between the two falls inside `geom`'s own last row.
+///
+/// The vertical counterpart of the screen-edge test the right column uses, and deliberately not the
+/// same test: a Left or Right band is inset by the tab's chrome (`allocate_global_panes`), so its
+/// last row is normally followed by the status bar rather than by anything that draws a line. An
+/// ordinary tab pane flush with the bottom of its viewport draws no bottom line either.
+fn pane_directly_below(geom: &PaneGeom, allocated: &BTreeMap<ZellijUtilsPaneId, PaneGeom>) -> bool {
+    let bottom = geom.y + geom.rows.as_usize();
+    // a pane is never directly below itself: every pane is at least one row tall
+    allocated.values().any(|other| {
+        other.y == bottom
+            && other.x < geom.x + geom.cols.as_usize()
+            && geom.x < other.x + other.cols.as_usize()
+    })
+}
+
 pub enum GlobalPaneMouseEffect {
     WriteRaw(Vec<u8>),
     WriteAdjusted(Vec<Vec<u8>>),
@@ -2060,19 +2077,35 @@ impl GlobalPaneManager {
                     GlobalPaneEdge::Top => y == geom.y + geom.rows.as_usize().saturating_sub(1),
                     GlobalPaneEdge::Right | GlobalPaneEdge::Bottom => false,
                 };
-                inside && !tab_facing_edge
+                // Nor a cell the pane's own contents cover. `Boundaries` draws a pane's bottom line
+                // against the whole surface - `render` builds it over `self.area` rather than a
+                // chrome-excluding viewport like a tab's - so a band that stops above the tab's
+                // status bar would otherwise have a line painted over its last content row. The
+                // only horizontal lines landing in a pane's last row are its own bottom boundary
+                // and the top boundary of a pane starting below it, and both of those reserve the
+                // row (see `apply_layout`), so this drops exactly the ones nothing shares.
+                let last_row_is_content = global_pane.pane.get_content_offset().bottom == 0
+                    && y + 1 == geom.y + geom.rows.as_usize();
+                inside && !tab_facing_edge && !last_row_is_content
             })
     }
 
     fn apply_layout(&mut self, layout: AllocatedGlobalPanes, area: Viewport) -> Result<(), String> {
         let area_changed = self.area != Some(area);
-        // panes with a same-edge pane after them along the strip's long axis reserve their
-        // trailing cell for the separator between the two, which the `Boundaries` pass in `render`
-        // paints there - as this pane's bottom (or right) boundary merged with the follower's top
-        // (or left) one, so it carries whichever of them is focused
+        // Top and Bottom panes with a same-edge pane after them along the strip's long axis reserve
+        // their trailing column for the separator between the two, which the `Boundaries` pass in
+        // `render` paints there - as this pane's right boundary merged with the follower's left one,
+        // so it carries whichever of them is focused. Left and Right strips split along the vertical
+        // axis instead, where `pane_directly_below` already answers the same question.
         let strip_followers: HashSet<ZellijUtilsPaneId> = self
             .panes
             .iter()
+            .filter(|global_pane| {
+                matches!(
+                    global_pane.placement.edge,
+                    GlobalPaneEdge::Top | GlobalPaneEdge::Bottom
+                )
+            })
             .filter_map(|global_pane| {
                 let pane_id: ZellijUtilsPaneId = global_pane.pane.pid().into();
                 let geom = layout.panes.get(&pane_id)?;
@@ -2082,14 +2115,7 @@ impl GlobalPaneManager {
                         && layout
                             .panes
                             .get(&other.pane.pid().into())
-                            .map(|other_geom| match edge {
-                                GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
-                                    other_geom.y > geom.y
-                                },
-                                GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
-                                    other_geom.x > geom.x
-                                },
-                            })
+                            .map(|other_geom| other_geom.x > geom.x)
                             .unwrap_or(false)
                 });
                 has_follower.then_some(pane_id)
@@ -2124,20 +2150,22 @@ impl GlobalPaneManager {
                                 if geom.x + geom.cols.as_usize() < area.x + area.cols {
                                     content_offset.right = 1;
                                 }
-                                if geom.y + geom.rows.as_usize() < area.y + area.rows {
+                                // The bottom row is a boundary only when something actually draws
+                                // there: a global pane starting on the row below (its top boundary
+                                // and this pane's bottom boundary are the same cell), or the tab,
+                                // for a Top pane whose last row is the cell it cedes - see
+                                // `owns_boundary_cell`. A band that stops above the tab's chrome
+                                // keeps that row for its own contents, like a tab pane flush with
+                                // the bottom of its viewport.
+                                if matches!(global_pane.placement.edge, GlobalPaneEdge::Top)
+                                    || pane_directly_below(&geom, &layout.panes)
+                                {
                                     content_offset.bottom = 1;
                                 }
-                                // and the trailing cell towards a same-edge pane after this one,
+                                // and the trailing column towards a same-edge pane after this one,
                                 // for the split separator between them
                                 if strip_followers.contains(&global_pane.pane.pid().into()) {
-                                    match global_pane.placement.edge {
-                                        GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
-                                            content_offset.bottom = 1;
-                                        },
-                                        GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
-                                            content_offset.right = 1;
-                                        },
-                                    }
+                                    content_offset.right = 1;
                                 }
                                 content_offset
                             };
@@ -3025,7 +3053,7 @@ mod tests {
     }
 
     #[test]
-    fn global_boundaries_reserve_inset_trailing_edges() {
+    fn global_boundaries_reserve_only_the_trailing_edges_something_draws_on() {
         let area = Viewport {
             cols: 120,
             rows: 40,
@@ -3044,11 +3072,12 @@ mod tests {
 
         let left = manager.pane(PaneId::Plugin(1)).unwrap();
         let left_geom = left.position_and_size();
+        // only the column facing the tab: the band stops above the tab's bottom chrome, so nothing
+        // draws a line under it and the last row stays the pane's own
         assert_eq!(
             left.get_content_offset(),
             Offset {
                 right: 1,
-                bottom: 1,
                 ..Default::default()
             }
         );
@@ -3057,7 +3086,7 @@ mod tests {
             left_geom.x + left_geom.cols.as_usize() - 1,
             left_geom.y + left_geom.rows.as_usize() - 1,
         ));
-        assert!(manager.owns_boundary_cell(
+        assert!(!manager.owns_boundary_cell(
             left_geom.x + left_geom.cols.as_usize() - 2,
             left_geom.y + left_geom.rows.as_usize() - 1,
         ));
@@ -3100,6 +3129,93 @@ mod tests {
             top_geom.x + top_geom.cols.as_usize() - 1,
             top_geom.y + top_geom.rows.as_usize() - 1,
         ));
+    }
+
+    #[test]
+    fn a_band_that_stops_above_the_chrome_keeps_its_last_row_for_contents() {
+        let area = Viewport {
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::None,
+        );
+        manager.set_chrome_rows((0, 3));
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        let left = manager.pane(PaneId::Plugin(1)).unwrap();
+        let geom = left.position_and_size();
+        assert!(
+            geom.y + geom.rows.as_usize() < area.y + area.rows,
+            "the band should stop above the tab's bottom chrome"
+        );
+        assert_eq!(left.get_content_offset().bottom, 0);
+        assert_eq!(left.get_content_rows(), geom.rows.as_usize());
+        assert!(!manager.owns_boundary_cell(geom.x, geom.y + geom.rows.as_usize() - 1));
+    }
+
+    #[test]
+    fn a_band_that_abuts_a_bottom_global_pane_keeps_its_separator() {
+        // the Bottom pane's top boundary and the band's bottom boundary are the same cell, so the
+        // band has to leave it - without the reservation the line would land on its contents
+        let area = Viewport {
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::None,
+        );
+        manager
+            .insert(
+                mock_pane(PaneId::Plugin(1)),
+                placement(GlobalPaneEdge::Bottom, PercentOrFixed::Percent(25)),
+                false,
+            )
+            .unwrap();
+        manager
+            .insert(mock_pane(PaneId::Plugin(2)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+
+        let left = manager.pane(PaneId::Plugin(2)).unwrap();
+        let geom = left.position_and_size();
+        let bottom_geom = manager.pane(PaneId::Plugin(1)).unwrap().position_and_size();
+        assert_eq!(
+            geom.y + geom.rows.as_usize(),
+            bottom_geom.y,
+            "the band should abut the bottom strip with no chrome between them"
+        );
+        assert_eq!(left.get_content_offset().bottom, 1);
+        assert!(manager.owns_boundary_cell(geom.x, geom.y + geom.rows.as_usize() - 1));
+    }
+
+    #[test]
+    fn the_last_row_of_a_chrome_inset_strip_renders_no_separator() {
+        let ((separator_row, cols, grid), last_row) = render_left_strip(None, true, (0, 3));
+        for x in 0..cols - 1 {
+            assert_eq!(
+                grid.viewport[separator_row].columns[x].character, '─',
+                "column {x} of the row the two panes share",
+            );
+            // a cell nothing wrote is not in the grid at all, which is just as much "no line"
+            assert_ne!(
+                grid.viewport
+                    .get(last_row)
+                    .and_then(|row| row.columns.get(x))
+                    .map(|column| column.character),
+                Some('─'),
+                "column {x} of the strip's last row, which has only the tab's chrome below it",
+            );
+        }
     }
 
     #[test]
@@ -3250,6 +3366,16 @@ mod tests {
         focus: Option<PaneId>,
         force_render: bool,
     ) -> (usize, usize, Grid) {
+        render_left_strip(focus, force_render, (0, 0)).0
+    }
+
+    /// As `render_left_strip_with_focus`, with the tab chrome the band gives back. Also returns the
+    /// lower pane's last row, which is a boundary only when something draws there.
+    fn render_left_strip(
+        focus: Option<PaneId>,
+        force_render: bool,
+        chrome_rows: (usize, usize),
+    ) -> ((usize, usize, Grid), usize) {
         let client_id = 1;
         let area = Viewport {
             cols: 40,
@@ -3261,6 +3387,7 @@ mod tests {
             Rc::new(RefCell::new(None)),
             zellij_utils::input::options::PaneFrameStyle::Titles,
         );
+        manager.set_chrome_rows(chrome_rows);
         manager
             .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
             .unwrap();
@@ -3323,7 +3450,9 @@ mod tests {
             false,
         );
         vte::Parser::new().advance(&mut grid, rendered.as_bytes());
-        (separator_row, upper.cols.as_usize(), grid)
+        let lower = manager.pane(PaneId::Plugin(2)).unwrap().position_and_size();
+        let lower_last_row = lower.y + lower.rows.as_usize() - 1;
+        ((separator_row, upper.cols.as_usize(), grid), lower_last_row)
     }
 
     #[test]

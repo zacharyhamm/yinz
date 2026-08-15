@@ -31,6 +31,11 @@ group-level repaint is intentionally simpler.
 - **Chrome rows are deterministic** — `Screen::max_chrome_rows` takes the per-axis maximum across
   every tab. `global_panes::unowned_strip_rows` identifies cells left between shorter tab chrome
   and a global pane, and `Screen::fill_unowned_strip_rows` paints them.
+- **No line under a chrome-inset band** — a Left or Right band stops above the tab's status bar, so
+  `GlobalPaneManager::apply_layout` reserves its last row only when `global_panes::pane_directly_below`
+  finds a global pane starting there (or the pane is a Top one, whose last row the tab draws), and
+  `owns_boundary_cell` refuses any cell the pane's own contents cover. A band with nothing but the
+  tab's chrome below it draws no bottom line, like a tab pane flush with the bottom of its viewport.
 - **Watchers see the followed tab** — the watcher render phase positions panes for
   `followed_client_id` and watcher dimensions do not constrain the session.
 
