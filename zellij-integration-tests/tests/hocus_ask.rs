@@ -78,6 +78,18 @@ const GLOBAL_AND_SHELL: &str = r#"layout {
 }
 "#;
 
+/// As above, plus a floating pane the popup has to share the floating layer with.
+const GLOBAL_SHELL_AND_FLOATING: &str = r#"layout {
+    global_panes {
+        pane edge="left" size="50%"
+    }
+    pane
+    floating_panes {
+        pane
+    }
+}
+"#;
+
 /// A session with one shell pane and the popup available.
 fn start_without_hocus() -> TestSession {
     let zellij = TestRunner::new(TERMINAL_SIZE).with_config(ASK_ONLY).start();
@@ -255,6 +267,49 @@ fn popup_from_a_global_pane_covers_it_and_returns_focus() {
         restored,
         "closing the popup should restore global-pane focus"
     );
+    zellij.quit();
+}
+
+/// The popup is one floating pane among however many are already open, and the server draws the
+/// floating panes in two passes - the overlays, of which the popup is one, and everything else.
+/// A popup whose z-index comes from its place in its own pass rather than from the stack of all
+/// of them is clipped against its own geometry and disappears, leaving the global pane behind it
+/// on screen.
+#[test]
+fn the_popup_covers_a_global_pane_with_another_floating_pane_already_open() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(ASK_ONLY)
+        .with_layout(LayoutInfo::Stringified(
+            GLOBAL_SHELL_AND_FLOATING.to_owned(),
+        ))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(PROMPT);
+    let floating_shell = zellij.expect_pty_spawn();
+    floating_shell.output(b"FLOATING PANE");
+    zellij.wait_until("the global, tiled and floating panes load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("FLOATING PANE")
+    });
+
+    open_popup(&zellij);
+    let snapshot = zellij.snapshot();
+    assert!(
+        snapshot.contains(POPUP_TITLE),
+        "the popup should draw its frame over the panes it covers, got:\n{snapshot}"
+    );
+
+    // the popup takes its place over the global pane only once it has repositioned itself, so
+    // what matters is that it can still paint after that - a question typed into it has to arrive
+    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
+    zellij.send_stdin(b"still on top?");
+    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
+    zellij.wait_until(
+        "the popup can still paint over what it covers",
+        |snapshot| snapshot.contains("still on top?"),
+    );
+
     zellij.quit();
 }
 
