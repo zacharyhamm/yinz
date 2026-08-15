@@ -536,6 +536,190 @@ fn a_stacks_members_travel_top_to_bottom_and_keep_which_one_was_open() {
     );
 }
 
+/// A tab that is nothing but one stack, plus which member was asked to be open.
+///
+/// `tab_arrangement_maybe_stacked` can produce stacks but cannot say which of the
+/// panes it produced was the expanded one, and that is the subject here. Members
+/// are all terminals: a plugin cannot be the pane whose process is handed over,
+/// so a stack made of them would have nothing to say about the queue.
+#[hegel::composite]
+fn a_single_stack(tc: &hegel::TestCase, viewport: Size) -> (Vec<PaneLayoutManifest>, usize) {
+    let members = tc.draw(generators::integers::<usize>().min_value(2).max_value(8));
+    let expanded = tc.draw(
+        generators::integers::<usize>()
+            .min_value(0)
+            .max_value(members - 1),
+    );
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children_are_stacked: true,
+        children: (0..members)
+            .map(|index| TiledPaneLayout {
+                run: Some(Run::Command(RunCommand {
+                    command: "sh".into(),
+                    ..Default::default()
+                })),
+                is_expanded_in_stack: index == expanded,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+
+    let positioned = layout
+        .position_panes_in_space(&space(viewport), None, false, false)
+        .unwrap_or_default();
+    let manifests = positioned
+        .into_iter()
+        .map(|(layout, geom)| PaneLayoutManifest {
+            geom,
+            run: layout.run,
+            ..Default::default()
+        })
+        .collect();
+    (manifests, expanded)
+}
+
+#[hegel::test]
+fn a_stack_arrives_with_the_same_member_open(tc: hegel::TestCase) {
+    // The property behind `a_stacks_members_travel_top_to_bottom_and_keep_which
+    // _one_was_open`, which pins it with a single stack of three at 80x24. Which
+    // member is open is not carried as a flag - it is carried as the one member
+    // taller than its title row - so it survives the trip only if the geometry
+    // does, at whatever size and depth the stack happens to have.
+    let viewport = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let (tiled, expanded) = tc.draw(a_single_stack(viewport));
+    // Too many members for the rows there are: the stack is refused rather than
+    // squeezed, so there is no arrangement to move.
+    tc.assume(tiled.len() > 1);
+
+    let open_before: Vec<usize> = tiled
+        .iter()
+        .enumerate()
+        .filter(|(_, pane)| pane.geom.rows.as_usize() > 1)
+        .map(|(index, _)| index)
+        .collect();
+    // The generator's claim, read back off the geometry rather than trusted. The
+    // empty case is a stack with exactly one row per member, where nothing is
+    // open and there is nothing for the trip to lose.
+    assert!(
+        open_before.is_empty() || open_before == vec![expanded],
+        "a stack should arrange itself with member {expanded} open, not {open_before:?}",
+    );
+
+    let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
+        return;
+    };
+    let Some(filled) =
+        slots_as_the_receiver_fills_them(&arrangement, &arrangement.tiled_order, viewport)
+    else {
+        return;
+    };
+
+    let mut open_after: Vec<usize> = filled
+        .iter()
+        .filter(|(_, geom)| geom.rows.as_usize() > 1)
+        .map(|(pane, _)| *pane)
+        .collect();
+    open_after.sort_unstable();
+    assert_eq!(
+        open_after, open_before,
+        "the tab arrived showing a different member of the stack",
+    );
+}
+
+#[hegel::test]
+fn a_stacks_members_arrive_in_the_order_they_were_stacked(tc: hegel::TestCase) {
+    // `every_member_of_a_stack_travels_exactly_once` establishes that the queue is
+    // a permutation of the members, which leaves the permutation itself unchecked.
+    // Order is the half that matters on screen: a stack renders its members'
+    // titles in a column, so two members swapped means two panes sitting under
+    // each other's names. Distance is no evidence here - members are a row apart -
+    // but their order still is.
+    let viewport = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, true, true));
+    tc.assume(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
+
+    let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
+        return;
+    };
+    let Some(filled) =
+        slots_as_the_receiver_fills_them(&arrangement, &arrangement.tiled_order, viewport)
+    else {
+        return;
+    };
+
+    let mut arrived_by_stack: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for (pane, geom) in &filled {
+        if let Some(stack_id) = tiled[*pane].geom.stacked {
+            arrived_by_stack
+                .entry(stack_id)
+                .or_default()
+                .push((geom.y, *pane));
+        }
+    }
+
+    for (stack_id, mut arrived) in arrived_by_stack {
+        arrived.sort_unstable();
+        let arrived: Vec<usize> = arrived.into_iter().map(|(_, pane)| pane).collect();
+
+        // Plugin members are left out of both sides: the receiving session starts
+        // those afresh from the layout rather than taking one off the queue, so
+        // they occupy no slot for a pane to land in the wrong one of.
+        let mut before: Vec<(usize, usize)> = tiled
+            .iter()
+            .enumerate()
+            .filter(|(_, pane)| pane.geom.stacked == Some(stack_id) && !is_plugin_manifest(pane))
+            .map(|(index, pane)| (pane.geom.y, index))
+            .collect();
+        before.sort_unstable();
+        let before: Vec<usize> = before.into_iter().map(|(_, pane)| pane).collect();
+
+        assert_eq!(
+            arrived, before,
+            "stack {stack_id}'s members landed under each other's titles",
+        );
+    }
+}
+
+#[hegel::test]
+fn a_tab_with_stacks_keeps_its_shape_at_a_size_it_was_never_arranged_for(tc: hegel::TestCase) {
+    // The same promise as `a_tab_keeps_its_shape_at_a_size_it_was_never_arranged
+    // _for`, asked of the arrangement a stack list travels as. Worth asking
+    // separately: a stack's collapsed members are a fixed one row each while
+    // everything around them is a percentage, so a receiving session of a
+    // different height divides the space by a rule the unstacked case never
+    // reaches - and dropping a member there would strand its process.
+    let viewport = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, false, true));
+    tc.assume(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
+
+    let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
+        return;
+    };
+
+    let elsewhere = Size {
+        cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
+        rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
+    };
+    let Some(positioned) = position_as_the_receiver_does(&arrangement.tiled_layout, elsewhere)
+    else {
+        // Genuinely no room: the receiving session is too small for this many
+        // panes, which it says rather than silently dropping some.
+        return;
+    };
+    assert_eq!(positioned.len(), tiled.len());
+}
+
 #[hegel::test]
 fn a_tab_keeps_its_shape_at_a_size_it_was_never_arranged_for(tc: hegel::TestCase) {
     let viewport = Size {

@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
-use zellij_server::os_input_output::{AsyncReader, ServerOsApi};
+use zellij_server::os_input_output::{AdoptedTerminal, AsyncReader, ServerOsApi};
 use zellij_server::panes::PaneId;
+use zellij_server::pty_host::client::ReleasedPtyHost;
 use zellij_server::ClientId;
 use zellij_utils::data::Palette;
 use zellij_utils::errors::prelude::*;
@@ -270,5 +271,58 @@ impl ServerOsApi for FakeServerOsApi {
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
         self.shared_ptys.remove(terminal_id);
         Ok(())
+    }
+    /// Hand a pane's supervisor over without killing it.
+    ///
+    /// A real one detaches a process the server never owned in the first place;
+    /// the fake moves its pty state somewhere neither session's registry can see
+    /// until the other one asks for it. `host_pid` is not modelled — nothing here
+    /// has a supervisor process — but the control socket is, because that is the
+    /// only thing the receiving session is told and the only thing it can get
+    /// wrong.
+    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+        let control_socket = self
+            .shared_ptys
+            .release_for_warp(terminal_id)
+            .with_context(|| format!("no fake pty for terminal id {terminal_id}"))?;
+        Ok(ReleasedPtyHost {
+            host_id: format!("fake-pty-host-{terminal_id}"),
+            host_pid: FAKE_PID_BASE + terminal_id,
+            control_socket: Some(control_socket),
+        })
+    }
+    fn adopt_terminal(
+        &self,
+        control_socket: &Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let adopted = self
+            .shared_ptys
+            .adopt_for_warp(control_socket, quit_cb)
+            .with_context(|| format!("no supervisor is waiting at {}", control_socket.display()))?;
+        // The pane's folder follows it: `get_cwd` is answered out of a map keyed
+        // by child pid, and this session has never seen this pane before.
+        if let Some(cwd) = adopted.run_command.cwd.clone() {
+            self.cwds
+                .lock()
+                .unwrap()
+                .insert(FAKE_PID_BASE + adopted.terminal_id, cwd);
+        }
+        Ok(AdoptedTerminal {
+            terminal_id: adopted.terminal_id,
+            reader: adopted.reader,
+            // Renumbered with the terminal id, as every other fake pid is. A real
+            // warp keeps the child's pid, which is the evidence that the process
+            // survived; here the evidence is that the pty *state* travelled -
+            // its stdin, its sizes, the command it was spawned with - and that it
+            // was never told to exit.
+            child_pid: FAKE_PID_BASE + adopted.terminal_id,
+            cmd: adopted.run_command,
+            // Not modelled: a real supervisor buffers what the child wrote while
+            // nobody was attached. The fake has no way to be written to while it
+            // is detached, so there is never anything to replay.
+            buffered: Vec::new(),
+            child_exit_status: adopted.child_exit_status,
+        })
     }
 }

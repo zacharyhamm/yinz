@@ -1370,7 +1370,18 @@ impl<'a> PaneApplier<'a> {
     ) {
         for pane_id in remaining_pane_ids {
             if let Some(pane) = existing_tab_state.remove_pane(&pane_id) {
-                self.tiled_panes.insert_pane(pane.pid(), pane, client_id);
+                if let Some(pane) = self.tiled_panes.insert_pane(pane.pid(), pane, client_id) {
+                    // A pane the tab already holds, for which the layout being
+                    // applied has no room. It cannot be parked from here -
+                    // `LayoutApplier` is handed the two pane collections and not
+                    // the tab's suppressed ones - so this is the one place a
+                    // pane is still dropped. Said out loud rather than silently,
+                    // because the process it was running outlives it.
+                    log::error!(
+                        "No room in the layout for pane {:?}, dropping it",
+                        pane.pid()
+                    );
+                }
                 if let Some(l) = last_logical_position.take() {
                     self.tiled_panes.set_pane_logical_position(pane_id, l);
                     last_logical_position = Some(l + 1);

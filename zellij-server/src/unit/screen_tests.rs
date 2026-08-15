@@ -18221,6 +18221,77 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     );
 }
 
+#[test]
+fn an_adopted_tab_takes_a_client_off_a_global_pane() {
+    // A whole tab arriving moves the client into it. The pane placements have to
+    // *name* the tab to stay out of the global strip; a tab is built by
+    // `new_tab`, which moves the client itself - so what this has to check is not
+    // where the panes go but that the client is looking at them when they arrive.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        99,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen
+        .focus_global_pane(PaneId::Terminal(99), client_id)
+        .expect("TEST");
+    assert_eq!(
+        screen.global_panes.focused_pane_id(client_id),
+        Some(PaneId::Terminal(99)),
+    );
+
+    // The result is not asserted: the panes are set aside on the pty thread and
+    // filled in by a later instruction, so a tab adopted against these empty
+    // channels never finishes arriving. The focus is handed over before any of
+    // that, which is the whole point of asking here.
+    let _ = screen.place_adopted_tab(
+        zellij_utils::data::WarpedTab::default(),
+        crate::pty::AdoptedTabPanes {
+            tiled: vec![],
+            floating: vec![],
+        },
+        client_id,
+    );
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(client_id),
+        None,
+        "the client would have been looking at the global pane while its new tab arrived",
+    );
+}
+
+#[test]
+fn a_session_whose_other_terminals_are_all_global_is_still_down_to_its_last_pane() {
+    // `selectable_terminal_pane_count` asks the tabs, and global panes are held
+    // by the session rather than by a tab - so a session hung with global
+    // terminals is still a session with one pane in it. Warping that pane away
+    // would leave nothing a tab could focus, which is the closing this guard
+    // exists to refuse.
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    for (id, edge) in [
+        (97, GlobalPaneEdge::Left),
+        (98, GlobalPaneEdge::Right),
+        (99, GlobalPaneEdge::Top),
+    ] {
+        gp_insert_global_pane(&mut screen, id, edge, PercentOrFixed::Fixed(8), false);
+    }
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Err("this is the session's only pane; moving it would close the session".to_owned()),
+    );
+}
+
 /// A tab where terminal 1's scrollback is being edited by terminal 9, so 1 is
 /// suppressed behind the editor, plus a second tab so the session is never down
 /// to its last pane.
@@ -18486,6 +18557,74 @@ fn a_tab_with_a_scrollback_editor_open_cannot_be_warped() {
     // suppressed-pane bookkeeping is keyed by the visible pane, so closing the
     // pair hands over the wrong pty.
     let mut screen = screen_with_a_scrollback_editor_open();
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some(
+            "this tab has a pane hidden behind another one; close it before moving the tab"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_tab_holding_a_pane_a_plugin_hid_cannot_be_warped() {
+    // Parked with nothing standing in for it, like a stack-list member - and
+    // unlike one, with no slot in the layout the tab travels as. A single such
+    // pane can be warped on its own (`a_pane_a_plugin_hid_can_be_warped`), because
+    // then it is the thing being moved; taking the tab out from under it would
+    // release a supervisor nobody at the far end is holding.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+    tab.suppress_pane(PaneId::Terminal(3), None);
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some(
+            "this tab has a pane hidden behind another one; close it before moving the tab"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_tab_holding_a_hidden_floating_pane_cannot_be_warped() {
+    // The same refusal, asked of the one kind of pane that can never be the
+    // exception to it: a stack is a shape the *tiled* layout takes, so a hidden
+    // floating pane is a hidden pane and nothing else.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+    tab.suppress_pane(PaneId::Terminal(3), None);
+    assert!(
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "a floating pane is not a stack-list member, whatever else it is",
+    );
 
     assert_eq!(
         screen.check_tab_can_be_warped(Some(0), 1).err(),
@@ -18854,6 +18993,93 @@ fn a_tab_with_a_stack_list_can_be_warped() {
 }
 
 #[test]
+fn a_tab_whose_stack_list_member_is_being_edited_cannot_be_warped() {
+    // The case the refusal is really for, in the middle of the thing the refusal
+    // makes an exception for. A stack-list member with a scrollback editor open on
+    // it is a pair: the editor is the member and travels, but the pane it is
+    // editing is parked behind it with no slot of its own. Letting the tab go
+    // would dismantle it around a pty nobody released.
+    let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some(
+            "this tab has a pane hidden behind another one; close it before moving the tab"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_rect() {
+    // The seam between two well-tested halves. `warped_tab`'s properties start
+    // from manifests that already have a stack's shape, and the tab-warp tests ask
+    // only that every member has a slot - so what a real `Tab` hands the layout
+    // builder is checked by neither. The members are not in the grid, so their
+    // geometry is synthesised here or nowhere.
+    let screen = screen_with_a_stack_list();
+    let tab = screen.tabs.get(&0).expect("TEST");
+    let in_the_grid: Vec<PaneId> = tab.get_tiled_panes().map(|(pane_id, _)| *pane_id).collect();
+    assert_eq!(
+        in_the_grid,
+        vec![PaneId::Terminal(3)],
+        "the open member is the only one holding the list's slot",
+    );
+    let full_rect = tab
+        .get_tiled_panes()
+        .next()
+        .expect("TEST")
+        .1
+        .position_and_size();
+
+    let geoms = tab.stack_list_serialization_geoms();
+    let members = [
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    ];
+    assert_eq!(geoms.len(), members.len(), "every member gets a geom");
+    let stack_id = geoms[&members[0]].stacked;
+    assert!(stack_id.is_some(), "the members travel as a stack");
+
+    let mut expected_y = full_rect.y;
+    for member in members {
+        let geom = geoms[&member];
+        assert_eq!(
+            geom.stacked, stack_id,
+            "{member:?} is in a stack of its own",
+        );
+        assert_eq!((geom.x, geom.cols), (full_rect.x, full_rect.cols));
+        assert_eq!(
+            geom.y, expected_y,
+            "{member:?} does not start where the member above it ended",
+        );
+        if member == PaneId::Terminal(3) {
+            assert_eq!(
+                geom.rows.as_usize(),
+                full_rect.rows.as_usize() - 2,
+                "the open member should take what the two collapsed ones leave",
+            );
+        } else {
+            assert!(
+                geom.rows.is_fixed() && geom.rows.as_usize() == 1,
+                "{member:?} should be collapsed to its title row, but has {:?}",
+                geom.rows,
+            );
+        }
+        expected_y += geom.rows.as_usize();
+    }
+    // Which member is open is not carried as a flag - it is carried as the one
+    // member taller than a title row - so the rows have to add up to the rect or
+    // the stack arrives either overflowing it or short of it.
+    assert_eq!(
+        expected_y,
+        full_rect.y + full_rect.rows.as_usize(),
+        "the stack should occupy exactly the rect the open member had",
+    );
+}
+
+#[test]
 fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
     // The invariant that makes the warp safe: a released supervisor with no slot
     // in the layout is a process nobody would be holding at the far end.
@@ -18867,16 +19093,40 @@ fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
         terminal_ids.len(),
         "every terminal that would be released should already have a slot",
     );
-    for member in [
-        PaneId::Terminal(1),
-        PaneId::Terminal(2),
-        PaneId::Terminal(3),
-    ] {
-        assert!(
-            prepared.tiled_panes.contains(&member),
-            "{member:?} should have a slot in the warped layout",
-        );
-    }
+    // Slot order, not tab order: the receiving session fills its slots in this
+    // order, so this is the members arriving top to bottom the way they were
+    // stacked.
+    assert_eq!(
+        prepared.tiled_panes,
+        vec![
+            PaneId::Terminal(1),
+            PaneId::Terminal(2),
+            PaneId::Terminal(3),
+        ],
+        "the members should have slots in the order they were stacked",
+    );
+
+    // And the slots should be a stack rather than three panes that happen to be
+    // adjacent - a layout is what the far end rebuilds from, so a stack that
+    // arrived as an ordinary split would be a tab the user did not send.
+    let stack = &prepared.tiled_layout;
+    assert!(
+        stack.children_are_stacked,
+        "the tab's one node should be the stack",
+    );
+    assert_eq!(stack.children.len(), 3, "with a child per member");
+    let expanded: Vec<usize> = stack
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, child)| child.is_expanded_in_stack)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        expanded,
+        vec![2],
+        "exactly one member is open, and it is the one that was open here",
+    );
 }
 
 #[test]
@@ -18911,8 +19161,9 @@ fn warping_a_tab_does_not_kill_the_children_of_its_hidden_stack_list_members() {
 fn a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped() {
     // The pair this refusal is really about, and the one an `is_scrollback_editor`
     // check would let through: `suppress_pane_and_replace_with_pid` sets that flag
-    // to `false` while parking the hidden pane under the *visible* pane's id, so
-    // closing the tab swaps it back in rather than removing it.
+    // to `false` while parking the hidden pane behind the visible one - under its
+    // own id, with the stand-in named in `restored_by` - so closing the tab swaps
+    // it back in rather than removing it.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);

@@ -6173,7 +6173,13 @@ impl Tab {
             .and_then(|suppressed| {
                 let suppressed_pane = suppressed.pane;
                 let suppressed_pane_id = suppressed_pane.pid();
-                let replaced_pane = if self.are_floating_panes_visible() {
+                // Where the stand-in actually is, rather than whether floating
+                // panes happen to be visible: the two differ whenever a tiled
+                // stand-in is closed while a floating pane is open, and asking
+                // the wrong collection to replace it fails *after* the hidden
+                // pane has been taken out of the map - so it is dropped, and its
+                // process left with nothing that could ever close it.
+                let replaced_pane = if self.floating_panes.panes_contain(&pane_id) {
                     Some(self.floating_panes.replace_pane(pane_id, suppressed_pane)).transpose()?
                 } else {
                     self.tiled_panes.replace_pane(pane_id, suppressed_pane)
@@ -7380,27 +7386,56 @@ impl Tab {
     fn make_hidden_stack_list_member_visible(&mut self, pane_id: PaneId) -> bool {
         self.swap_in_hidden_stack_list_member(pane_id, None)
     }
+    /// Put a suppressed pane back in the layout, or leave it suppressed.
+    ///
+    /// The room check comes *before* the entry is taken out, for the reason
+    /// `accept_extracted_pane` spells out: `add_tiled_pane` and
+    /// `add_floating_pane` take the box by value and drop it when the tab has no
+    /// room, reporting success. For a pane being created that is a failed
+    /// insert; for a pane already in this tab it is destruction — the entry is
+    /// gone, so nothing can ever close the pane or reap its process, and the
+    /// only trace is a log line nobody reads.
+    ///
+    /// Staying suppressed is a state the pane is already in and can be asked out
+    /// of again, so failing that way costs nothing.
+    fn restore_suppressed_pane(&mut self, pane_id: PaneId, should_float_if_hidden: bool) -> bool {
+        if !self.suppressed_panes.contains_key(&pane_id) {
+            return false;
+        }
+        let has_room = if should_float_if_hidden {
+            self.floating_panes.find_room_for_new_pane().is_some()
+        } else {
+            self.tiled_panes.has_room_for_new_pane()
+        };
+        if !has_room {
+            log::error!(
+                "No room to show pane {:?}, leaving it hidden rather than dropping it",
+                pane_id
+            );
+            return true;
+        }
+        let Some(pane) = self
+            .suppressed_panes
+            .remove(&pane_id)
+            .map(|suppressed| suppressed.pane)
+        else {
+            return false;
+        };
+        if should_float_if_hidden {
+            self.add_floating_pane(pane, pane_id, None, true, None)
+                .non_fatal();
+        } else {
+            self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
+        }
+        true
+    }
     pub fn unsuppress_pane(&mut self, pane_id: PaneId, should_float_if_hidden: bool) {
         // removes a pane from being suppressed (hidden) but does not focus it
         if self.make_hidden_stack_list_member_visible(pane_id) {
             return;
         }
-        match self
-            .suppressed_panes
-            .remove(&pane_id)
-            .map(|suppressed| suppressed.pane)
-        {
-            Some(pane) => {
-                if should_float_if_hidden {
-                    self.add_floating_pane(pane, pane_id, None, true, None)
-                        .non_fatal();
-                } else {
-                    self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
-                }
-            },
-            None => {
-                log::error!("Could not find suppressed pane with id: {:?}", pane_id);
-            },
+        if !self.restore_suppressed_pane(pane_id, should_float_if_hidden) {
+            log::error!("Could not find suppressed pane with id: {:?}", pane_id);
         }
     }
     pub fn unsuppress_or_expand_pane(&mut self, pane_id: PaneId, should_float_if_hidden: bool) {
@@ -7408,29 +7443,14 @@ impl Tab {
         if self.make_hidden_stack_list_member_visible(pane_id) {
             return;
         }
-        match self
-            .suppressed_panes
-            .remove(&pane_id)
-            .map(|suppressed| suppressed.pane)
-        {
-            Some(pane) => {
-                if should_float_if_hidden {
-                    self.add_floating_pane(pane, pane_id, None, true, None)
-                        .non_fatal();
-                } else {
-                    self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
-                }
-            },
-            None => {
-                let expand_panes_success =
-                    !self.tiled_panes.expand_pane_in_stack(pane_id).is_empty();
-                if !expand_panes_success {
-                    log::error!(
-                        "Could not find suppressed or stacked pane with id: {:?}",
-                        pane_id
-                    );
-                }
-            },
+        if !self.restore_suppressed_pane(pane_id, should_float_if_hidden) {
+            let expand_panes_success = !self.tiled_panes.expand_pane_in_stack(pane_id).is_empty();
+            if !expand_panes_success {
+                log::error!(
+                    "Could not find suppressed or stacked pane with id: {:?}",
+                    pane_id
+                );
+            }
         }
     }
     /// Take a pane out of the layout, leaving `stand_in` holding its place.
@@ -7561,13 +7581,23 @@ impl Tab {
             self.auto_layout && !self.swap_layouts.is_tiled_damaged() && !without_relayout;
         if self.tiled_panes.has_room_for_new_pane() {
             pane.set_active_at(Instant::now());
-            if should_auto_layout {
+            let not_placed = if should_auto_layout {
                 // no need to relayout here, we'll do it when reapplying the swap layout
                 // below
                 self.tiled_panes
-                    .insert_pane_without_relayout(pane_id, pane, client_id);
+                    .insert_pane_without_relayout(pane_id, pane, client_id)
             } else {
-                self.tiled_panes.insert_pane(pane_id, pane, client_id);
+                self.tiled_panes.insert_pane(pane_id, pane, client_id)
+            };
+            // `has_room_for_new_pane` and the placement itself do not ask quite
+            // the same question — the check counts room in a stack that the
+            // placement may then fail to make — so the grid can still hand the
+            // pane back. Parked rather than dropped: a pane nothing renders is
+            // recoverable, a pane nothing *holds* is a process with no owner.
+            if let Some(pane) = not_placed {
+                log::error!("No room for pane {pane_id:?} in the tiled layout, hiding it instead");
+                self.park_pane(pane);
+                return Ok(());
             }
             if !self.is_pending {
                 // if this tab is pending, the geometry of the panes inside it (including the one we
@@ -7969,7 +7999,10 @@ impl Tab {
         self.swap_layouts.set_is_tiled_damaged(); // TODO: verify we can do all the below first
         if self.pane_is_stacked(root_pane_id) {
             for pane in panes_to_stack.drain(..) {
-                self.tiled_panes.add_pane_to_stack(&root_pane_id, pane);
+                if let Some(pane) = self.tiled_panes.add_pane_to_stack(&root_pane_id, pane) {
+                    log::error!("No room in the stack for pane {:?}, hiding it", pane.pid());
+                    self.park_pane(pane);
+                }
             }
         } else {
             // + 1 for the root pane

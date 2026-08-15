@@ -1,5 +1,7 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -54,6 +56,32 @@ pub(crate) struct FakePtyRegistry {
     next_terminal_id: u32,
     pub fake_pty_states: HashMap<u32, FakePtyState>,
     pub spawn_queue: VecDeque<u32>,
+    /// Terminals this session took over from another one. Kept apart from
+    /// `spawn_queue` because nothing was spawned: the whole claim a warp makes is
+    /// that the process was already running and went on running.
+    pub adopted_queue: VecDeque<u32>,
+}
+
+/// Supervisors released by one session and not yet adopted by another.
+///
+/// Process-global, because the two sessions in a warp test have a registry each
+/// — exactly as two real servers have a pty host each — and the pane has to
+/// exist in neither for the moment it is between them. Keyed by control socket
+/// path, which is the address the receiving session is handed and the only thing
+/// it is told about the pane.
+fn detached_supervisors() -> &'static Mutex<HashMap<PathBuf, FakePtyState>> {
+    static DETACHED_SUPERVISORS: OnceLock<Mutex<HashMap<PathBuf, FakePtyState>>> = OnceLock::new();
+    DETACHED_SUPERVISORS.get_or_init(Default::default)
+}
+
+/// An address no two releases share, so a test running several warps at once
+/// cannot hand one pane's supervisor to the wrong session.
+fn next_control_socket() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    PathBuf::from(format!(
+        "/fake-pty-host/warp-{}.sock",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 impl FakePtyRegistry {
@@ -145,6 +173,78 @@ impl SharedPtys {
         Box::new(FakeAsyncReader {
             output_rx,
             pending: VecDeque::new(),
+        })
+    }
+
+    /// Hand a pane's supervisor over without killing it.
+    ///
+    /// The state moves out of this session's registry into the detached one,
+    /// which is what makes it stop being this session's pane while leaving the
+    /// fake process exactly as it was — the stdin it has been sent, the sizes it
+    /// has been told about, the command it was spawned with, whether it has
+    /// exited. That everything survives *unchanged* is the whole claim a warp
+    /// makes, so the fake models it by moving the state rather than rebuilding it.
+    ///
+    /// `output_tx` travels with it and is replaced on the far side. Dropping it
+    /// would be an EOF to the reader, but `Pty::release_terminal_for_warp` aborts
+    /// the reader task before this returns, so there is nobody left to hear it.
+    pub(crate) fn release_for_warp(&self, terminal_id: u32) -> Option<PathBuf> {
+        let fake_pty_state =
+            self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
+        let fake_pty_state = fake_pty_state?;
+        let control_socket = next_control_socket();
+        detached_supervisors()
+            .lock()
+            .unwrap()
+            .insert(control_socket.clone(), fake_pty_state);
+        Some(control_socket)
+    }
+
+    /// Take a detached supervisor over into this session under a fresh id.
+    ///
+    /// The new id is this session's — ids are per-server and the receiving one
+    /// knows nothing of the sender's numbering — but everything the id names is
+    /// the same fake process it was before.
+    pub(crate) fn adopt_for_warp(
+        &self,
+        control_socket: &Path,
+        quit_cb: QuitCb,
+    ) -> Option<AdoptedFakePty> {
+        let mut fake_pty_state = detached_supervisors()
+            .lock()
+            .unwrap()
+            .remove(control_socket)?;
+        let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
+        let run_command = fake_pty_state.run_command();
+        let child_exit_status = if fake_pty_state.exited {
+            Some(None)
+        } else {
+            None
+        };
+        fake_pty_state.output_tx = Some(output_tx);
+        fake_pty_state.quit_cb = Some(quit_cb);
+        let terminal_id = self.next_terminal_id();
+        self.mutate(|fake_pty_registry| {
+            fake_pty_registry
+                .fake_pty_states
+                .insert(terminal_id, fake_pty_state);
+            fake_pty_registry.adopted_queue.push_back(terminal_id);
+        });
+        Some(AdoptedFakePty {
+            terminal_id,
+            reader: Box::new(FakeAsyncReader {
+                output_rx,
+                pending: VecDeque::new(),
+            }),
+            run_command,
+            child_exit_status,
+        })
+    }
+
+    /// The next terminal this session adopted, waiting for one if need be.
+    pub(crate) fn expect_adoption(&self) -> u32 {
+        self.wait_for("a pane to be adopted from another session", |registry| {
+            registry.adopted_queue.pop_front()
         })
     }
 
@@ -332,6 +432,14 @@ impl SharedPtys {
             fake_pty_registry = guard;
         }
     }
+}
+
+/// What a session gets back for taking a detached supervisor over.
+pub(crate) struct AdoptedFakePty {
+    pub terminal_id: u32,
+    pub reader: Box<dyn AsyncReader>,
+    pub run_command: RunCommand,
+    pub child_exit_status: Option<Option<i32>>,
 }
 
 struct FakeAsyncReader {
