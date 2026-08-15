@@ -59,7 +59,7 @@ use crate::route::NotificationEnd;
 use crate::{
     global_panes::GlobalPaneStrip,
     os_input_output::ServerOsApi,
-    output::{CharacterChunk, KittyImageChunk, Output, SixelImageChunk},
+    output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
     panes::grid::namespace_notification_id,
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
@@ -4842,6 +4842,18 @@ impl Tab {
     }
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.floating_panes.is_overlay(pane_id)
+    }
+    /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
+    /// for callers outside the tab's own render (eg. the global panes, which paint after every
+    /// tab has had its turn).
+    pub fn floating_panes_stack(&self) -> Option<FloatingPanesStack> {
+        self.floating_panes.stack()
+    }
+    /// The coordinates a floating pane was placed with, if it was placed as an overlay. Moving a
+    /// pane between tabs has to carry these along: they are what makes it an overlay in the tab
+    /// it lands in, and what sizes it against the whole surface rather than the tab's viewport.
+    pub fn overlay_coordinates_for(&self, pane_id: PaneId) -> Option<FloatingPaneCoordinates> {
+        self.floating_panes.overlay_coordinates_for(pane_id)
     }
     /// Recompute the tiled panes' content offsets (and the pty sizes that follow from them) against
     /// the current boundary viewport — needed when the global pane strips change without the tab's

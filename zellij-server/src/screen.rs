@@ -5343,8 +5343,16 @@ impl Screen {
                 if repaint_per_group {
                     self.global_panes.set_force_render();
                 }
-                self.global_panes
-                    .render(
+                // the tab loop above left the output pointing at whichever tab rendered last -
+                // point it at this group's tab, or the global panes are clipped against another
+                // tab's floating panes and paint over the ones in front of these clients
+                let previous_stack = output.set_floating_panes_stack(
+                    tab_id
+                        .and_then(|tab_id| self.tabs.get(&tab_id))
+                        .and_then(|tab| tab.floating_panes_stack()),
+                );
+                let group_result = (|| -> Result<()> {
+                    self.global_panes.render(
                         &mut output,
                         &client_ids,
                         &self.mode_info,
@@ -5352,22 +5360,29 @@ impl Screen {
                         self.style,
                         self.session_is_mirrored,
                         multiple_users_exist_in_session,
-                    )
-                    .context(err_context)?;
-                if let Some(tab_id) = tab_id {
-                    // a host display clear wiped these cells along with everything else
-                    let force = output.any_host_display_cleared();
-                    self.fill_unowned_strip_rows(&mut output, tab_id, &layout, &client_ids, force)
-                        .context(err_context)?;
-                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                        tab.render_overlays_after_global_panes(
+                    )?;
+                    if let Some(tab_id) = tab_id {
+                        // a host display clear wiped these cells along with everything else
+                        let force = output.any_host_display_cleared();
+                        self.fill_unowned_strip_rows(
                             &mut output,
-                            None,
-                            &global_focused_clients,
-                        )
-                        .context(err_context)?;
+                            tab_id,
+                            &layout,
+                            &client_ids,
+                            force,
+                        )?;
+                        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                            tab.render_overlays_after_global_panes(
+                                &mut output,
+                                None,
+                                &global_focused_clients,
+                            )?;
+                        }
                     }
-                }
+                    Ok(())
+                })();
+                output.set_floating_panes_stack(previous_stack);
+                group_result.context(err_context)?;
                 if !self.notifications.is_empty() {
                     notification_targets.push((layout.center, client_ids));
                 }
@@ -7521,12 +7536,17 @@ impl Screen {
         let err_context = || "failed to focus_plugin_pane".to_string();
         let mut tab_index_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
+        // an overlay is only an overlay by virtue of the coordinates it was placed with, and the
+        // tab it leaves forgets them - carry them over, or the pane lands in the new tab sized
+        // against its viewport and painted under the global panes
+        let mut overlay_coordinates = None;
         let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
         let all_tabs = self.get_tabs_mut();
         for (tab_index, tab) in all_tabs.iter_mut() {
             if let Some(plugin_pane_id) = tab.find_plugin(&run_plugin) {
                 tab_index_and_plugin_pane_id = Some((*tab_index, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_index != *tab_index {
+                    overlay_coordinates = tab.overlay_coordinates_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
 
@@ -7542,7 +7562,7 @@ impl Screen {
                 new_active_tab.add_floating_pane(
                     plugin_pane_to_move_to_active_tab,
                     pane_id,
-                    None,
+                    overlay_coordinates,
                     true,
                     Some(client_id),
                 )?;

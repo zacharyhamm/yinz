@@ -132,43 +132,64 @@ impl FloatingPanes {
         }
         self.set_force_render();
     }
-    pub fn stack(&self) -> Option<FloatingPanesStack> {
+    /// The panes making up the occlusion stack, bottom-most first.
+    ///
+    /// `stack()` turns these into the geometries `Output` clips against, and `render` sends
+    /// each pane's position in this list as its z-index - `visible_character_chunks` then
+    /// skips that many layers. The two must be derived from the same list: a pane given an
+    /// index that is not its own is clipped against its own geometry and erases itself.
+    fn stack_layer_ids(&self) -> Vec<PaneId> {
         if *self.fullscreen_covers_ui.borrow() {
-            return None;
+            return vec![];
         }
         if let Some(fullscreen_pane_id) = self.fullscreen_pane_id {
             return self
                 .panes
-                .get(&fullscreen_pane_id)
-                .map(|p| FloatingPanesStack {
-                    layers: vec![p.current_geom()],
-                });
+                .contains_key(&fullscreen_pane_id)
+                .then_some(vec![fullscreen_pane_id])
+                .unwrap_or_default();
         }
         if self.panes_are_visible() {
-            let layers: Vec<PaneGeom> = self
-                .z_indices
+            self.z_indices
                 .iter()
-                .filter_map(|pane_id| self.panes.get(pane_id).map(|p| p.position_and_size()))
-                .collect();
-            if layers.is_empty() {
-                None
-            } else {
-                Some(FloatingPanesStack { layers })
-            }
+                .filter(|pane_id| self.panes.contains_key(pane_id))
+                .copied()
+                .collect()
         } else if self.has_pinned_panes() {
-            let layers = self
-                .z_indices
+            self.z_indices
                 .iter()
-                .filter_map(|pane_id| {
+                .filter(|pane_id| {
                     self.panes
                         .get(pane_id)
-                        .map(|p| p.position_and_size())
-                        .filter(|p| p.is_pinned)
+                        .is_some_and(|p| p.position_and_size().is_pinned)
                 })
-                .collect();
-            Some(FloatingPanesStack { layers })
+                .copied()
+                .collect()
         } else {
+            vec![]
+        }
+    }
+    pub fn stack(&self) -> Option<FloatingPanesStack> {
+        // a fullscreen floating pane covers the surface with its own geometry rather than the
+        // one it would return to
+        let fullscreen = self.fullscreen_pane_id.is_some();
+        let layers: Vec<PaneGeom> = self
+            .stack_layer_ids()
+            .iter()
+            .filter_map(|pane_id| {
+                self.panes.get(pane_id).map(|p| {
+                    if fullscreen {
+                        p.current_geom()
+                    } else {
+                        p.position_and_size()
+                    }
+                })
+            })
+            .collect();
+        if layers.is_empty() {
             None
+        } else {
+            Some(FloatingPanesStack { layers })
         }
     }
     pub fn has_pinned_panes(&self) -> bool {
@@ -558,6 +579,10 @@ impl FloatingPanes {
         let regular_fullscreen =
             fullscreen_pane_id.is_some() && !self.floating_fullscreen_covers_ui;
         let pane_frame_style = self.pane_frame_style;
+        // this pass draws only half the panes (the overlays or the rest), so a pane's place
+        // among the panes drawn here is not its place in the occlusion stack - take the index
+        // from the stack itself, or a pane ends up clipped against its own geometry
+        let layer_ids = self.stack_layer_ids();
         let mut floating_panes: Vec<_> = if let Some(fullscreen_pane_id) = fullscreen_pane_id {
             self.panes
                 .iter_mut()
@@ -587,7 +612,12 @@ impl FloatingPanes {
             let b_pos = self.z_indices.iter().position(|id| id == *b_id);
             a_pos.cmp(&b_pos)
         });
-        for (z_index, (kind, pane)) in floating_panes.iter_mut().enumerate() {
+        for (kind, pane) in floating_panes.iter_mut() {
+            // +1 because 0 is reserved for non-floating panes
+            let z_index = layer_ids
+                .iter()
+                .position(|id| id == *kind)
+                .map(|index| index + 1);
             let mut active_panes = active_panes.clone();
             let multiple_users_exist_in_session =
                 { self.connected_clients_in_app.borrow().len() > 1 };
@@ -610,7 +640,7 @@ impl FloatingPanes {
                 self.style,
                 &active_panes,
                 multiple_users_exist_in_session,
-                Some(z_index + 1), // +1 because 0 is reserved for non-floating panes
+                z_index,
                 false,
                 false,
                 should_draw_pane_frames,
@@ -1210,6 +1240,10 @@ impl FloatingPanes {
 
     pub fn is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_coordinates.contains_key(&pane_id)
+    }
+
+    pub fn overlay_coordinates_for(&self, pane_id: PaneId) -> Option<FloatingPaneCoordinates> {
+        self.overlay_coordinates.get(&pane_id).cloned()
     }
 
     pub fn has_overlays(&self) -> bool {
