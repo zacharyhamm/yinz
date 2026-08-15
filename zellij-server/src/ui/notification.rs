@@ -16,63 +16,262 @@ use crate::panes::terminal_character::{
     AnsiCode, RcCharacterStyles, TerminalCharacter, RESET_STYLES,
 };
 
-/// A toast is three rows: top border, text, bottom border.
-pub const NOTIFICATION_ROWS: usize = 3;
-/// The widest a toast gets - borders and padding included - before its text is truncated.
+/// The top and bottom border. A toast is this plus however many rows its text wrapped into.
+pub const NOTIFICATION_BORDER_ROWS: usize = 2;
+/// The most text rows a toast grows to before the rest is truncated away.
+///
+/// A toast is an interruption, not a pager: past a handful of rows the message belongs in a pane.
+/// Six keeps the tallest toast (eight rows with borders) inside even a short viewport.
+pub const MAX_NOTIFICATION_TEXT_ROWS: usize = 6;
+/// The widest a toast gets - borders and padding included - before its text is wrapped.
 const MAX_NOTIFICATION_COLS: usize = 50;
 /// One column of breathing room between the toast and the viewport edge it's anchored to.
 const EDGE_MARGIN: usize = 1;
+/// 2 border columns + 2 padding columns. The one place this arithmetic lives: callers pass the
+/// whole box width around and let this module work out how much of it is text.
+const CHROME_COLS: usize = 4;
+
+/// How tall the box for `text_rows` rows of text is.
+///
+/// Trivial, but the height is computed by the caller (which wraps) and consumed by
+/// [`notification_origins`] (which stacks), and those two must not drift.
+pub fn notification_height(text_rows: usize) -> usize {
+    text_rows + NOTIFICATION_BORDER_ROWS
+}
 
 /// How wide the toast for `text` should be, borders and padding included, clamped to what
 /// `viewport_cols` can hold. Returns `None` if the viewport is too narrow for even a minimal box.
+///
+/// The natural width is the widest of the text's own `\n`-separated segments rather than the width
+/// of the whole string: a multi-line message is never laid out end to end, so measuring it that way
+/// would ask for a box far wider than any row will fill.
 pub fn notification_width(text: &str, viewport_cols: usize) -> Option<usize> {
-    // 2 border columns + 2 padding columns
-    let chrome = 4;
-    let smallest = chrome + 1;
+    let smallest = CHROME_COLS + 1;
     let available = viewport_cols.checked_sub(EDGE_MARGIN * 2)?;
     if available < smallest {
         return None;
     }
-    let natural = text.width().saturating_add(chrome);
+    // `split('\n')` rather than `lines()`: the latter drops a trailing empty segment, and the
+    // wrapping below has to split the same way for the width and the rows to agree.
+    let natural = text
+        .split('\n')
+        .map(|segment| sanitize(segment).width())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(CHROME_COLS);
     Some(natural.clamp(smallest, available.min(MAX_NOTIFICATION_COLS)))
+}
+
+/// The text rows for `text` inside a box `width` columns wide.
+///
+/// Wrapping lives out here rather than inside [`notification_chunks`] because the caller needs the
+/// row count to know how tall the box is *before* anything is painted. Handing the rows back to
+/// `notification_chunks` - rather than the string - is what stops the two from wrapping
+/// independently and disagreeing about where the box ends.
+///
+/// An explicit `\n` starts a new row and leading indentation survives, including on the
+/// continuation rows of a wrapped line, so a caller can send an indented `key: value` block and get
+/// it back looking like one. Words wrap on whitespace; a word too wide for a row is broken at a
+/// column boundary rather than allowed to straddle the border. Past
+/// [`MAX_NOTIFICATION_TEXT_ROWS`] the last row ends in an ellipsis and the rest is dropped.
+///
+/// Never returns an empty `Vec` - empty text is one empty row, which paints the same box a
+/// one-line message does.
+pub fn notification_lines(text: &str, width: usize) -> Vec<String> {
+    let text_width = width.saturating_sub(CHROME_COLS);
+    // `notification_width` never returns a box this small, but a caller passing a raw width must
+    // not be able to make the wrapping below loop forever.
+    if text_width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut rows: Vec<String> = Vec::new();
+    let mut overflowed = false;
+    'segments: for segment in text.split('\n') {
+        for row in wrap_segment(&sanitize(segment), text_width) {
+            if rows.len() == MAX_NOTIFICATION_TEXT_ROWS {
+                overflowed = true;
+                break 'segments;
+            }
+            rows.push(row);
+        }
+    }
+
+    if overflowed {
+        if let Some(last) = rows.last_mut() {
+            *last = ellipsize(last, text_width);
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+/// Control characters are dropped: a toast renders text a plugin or a CLI caller chose, and an
+/// escape sequence in it must not be able to repaint the session. A bare carriage return is the
+/// dangerous one - it would send the rest of the chunk back over the box's own border. Tabs become
+/// four spaces, since a tab measures zero columns here but eight on screen.
+fn sanitize(segment: &str) -> String {
+    let mut sanitized = String::with_capacity(segment.len());
+    for ch in segment.chars() {
+        match ch {
+            '\t' => sanitized.push_str("    "),
+            ch if ch.is_control() => {},
+            ch => sanitized.push(ch),
+        }
+    }
+    sanitized
+}
+
+/// One `\n`-free segment as the rows it occupies. Always at least one row.
+fn wrap_segment(segment: &str, text_width: usize) -> Vec<String> {
+    if segment.width() <= text_width {
+        return vec![segment.to_owned()];
+    }
+
+    let lead = &segment[..segment.len() - segment.trim_start().len()];
+    // Continuation rows are re-indented to match, so a wrapped `  key: value` still reads as one
+    // indented item. Clamped to half the row: a pathological indent must still leave room for text.
+    let indent_width = lead.width().min(text_width / 2);
+    let indent = " ".repeat(indent_width);
+    // The first row keeps the real indentation, unless it alone would fill the row.
+    let mut row = if lead.width() < text_width {
+        lead.to_owned()
+    } else {
+        String::new()
+    };
+    let mut row_width = row.width();
+    let mut has_word = false;
+    let mut rows = Vec::new();
+
+    for word in segment.split_whitespace() {
+        let word_width = word.width();
+        let separator = usize::from(has_word);
+        if row_width + separator + word_width <= text_width {
+            if has_word {
+                row.push(' ');
+                row_width += 1;
+            }
+            row.push_str(word);
+            row_width += word_width;
+            has_word = true;
+            continue;
+        }
+        if has_word {
+            rows.push(std::mem::replace(&mut row, indent.clone()));
+            row_width = indent_width;
+            has_word = false;
+        }
+        // The row is bare indentation now, so anything that still doesn't fit never will.
+        for (index, piece) in hard_split(word, text_width - indent_width)
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                rows.push(std::mem::replace(&mut row, indent.clone()));
+                row_width = indent_width;
+            }
+            row_width += piece.width();
+            row.push_str(&piece);
+            has_word = true;
+        }
+    }
+
+    if has_word || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// A word wider than a row, cut at column boundaries. Breaking *before* the character that would
+/// overflow is what stops a double-width glyph from straddling the border.
+fn hard_split(word: &str, budget: usize) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut piece = String::new();
+    let mut used = 0;
+    for ch in word.chars() {
+        let ch_width = ch.width().unwrap_or(0).max(1);
+        if used + ch_width > budget && !piece.is_empty() {
+            pieces.push(std::mem::take(&mut piece));
+            used = 0;
+        }
+        piece.push(ch);
+        used += ch_width;
+    }
+    if !piece.is_empty() {
+        pieces.push(piece);
+    }
+    pieces
+}
+
+/// `row` cut to leave a column for the ellipsis that replaces what was dropped. At a one-column row
+/// this is the ellipsis alone, which still fits.
+fn ellipsize(row: &str, text_width: usize) -> String {
+    let budget = text_width.saturating_sub(1);
+    let mut truncated = String::new();
+    let mut used = 0;
+    for ch in row.chars() {
+        let ch_width = ch.width().unwrap_or(0).max(1);
+        if used + ch_width > budget {
+            break;
+        }
+        truncated.push(ch);
+        used += ch_width;
+    }
+    truncated.push('…');
+    truncated
 }
 
 /// The top-left corner of each visible notification, index 0 nearest `position`'s corner.
 ///
 /// Stacks grow away from the edge they're anchored to: downwards from a top corner, upwards from a
-/// bottom one. Notifications that would not fit inside `viewport` are dropped, so the result may be
-/// shorter than `count`.
+/// bottom one. `heights` is each notification's own height, newest first - toasts are no longer all
+/// the same height, so a bottom-anchored one is placed by its *bottom* edge and its origin moves up
+/// by its own height as well as by everything already stacked.
+///
+/// Notifications that would not fit inside `viewport` are dropped, so the result may be shorter
+/// than `heights`. The first that doesn't fit ends the stack rather than being skipped over: the
+/// stack has to stay contiguous and in arrival order, and letting a short toast leapfrog a dropped
+/// tall one would make what's on screen stop matching what arrived. One consequence worth naming:
+/// a newest toast taller than the whole viewport hides the ones behind it, which takes a viewport
+/// under eight rows and degrades to the same nothing-fits-nothing-shows this has always done.
 pub fn notification_origins(
     viewport: Viewport,
     position: NotificationPosition,
-    count: usize,
+    heights: &[usize],
     width: usize,
 ) -> Vec<(usize, usize)> {
     if width + EDGE_MARGIN * 2 > viewport.cols {
         return vec![];
     }
-    let visible = count.min(viewport.rows / NOTIFICATION_ROWS);
     let x = if position.is_left() {
         viewport.x + EDGE_MARGIN
     } else {
         viewport.x + viewport.cols - width - EDGE_MARGIN
     };
-    (0..visible)
-        .map(|i| {
-            let offset = i * NOTIFICATION_ROWS;
-            let y = if position.is_top() {
-                viewport.y + offset
-            } else {
-                viewport.y + viewport.rows - NOTIFICATION_ROWS - offset
-            };
-            (x, y)
-        })
-        .collect()
+    let mut used = 0;
+    let mut origins = Vec::with_capacity(heights.len());
+    for height in heights {
+        if used + height > viewport.rows {
+            break;
+        }
+        let y = if position.is_top() {
+            viewport.y + used
+        } else {
+            viewport.y + viewport.rows - used - height
+        };
+        origins.push((x, y));
+        used += height;
+    }
+    origins
 }
 
 /// The chunks for one toast, its top-left corner at (`x`, `y`) and `width` columns wide.
+///
+/// `lines` comes from [`notification_lines`] called with the same `width`.
 pub fn notification_chunks(
-    text: &str,
+    lines: &[String],
     x: usize,
     y: usize,
     width: usize,
@@ -99,43 +298,42 @@ pub fn notification_chunks(
         characters
     };
 
-    let mut text_row = Vec::with_capacity(width);
-    text_row.push(TerminalCharacter::new_styled('│', border.clone()));
-    text_row.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
-    // ponytail: single line, truncated with an ellipsis. Wrap into a taller box if messages turn
-    // out to be long in practice.
     let text_width = inner_width.saturating_sub(2);
-    let mut used = 0;
-    let truncated = text.width() > text_width;
-    let budget = if truncated {
-        text_width.saturating_sub(1)
-    } else {
-        text_width
-    };
-    for character in text.chars() {
-        let character_width = character.width().unwrap_or(0).max(1);
-        if used + character_width > budget {
-            break;
+    let text_row = |line: &str| -> Vec<TerminalCharacter> {
+        let mut characters = Vec::with_capacity(width);
+        characters.push(TerminalCharacter::new_styled('│', border.clone()));
+        characters.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
+        let mut used = 0;
+        for character in line.chars() {
+            let character_width = character.width().unwrap_or(0).max(1);
+            // `notification_lines` has already fitted the row; this only stops a caller that
+            // wrapped to a different width from painting over the border.
+            if used + character_width > text_width {
+                break;
+            }
+            characters.push(TerminalCharacter::new_styled(character, fill.clone()));
+            used += character_width;
         }
-        text_row.push(TerminalCharacter::new_styled(character, fill.clone()));
-        used += character_width;
-    }
-    if truncated {
-        text_row.push(TerminalCharacter::new_styled('…', fill.clone()));
-        used += 1;
-    }
-    while used < text_width {
-        text_row.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
-        used += 1;
-    }
-    text_row.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
-    text_row.push(TerminalCharacter::new_styled('│', border.clone()));
+        while used < text_width {
+            characters.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
+            used += 1;
+        }
+        characters.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
+        characters.push(TerminalCharacter::new_styled('│', border.clone()));
+        characters
+    };
 
-    vec![
-        CharacterChunk::new(border_row('╭', '╮'), x, y),
-        CharacterChunk::new(text_row, x, y + 1),
-        CharacterChunk::new(border_row('╰', '╯'), x, y + 2),
-    ]
+    let mut chunks = Vec::with_capacity(lines.len() + NOTIFICATION_BORDER_ROWS);
+    chunks.push(CharacterChunk::new(border_row('╭', '╮'), x, y));
+    for (offset, line) in lines.iter().enumerate() {
+        chunks.push(CharacterChunk::new(text_row(line), x, y + 1 + offset));
+    }
+    chunks.push(CharacterChunk::new(
+        border_row('╰', '╯'),
+        x,
+        y + 1 + lines.len(),
+    ));
+    chunks
 }
 
 #[cfg(test)]
@@ -151,6 +349,19 @@ mod tests {
         }
     }
 
+    fn rows(chunks: &[CharacterChunk]) -> Vec<String> {
+        chunks
+            .iter()
+            .map(|chunk| {
+                chunk
+                    .terminal_characters
+                    .iter()
+                    .map(|c| c.character)
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
     fn notifications_stack_away_from_the_edge_they_are_anchored_to() {
         let viewport = viewport();
@@ -161,7 +372,7 @@ mod tests {
             NotificationPosition::BottomLeft,
             NotificationPosition::BottomRight,
         ] {
-            let origins = notification_origins(viewport, position, 3, width);
+            let origins = notification_origins(viewport, position, &[3, 3, 3], width);
             assert_eq!(origins.len(), 3, "{:?}", position);
 
             let expected_x = if position.is_left() {
@@ -185,7 +396,7 @@ mod tests {
             } else {
                 assert_eq!(
                     origins[0].1,
-                    viewport.y + viewport.rows - NOTIFICATION_ROWS,
+                    viewport.y + viewport.rows - 3,
                     "{:?}",
                     position
                 );
@@ -206,7 +417,7 @@ mod tests {
             rows: 7, // room for 2 toasts, not 5
             cols: 80,
         };
-        let origins = notification_origins(short, NotificationPosition::TopLeft, 5, 20);
+        let origins = notification_origins(short, NotificationPosition::TopLeft, &[3; 5], 20);
         assert_eq!(origins.len(), 2);
 
         let narrow = Viewport {
@@ -215,7 +426,61 @@ mod tests {
             rows: 30,
             cols: 10,
         };
-        assert!(notification_origins(narrow, NotificationPosition::TopLeft, 1, 20).is_empty());
+        assert!(notification_origins(narrow, NotificationPosition::TopLeft, &[3], 20).is_empty());
+    }
+
+    /// Heights differ now, so the stack is an accumulation rather than a multiplication.
+    #[test]
+    fn toasts_of_different_heights_stack_without_overlapping_or_gaps() {
+        let viewport = viewport();
+        let heights = [5, 3, 4];
+
+        let top = notification_origins(viewport, NotificationPosition::TopLeft, &heights, 20);
+        assert_eq!(top.len(), 3);
+        for (index, height) in heights.iter().enumerate().take(2) {
+            assert_eq!(
+                top[index].1 + height,
+                top[index + 1].1,
+                "toast {index} should end exactly where the next one starts"
+            );
+        }
+
+        let bottom = notification_origins(viewport, NotificationPosition::BottomLeft, &heights, 20);
+        assert_eq!(bottom.len(), 3);
+        for (index, _) in heights.iter().enumerate().take(2) {
+            assert_eq!(
+                bottom[index + 1].1 + heights[index + 1],
+                bottom[index].1,
+                "toast {index} should start exactly where the next one ends"
+            );
+        }
+    }
+
+    /// The easy one to get wrong: a taller toast at a bottom corner grows upwards, so its own
+    /// height moves its origin rather than leaving it hanging off the bottom.
+    #[test]
+    fn a_bottom_anchored_toast_is_positioned_by_its_bottom_edge() {
+        let viewport = viewport();
+        for height in [3, 5, 8] {
+            let origins =
+                notification_origins(viewport, NotificationPosition::BottomRight, &[height], 20);
+            assert_eq!(
+                origins[0].1 + height,
+                viewport.y + viewport.rows,
+                "a {height}-row toast should end on the last viewport row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_toast_taller_than_the_viewport_is_dropped() {
+        let short = Viewport {
+            x: 0,
+            y: 0,
+            rows: 6,
+            cols: 80,
+        };
+        assert!(notification_origins(short, NotificationPosition::TopLeft, &[8], 20).is_empty());
     }
 
     #[test]
@@ -230,11 +495,108 @@ mod tests {
         assert_eq!(notification_width("hello", 3), None);
     }
 
+    /// Measuring the whole string would ask for a box as wide as every line laid end to end.
     #[test]
-    fn chunks_are_three_rows_of_exactly_the_requested_width() {
+    fn width_is_the_widest_explicit_line_rather_than_the_whole_string() {
+        assert_eq!(notification_width("hello\nhi\nthere", 80), Some(9));
+    }
+
+    #[test]
+    fn a_short_single_line_message_wraps_to_exactly_one_row() {
+        assert_eq!(
+            notification_lines("build finished", 40),
+            vec!["build finished"]
+        );
+    }
+
+    #[test]
+    fn explicit_newlines_start_a_new_row() {
+        assert_eq!(
+            notification_lines("hocus needs confirmation\nsend_input", 40),
+            vec!["hocus needs confirmation", "send_input"]
+        );
+    }
+
+    #[test]
+    fn a_blank_line_between_paragraphs_is_kept_as_a_blank_row() {
+        assert_eq!(notification_lines("one\n\ntwo", 40), vec!["one", "", "two"]);
+    }
+
+    #[test]
+    fn words_wrap_on_whitespace_rather_than_mid_word() {
+        // 14 columns of text: "the quick" fits, "brown" does not.
+        assert_eq!(
+            notification_lines("the quick brown fox", 18),
+            vec!["the quick", "brown fox"]
+        );
+    }
+
+    #[test]
+    fn leading_indentation_survives_wrapping() {
+        let lines = notification_lines("  text: git push --force --all", 18);
+        assert_eq!(lines, vec!["  text: git", "  push --force", "  --all"]);
+    }
+
+    #[test]
+    fn a_word_longer_than_a_row_is_hard_broken() {
+        assert_eq!(
+            notification_lines(&"x".repeat(20), 12),
+            vec!["xxxxxxxx", "xxxxxxxx", "xxxx"]
+        );
+    }
+
+    /// A double-width glyph that straddled the border would paint over the box's own frame.
+    #[test]
+    fn wide_characters_never_straddle_the_box_border() {
+        // 7 columns of text, glyphs 2 columns each: three fit, the fourth starts a row.
+        let lines = notification_lines(&"日".repeat(4), 11);
+        assert_eq!(lines, vec!["日日日", "日"]);
+        for line in &lines {
+            assert!(line.width() <= 7, "{line:?} overflows the row");
+        }
+    }
+
+    #[test]
+    fn text_past_the_row_cap_is_truncated_with_an_ellipsis_on_the_last_row() {
+        let many = (0..MAX_NOTIFICATION_TEXT_ROWS + 4)
+            .map(|index| format!("row {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let lines = notification_lines(&many, 20);
+
+        assert_eq!(lines.len(), MAX_NOTIFICATION_TEXT_ROWS);
+        assert!(
+            lines
+                .last()
+                .expect("capped at a non-zero cap")
+                .ends_with('…'),
+            "got {:?}",
+            lines.last()
+        );
+    }
+
+    /// Truncate-then-append is what makes the narrowest possible row work without a special case.
+    #[test]
+    fn the_ellipsis_still_fits_a_one_column_row() {
+        let many = "a\n".repeat(MAX_NOTIFICATION_TEXT_ROWS + 2);
+        let lines = notification_lines(&many, CHROME_COLS + 1);
+        assert_eq!(lines.last().map(String::as_str), Some("…"));
+    }
+
+    #[test]
+    fn control_characters_are_dropped_so_a_message_cannot_repaint_the_session() {
+        assert_eq!(
+            notification_lines("safe\u{1b}[2Jtext\rmore", 40),
+            vec!["safe[2Jtextmore"]
+        );
+    }
+
+    #[test]
+    fn a_single_line_toast_is_still_three_rows_of_exactly_the_requested_width() {
         let style = Style::default();
-        let chunks = notification_chunks("hello", 4, 9, 20, &style);
-        assert_eq!(chunks.len(), NOTIFICATION_ROWS);
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        assert_eq!(chunks.len(), notification_height(1));
         for (offset, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.x, 4);
             assert_eq!(chunk.y, 9 + offset);
@@ -252,15 +614,49 @@ mod tests {
     }
 
     #[test]
-    fn long_text_is_truncated_with_an_ellipsis_and_still_fits() {
+    fn every_row_of_a_multi_line_toast_spans_the_full_width() {
         let style = Style::default();
-        let chunks = notification_chunks("a message far too long for this box", 0, 0, 20, &style);
-        let text_row: String = chunks[1]
-            .terminal_characters
-            .iter()
-            .map(|c| c.character)
-            .collect();
-        assert_eq!(text_row.width(), 20);
-        assert!(text_row.contains('…'), "got {:?}", text_row);
+        let lines = notification_lines("one\ntwo three\n  four", 20);
+        let chunks = notification_chunks(&lines, 0, 0, 20, &style);
+
+        assert_eq!(chunks.len(), notification_height(lines.len()));
+        for (offset, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.y, offset, "rows should be contiguous");
+            assert_eq!(
+                chunk
+                    .terminal_characters
+                    .iter()
+                    .map(|c| c.width())
+                    .sum::<usize>(),
+                20,
+                "row {offset} should span the full width"
+            );
+        }
+    }
+
+    /// The shape this whole change exists for: hocus's confirmation block, rendered as written.
+    #[test]
+    fn the_hocus_confirmation_block_renders_as_written() {
+        let style = Style::default();
+        let text = "hocus needs confirmation\nsend_input\n  pane_id: 3\n  text: git push";
+        let width = notification_width(text, 80).expect("wide enough");
+        let lines = notification_lines(text, width);
+
+        assert_eq!(
+            lines,
+            vec![
+                "hocus needs confirmation",
+                "send_input",
+                "  pane_id: 3",
+                "  text: git push",
+            ]
+        );
+
+        let painted = rows(&notification_chunks(&lines, 0, 0, width, &style));
+        assert_eq!(painted.len(), notification_height(4));
+        assert!(painted[0].starts_with('╭'), "got {:?}", painted[0]);
+        assert_eq!(painted[1], "│ hocus needs confirmation │");
+        assert_eq!(painted[3], "│   pane_id: 3             │");
+        assert!(painted[5].starts_with('╰'), "got {:?}", painted[5]);
     }
 }

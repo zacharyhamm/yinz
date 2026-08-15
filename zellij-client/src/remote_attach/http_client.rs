@@ -48,23 +48,21 @@ impl HttpClientWithCookies {
         let mut req = request.into();
 
         // Add cookies to request
-        if let Ok(cookies) = self.cookies.lock() {
-            if !cookies.is_empty() {
-                let cookie_header = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                req.headers_mut()
-                    .insert("cookie", cookie_header.parse().unwrap());
+        if let Some(cookie_header) = self.get_cookie_header() {
+            match cookie_header.parse() {
+                Ok(value) => {
+                    req.headers_mut().insert("cookie", value);
+                },
+                Err(e) => log::warn!("dropping unrepresentable cookie header: {}", e),
             }
         }
 
         let response = self.client.send_async(req).await?;
 
-        // Extract and store cookies from response
-        if let Some(set_cookie_headers) = response.headers().get_all("set-cookie").iter().next() {
-            if let Ok(cookie_str) = set_cookie_headers.to_str() {
+        // Extract and store cookies from response. A response may carry
+        // several Set-Cookie headers, one per cookie.
+        for set_cookie in response.headers().get_all("set-cookie").iter() {
+            if let Ok(cookie_str) = set_cookie.to_str() {
                 self.parse_and_store_cookies(cookie_str);
             }
         }
@@ -91,18 +89,20 @@ impl HttpClientWithCookies {
         }
     }
 
+    /// The stored cookies rendered as one `Cookie:` header value, or `None`
+    /// when there is nothing to send.
     pub fn get_cookie_header(&self) -> Option<String> {
-        if let Ok(cookies) = self.cookies.lock() {
-            if !cookies.is_empty() {
-                let cookie_header = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Some(cookie_header);
-            }
+        let cookies = self.cookies.lock().ok()?;
+        if cookies.is_empty() {
+            return None;
         }
-        None
+        Some(
+            cookies
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
 
     /// Extract a specific cookie value

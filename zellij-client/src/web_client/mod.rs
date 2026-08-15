@@ -1,5 +1,3 @@
-pub mod control_message;
-
 pub(crate) mod authentication;
 mod connection_manager;
 mod host_query_seed;
@@ -44,6 +42,7 @@ use http_handlers::{
 };
 use ipc_listener::listen_to_web_server_instructions;
 
+use crate::web_protocol::endpoints;
 use types::{
     AppState, ClientOsApiFactory, ConnectionTable, RealClientOsApiFactory, RealSessionManager,
     SessionManager,
@@ -51,6 +50,26 @@ use types::{
 use utils::should_use_https;
 use uuid::Uuid;
 use websocket_handlers::{ws_handler_control, ws_handler_terminal};
+
+#[allow(clippy::too_many_arguments)]
+/// Load the TLS material for the web server, if it was configured.
+///
+/// The cert and key are all-or-nothing: one without the other is a
+/// configuration error rather than a reason to silently serve plain HTTP.
+fn build_tls_config(
+    runtime: &Runtime,
+    web_server_cert: Option<PathBuf>,
+    web_server_key: Option<PathBuf>,
+) -> Result<Option<RustlsConfig>, String> {
+    match (web_server_cert, web_server_key) {
+        (Some(cert), Some(key)) => runtime
+            .block_on(async move { RustlsConfig::from_pem_file(cert, key).await })
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        (None, None) => Ok(None),
+        _ => Err("Must specify both web_server_cert and web_server_key".to_owned()),
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn start_web_client(
@@ -113,23 +132,10 @@ pub fn start_web_client(
         let listener = runtime.block_on(async move {
             std::net::TcpListener::bind(format!("{}:{}", web_server_ip, web_server_port))
         });
-        let tls_config = match (web_server_cert, web_server_key) {
-            (Some(web_server_cert), Some(web_server_key)) => {
-                let tls_config = runtime.block_on(async move {
-                    RustlsConfig::from_pem_file(web_server_cert, web_server_key).await
-                });
-                let tls_config = match tls_config {
-                    Ok(tls_config) => tls_config,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        std::process::exit(2);
-                    },
-                };
-                Some(tls_config)
-            },
-            (None, None) => None,
-            _ => {
-                eprintln!("Must specify both web_server_cert and web_server_key");
+        let tls_config = match build_tls_config(&runtime, web_server_cert, web_server_key) {
+            Ok(tls_config) => tls_config,
+            Err(e) => {
+                eprintln!("{}", e);
                 std::process::exit(2);
             },
         };
@@ -221,17 +227,18 @@ pub async fn serve_web_client(
 
     let is_https = state.is_https;
     let app = Router::new()
-        .route("/ws/control", any(ws_handler_control))
-        .route("/ws/terminal", any(ws_handler_terminal))
-        .route("/ws/terminal/{session}", any(ws_handler_terminal))
-        .route("/session", post(create_new_client))
-        .route("/session-list", get(list_sessions_handler))
+        .route(endpoints::WS_CONTROL, any(ws_handler_control))
+        .route(endpoints::WS_TERMINAL, any(ws_handler_terminal))
+        .route(endpoints::WS_TERMINAL_WITH_SESSION, any(ws_handler_terminal))
+        .route(endpoints::SESSION, post(create_new_client))
+        .route(endpoints::SESSION_LIST, get(list_sessions_handler))
+        // Only the routes above this layer are authenticated.
         .route_layer(middleware::from_fn(auth_middleware))
-        .route("/", get(serve_html))
-        .route("/{session}", get(serve_html))
-        .route("/assets/{*path}", get(get_static_asset))
-        .route("/command/login", post(login_handler))
-        .route("/info/version", get(version_handler))
+        .route(endpoints::ROOT, get(serve_html))
+        .route(endpoints::SESSION_PAGE, get(serve_html))
+        .route(endpoints::STATIC_ASSETS, get(get_static_asset))
+        .route(endpoints::LOGIN, post(login_handler))
+        .route(endpoints::VERSION, get(version_handler))
         .with_state(state)
         .layer(axum::middleware::from_fn(move |request, next: axum::middleware::Next| {
             async move {
@@ -307,26 +314,7 @@ fn daemonize_web_server(
         .privileged_action(
             move || -> Result<(Runtime, std::net::TcpListener, Option<RustlsConfig>), String> {
                 let runtime = Runtime::new().map_err(|e| e.to_string())?;
-                let tls_config = match (web_server_cert, web_server_key) {
-                    (Some(web_server_cert), Some(web_server_key)) => {
-                        let tls_config = runtime.block_on(async move {
-                            RustlsConfig::from_pem_file(web_server_cert, web_server_key).await
-                        });
-                        let tls_config = match tls_config {
-                            Ok(tls_config) => tls_config,
-                            Err(e) => {
-                                return Err(e.to_string());
-                            },
-                        };
-                        Some(tls_config)
-                    },
-                    (None, None) => None,
-                    _ => {
-                        return Err(
-                            "Must specify both web_server_cert and web_server_key".to_owned()
-                        )
-                    },
-                };
+                let tls_config = build_tls_config(&runtime, web_server_cert, web_server_key)?;
 
                 let listener = runtime.block_on(async move {
                     std::net::TcpListener::bind(format!("{}:{}", web_server_ip, web_server_port))

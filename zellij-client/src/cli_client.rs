@@ -6,7 +6,7 @@ use std::process;
 use std::str::FromStr;
 use std::{fs, path::PathBuf};
 
-use crate::os_input_output::ClientOsApi;
+use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
 use zellij_utils::{
     cli::{SubscribeCli, SubscribeFormat},
@@ -17,7 +17,7 @@ use zellij_utils::{
 };
 
 pub fn start_cli_client(
-    mut os_input: Box<dyn ClientOsApi>,
+    mut os_input: Box<dyn CliClientOs>,
     session_name: &str,
     actions: Vec<Action>,
 ) -> i32 {
@@ -82,7 +82,7 @@ pub fn start_cli_client(
 
 #[allow(clippy::too_many_arguments)]
 fn pipe_client(
-    os_input: &mut Box<dyn ClientOsApi>,
+    os_input: &mut Box<dyn CliClientOs>,
     pipe_id: String,
     mut name: Option<String>,
     mut payload: Option<String>,
@@ -211,7 +211,7 @@ fn pipe_client(
 }
 
 fn individual_messages_client(
-    os_input: &mut Box<dyn ClientOsApi>,
+    os_input: &mut Box<dyn CliClientOs>,
     action: Action,
     pane_id: Option<u32>,
 ) -> Option<i32> {
@@ -260,7 +260,7 @@ fn individual_messages_client(
 }
 
 pub fn start_subscribe_client(
-    os_input: Box<dyn ClientOsApi>,
+    os_input: Box<dyn CliClientOs>,
     session_name: &str,
     subscribe_cli: SubscribeCli,
 ) {

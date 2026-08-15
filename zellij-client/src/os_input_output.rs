@@ -97,9 +97,8 @@ impl std::fmt::Debug for ClientOsInputOutput {
     }
 }
 
-/// The `ClientOsApi` trait represents an abstract interface to the features of an operating system that
-/// Zellij client requires.
-pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
+/// Control over the controlling terminal's state.
+pub trait TtyControl {
     /// Returns the size of the terminal.
     fn get_terminal_size(&self) -> Size;
     /// Set the terminal to
@@ -108,49 +107,51 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     /// Set the terminal to
     /// [cooked mode](https://en.wikipedia.org/wiki/Terminal_mode).
     fn unset_raw_mode(&self) -> Result<(), std::io::Error>;
+    fn load_palette(&self) -> Palette;
+    fn enable_mouse(&self) -> Result<()>;
+    fn disable_mouse(&self) -> Result<()>;
+}
+
+/// Access to the process's standard streams.
+pub trait StdioAccess {
     /// Returns the writer that allows writing to standard output.
     fn get_stdout_writer(&self) -> Box<dyn io::Write>;
     /// Returns a BufReader that allows to read from STDIN line by line, also locks STDIN
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead>;
+    /// Returns the raw contents of standard input.
+    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str>;
     fn stdin_is_terminal(&self) -> bool {
         true
     }
     fn stdout_is_terminal(&self) -> bool {
         true
     }
-    fn update_session_name(&mut self, new_session_name: String);
-    /// Returns the raw contents of standard input.
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str>;
-    /// Returns a [`Box`] pointer to this [`ClientOsApi`] struct.
-    fn box_clone(&self) -> Box<dyn ClientOsApi>;
+    /// Returns an async stdin reader that can be polled in tokio::select
+    fn get_async_stdin_reader(&self) -> Box<dyn AsyncStdin> {
+        Box::new(AsyncStdinReader::new())
+    }
+}
+
+/// The IPC link to the session's server process.
+pub trait ServerConnection {
     /// Sends a message to the server.
     fn send_to_server(&self, msg: ClientToServerMsg);
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
     fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)>;
-    fn handle_signals(
-        &self,
-        sigwinch_cb: Box<dyn Fn()>,
-        quit_cb: Box<dyn Fn()>,
-        resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    );
     /// Establish a connection with the server socket.
     fn connect_to_server(&self, path: &Path);
+    fn update_session_name(&mut self, new_session_name: String);
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
         crate::spawn_server(socket_path, debug)
     }
-    fn should_install_panic_hook(&self) -> bool {
-        true
-    }
-    fn load_palette(&self) -> Palette;
-    fn enable_mouse(&self) -> Result<()>;
-    fn disable_mouse(&self) -> Result<()>;
+}
+
+/// Signals and other process-level environment the client reacts to.
+pub trait SignalSource {
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>);
     fn env_variable(&self, _name: &str) -> Option<String> {
         None
-    }
-    /// Returns an async stdin reader that can be polled in tokio::select
-    fn get_async_stdin_reader(&self) -> Box<dyn AsyncStdin> {
-        Box::new(AsyncStdinReader::new())
     }
     /// Returns an async signal listener that can be polled in tokio::select
     fn get_async_signal_listener(&self) -> io::Result<Box<dyn AsyncSignals>> {
@@ -158,7 +159,28 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     }
 }
 
-impl ClientOsApi for ClientOsInputOutput {
+/// What the CLI client needs: a link to the server, the standard streams,
+/// and the environment. It never touches the tty, so it does not ask for it.
+pub trait CliClientOs: ServerConnection + StdioAccess + SignalSource {}
+impl<T: ServerConnection + StdioAccess + SignalSource + ?Sized> CliClientOs for T {}
+
+/// The `ClientOsApi` trait represents an abstract interface to the features of an operating system that
+/// Zellij client requires.
+///
+/// It is the union of the four capability traits above. Code that needs the
+/// whole client environment takes this; code that needs one slice of it should
+/// take the narrower trait, which `dyn ClientOsApi` upcasts to.
+pub trait ClientOsApi:
+    TtyControl + StdioAccess + ServerConnection + SignalSource + Send + Sync + std::fmt::Debug
+{
+    /// Returns a [`Box`] pointer to this [`ClientOsApi`] struct.
+    fn box_clone(&self) -> Box<dyn ClientOsApi>;
+    fn should_install_panic_hook(&self) -> bool {
+        true
+    }
+}
+
+impl TtyControl for ClientOsInputOutput {
     fn get_terminal_size(&self) -> Size {
         get_terminal_size()
     }
@@ -168,12 +190,32 @@ impl ClientOsApi for ClientOsInputOutput {
     fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
         crossterm::terminal::disable_raw_mode()
     }
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new((*self).clone())
+    fn load_palette(&self) -> Palette {
+        // this was removed because termbg doesn't release stdin in certain scenarios (we know of
+        // some terminals (including FreeBSD): https://github.com/zellij-org/zellij/issues/538
+        //
+        // let palette = default_palette();
+        // let timeout = std::time::Duration::from_millis(100);
+        // if let Ok(rgb) = termbg::rgb(timeout) {
+        //     palette.bg = PaletteColor::Rgb((rgb.r as u8, rgb.g as u8, rgb.b as u8));
+        //     // TODO: also dynamically get all other colors from the user's terminal
+        //     // this should be done in the same method (OSC ]11), but there might be other
+        //     // considerations here, hence using the library
+        // };
+        default_palette()
     }
-    fn update_session_name(&mut self, new_session_name: String) {
-        *self.session_name.lock().unwrap() = Some(new_session_name);
+    fn enable_mouse(&self) -> Result<()> {
+        let mut stdout = self.get_stdout_writer();
+        enable_mouse_support(&mut *stdout)
     }
+
+    fn disable_mouse(&self) -> Result<()> {
+        let mut stdout = self.get_stdout_writer();
+        disable_mouse_support(&mut *stdout)
+    }
+}
+
+impl StdioAccess for ClientOsInputOutput {
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         let session_name_at_calltime = { self.session_name.lock().unwrap().clone() };
         // here we wait for a lock in case another thread is holding stdin
@@ -231,6 +273,12 @@ impl ClientOsApi for ClientOsInputOutput {
         let stdout = ::std::io::stdout();
         stdout.is_terminal()
     }
+}
+
+impl ServerConnection for ClientOsInputOutput {
+    fn update_session_name(&mut self, new_session_name: String) {
+        *self.session_name.lock().unwrap() = Some(new_session_name);
+    }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
         match self.send_instructions_to_server.lock().unwrap().as_mut() {
@@ -250,31 +298,6 @@ impl ClientOsApi for ClientOsInputOutput {
             .unwrap()
             .recv_server_msg()
     }
-    fn handle_signals(
-        &self,
-        sigwinch_cb: Box<dyn Fn()>,
-        quit_cb: Box<dyn Fn()>,
-        resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    ) {
-        let mut sigwinch_cb_timestamp = time::Instant::now();
-        let signals = BlockingSignalIterator::new(resize_receiver).unwrap();
-        for event in signals {
-            match event {
-                SignalEvent::Resize => {
-                    // throttle sigwinch_cb calls, reduce excessive renders while resizing
-                    if sigwinch_cb_timestamp.elapsed() < SIGWINCH_CB_THROTTLE_DURATION {
-                        thread::sleep(SIGWINCH_CB_THROTTLE_DURATION);
-                    }
-                    sigwinch_cb_timestamp = time::Instant::now();
-                    sigwinch_cb();
-                },
-                SignalEvent::Quit => {
-                    quit_cb();
-                    break;
-                },
-            }
-        }
-    }
     fn connect_to_server(&self, path: &Path) {
         let socket;
         loop {
@@ -292,32 +315,38 @@ impl ClientOsApi for ClientOsInputOutput {
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
     }
-    fn load_palette(&self) -> Palette {
-        // this was removed because termbg doesn't release stdin in certain scenarios (we know of
-        // some terminals (including FreeBSD): https://github.com/zellij-org/zellij/issues/538
-        //
-        // let palette = default_palette();
-        // let timeout = std::time::Duration::from_millis(100);
-        // if let Ok(rgb) = termbg::rgb(timeout) {
-        //     palette.bg = PaletteColor::Rgb((rgb.r as u8, rgb.g as u8, rgb.b as u8));
-        //     // TODO: also dynamically get all other colors from the user's terminal
-        //     // this should be done in the same method (OSC ]11), but there might be other
-        //     // considerations here, hence using the library
-        // };
-        default_palette()
-    }
-    fn enable_mouse(&self) -> Result<()> {
-        let mut stdout = self.get_stdout_writer();
-        enable_mouse_support(&mut *stdout)
-    }
+}
 
-    fn disable_mouse(&self) -> Result<()> {
-        let mut stdout = self.get_stdout_writer();
-        disable_mouse_support(&mut *stdout)
+impl SignalSource for ClientOsInputOutput {
+    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
+        let mut sigwinch_cb_timestamp = time::Instant::now();
+        let signals = BlockingSignalIterator::new().unwrap();
+        for event in signals {
+            match event {
+                SignalEvent::Resize => {
+                    // throttle sigwinch_cb calls, reduce excessive renders while resizing
+                    if sigwinch_cb_timestamp.elapsed() < SIGWINCH_CB_THROTTLE_DURATION {
+                        thread::sleep(SIGWINCH_CB_THROTTLE_DURATION);
+                    }
+                    sigwinch_cb_timestamp = time::Instant::now();
+                    sigwinch_cb();
+                },
+                SignalEvent::Quit => {
+                    quit_cb();
+                    break;
+                },
+            }
+        }
     }
 
     fn env_variable(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
+    }
+}
+
+impl ClientOsApi for ClientOsInputOutput {
+    fn box_clone(&self) -> Box<dyn ClientOsApi> {
+        Box::new((*self).clone())
     }
 }
 
@@ -338,13 +367,7 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
 }
 
 pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
-    let reading_from_stdin = Arc::new(Mutex::new(None));
-    Ok(ClientOsInputOutput {
-        send_instructions_to_server: Arc::new(Mutex::new(None)),
-        receive_instructions_from_server: Arc::new(Mutex::new(None)),
-        reading_from_stdin,
-        session_name: Arc::new(Mutex::new(None)),
-    })
+    get_client_os_input()
 }
 
 pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;

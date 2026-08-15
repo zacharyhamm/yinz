@@ -22,6 +22,13 @@ impl State {
             {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
+                // The prompt renders into the sidebar, and the sidebar is very
+                // often not the thing being looked at: Esc hides it, a parked
+                // chat can be confirming while another is in the foreground, and
+                // a scheduled run with `show: false` never opens it at all. A
+                // toast is drawn over whatever pane you are actually in, so the
+                // ask cannot stall unseen with every other job queued behind it.
+                notify(&tools::confirmation_toast(&call));
                 return;
             }
             if tools::needs_confirmation(&call.name) {

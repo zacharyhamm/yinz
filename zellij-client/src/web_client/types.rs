@@ -1,5 +1,4 @@
 use axum::extract::ws::Message;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,9 +6,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::os_input_output::ClientOsApi;
-use crate::web_client::control_message::SetConfigPayload;
 use crate::web_client::session_management::spawn_new_session;
+use crate::web_protocol::http::WebSessionInfo;
 use std::path::{Path, PathBuf};
+use zellij_utils::input::actions::Action;
 use zellij_utils::{
     input::{config::Config, options::Options},
     ipc::ClientToServerMsg,
@@ -227,60 +227,38 @@ pub struct AppState {
     pub pending_welcome_sessions: PendingWelcomeSessions,
 }
 
-#[derive(Serialize)]
-pub struct CreateClientIdResponse {
-    pub web_client_id: String,
-    pub is_read_only: bool,
-    pub session_name: String,
-    pub config: SetConfigPayload,
-}
+impl AppState {
+    /// The client's own view of the OS, cloned out from under the table lock.
+    ///
+    /// Every websocket frame needs this, and holding the lock while handling
+    /// the frame would serialise all connections, so it is always cloned.
+    pub fn os_api_for(&self, web_client_id: &str) -> Option<Box<dyn ClientOsApi>> {
+        self.connection_table
+            .lock()
+            .unwrap()
+            .get_client_os_api(web_client_id)
+            .cloned()
+    }
 
-#[derive(Deserialize)]
-pub struct SessionQuery {
-    pub session: Option<String>,
-    pub welcome: Option<bool>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct WebSessionInfo {
-    pub name: String,
-    pub web_clients_allowed: bool,
-    pub tab_count: usize,
-    pub pane_count: usize,
-    pub connected_clients: usize,
-    pub creation_secs_ago: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct SessionListResponse {
-    pub sessions: Vec<WebSessionInfo>,
-}
-
-#[derive(Deserialize)]
-pub struct TerminalParams {
-    pub web_client_id: String,
-    pub rows: Option<u16>,
-    pub cols: Option<u16>,
-    pub cell_width: Option<u16>,
-    pub cell_height: Option<u16>,
-}
-
-#[derive(Deserialize)]
-pub struct ControlParams {
-    pub web_client_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    pub auth_token: String,
-    pub remember_me: Option<bool>,
-}
-
-#[derive(Serialize)]
-pub struct LoginResponse {
-    pub success: bool,
-    pub message: String,
+    /// Whether `session_token_hash` is the token that created `web_client_id`.
+    pub fn client_is_owned_by(&self, web_client_id: &str, session_token_hash: &str) -> bool {
+        self.connection_table
+            .lock()
+            .unwrap()
+            .verify_client_ownership(web_client_id, session_token_hash)
+    }
 }
 
 pub const BRACKETED_PASTE_START: [u8; 6] = [27, 91, 50, 48, 48, 126]; // \u{1b}[200~
 pub const BRACKETED_PASTE_END: [u8; 6] = [27, 91, 50, 48, 49, 126]; // \u{1b}[201~
+
+/// A plain action from a web client: not tied to a terminal, not attributed
+/// to a particular client id, and never from the CLI.
+pub fn client_action(action: Action) -> ClientToServerMsg {
+    ClientToServerMsg::Action {
+        action,
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    }
+}

@@ -1,13 +1,14 @@
 use crate::web_client::authentication::SessionTokenHash;
-use crate::web_client::control_message::{
-    TerminalMetricsPayload, WebClientToWebServerControlMessage,
-    WebClientToWebServerControlMessagePayload,
-};
 use crate::web_client::message_handlers::{
     parse_stdin, render_to_client, send_control_messages_to_client, StdinSession,
 };
 use crate::web_client::server_listener::zellij_server_listener;
-use crate::web_client::types::{AppState, ControlParams, TerminalParams};
+use crate::web_client::types::{client_action, AppState};
+use crate::web_protocol::control_message::{
+    TerminalMetricsPayload, WebClientToWebServerControlMessage,
+    WebClientToWebServerControlMessagePayload,
+};
+use crate::web_protocol::http::{ControlParams, TerminalParams};
 
 use axum::{
     extract::{
@@ -35,12 +36,7 @@ pub async fn ws_handler_control(
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
 ) -> Response {
-    if !state
-        .connection_table
-        .lock()
-        .unwrap()
-        .verify_client_ownership(&params.web_client_id, &session_token_hash.0)
-    {
+    if !state.client_is_owned_by(&params.web_client_id, &session_token_hash.0) {
         log::error!(
             "Control WebSocket: client does not own web_client_id {}",
             params.web_client_id
@@ -56,10 +52,17 @@ pub async fn ws_handler_terminal(
     Query(params): Query<TerminalParams>,
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_ws_terminal(socket, session_name, params, state, session_token_hash)
-    })
+) -> Response {
+    // Refuse before upgrading, so an unauthorized client gets an HTTP error
+    // rather than a socket that is accepted and then dropped.
+    if !state.client_is_owned_by(&params.web_client_id, &session_token_hash.0) {
+        log::error!(
+            "Terminal WebSocket: client does not own web_client_id {}",
+            params.web_client_id
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_ws_terminal(socket, session_name, params, state))
 }
 
 async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppState) {
@@ -77,13 +80,7 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
         .add_client_control_tx(&web_client_id, control_channel_tx);
 
     let send_message_to_server = |deserialized_msg: WebClientToWebServerControlMessage| {
-        let Some(client_connection) = state
-            .connection_table
-            .lock()
-            .unwrap()
-            .get_client_os_api(&deserialized_msg.web_client_id)
-            .cloned()
-        else {
+        let Some(client_connection) = state.os_api_for(&deserialized_msg.web_client_id) else {
             log::error!("Unknown web_client_id: {}", deserialized_msg.web_client_id);
             return;
         };
@@ -130,7 +127,6 @@ async fn handle_ws_terminal(
     session_name: Option<AxumPath<String>>,
     params: TerminalParams,
     state: AppState,
-    session_token_hash: SessionTokenHash,
 ) {
     let client_size = match (params.rows, params.cols) {
         (Some(rows), Some(cols)) if rows > 0 && cols > 0 => Some(Size {
@@ -148,27 +144,7 @@ async fn handle_ws_terminal(
     };
     let web_client_id = params.web_client_id;
 
-    // Verify the session token owns this web_client_id
-    if !state
-        .connection_table
-        .lock()
-        .unwrap()
-        .verify_client_ownership(&web_client_id, &session_token_hash.0)
-    {
-        log::error!(
-            "Terminal WebSocket: client does not own web_client_id {}",
-            web_client_id
-        );
-        return;
-    }
-
-    let Some(os_input) = state
-        .connection_table
-        .lock()
-        .unwrap()
-        .get_client_os_api(&web_client_id)
-        .cloned()
-    else {
+    let Some(os_input) = state.os_api_for(&web_client_id) else {
         log::error!("Unknown web_client_id: {}", web_client_id);
         return;
     };
@@ -256,13 +232,7 @@ async fn handle_ws_terminal(
                 // Idle timeout fired with `pending_finalize` set:
                 // drain any ambiguous-but-complete events termwiz held
                 // back on the previous frame.
-                if let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                {
+                if let Some(client_connection) = state.os_api_for(&web_client_id) {
                     stdin_session.finalize(&*client_connection, &mut mouse_old_event);
                 } else {
                     // No client to send drained events to — clear the
@@ -273,37 +243,20 @@ async fn handle_ws_terminal(
             },
         };
         match msg {
-            Message::Binary(buf) => {
-                let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                else {
+            // Browsers may send stdin as either frame type; the bytes mean
+            // the same thing to the parser.
+            Message::Binary(_) | Message::Text(_) => {
+                let bytes: &[u8] = match &msg {
+                    Message::Binary(buf) => buf,
+                    Message::Text(text) => text.as_bytes(),
+                    _ => unreachable!("outer match restricts this to Binary/Text"),
+                };
+                let Some(client_connection) = state.os_api_for(&web_client_id) else {
                     log::error!("Unknown web_client_id: {}", web_client_id);
                     continue;
                 };
                 parse_stdin(
-                    &buf,
-                    client_connection.clone(),
-                    &mut mouse_old_event,
-                    &mut stdin_session,
-                );
-            },
-            Message::Text(msg) => {
-                let Some(client_connection) = state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .get_client_os_api(&web_client_id)
-                    .cloned()
-                else {
-                    log::error!("Unknown web_client_id: {}", web_client_id);
-                    continue;
-                };
-                parse_stdin(
-                    msg.as_bytes(),
+                    bytes,
                     client_connection.clone(),
                     &mut mouse_old_event,
                     &mut stdin_session,
@@ -351,46 +304,31 @@ fn control_payload_to_server_msg(
             } else {
                 PaneId::Terminal(pane_id)
             };
-            ClientToServerMsg::Action {
-                action: Action::FocusPaneByPaneId { pane_id },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            }
+            client_action(Action::FocusPaneByPaneId { pane_id })
         },
         WebClientToWebServerControlMessagePayload::NewPaneInTab { .. } => {
-            ClientToServerMsg::Action {
-                action: Action::NewTiledPane {
-                    direction: None,
-                    command: None,
-                    pane_name: None,
-                    near_current_pane: false,
-                    no_focus: false,
-                    borderless: None,
-                    tab_id: None,
-                    global_placement: None,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            }
+            client_action(Action::NewTiledPane {
+                direction: None,
+                command: None,
+                pane_name: None,
+                near_current_pane: false,
+                no_focus: false,
+                borderless: None,
+                tab_id: None,
+                global_placement: None,
+            })
         },
-        WebClientToWebServerControlMessagePayload::NewTab => ClientToServerMsg::Action {
-            action: Action::NewTab {
-                tiled_layout: None,
-                floating_layouts: vec![],
-                swap_tiled_layouts: None,
-                swap_floating_layouts: None,
-                tab_name: None,
-                should_change_focus_to_new_tab: true,
-                cwd: None,
-                initial_panes: None,
-                first_pane_unblock_condition: None,
-            },
-            terminal_id: None,
-            client_id: None,
-            is_cli_client: false,
-        },
+        WebClientToWebServerControlMessagePayload::NewTab => client_action(Action::NewTab {
+            tiled_layout: None,
+            floating_layouts: vec![],
+            swap_tiled_layouts: None,
+            swap_floating_layouts: None,
+            tab_name: None,
+            should_change_focus_to_new_tab: true,
+            cwd: None,
+            initial_panes: None,
+            first_pane_unblock_condition: None,
+        }),
         WebClientToWebServerControlMessagePayload::SetMobileRenderPreferences {
             single_pane,
             fit,

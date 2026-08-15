@@ -3,7 +3,7 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use isahc::prelude::*;
 use serde_json;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -11,15 +11,18 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use zellij_utils::input::layout::Layout;
 use zellij_utils::{consts::VERSION, input::config::Config, input::options::Options};
 
-use crate::os_input_output::ClientOsApi;
-use crate::web_client::control_message::{
+use crate::os_input_output::{ClientOsApi, ServerConnection};
+use crate::test_support::FakeClientOsApi;
+use crate::web_client::ClientOsApiFactory;
+use crate::web_protocol::control_message::{
     WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
 };
-use crate::web_client::types::{SessionListResponse, WebSessionInfo};
-use crate::web_client::ClientOsApiFactory;
+use crate::web_protocol::endpoints::{
+    LOGIN, SESSION_LIST, VERSION as VERSION_ENDPOINT, WS_CONTROL, WS_TERMINAL,
+};
+use crate::web_protocol::http::{SessionListResponse, WebSessionInfo};
 use zellij_utils::{
-    data::{LayoutInfo, Palette},
-    errors::ErrorContext,
+    data::LayoutInfo,
     ipc::{ClientToServerMsg, ServerToClientMsg},
     pane_size::Size,
     web_authentication_tokens::{create_token, delete_db, revoke_token},
@@ -32,9 +35,44 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
+    /// Bind an ephemeral port, start the web server on it, and wait until it
+    /// answers. Returns the port and the task handle so the test can abort it.
+    async fn start_test_server(
+        config: Config,
+        options: Options,
+        session_manager: Arc<MockSessionManager>,
+        client_os_api_factory: Arc<MockClientOsApiFactory>,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+
+        let server_handle = tokio::spawn(async move {
+            serve_web_client(
+                config,
+                options,
+                Some(temp_config_path),
+                listener,
+                None,
+                Some(session_manager),
+                Some(client_os_api_factory),
+                addr.ip(),
+                port,
+            )
+            .await;
+        });
+
+        wait_for_server(port, Duration::from_secs(5))
+            .await
+            .expect("Server failed to start");
+
+        (port, server_handle)
+    }
+
     async fn wait_for_server(port: u16, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         while start.elapsed() < timeout {
             match tokio::task::spawn_blocking({
@@ -72,29 +110,10 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-
-        let server_handle = tokio::spawn(serve_web_client(
-            config,
-            options,
-            Some(temp_config_path),
-            listener,
-            None,
-            Some(session_manager),
-            Some(client_os_api_factory),
-            addr.ip(),
-            port,
-        ));
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         let mut response = timeout(
             Duration::from_secs(5),
@@ -156,7 +175,7 @@ mod tests {
             .await
             .expect("Server failed to start");
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -199,7 +218,7 @@ mod tests {
         assert_eq!(response_json["success"], true);
         assert_eq!(response_json["message"], "Login successful");
 
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": false
@@ -251,31 +270,10 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": "invalid_token_123",
             "remember_me": false
@@ -318,31 +316,10 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -404,7 +381,7 @@ mod tests {
         let web_client_id = client_data["web_client_id"].as_str().unwrap().to_string();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -440,7 +417,7 @@ mod tests {
             .expect("Failed to send resize message");
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -465,7 +442,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let mut found_resize = false;
         let mut found_terminal_input = false;
@@ -522,31 +499,10 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true,
@@ -601,7 +557,7 @@ mod tests {
         let web_client_id = client_data["web_client_id"].as_str().unwrap().to_string();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -649,7 +605,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_pixel_dims = sent_messages
             .into_iter()
@@ -690,29 +646,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_url = format!("http://127.0.0.1:{}/session", port);
         let response = timeout(
@@ -740,29 +675,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_url = format!("http://127.0.0.1:{}/session", port);
         let response = timeout(
@@ -802,36 +716,15 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -860,7 +753,7 @@ mod tests {
             .expect("Failed to send resize message");
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -940,29 +833,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
@@ -970,7 +842,7 @@ mod tests {
         let client_id_2 = create_client_session(port, &session_token).await;
 
         let control_ws_url_1 = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, client_id_1
         );
         let (control_ws_1, _) = timeout(
@@ -984,7 +856,7 @@ mod tests {
         let (mut control_sink_1, _control_stream_1) = control_ws_1.split();
 
         let control_ws_url_2 = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, client_id_2
         );
         let (control_ws_2, _) = timeout(
@@ -1028,7 +900,7 @@ mod tests {
             .expect("Failed to send resize message for client 2");
 
         let terminal_ws_url_1 = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, client_id_1
         );
         let (terminal_ws_1, _) = timeout(
@@ -1076,7 +948,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let total_resize_messages = sent_messages
             .iter()
@@ -1110,35 +982,14 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1246,35 +1097,14 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1297,11 +1127,7 @@ mod tests {
         {
             let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api
-                    .messages_to_server
-                    .lock()
-                    .unwrap()
-                    .push(ClientToServerMsg::ClientExited);
+                mock_api.send_to_server(ClientToServerMsg::ClientExited);
             }
         }
 
@@ -1331,7 +1157,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_client_exited = sent_messages
             .iter()
@@ -1419,7 +1245,7 @@ mod tests {
         assert!(is_read_only, "Client should be marked as read-only");
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
 
@@ -1486,7 +1312,7 @@ mod tests {
         let regular_web_client_id = create_client_session(port, &regular_session_token).await;
 
         let regular_control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, regular_web_client_id
         );
         let (regular_control_ws, _) = timeout(
@@ -1500,7 +1326,7 @@ mod tests {
         let (mut regular_control_sink, _regular_control_stream) = regular_control_ws.split();
 
         let regular_terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, regular_web_client_id
         );
         let (regular_terminal_ws, _) = timeout(
@@ -1542,7 +1368,7 @@ mod tests {
         let readonly_web_client_id = create_client_session(port, &readonly_session_token).await;
 
         let readonly_control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, readonly_web_client_id
         );
         let (readonly_control_ws, _) = timeout(
@@ -1556,7 +1382,7 @@ mod tests {
         let (mut readonly_control_sink, _readonly_control_stream) = readonly_control_ws.split();
 
         let readonly_terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, readonly_web_client_id
         );
         let (readonly_terminal_ws, _) = timeout(
@@ -1651,7 +1477,7 @@ mod tests {
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -1665,7 +1491,7 @@ mod tests {
         let (mut control_sink, _control_stream) = control_ws.split();
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1821,7 +1647,7 @@ mod tests {
     }
 
     async fn login_and_get_session_token(port: u16, auth_token: &str) -> String {
-        let login_url = format!("http://127.0.0.1:{}/command/login", port);
+        let login_url = format!("http://127.0.0.1:{}{LOGIN}", port);
         let login_payload = serde_json::json!({
             "auth_token": auth_token,
             "remember_me": true
@@ -1907,35 +1733,14 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -1949,7 +1754,7 @@ mod tests {
         let (_terminal_sink, mut terminal_stream) = terminal_ws.split();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -1985,7 +1790,7 @@ mod tests {
                 "Expected at least one mock API to be registered"
             );
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api.queue_server_message(ServerToClientMsg::Exit {
+                mock_api.queue_from_server(ServerToClientMsg::Exit {
                     exit_reason: zellij_utils::ipc::ExitReason::KickedByHost,
                 });
             }
@@ -2084,35 +1889,14 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -2126,7 +1910,7 @@ mod tests {
         let (_terminal_sink, mut terminal_stream) = terminal_ws.split();
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -2162,7 +1946,7 @@ mod tests {
                 "Expected at least one mock API to be registered"
             );
             if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api.queue_server_message(ServerToClientMsg::Exit {
+                mock_api.queue_from_server(ServerToClientMsg::Exit {
                     exit_reason: zellij_utils::ipc::ExitReason::Normal,
                 });
             }
@@ -2209,6 +1993,52 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    /// A client must not be able to open a terminal socket for a
+    /// web_client_id that belongs to somebody else's session token, and the
+    /// refusal must happen during the HTTP handshake rather than after the
+    /// socket has already been upgraded.
+    #[tokio::test]
+    #[serial]
+    async fn terminal_websocket_rejects_another_clients_id_before_upgrade() {
+        let owner_token_name = "ws_owner_token";
+        let intruder_token_name = "ws_intruder_token";
+        delete_db().ok();
+        let (owner_auth, _) = create_token(Some(owner_token_name.to_string()), false)
+            .expect("Failed to create owner token");
+        let (intruder_auth, _) = create_token(Some(intruder_token_name.to_string()), false)
+            .expect("Failed to create intruder token");
+
+        let session_manager = Arc::new(MockSessionManager::new());
+        let (port, server_handle) = spawn_test_server_with_session_manager(session_manager).await;
+
+        // The owner creates a session and gets a web_client_id.
+        let owner_session_token = login_and_get_session_token(port, &owner_auth).await;
+        let owner_web_client_id = create_client_session(port, &owner_session_token).await;
+
+        // The intruder logs in separately, then tries to use the owner's id.
+        let intruder_session_token = login_and_get_session_token(port, &intruder_auth).await;
+        let terminal_ws_url = format!(
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
+            port, owner_web_client_id
+        );
+        let result = timeout(
+            Duration::from_secs(5),
+            connect_async_with_cookie(&terminal_ws_url, &intruder_session_token),
+        )
+        .await
+        .expect("Terminal WebSocket connection attempt timed out");
+
+        assert!(
+            result.is_err(),
+            "terminal WebSocket handshake must fail for a web_client_id the caller does not own"
+        );
+
+        server_handle.abort();
+        let _ = revoke_token(owner_token_name);
+        let _ = revoke_token(intruder_token_name);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     async fn connect_async_with_cookie(
         url: &str,
         session_token: &str,
@@ -2245,29 +2075,10 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-
-        let server_handle = tokio::spawn(serve_web_client(
-            config,
-            options,
-            Some(temp_config_path),
-            listener,
-            None,
-            Some(session_manager),
-            Some(client_os_api_factory),
-            addr.ip(),
-            port,
-        ));
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let url = format!("http://127.0.0.1:{}/info/version", port);
+        let url = format!("http://127.0.0.1:{}{VERSION_ENDPOINT}", port);
 
         let response = timeout(
             Duration::from_secs(5),
@@ -2343,29 +2154,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, session_manager, client_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &auth_token).await;
 
@@ -2426,30 +2216,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let rw_session_token = login_and_get_session_token(port, &rw_token).await;
         let rw_web_client_id = create_client_session(port, &rw_session_token).await;
@@ -2458,7 +2226,7 @@ mod tests {
         let _ro_web_client_id = create_client_session(port, &ro_session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, rw_web_client_id
         );
         let connect_result = timeout(
@@ -2479,7 +2247,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         assert!(
             !sent_messages
@@ -2507,36 +2275,14 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let session_token = login_and_get_session_token(port, &rw_token).await;
         let web_client_id = create_client_session(port, &session_token).await;
 
         let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_CONTROL}?web_client_id={}",
             port, web_client_id
         );
         let (control_ws, _) = timeout(
@@ -2571,7 +2317,7 @@ mod tests {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|mock_api| mock_api.get_sent_messages())
+            .flat_map(|mock_api| mock_api.sent_messages())
             .collect();
         let found_resize = sent_messages
             .iter()
@@ -2601,30 +2347,8 @@ mod tests {
         let config = Config::default();
         let options = Options::default();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        let ip = addr.ip();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(mock_session_manager),
-                Some(mock_os_api_factory),
-                ip,
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
+        let (port, server_handle) =
+            start_test_server(config, options, mock_session_manager, mock_os_api_factory).await;
 
         let rw_session_token = login_and_get_session_token(port, &rw_token).await;
         let rw_web_client_id = create_client_session(port, &rw_session_token).await;
@@ -2633,7 +2357,7 @@ mod tests {
         let _ro_web_client_id = create_client_session(port, &ro_session_token).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}?web_client_id={}",
             port, rw_web_client_id
         );
         let ws_result = timeout(
@@ -3012,7 +2736,7 @@ mod tests {
         let (port, server_handle) =
             spawn_test_server_with_session_manager(Arc::new(MockSessionManager::new())).await;
 
-        let url = format!("http://127.0.0.1:{}/session-list", port);
+        let url = format!("http://127.0.0.1:{}{SESSION_LIST}", port);
         let response = timeout(
             Duration::from_secs(5),
             tokio::task::spawn_blocking(move || isahc::get(&url)),
@@ -3062,7 +2786,7 @@ mod tests {
 
         let session_token = login_and_get_session_token(port, &regular_token).await;
 
-        let url = format!("http://127.0.0.1:{}/session-list", port);
+        let url = format!("http://127.0.0.1:{}{SESSION_LIST}", port);
         let mut response = timeout(
             Duration::from_secs(5),
             tokio::task::spawn_blocking(move || {
@@ -3167,7 +2891,7 @@ mod tests {
             create_client_session_with_query(port, &session_token, query).await;
 
         let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal/{}?web_client_id={}",
+            "ws://127.0.0.1:{}{WS_TERMINAL}/{}?web_client_id={}",
             port, session_name, web_client_id
         );
         let (terminal_ws, _) = timeout(
@@ -3334,7 +3058,7 @@ impl SessionManager for MockSessionManager {
 
 #[derive(Debug, Clone)]
 struct MockClientOsApiFactory {
-    mock_apis: Arc<Mutex<HashMap<String, Arc<MockClientOsApi>>>>,
+    mock_apis: Arc<Mutex<HashMap<String, Arc<FakeClientOsApi>>>>,
 }
 
 impl MockClientOsApiFactory {
@@ -3347,7 +3071,7 @@ impl MockClientOsApiFactory {
 
 impl ClientOsApiFactory for MockClientOsApiFactory {
     fn create_client_os_api(&self) -> Result<Box<dyn ClientOsApi>, Box<dyn std::error::Error>> {
-        let mock_api = Arc::new(MockClientOsApi::new());
+        let mock_api = Arc::new(FakeClientOsApi::new());
 
         let client_id = uuid::Uuid::new_v4().to_string();
         self.mock_apis
@@ -3356,83 +3080,5 @@ impl ClientOsApiFactory for MockClientOsApiFactory {
             .insert(client_id, mock_api.clone());
 
         Ok(Box::new((*mock_api).clone()))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct MockClientOsApi {
-    terminal_size: Size,
-    messages_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
-    messages_from_server: Arc<Mutex<VecDeque<(ServerToClientMsg, ErrorContext)>>>,
-}
-
-impl MockClientOsApi {
-    fn new() -> Self {
-        Self {
-            terminal_size: Size { rows: 24, cols: 80 },
-            messages_to_server: Arc::new(Mutex::new(Vec::new())),
-            messages_from_server: Arc::new(Mutex::new(VecDeque::new())),
-        }
-    }
-
-    fn get_sent_messages(&self) -> Vec<ClientToServerMsg> {
-        self.messages_to_server.lock().unwrap().clone()
-    }
-
-    fn queue_server_message(&self, msg: ServerToClientMsg) {
-        self.messages_from_server
-            .lock()
-            .unwrap()
-            .push_back((msg, ErrorContext::default()));
-    }
-}
-
-impl ClientOsApi for MockClientOsApi {
-    fn get_terminal_size(&self) -> Size {
-        self.terminal_size
-    }
-    fn set_raw_mode(&mut self) {}
-    fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-    fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
-        Box::new(std::io::sink())
-    }
-    fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
-        Box::new(std::io::Cursor::new(Vec::new()))
-    }
-    fn update_session_name(&mut self, _new_session_name: String) {}
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-    fn box_clone(&self) -> Box<dyn ClientOsApi> {
-        Box::new(self.clone())
-    }
-    fn send_to_server(&self, msg: ClientToServerMsg) {
-        self.messages_to_server.lock().unwrap().push(msg);
-    }
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-        let msg = self.messages_from_server.lock().unwrap().pop_front();
-        if msg.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        msg
-    }
-    fn handle_signals(
-        &self,
-        _sigwinch_cb: Box<dyn Fn()>,
-        _quit_cb: Box<dyn Fn()>,
-        _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    ) {
-    }
-    fn connect_to_server(&self, _path: &std::path::Path) {}
-    fn load_palette(&self) -> Palette {
-        Palette::default()
-    }
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
     }
 }
