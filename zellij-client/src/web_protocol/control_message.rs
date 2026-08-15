@@ -1,6 +1,10 @@
 #![allow(clippy::large_enum_variant)]
 use serde::{Deserialize, Serialize};
-use zellij_utils::{input::config::Config, ipc::MobileStatePayload, pane_size::Size};
+use zellij_utils::{
+    input::{config::Config, options::Options, web_client::WebClientTheme},
+    ipc::MobileStatePayload,
+    pane_size::Size,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 
@@ -57,7 +61,7 @@ pub enum WebServerToWebClientControlMessage {
     MobileState { payload: MobileStatePayload },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SetConfigPayload {
     pub font: String,
     pub theme: SetConfigPayloadTheme,
@@ -122,14 +126,48 @@ pub struct SetConfigPayloadTheme {
     pub yellow: Option<String>,
 }
 
-impl From<&Config> for SetConfigPayload {
-    fn from(config: &Config) -> Self {
+/// The 16 ANSI colour overrides from `web_client.theme`, in palette-index
+/// order (0-7 normal, 8-15 bright).
+///
+/// Shared so the payload sent to xterm.js and the OSC 4 replies synthesized
+/// for the server are built from one list, and cannot disagree about which
+/// index a colour belongs to.
+pub fn indexed_theme_overrides(theme: Option<&WebClientTheme>) -> [Option<String>; 16] {
+    let get = |f: fn(&WebClientTheme) -> Option<String>| theme.and_then(f);
+    [
+        get(|t| t.black.clone()),
+        get(|t| t.red.clone()),
+        get(|t| t.green.clone()),
+        get(|t| t.yellow.clone()),
+        get(|t| t.blue.clone()),
+        get(|t| t.magenta.clone()),
+        get(|t| t.cyan.clone()),
+        get(|t| t.white.clone()),
+        get(|t| t.bright_black.clone()),
+        get(|t| t.bright_red.clone()),
+        get(|t| t.bright_green.clone()),
+        get(|t| t.bright_yellow.clone()),
+        get(|t| t.bright_blue.clone()),
+        get(|t| t.bright_magenta.clone()),
+        get(|t| t.bright_cyan.clone()),
+        get(|t| t.bright_white.clone()),
+    ]
+}
+
+impl SetConfigPayload {
+    /// Build the config the browser renders with.
+    ///
+    /// `config_options` is the CLI-merged view, not `config.options`, so a
+    /// `--theme` override reaches the browser and stays consistent with the
+    /// colours seeded into the server's host-query cache.
+    pub fn new(config: &Config, config_options: &Options) -> Self {
         let font = config.web_client.font.clone();
 
-        let palette = config.theme_config(config.options.theme.as_ref());
+        let palette = config.theme_config(config_options.theme.as_ref());
         let web_client_theme_from_config = config.web_client.theme.as_ref();
 
         let mut theme = SetConfigPayloadTheme::default();
+        let indexed = indexed_theme_overrides(web_client_theme_from_config);
 
         theme.background = web_client_theme_from_config
             .and_then(|theme| theme.background.clone())
@@ -137,30 +175,23 @@ impl From<&Config> for SetConfigPayload {
         theme.foreground = web_client_theme_from_config
             .and_then(|theme| theme.foreground.clone())
             .or_else(|| palette.map(|p| p.text_unselected.base.as_rgb_str()));
-        theme.black = web_client_theme_from_config.and_then(|theme| theme.black.clone());
-        theme.blue = web_client_theme_from_config.and_then(|theme| theme.blue.clone());
-        theme.bright_black =
-            web_client_theme_from_config.and_then(|theme| theme.bright_black.clone());
-        theme.bright_blue =
-            web_client_theme_from_config.and_then(|theme| theme.bright_blue.clone());
-        theme.bright_cyan =
-            web_client_theme_from_config.and_then(|theme| theme.bright_cyan.clone());
-        theme.bright_green =
-            web_client_theme_from_config.and_then(|theme| theme.bright_green.clone());
-        theme.bright_magenta =
-            web_client_theme_from_config.and_then(|theme| theme.bright_magenta.clone());
-        theme.bright_red = web_client_theme_from_config.and_then(|theme| theme.bright_red.clone());
-        theme.bright_white =
-            web_client_theme_from_config.and_then(|theme| theme.bright_white.clone());
-        theme.bright_yellow =
-            web_client_theme_from_config.and_then(|theme| theme.bright_yellow.clone());
+        theme.black = indexed[0].clone();
+        theme.blue = indexed[4].clone();
+        theme.bright_black = indexed[8].clone();
+        theme.bright_blue = indexed[12].clone();
+        theme.bright_cyan = indexed[14].clone();
+        theme.bright_green = indexed[10].clone();
+        theme.bright_magenta = indexed[13].clone();
+        theme.bright_red = indexed[9].clone();
+        theme.bright_white = indexed[15].clone();
+        theme.bright_yellow = indexed[11].clone();
         theme.cursor = web_client_theme_from_config.and_then(|theme| theme.cursor.clone());
         theme.cursor_accent =
             web_client_theme_from_config.and_then(|theme| theme.cursor_accent.clone());
-        theme.cyan = web_client_theme_from_config.and_then(|theme| theme.cyan.clone());
-        theme.green = web_client_theme_from_config.and_then(|theme| theme.green.clone());
-        theme.magenta = web_client_theme_from_config.and_then(|theme| theme.magenta.clone());
-        theme.red = web_client_theme_from_config.and_then(|theme| theme.red.clone());
+        theme.cyan = indexed[6].clone();
+        theme.green = indexed[2].clone();
+        theme.magenta = indexed[5].clone();
+        theme.red = indexed[1].clone();
         theme.selection_background = web_client_theme_from_config
             .and_then(|theme| theme.selection_background.clone())
             .or_else(|| palette.map(|p| p.text_selected.background.as_rgb_str()));
@@ -169,8 +200,8 @@ impl From<&Config> for SetConfigPayload {
             .or_else(|| palette.map(|p| p.text_selected.base.as_rgb_str()));
         theme.selection_inactive_background = web_client_theme_from_config
             .and_then(|theme| theme.selection_inactive_background.clone());
-        theme.white = web_client_theme_from_config.and_then(|theme| theme.white.clone());
-        theme.yellow = web_client_theme_from_config.and_then(|theme| theme.yellow.clone());
+        theme.white = indexed[7].clone();
+        theme.yellow = indexed[3].clone();
 
         let cursor_blink = config.web_client.cursor_blink;
         let mac_option_is_meta = config.web_client.mac_option_is_meta;

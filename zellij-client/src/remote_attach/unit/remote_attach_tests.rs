@@ -18,10 +18,12 @@ mod mock_server {
         Json, Router,
     };
     use axum_extra::extract::cookie::{Cookie, CookieJar};
-    use serde::Deserialize;
-    use serde_json::json;
     use tokio::net::TcpListener;
     use uuid::Uuid;
+
+    use crate::web_protocol::control_message::SetConfigPayload;
+    use crate::web_protocol::endpoints;
+    use crate::web_protocol::http::{CreateClientIdResponse, LoginRequest, LoginResponse};
 
     #[derive(Clone)]
     pub struct MockRemoteServerState {
@@ -29,6 +31,8 @@ mod mock_server {
         pub session_tokens: Arc<Mutex<HashMap<String, String>>>, // token -> web_client_id
         pub endpoints_called: Arc<Mutex<Vec<String>>>,
         pub query_strings: Arc<Mutex<HashMap<String, String>>>,
+        /// The `remember_me` of every login seen, in order.
+        pub remember_me_asked_for: Arc<Mutex<Vec<Option<bool>>>>,
     }
 
     impl MockRemoteServerState {
@@ -38,7 +42,12 @@ mod mock_server {
                 session_tokens: Arc::new(Mutex::new(HashMap::new())),
                 endpoints_called: Arc::new(Mutex::new(Vec::new())),
                 query_strings: Arc::new(Mutex::new(HashMap::new())),
+                remember_me_asked_for: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        pub fn get_remember_me_asked_for(&self) -> Vec<Option<bool>> {
+            self.remember_me_asked_for.lock().unwrap().clone()
         }
 
         fn record_query(&self, endpoint: &str, query: Option<&str>) {
@@ -71,17 +80,17 @@ mod mock_server {
         }
     }
 
-    #[derive(Deserialize)]
-    pub struct LoginRequest {
-        pub auth_token: String,
-    }
-
     pub async fn handle_login(
         State(state): State<MockRemoteServerState>,
         jar: CookieJar,
         Json(payload): Json<LoginRequest>,
-    ) -> Result<(CookieJar, Json<serde_json::Value>), StatusCode> {
-        state.record_endpoint("/command/login");
+    ) -> Result<(CookieJar, Json<LoginResponse>), StatusCode> {
+        state.record_endpoint(endpoints::LOGIN);
+        state
+            .remember_me_asked_for
+            .lock()
+            .unwrap()
+            .push(payload.remember_me);
 
         let valid_tokens = state.valid_auth_tokens.lock().unwrap();
         if !valid_tokens.contains_key(&payload.auth_token) {
@@ -107,10 +116,10 @@ mod mock_server {
 
         Ok((
             jar,
-            Json(json!({
-                "success": true,
-                "message": "Login successful"
-            })),
+            Json(LoginResponse {
+                success: true,
+                message: "Login successful".to_string(),
+            }),
         ))
     }
 
@@ -118,9 +127,9 @@ mod mock_server {
         State(state): State<MockRemoteServerState>,
         uri: axum::http::Uri,
         jar: CookieJar,
-    ) -> Result<Json<serde_json::Value>, StatusCode> {
-        state.record_endpoint("/session");
-        state.record_query("/session", uri.query());
+    ) -> Result<Json<CreateClientIdResponse>, StatusCode> {
+        state.record_endpoint(endpoints::SESSION);
+        state.record_query(endpoints::SESSION, uri.query());
 
         let session_token = jar
             .get("session_token")
@@ -134,17 +143,15 @@ mod mock_server {
             .clone();
         drop(session_tokens);
 
-        Ok(Json(json!({
-            "web_client_id": web_client_id,
-            "is_read_only": false,
-            "session_name": "session-name",
-            "config": {
-                "font": "Monospace",
-                "theme": {},
-                "cursor_blink": false,
-                "mac_option_is_meta": false
-            }
-        })))
+        Ok(Json(CreateClientIdResponse {
+            web_client_id,
+            is_read_only: false,
+            session_name: "session-name".to_string(),
+            config: SetConfigPayload {
+                font: "Monospace".to_string(),
+                ..Default::default()
+            },
+        }))
     }
 
     pub async fn handle_ws_terminal(
@@ -153,8 +160,8 @@ mod mock_server {
         uri: axum::http::Uri,
         jar: CookieJar,
     ) -> Result<Response, StatusCode> {
-        state.record_endpoint("/ws/terminal");
-        state.record_query("/ws/terminal", uri.query());
+        state.record_endpoint(endpoints::WS_TERMINAL);
+        state.record_query(endpoints::WS_TERMINAL, uri.query());
 
         // Validate session token
         let session_token = jar
@@ -188,8 +195,8 @@ mod mock_server {
         uri: axum::http::Uri,
         jar: CookieJar,
     ) -> Result<Response, StatusCode> {
-        state.record_endpoint("/ws/control");
-        state.record_query("/ws/control", uri.query());
+        state.record_endpoint(endpoints::WS_CONTROL);
+        state.record_query(endpoints::WS_CONTROL, uri.query());
 
         // Validate session token
         let session_token = jar
@@ -221,11 +228,11 @@ mod mock_server {
         state: MockRemoteServerState,
     ) -> (u16, tokio::task::JoinHandle<()>) {
         let app = Router::new()
-            .route("/command/login", post(handle_login))
-            .route("/session", post(handle_session))
-            .route("/ws/terminal", get(handle_ws_terminal))
-            .route("/ws/terminal/{session_name}", get(handle_ws_terminal))
-            .route("/ws/control", get(handle_ws_control))
+            .route(endpoints::LOGIN, post(handle_login))
+            .route(endpoints::SESSION, post(handle_session))
+            .route(endpoints::WS_TERMINAL, get(handle_ws_terminal))
+            .route(endpoints::WS_TERMINAL_WITH_SESSION, get(handle_ws_terminal))
+            .route(endpoints::WS_CONTROL, get(handle_ws_control))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -235,9 +242,8 @@ mod mock_server {
             axum::serve(listener, app).await.unwrap();
         });
 
-        // Wait for server to be ready
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
+        // No readiness wait needed: the listener is already bound, so
+        // connections queue in the accept backlog until axum picks them up.
         (port, server_handle)
     }
 }
@@ -366,73 +372,6 @@ fn cleanup_test_db(server_url: &str) {
     let _ = remote_session_tokens::delete_session_token(server_url);
 }
 
-// Mock ClientOsApi for testing
-#[derive(Debug, Clone)]
-struct MockClientOsApi;
-
-impl crate::os_input_output::ClientOsApi for MockClientOsApi {
-    fn get_terminal_size(&self) -> zellij_utils::pane_size::Size {
-        zellij_utils::pane_size::Size { rows: 24, cols: 80 }
-    }
-
-    fn set_raw_mode(&mut self) {}
-
-    fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    fn box_clone(&self) -> Box<dyn crate::os_input_output::ClientOsApi> {
-        Box::new(MockClientOsApi)
-    }
-
-    fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
-    }
-
-    fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
-        Box::new(std::io::BufReader::new(std::io::empty()))
-    }
-
-    fn get_stdout_writer(&self) -> Box<dyn std::io::Write> {
-        Box::new(std::io::sink())
-    }
-
-    fn update_session_name(&mut self, _new_session_name: String) {}
-
-    fn send_to_server(&self, _msg: zellij_utils::ipc::ClientToServerMsg) {}
-
-    fn recv_from_server(
-        &self,
-    ) -> Option<(
-        zellij_utils::ipc::ServerToClientMsg,
-        zellij_utils::errors::ErrorContext,
-    )> {
-        None
-    }
-
-    fn handle_signals(
-        &self,
-        _sigwinch_cb: Box<dyn Fn()>,
-        _quit_cb: Box<dyn Fn()>,
-        _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-    ) {
-    }
-
-    fn connect_to_server(&self, _path: &std::path::Path) {}
-
-    fn load_palette(&self) -> zellij_utils::data::Palette {
-        zellij_utils::shared::default_palette()
-    }
-
-    fn enable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn disable_mouse(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
 // Tests
 #[cfg(feature = "web_server_capability")]
 mod tests {
@@ -448,7 +387,8 @@ mod tests {
     ) -> Result<WebSocketConnections, RemoteClientError> {
         tokio::task::spawn_blocking(move || {
             let runtime = crate::async_runtime(None);
-            let os_input: Box<dyn crate::os_input_output::ClientOsApi> = Box::new(MockClientOsApi);
+            let os_input: Box<dyn crate::os_input_output::ClientOsApi> =
+                Box::new(crate::test_support::FakeClientOsApi::new());
             attach_to_remote_session(
                 runtime,
                 os_input,
@@ -588,6 +528,12 @@ mod tests {
 
         assert!(result.is_ok(), "Connection should succeed");
 
+        assert_eq!(
+            server_state.get_remember_me_asked_for(),
+            vec![Some(true)],
+            "The server should have been asked to remember this login"
+        );
+
         // Verify token was saved
         let saved_token = remote_session_tokens::get_session_token(&base_url);
         assert!(saved_token.is_ok());
@@ -622,6 +568,12 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "Connection should succeed");
+
+        assert_eq!(
+            server_state.get_remember_me_asked_for(),
+            vec![Some(false)],
+            "The server should not have been asked to remember this login"
+        );
 
         // Verify token was NOT saved
         let saved_token = remote_session_tokens::get_session_token(&base_url);
@@ -993,6 +945,46 @@ mod tests {
         );
 
         tls_mock_server::shutdown_server(handle, server_task).await;
+    }
+}
+
+#[cfg(feature = "web_server_capability")]
+mod cookie_jar_tests {
+    use crate::remote_attach::http_client::HttpClientWithCookies;
+    use axum::{response::IntoResponse, routing::get, Router};
+    use tokio::net::TcpListener;
+
+    /// A response carrying each cookie in its own Set-Cookie header, which is
+    /// how servers normally send more than one.
+    async fn two_cookies() -> impl IntoResponse {
+        axum::response::Response::builder()
+            .header("Set-Cookie", "session_token=abc; Path=/; HttpOnly")
+            .header("Set-Cookie", "csrf_token=xyz; Path=/")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stores_every_set_cookie_header() {
+        let app = Router::new().route("/two", get(two_cookies));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = HttpClientWithCookies::new(None, true).unwrap();
+        let request = isahc::Request::get(format!("http://127.0.0.1:{}/two", port))
+            .body(Vec::new())
+            .unwrap();
+        client.send_with_cookies(request).await.unwrap();
+
+        assert_eq!(client.get_cookie("session_token").as_deref(), Some("abc"));
+        assert_eq!(
+            client.get_cookie("csrf_token").as_deref(),
+            Some("xyz"),
+            "a cookie sent in a second Set-Cookie header must not be dropped"
+        );
+
+        server.abort();
     }
 }
 

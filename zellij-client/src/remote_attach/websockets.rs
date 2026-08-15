@@ -1,5 +1,5 @@
-use super::config::{WS_CONTROL_ENDPOINT, WS_TERMINAL_ENDPOINT};
 use super::http_client::HttpClientWithCookies;
+use crate::web_protocol::endpoints::{WS_CONTROL, WS_TERMINAL};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -184,6 +184,30 @@ impl std::fmt::Debug for WebSocketConnections {
     }
 }
 
+/// Build the upgrade request for one of the two WebSocket endpoints. Both
+/// carry the same handshake headers and the same session cookie; only the
+/// URL differs.
+fn ws_request(
+    url: &str,
+    host: &str,
+    cookie_header: Option<&str>,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, Box<dyn std::error::Error>> {
+    let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(url)
+        .header("Host", host)
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .header("Sec-WebSocket-Version", "13");
+    if let Some(cookie_header) = cookie_header {
+        request = request.header("Cookie", cookie_header);
+    }
+    Ok(request.body(())?)
+}
+
 pub async fn establish_websocket_connections(
     web_client_id: &str,
     http_client: &HttpClientWithCookies,
@@ -210,7 +234,7 @@ pub async fn establish_websocket_connections(
 
     let terminal_url = if session_name.is_empty() {
         format!(
-            "{}://{}{WS_TERMINAL_ENDPOINT}?web_client_id={}{}",
+            "{}://{}{WS_TERMINAL}?web_client_id={}{}",
             ws_protocol,
             base_host,
             urlencoding::encode(web_client_id),
@@ -218,7 +242,7 @@ pub async fn establish_websocket_connections(
         )
     } else {
         format!(
-            "{}://{}{WS_TERMINAL_ENDPOINT}/{}?web_client_id={}{}",
+            "{}://{}{WS_TERMINAL}/{}?web_client_id={}{}",
             ws_protocol,
             base_host,
             urlencoding::encode(session_name),
@@ -228,7 +252,7 @@ pub async fn establish_websocket_connections(
     };
 
     let control_url = format!(
-        "{}://{}{WS_CONTROL_ENDPOINT}?web_client_id={}",
+        "{}://{}{WS_CONTROL}?web_client_id={}",
         ws_protocol,
         base_host,
         urlencoding::encode(web_client_id)
@@ -237,37 +261,9 @@ pub async fn establish_websocket_connections(
     log::info!("Connecting to terminal WebSocket: {}", terminal_url);
     log::info!("Connecting to control WebSocket: {}", control_url);
 
-    // Build WebSocket requests with cookies
-    let mut terminal_request = tokio_tungstenite::tungstenite::http::Request::builder()
-        .uri(&terminal_url)
-        .header("Host", &base_host)
-        .header("Upgrade", "websocket")
-        .header("Connection", "Upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .header("Sec-WebSocket-Version", "13");
-
-    let mut control_request = tokio_tungstenite::tungstenite::http::Request::builder()
-        .uri(&control_url)
-        .header("Host", &base_host)
-        .header("Upgrade", "websocket")
-        .header("Connection", "Upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .header("Sec-WebSocket-Version", "13");
-
-    // Add cookies if available
-    if let Some(cookie_header) = http_client.get_cookie_header() {
-        terminal_request = terminal_request.header("Cookie", &cookie_header);
-        control_request = control_request.header("Cookie", &cookie_header);
-    }
-
-    let terminal_request = terminal_request.body(())?;
-    let control_request = control_request.body(())?;
+    let cookie_header = http_client.get_cookie_header();
+    let terminal_request = ws_request(&terminal_url, &base_host, cookie_header.as_deref())?;
+    let control_request = ws_request(&control_url, &base_host, cookie_header.as_deref())?;
 
     // Build TLS config (only for wss://)
     let tls_config = if is_tls {

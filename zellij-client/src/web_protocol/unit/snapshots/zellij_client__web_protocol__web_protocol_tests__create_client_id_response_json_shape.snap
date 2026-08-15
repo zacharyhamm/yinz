@@ -1,0 +1,24 @@
+---
+source: zellij-client/src/web_protocol/./unit/web_protocol_tests.rs
+expression: "serde_json::to_string_pretty(&response).unwrap()"
+---
+{
+  "web_client_id": "client-id",
+  "is_read_only": false,
+  "session_name": "session",
+  "config": {
+    "font": "Monospace",
+    "theme": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "brightBlack": "#555555",
+      "cursorAccent": "#111111",
+      "selectionBackground": "#222222"
+    },
+    "cursor_blink": true,
+    "cursor_inactive_style": "underline",
+    "cursor_style": "block",
+    "mac_option_is_meta": true,
+    "font_size": 14
+  }
+}

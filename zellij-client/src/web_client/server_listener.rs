@@ -1,5 +1,4 @@
 use crate::os_input_output::ClientOsApi;
-use crate::web_client::control_message::{SetConfigPayload, WebServerToWebClientControlMessage};
 use crate::web_client::host_query_seed::build_host_query_seed_msgs;
 use crate::web_client::session_management::{
     build_initial_connection, create_first_message, create_ipc_pipe,
@@ -9,6 +8,7 @@ use crate::web_client::types::{
     SessionManager,
 };
 use crate::web_client::utils::terminal_init_messages;
+use crate::web_protocol::control_message::{SetConfigPayload, WebServerToWebClientControlMessage};
 
 use std::{
     path::PathBuf,
@@ -245,7 +245,8 @@ pub fn zellij_server_listener(
                                         for seed in build_host_query_seed_msgs(&new_config, &config_options) {
                                             os_input.send_to_server(seed);
                                         }
-                                        let set_config_payload = SetConfigPayload::from(&new_config);
+                                        let set_config_payload =
+                                            SetConfigPayload::new(&new_config, &config_options);
                                         client_connection_bus.send_control(
                                             WebServerToWebClientControlMessage::SetConfig(set_config_payload),
                                         );

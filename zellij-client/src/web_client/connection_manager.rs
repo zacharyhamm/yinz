@@ -1,6 +1,23 @@
 use crate::os_input_output::ClientOsApi;
-use crate::web_client::control_message::WebServerToWebClientControlMessage;
+
+/// The close frame sent when the server drops a web client.
+///
+/// 4001 is Zellij's private code for "do not reconnect" - the browser client
+/// treats anything else, including NORMAL, as a transient disconnect worth
+/// retrying.
+pub fn close_message(should_not_reconnect: bool) -> Message {
+    let code = if should_not_reconnect {
+        4001u16
+    } else {
+        axum::extract::ws::close_code::NORMAL
+    };
+    Message::Close(Some(CloseFrame {
+        code,
+        reason: "Connection closed".into(),
+    }))
+}
 use crate::web_client::types::{ClientChannels, ClientConnectionBus, ConnectionTable};
+use crate::web_protocol::control_message::WebServerToWebClientControlMessage;
 use axum::extract::ws::{CloseFrame, Message};
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::mpsc::UnboundedSender;
@@ -106,40 +123,29 @@ impl ConnectionTable {
 
 impl ClientConnectionBus {
     pub fn send_stdout(&mut self, stdout: String) {
+        if self.stdout_channel_tx.is_none() {
+            self.get_stdout_channel_tx();
+        }
         match self.stdout_channel_tx.as_ref() {
-            Some(stdout_channel_tx) => {
-                let _ = stdout_channel_tx.send(stdout);
+            Some(tx) => {
+                let _ = tx.send(stdout);
             },
-            None => {
-                self.get_stdout_channel_tx();
-                if let Some(stdout_channel_tx) = self.stdout_channel_tx.as_ref() {
-                    let _ = stdout_channel_tx.send(stdout);
-                } else {
-                    log::error!("Failed to send STDOUT message to client");
-                }
-            },
+            None => log::error!("Failed to send STDOUT message to client"),
         }
     }
 
     pub fn send_control(&mut self, message: WebServerToWebClientControlMessage) {
         let message = Message::Text(serde_json::to_string(&message).unwrap().into());
-        match self.control_channel_tx.as_ref() {
-            Some(control_channel_tx) => {
-                let _ = control_channel_tx.send(message);
-            },
-            None => {
-                self.get_control_channel_tx();
-                if let Some(control_channel_tx) = self.control_channel_tx.as_ref() {
-                    let _ = control_channel_tx.send(message);
-                } else {
-                    self.connection_table
-                        .lock()
-                        .unwrap()
-                        .queue_client_control_message(&self.web_client_id, message);
-                }
-            },
-        }
+        self.send_on_control(message, |bus, message| {
+            // The control socket has not attached yet; hold the message so it
+            // is delivered once it does.
+            bus.connection_table
+                .lock()
+                .unwrap()
+                .queue_client_control_message(&bus.web_client_id, message);
+        });
     }
+
     pub fn close_connection(&mut self) {
         let should_not_reconnect = self
             .connection_table
@@ -148,33 +154,32 @@ impl ClientConnectionBus {
             .get_should_not_reconnect_flag(&self.web_client_id)
             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false);
-        let code = if should_not_reconnect {
-            4001u16
-        } else {
-            axum::extract::ws::close_code::NORMAL
-        };
-        let close_frame = CloseFrame {
-            code,
-            reason: "Connection closed".into(),
-        };
-        let close_message = Message::Close(Some(close_frame));
-        match self.control_channel_tx.as_ref() {
-            Some(control_channel_tx) => {
-                let _ = control_channel_tx.send(close_message);
-            },
-            None => {
-                self.get_control_channel_tx();
-                if let Some(control_channel_tx) = self.control_channel_tx.as_ref() {
-                    let _ = control_channel_tx.send(close_message);
-                } else {
-                    log::error!("Failed to send close message to client");
-                }
-            },
-        }
+        self.send_on_control(close_message(should_not_reconnect), |_, _| {
+            log::error!("Failed to send close message to client");
+        });
         self.connection_table
             .lock()
             .unwrap()
             .remove_client(&self.web_client_id);
+    }
+
+    /// Send on the control channel, resolving it from the table if this bus
+    /// has not cached it yet, and falling back to `on_unavailable` when there
+    /// is still no socket to send on.
+    fn send_on_control(
+        &mut self,
+        message: Message,
+        on_unavailable: impl FnOnce(&mut Self, Message),
+    ) {
+        if self.control_channel_tx.is_none() {
+            self.get_control_channel_tx();
+        }
+        match self.control_channel_tx.as_ref() {
+            Some(tx) => {
+                let _ = tx.send(message);
+            },
+            None => on_unavailable(self, message),
+        }
     }
 
     pub fn close_connection_kicked(&mut self) {
@@ -215,69 +220,14 @@ impl ClientConnectionBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::os_input_output::ClientOsApi;
-    use std::io::{BufRead, Cursor, Write};
-    use std::path::Path;
+    use crate::test_support::FakeClientOsApi;
     use std::sync::Mutex;
-    use zellij_utils::{
-        data::Palette,
-        errors::ErrorContext,
-        ipc::{ClientToServerMsg, ServerToClientMsg},
-        pane_size::Size,
-    };
-
-    #[derive(Clone, Debug, Default)]
-    struct StubOsInput;
-
-    impl ClientOsApi for StubOsInput {
-        fn get_terminal_size(&self) -> Size {
-            Size::default()
-        }
-        fn set_raw_mode(&mut self) {}
-        fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-            Ok(())
-        }
-        fn get_stdout_writer(&self) -> Box<dyn Write> {
-            Box::new(std::io::sink())
-        }
-        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
-            Box::new(Cursor::new(Vec::<u8>::new()))
-        }
-        fn update_session_name(&mut self, _new_session_name: String) {}
-        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-            Ok(vec![])
-        }
-        fn box_clone(&self) -> Box<dyn ClientOsApi> {
-            Box::new(self.clone())
-        }
-        fn send_to_server(&self, _msg: ClientToServerMsg) {}
-        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-            None
-        }
-        fn handle_signals(
-            &self,
-            _sigwinch_cb: Box<dyn Fn()>,
-            _quit_cb: Box<dyn Fn()>,
-            _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-        ) {
-        }
-        fn connect_to_server(&self, _path: &Path) {}
-        fn load_palette(&self) -> Palette {
-            Palette::default()
-        }
-        fn enable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn disable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
 
     fn connection_table_with_client(client_id: &str) -> Arc<Mutex<ConnectionTable>> {
         let connection_table = Arc::new(Mutex::new(ConnectionTable::default()));
         connection_table.lock().unwrap().add_new_client(
             client_id.to_owned(),
-            Box::new(StubOsInput),
+            Box::new(FakeClientOsApi::new()),
             false,
             "token".to_owned(),
         );

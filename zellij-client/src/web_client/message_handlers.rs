@@ -1,6 +1,8 @@
 use crate::input_handler::from_termwiz;
 use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
 use crate::os_input_output::ClientOsApi;
+use crate::web_client::connection_manager::close_message;
+use crate::web_client::types::client_action;
 use crate::web_client::types::BRACKETED_PASTE_END;
 use crate::web_client::types::BRACKETED_PASTE_START;
 use std::sync::{
@@ -102,36 +104,21 @@ fn dispatch_termwiz_event(
             });
         },
         InputEvent::Paste(pasted_text) => {
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: BRACKETED_PASTE_START.to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: pasted_text.as_bytes().to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
-            os_input.send_to_server(ClientToServerMsg::Action {
-                action: Action::Write {
-                    key_with_modifier: None,
-                    bytes: BRACKETED_PASTE_END.to_vec(),
-                    is_kitty_keyboard_protocol: false,
-                },
-                terminal_id: None,
-                client_id: None,
-                is_cli_client: false,
-            });
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: BRACKETED_PASTE_START.to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: pasted_text.as_bytes().to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
+            os_input.send_to_server(client_action(Action::Write {
+                key_with_modifier: None,
+                bytes: BRACKETED_PASTE_END.to_vec(),
+                is_kitty_keyboard_protocol: false,
+            }));
         },
         _ => {
             log::error!("Unsupported event: {:#?}", input_event);
@@ -139,7 +126,7 @@ fn dispatch_termwiz_event(
     }
 }
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{Message, WebSocket};
 use futures::{prelude::stream::SplitSink, SinkExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -155,23 +142,8 @@ pub fn render_to_client(
             tokio::select! {
                 biased;
                 _ = cancellation_token.cancelled() => {
-                    let code = if should_not_reconnect.load(Ordering::Relaxed) {
-                        4001u16
-                    } else {
-                        axum::extract::ws::close_code::NORMAL
-                    };
-                    let close_frame = CloseFrame {
-                        code,
-                        reason: "Connection closed".into(),
-                    };
-                    let close_message = Message::Close(Some(close_frame));
-                    if client_channel_tx
-                        .send(close_message)
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    let close = close_message(should_not_reconnect.load(Ordering::Relaxed));
+                    let _ = client_channel_tx.send(close).await;
                     break;
                 }
                 result = stdout_channel_rx.recv() => {
@@ -277,78 +249,12 @@ pub fn parse_stdin(
 #[cfg(test)]
 mod tests {
     use super::parse_stdin;
-    use crate::os_input_output::ClientOsApi;
-    use std::io::{BufRead, Cursor, Write};
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use zellij_utils::{
-        data::Palette,
-        errors::ErrorContext,
-        input::mouse::MouseEvent,
-        ipc::{ClientToServerMsg, ServerToClientMsg},
-        pane_size::Size,
-    };
-
-    #[derive(Clone, Debug, Default)]
-    struct RecordingOsInput {
-        sent_messages: Arc<Mutex<Vec<ClientToServerMsg>>>,
-    }
-
-    impl RecordingOsInput {
-        fn take_sent_messages(&self) -> Vec<ClientToServerMsg> {
-            self.sent_messages.lock().unwrap().clone()
-        }
-    }
-
-    impl ClientOsApi for RecordingOsInput {
-        fn get_terminal_size(&self) -> Size {
-            Size::default()
-        }
-        fn set_raw_mode(&mut self) {}
-        fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
-            Ok(())
-        }
-        fn get_stdout_writer(&self) -> Box<dyn Write> {
-            Box::new(std::io::sink())
-        }
-        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
-            Box::new(Cursor::new(Vec::<u8>::new()))
-        }
-        fn update_session_name(&mut self, _new_session_name: String) {}
-        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-            Ok(vec![])
-        }
-        fn box_clone(&self) -> Box<dyn ClientOsApi> {
-            Box::new(self.clone())
-        }
-        fn send_to_server(&self, msg: ClientToServerMsg) {
-            self.sent_messages.lock().unwrap().push(msg);
-        }
-        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-            None
-        }
-        fn handle_signals(
-            &self,
-            _sigwinch_cb: Box<dyn Fn()>,
-            _quit_cb: Box<dyn Fn()>,
-            _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
-        ) {
-        }
-        fn connect_to_server(&self, _path: &Path) {}
-        fn load_palette(&self) -> Palette {
-            Palette::default()
-        }
-        fn enable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn disable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::test_support::FakeClientOsApi;
+    use zellij_utils::{input::mouse::MouseEvent, ipc::ClientToServerMsg};
 
     #[test]
     fn ime_multi_char_input_uses_per_char_raw_bytes() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -359,7 +265,7 @@ mod tests {
             &mut session,
         );
 
-        let sent_messages = os_input.take_sent_messages();
+        let sent_messages = os_input.sent_messages();
         assert_eq!(sent_messages.len(), 2);
 
         let raw_bytes: Vec<Vec<u8>> = sent_messages
@@ -378,7 +284,7 @@ mod tests {
 
     #[test]
     fn single_char_input_keeps_original_raw_bytes() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -389,7 +295,7 @@ mod tests {
             &mut session,
         );
 
-        let sent_messages = os_input.take_sent_messages();
+        let sent_messages = os_input.sent_messages();
         assert_eq!(sent_messages.len(), 1);
 
         match &sent_messages[0] {
@@ -408,7 +314,7 @@ mod tests {
     #[test]
     fn fragmented_kitty_sequence_resolves_across_frames() {
         use zellij_utils::data::{BareKey, KeyWithModifier};
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -420,7 +326,7 @@ mod tests {
             &mut session,
         );
         assert!(
-            os_input.take_sent_messages().is_empty(),
+            os_input.sent_messages().is_empty(),
             "incomplete Kitty prefix must not emit a key on frame 1"
         );
 
@@ -431,7 +337,7 @@ mod tests {
             &mut mouse_old_event,
             &mut session,
         );
-        let sent = os_input.take_sent_messages();
+        let sent = os_input.sent_messages();
         assert_eq!(
             sent.len(),
             1,
@@ -460,7 +366,7 @@ mod tests {
     /// and reach the server as ordinary key events.
     #[test]
     fn non_kitty_bytes_pass_through_to_termwiz_path() {
-        let os_input = RecordingOsInput::default();
+        let os_input = FakeClientOsApi::new();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
 
@@ -471,7 +377,7 @@ mod tests {
             &mut session,
         );
 
-        let sent = os_input.take_sent_messages();
+        let sent = os_input.sent_messages();
         // Two Char events ('a', 'b'), both via the termwiz path.
         assert_eq!(sent.len(), 2);
         for msg in &sent {

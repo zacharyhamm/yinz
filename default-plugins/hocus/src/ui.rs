@@ -1134,13 +1134,22 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
 
     // Name the call awaiting a y/n. The assistant message above lists every call
     // it asked for, which doesn't say which one this prompt is about.
+    //
+    // Wrapped here rather than left to the host: the tail skips the wrapping the
+    // cached body went through, and `print_text_with_coordinates` *truncates* what
+    // it is given. Unwrapped, a long argument runs off the pane edge and the user
+    // agrees to something they were never shown.
     if let Some(prompt) = prompt {
         tail.push(VLine::blank());
-        tail.push(VLine {
-            text: format!("run? {prompt}"),
-            role: Role::Error,
-            styles: Vec::new(),
-        });
+        for line in prompt {
+            for row in wrap(&line, cols) {
+                tail.push(VLine {
+                    text: row,
+                    role: Role::Error,
+                    styles: Vec::new(),
+                });
+            }
+        }
     }
 
     let body = &lines[..lines.len() - usize::from(replaced_last)];

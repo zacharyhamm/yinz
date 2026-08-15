@@ -38,14 +38,14 @@ pub fn build_host_query_seed_msgs(
     if let Some(fg) = resolved
         .foreground
         .as_ref()
-        .and_then(|s| css_rgb_to_xparse(s))
+        .and_then(|s| css_rgb_to_xparse_color(s))
     {
         msgs.push(ClientToServerMsg::ForegroundColor { color: fg });
     }
     if let Some(bg) = resolved
         .background
         .as_ref()
-        .and_then(|s| css_rgb_to_xparse(s))
+        .and_then(|s| css_rgb_to_xparse_color(s))
     {
         msgs.push(ClientToServerMsg::BackgroundColor { color: bg });
     }
@@ -68,7 +68,7 @@ struct ResolvedTheme {
 }
 
 /// Resolve the web-client theme using the same precedence as
-/// `SetConfigPayload::from(&Config)` so server-side synthesis matches
+/// `SetConfigPayload::new` so server-side synthesis matches
 /// the colors xterm.js paints in the browser.
 fn resolve_theme(config: &Config, config_options: &Options) -> ResolvedTheme {
     let mut out = ResolvedTheme::default();
@@ -83,24 +83,7 @@ fn resolve_theme(config: &Config, config_options: &Options) -> ResolvedTheme {
         .and_then(|t| t.background.clone())
         .or_else(|| palette.map(|p| p.text_unselected.background.as_rgb_str()));
 
-    if let Some(t) = web_client_theme {
-        out.indexed[0] = t.black.clone();
-        out.indexed[1] = t.red.clone();
-        out.indexed[2] = t.green.clone();
-        out.indexed[3] = t.yellow.clone();
-        out.indexed[4] = t.blue.clone();
-        out.indexed[5] = t.magenta.clone();
-        out.indexed[6] = t.cyan.clone();
-        out.indexed[7] = t.white.clone();
-        out.indexed[8] = t.bright_black.clone();
-        out.indexed[9] = t.bright_red.clone();
-        out.indexed[10] = t.bright_green.clone();
-        out.indexed[11] = t.bright_yellow.clone();
-        out.indexed[12] = t.bright_blue.clone();
-        out.indexed[13] = t.bright_magenta.clone();
-        out.indexed[14] = t.bright_cyan.clone();
-        out.indexed[15] = t.bright_white.clone();
-    }
+    out.indexed = crate::web_protocol::control_message::indexed_theme_overrides(web_client_theme);
 
     out
 }
@@ -137,15 +120,11 @@ fn build_color_registers(resolved: &ResolvedTheme) -> Vec<ColorRegister> {
 /// produces, which is what `SetConfigPayload` ships to xterm.js) into the
 /// `rgb:RRRR/GGGG/BBBB` form `xparse_color` accepts, prefixed for
 /// `ClientToServerMsg::{Foreground,Background}Color`'s consumer.
-fn css_rgb_to_xparse(css: &str) -> Option<String> {
-    css_rgb_to_xparse_color(css)
-}
-
-/// Same as `css_rgb_to_xparse`. Kept as a separate alias to make the
-/// difference between OSC 10/11 (xparse-format string going into screen's
+///
+/// Used for both OSC 10/11 (xparse-format string going into screen's
 /// terminal_emulator_colors) and OSC 4 (color string going into
-/// terminal_emulator_color_codes) explicit at call sites — currently both
-/// consumers want the same `rgb:RRRR/GGGG/BBBB` shape.
+/// terminal_emulator_color_codes) — both consumers want the same
+/// `rgb:RRRR/GGGG/BBBB` shape.
 fn css_rgb_to_xparse_color(css: &str) -> Option<String> {
     let PaletteColor::Rgb((r, g, b)) = PaletteColor::from_rgb_str(css) else {
         return None;
@@ -185,6 +164,72 @@ mod tests {
     use super::*;
     use hegel::generators;
     use zellij_utils::input::web_client::{WebClientConfig, WebClientTheme};
+
+    /// A config carrying one named theme whose unselected-text base colour is
+    /// `base`, so we can tell which theme was picked by the colour that comes
+    /// out the other end.
+    fn config_with_named_theme(name: &str, base: (u8, u8, u8)) -> Config {
+        use std::collections::HashMap;
+        use zellij_utils::data::{PaletteColor, Styling};
+        use zellij_utils::input::theme::{Theme, Themes};
+
+        let mut palette = Styling::default();
+        palette.text_unselected.base = PaletteColor::Rgb(base);
+
+        let mut themes = HashMap::new();
+        themes.insert(
+            name.to_string(),
+            Theme {
+                sourced_from_external_file: false,
+                palette,
+            },
+        );
+
+        Config {
+            themes: Themes::from_data(themes),
+            ..Default::default()
+        }
+    }
+
+    /// A `--theme` on the command line has to reach both the colours seeded
+    /// into the server's host-query cache and the payload the browser renders
+    /// with, or the two disagree about what the terminal looks like.
+    #[test]
+    fn cli_theme_override_drives_both_the_seed_and_the_browser_payload() {
+        use crate::web_protocol::control_message::SetConfigPayload;
+
+        let cli_theme = (1u8, 2u8, 3u8);
+        let mut config = config_with_named_theme("from-cli", cli_theme);
+        // The config file asks for a theme that does not exist, so if either
+        // path consulted config.options instead of the merged options it
+        // would resolve to nothing rather than to `from-cli`.
+        config.options.theme = Some("from-config-file".to_string());
+
+        let config_options = Options {
+            theme: Some("from-cli".to_string()),
+            ..Default::default()
+        };
+
+        let expected = PaletteColor::Rgb(cli_theme).as_rgb_str();
+
+        let payload = SetConfigPayload::new(&config, &config_options);
+        assert_eq!(
+            payload.theme.foreground.as_deref(),
+            Some(expected.as_str()),
+            "the browser payload must use the CLI-selected theme"
+        );
+
+        let msgs = build_host_query_seed_msgs(&config, &config_options);
+        let seeded_fg = msgs.iter().find_map(|msg| match msg {
+            ClientToServerMsg::ForegroundColor { color } => Some(color.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            seeded_fg,
+            css_rgb_to_xparse_color(&expected),
+            "the seeded OSC 10 reply must use the same theme as the browser payload"
+        );
+    }
 
     fn config_with_web_theme(theme: WebClientTheme) -> Config {
         Config {
@@ -258,7 +303,7 @@ mod tests {
         let g = tc.draw(generators::integers::<u8>());
         let b = tc.draw(generators::integers::<u8>());
         let css = PaletteColor::Rgb((r, g, b)).as_rgb_str();
-        let xparse = css_rgb_to_xparse(&css)
+        let xparse = css_rgb_to_xparse_color(&css)
             .unwrap_or_else(|| panic!("({}, {}, {}) -> {:?} was rejected", r, g, b, css));
         assert_eq!(
             parse_xparse(&xparse),
@@ -276,7 +321,7 @@ mod tests {
     fn css_rgb_to_xparse_is_total(tc: hegel::TestCase) {
         // Arbitrary Unicode: this string comes from user config.
         let s = tc.draw(generators::text());
-        if let Some(xparse) = css_rgb_to_xparse(&s) {
+        if let Some(xparse) = css_rgb_to_xparse_color(&s) {
             assert!(
                 parse_xparse(&xparse).is_some(),
                 "input {:?} produced malformed xparse string {:?}",

@@ -1,12 +1,9 @@
-use crate::os_input_output::ClientOsApi;
-use std::io::Write;
+use crate::os_input_output::StdioAccess;
+use crate::terminal_escapes::announce_nested;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use zellij_utils::nested_session::{
-    self, reannounce_check_interval_ms, reannounce_silence_ms, NestedSessionCapability,
-    NestedSessionMessage,
-};
+use zellij_utils::nested_session::{reannounce_check_interval_ms, reannounce_silence_ms};
 
 #[derive(Clone)]
 pub struct NestedReannounce {
@@ -15,7 +12,7 @@ pub struct NestedReannounce {
 }
 
 impl NestedReannounce {
-    pub fn spawn(os_input: Box<dyn ClientOsApi>, session_name: String) -> Self {
+    pub fn spawn(os_input: Box<dyn StdioAccess + Send>, session_name: String) -> Self {
         let handle = NestedReannounce {
             last_heard_from_host: Arc::new(Mutex::new(Instant::now())),
             stop: Arc::new(AtomicBool::new(false)),
@@ -36,17 +33,7 @@ impl NestedReannounce {
                         last.elapsed()
                     };
                     if silent_for >= Duration::from_millis(reannounce_silence_ms()) {
-                        let announce = NestedSessionMessage::Announce {
-                            session_name: session_name.clone(),
-                            capabilities: vec![NestedSessionCapability::NestedControl],
-                        };
-                        let mut stdout = os_input.get_stdout_writer();
-                        if stdout
-                            .write_all(&nested_session::encode_frame(&announce))
-                            .is_ok()
-                        {
-                            let _ = stdout.flush();
-                        }
+                        announce_nested(&*os_input, &session_name);
                     }
                 }
             });

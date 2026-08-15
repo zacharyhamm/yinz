@@ -155,13 +155,21 @@ impl State {
         self.is_streaming() || self.tools_busy()
     }
 
-    /// The call awaiting `y`/`n`, if any. Rendered so the prompt names the one
-    /// call it is about rather than leaving the user to infer it.
-    pub fn confirmation_prompt(&self) -> Option<String> {
+    /// The call awaiting `y`/`n` as the block that describes it, if any. Rendered
+    /// so the prompt names the one call it is about rather than leaving the user
+    /// to infer it, and says what that call will do rather than handing over the
+    /// model's own JSON to read.
+    pub fn confirmation_prompt(&self) -> Option<Vec<String>> {
         match self.status {
-            Status::ConfirmingTool => self.pending.front().map(tools::summarize),
+            Status::ConfirmingTool => self.pending.front().map(tools::confirmation_detail),
             _ => None,
         }
+    }
+
+    /// Whether a `y`/`n` is outstanding, for the callers that only need to know
+    /// that much and shouldn't pay to build the block to find out.
+    pub(crate) fn is_confirming(&self) -> bool {
+        matches!(self.status, Status::ConfirmingTool)
     }
 
     /// Whether we are waiting on something *and* nothing is arriving — the one

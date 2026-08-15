@@ -18,7 +18,6 @@ pub(crate) fn stdin_loop(
     stdin_ansi_parser: Arc<Mutex<StdinAnsiParser>>,
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
-    resize_sender: Option<std::sync::mpsc::Sender<()>>,
 ) {
     // Send the startup host query string so the host terminal replies
     // with its live pixel dimensions, fg/bg, sync-output support, and
@@ -39,9 +38,6 @@ pub(crate) fn stdin_loop(
             ]));
         }
     }
-
-    // Signal handling does not use the crossterm resize channel.
-    drop(resize_sender);
 
     // Byte reader + termwiz/kitty parser path.
     let mut input_parser = InputParser::new();
@@ -94,15 +90,12 @@ pub(crate) fn stdin_loop(
                                 InputInstruction::AnsiStdinInstructions(parse_output.replies),
                             );
                         }
-                        if let Some((token, reply_bytes)) = parse_output.completed_forward {
-                            let _ = send_input_instructions.send(
-                                InputInstruction::ForwardedReplyFromHostComplete {
-                                    token,
-                                    reply_bytes,
-                                },
-                            );
-                        }
-                        if let Some((token, reply_bytes)) = parse_output.completed_clipboard_forward
+                        // Either kind of forwarding window may have closed on
+                        // this chunk; both relay the same completion.
+                        for (token, reply_bytes) in parse_output
+                            .completed_forward
+                            .into_iter()
+                            .chain(parse_output.completed_clipboard_forward)
                         {
                             let _ = send_input_instructions.send(
                                 InputInstruction::ForwardedReplyFromHostComplete {
