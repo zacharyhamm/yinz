@@ -1318,11 +1318,8 @@ fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
         "the chrome pane does not span the full screen width"
     );
 
-    let global_pane_geom = screen
-        .global_panes
-        .pane(PaneId::Terminal(99))
-        .unwrap()
-        .position_and_size();
+    let global_pane = screen.global_panes.pane(PaneId::Terminal(99)).unwrap();
+    let global_pane_geom = global_pane.position_and_size();
     assert_eq!(
         (global_pane_geom.y, global_pane_geom.rows.as_usize()),
         (0, screen.surface_size().rows - chrome_bottom),
@@ -1330,6 +1327,17 @@ fn tab_chrome_spans_the_full_width_beside_a_left_global_pane() {
     );
     assert_eq!(global_pane_geom.x, 0);
     assert_eq!(global_pane_geom.cols.as_usize(), global_cols);
+    // the chrome is all that is below the band, and chrome draws no line above itself - so the
+    // band's last row is its own, like a tab pane flush with the bottom of the viewport
+    assert_eq!(
+        global_pane.get_content_offset().bottom,
+        0,
+        "the global pane gives up a row for a border nothing draws"
+    );
+    assert_eq!(
+        global_pane.get_content_rows(),
+        global_pane_geom.rows.as_usize()
+    );
 }
 
 /// Add a non-selectable borderless pane on the bottom edge of `tab_id`, standing in for the
