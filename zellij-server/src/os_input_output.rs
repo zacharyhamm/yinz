@@ -4,7 +4,11 @@ use crate::{panes::PaneId, ClientId};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
-use crate::os_input_output_unix::{AdoptedTerminal, UnixPtyBackend as PtyBackendImpl};
+use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
+// Re-exported: it is what `ServerOsApi::adopt_terminal` returns, so anything
+// implementing that trait outside this crate — the integration tests' fake
+// backend — needs to be able to name it.
+pub use crate::os_input_output_unix::AdoptedTerminal;
 use crate::pty_host::client::ReleasedPtyHost;
 
 use interprocess;

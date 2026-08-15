@@ -255,14 +255,22 @@ impl TiledPanes {
         self.reapply_pane_frames();
         removed_pane
     }
+    /// Put a pane in the grid, or hand it back if there is nowhere to put it.
+    ///
+    /// `Some` means the pane was *not* placed and is still the caller's to
+    /// dispose of. The alternative — swallowing the box on the failure paths —
+    /// destroys the pane: no `PaneClosed` goes out, the pty thread is never told
+    /// to close it, and nothing is left holding the id, so its process runs on
+    /// with no owner and no way to reap it.
+    #[must_use]
     pub fn insert_pane(
         &mut self,
         pane_id: PaneId,
         pane: Box<dyn Pane>,
         client_id: Option<ClientId>,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let should_relayout = true;
-        self.add_pane(pane_id, pane, should_relayout, client_id);
+        self.add_pane(pane_id, pane, should_relayout, client_id)
     }
     pub fn set_pane_logical_position(&mut self, pane_id: PaneId, logical_position: usize) {
         if let Some(pane) = self.panes.get_mut(&pane_id) {
@@ -271,14 +279,16 @@ impl TiledPanes {
             pane.set_geom(position_and_size);
         }
     }
+    /// As [`insert_pane`](Self::insert_pane), including handing the pane back.
+    #[must_use]
     pub fn insert_pane_without_relayout(
         &mut self,
         pane_id: PaneId,
         pane: Box<dyn Pane>,
         client_id: Option<ClientId>,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let should_relayout = false;
-        self.add_pane(pane_id, pane, should_relayout, client_id);
+        self.add_pane(pane_id, pane, should_relayout, client_id)
     }
     pub fn has_room_for_new_pane(&mut self) -> bool {
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
@@ -328,7 +338,13 @@ impl TiledPanes {
             }
         }
     }
-    pub fn add_pane_to_stack(&mut self, pane_id_in_stack: &PaneId, mut pane: Box<dyn Pane>) {
+    /// As [`insert_pane`](Self::insert_pane), including handing the pane back.
+    #[must_use]
+    pub fn add_pane_to_stack(
+        &mut self,
+        pane_id_in_stack: &PaneId,
+        mut pane: Box<dyn Pane>,
+    ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
@@ -340,11 +356,11 @@ impl TiledPanes {
                 pane.set_geom(new_pane_geom);
                 self.panes.insert(pane.pid(), pane);
                 self.set_force_render(); // TODO: why do we need this?
-                return;
+                None
             },
             Err(_e) => {
                 let should_relayout = false;
-                return self.add_pane_without_stacked_resize(pane.pid(), pane, should_relayout);
+                self.add_pane_without_stacked_resize(pane.pid(), pane, should_relayout)
             },
         }
     }
@@ -354,17 +370,21 @@ impl TiledPanes {
         pane: Box<dyn Pane>,
         should_relayout: bool,
         client_id: Option<ClientId>,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         if self.panes.is_empty() {
             self.panes.insert(pane_id, pane);
-            return;
+            return None;
         }
         let stacked_resize = { *self.stacked_resize.borrow() };
 
         if let Some(client_id) = client_id {
             if stacked_resize && self.is_connected(&client_id) {
-                self.add_pane_with_stacked_resize(pane_id, pane, should_relayout, client_id);
-                return;
+                return self.add_pane_with_stacked_resize(
+                    pane_id,
+                    pane,
+                    should_relayout,
+                    client_id,
+                );
             }
         }
         self.add_pane_without_stacked_resize(pane_id, pane, should_relayout)
@@ -374,7 +394,7 @@ impl TiledPanes {
         pane_id: PaneId,
         mut pane: Box<dyn Pane>,
         should_relayout: bool,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -397,6 +417,12 @@ impl TiledPanes {
                     if should_relayout {
                         self.relayout(!split_direction);
                     }
+                    None
+                } else {
+                    // the pane it was going to be split off is too small to
+                    // divide, which is a reason not to place this pane and not a
+                    // reason to destroy it
+                    Some(pane)
                 }
             },
             None => {
@@ -407,9 +433,11 @@ impl TiledPanes {
                         pane.set_geom(new_pane_geom);
                         self.panes.insert(pane_id, pane); // TODO: is set_geom the right one?
                         self.expand_pane_in_stack(pane_id);
+                        None
                     },
                     Err(e) => {
                         log::error!("Failed to add pane to stack: {:?}", e);
+                        Some(pane)
                     },
                 }
             },
@@ -421,7 +449,7 @@ impl TiledPanes {
         mut pane: Box<dyn Pane>,
         should_relayout: bool,
         client_id: ClientId,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -430,8 +458,18 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let Some(active_pane_id) = self.active_panes.get(&client_id) else {
-            log::error!("Could not find active pane id for client_id");
-            return;
+            // Placed without reference to the client rather than not placed at
+            // all: `pane` is owned here, so returning would drop it — the pane
+            // would cease to exist with no `PaneClosed`, no `ClosePane` for the
+            // pty thread and nothing left that could ever reap its process.
+            // Stacked resize is about *where* a pane goes, and having nowhere in
+            // particular to put it is not a reason to destroy it.
+            //
+            // Reachable whenever the client's active pane has left the grid — a
+            // plugin hid it, a scrollback editor took its place — and the client
+            // has not been focused anywhere since.
+            drop(pane_grid);
+            return self.add_pane_without_stacked_resize(pane_id, pane, should_relayout);
         };
         if pane_grid
             .get_pane_geom(active_pane_id)
@@ -445,7 +483,7 @@ impl TiledPanes {
                     self.panes.insert(pane_id, pane);
 
                     self.expand_pane_in_stack(pane_id);
-                    return;
+                    return None;
                 },
                 Err(_e) => {
                     return self.add_pane_without_stacked_resize(pane_id, pane, should_relayout);
@@ -467,6 +505,9 @@ impl TiledPanes {
                     if should_relayout {
                         self.relayout(!split_direction);
                     }
+                    None
+                } else {
+                    Some(pane)
                 }
             },
             None => {
@@ -477,7 +518,7 @@ impl TiledPanes {
                     Ok(new_pane_geom) => {
                         pane.set_geom(new_pane_geom);
                         self.panes.insert(pane_id, pane); // TODO: is set_geom the right one?
-                        return;
+                        return None;
                     },
                     Err(_e) => {
                         return self.add_pane_without_stacked_resize(

@@ -194,10 +194,19 @@ impl ServerConnection for FakeClientOsApi {
             .unwrap()
             .recv_server_msg();
         if let Some((msg, _)) = received.as_ref() {
-            self.received_server_messages
-                .lock()
-                .unwrap()
-                .push(server_message_name(msg));
+            // `Log`/`LogError` carry their lines rather than just their name:
+            // they are how an action answers a cli client in prose, and for
+            // anything whose whole outcome *is* the prose — a warp explaining why
+            // it will not move a pane — the name says nothing. A real cli client
+            // prints these to its own stderr, which a test running the client on
+            // a thread of its own cannot read.
+            let recorded = match msg {
+                ServerToClientMsg::Log { lines } | ServerToClientMsg::LogError { lines } => {
+                    format!("{}: {}", server_message_name(msg), lines.join("\n"))
+                },
+                _ => server_message_name(msg),
+            };
+            self.received_server_messages.lock().unwrap().push(recorded);
         }
         received
     }

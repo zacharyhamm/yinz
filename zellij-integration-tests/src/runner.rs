@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::ClientScreen;
 use zellij_client::os_input_output::SignalEvent;
 use zellij_client::ClientInfo;
 use zellij_utils::cli::{CliAction, CliArgs};
@@ -371,6 +372,21 @@ impl TestSession {
         }
     }
 
+    /// A handle on the next pane this session took over from another one.
+    ///
+    /// Deliberately not `expect_pty_spawn`: nothing was spawned. The handle
+    /// carries this session's terminal id, which is new, but everything it
+    /// reaches — the stdin the pane has been sent, the sizes it has been told
+    /// about, whether it ever exited — is the same fake process the other
+    /// session had.
+    pub fn expect_adopted_pty(&self) -> FakePtyHandle {
+        let terminal_id = self.fake_server_os_api.shared_ptys.expect_adoption();
+        FakePtyHandle {
+            terminal_id,
+            shared_ptys: self.fake_server_os_api.shared_ptys.clone(),
+        }
+    }
+
     pub fn send_stdin(&self, bytes: &[u8]) {
         self.main_client.send_stdin(bytes);
     }
@@ -457,21 +473,41 @@ impl TestSession {
     }
 
     pub fn run_cli_action(&self, cli_action: CliAction) -> i32 {
-        self.spawn_cli_client(cli_action)
-            .join()
-            .expect("cli client thread panicked")
+        self.run_cli_action_reporting(cli_action).0
     }
 
-    fn spawn_cli_client(&self, cli_action: CliAction) -> JoinHandle<i32> {
+    /// Run a cli action and return its exit code together with what it printed.
+    ///
+    /// Some actions answer in prose rather than in state — a warp that is refused
+    /// says why, and the wording is the whole of what the user gets — so a test
+    /// that only saw the exit code could not tell one refusal from another.
+    pub fn run_cli_action_reporting(&self, cli_action: CliAction) -> (i32, String) {
+        let (handle, client_screen) = self.spawn_cli_client(cli_action);
+        let exit_code = handle.join().expect("cli client thread panicked");
+        let reported = client_screen
+            .server_messages()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message.split_once(": "))
+            .filter(|(name, _)| *name == "Log" || *name == "LogError")
+            .map(|(_, lines)| lines.to_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (exit_code, reported)
+    }
+
+    fn spawn_cli_client(&self, cli_action: CliAction) -> (JoinHandle<i32>, ClientScreen) {
         let actions = Action::actions_from_cli(
             cli_action,
             Box::new(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
             Some(self.config.clone()),
         )
         .expect("failed to build cli actions");
-        let (fake_client_os_api, _fake_client_handle) = FakeClientOsApi::new(self.size, None);
+        let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(self.size, None);
+        let client_screen = fake_client_handle.client_screen.clone();
         let session_name = self.session_name.clone();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("in_process_cli_client".to_string())
             .spawn(move || {
                 zellij_client::cli_client::start_cli_client(
@@ -480,7 +516,8 @@ impl TestSession {
                     actions,
                 )
             })
-            .unwrap()
+            .unwrap();
+        (handle, client_screen)
     }
 
     pub fn save_session(&self) {
@@ -571,13 +608,15 @@ impl TestSession {
         let close_on_exit = true;
         let block_until_exit = true;
         CliClientHandle {
-            thread: self.spawn_cli_client(new_pane_cli_action(
-                command,
-                floating,
-                close_on_exit,
-                false,
-                block_until_exit,
-            )),
+            thread: self
+                .spawn_cli_client(new_pane_cli_action(
+                    command,
+                    floating,
+                    close_on_exit,
+                    false,
+                    block_until_exit,
+                ))
+                .0,
         }
     }
 
@@ -586,13 +625,15 @@ impl TestSession {
         let close_on_exit = true;
         let block_until_exit = true;
         CliClientHandle {
-            thread: self.spawn_cli_client(new_pane_cli_action(
-                command,
-                floating,
-                close_on_exit,
-                false,
-                block_until_exit,
-            )),
+            thread: self
+                .spawn_cli_client(new_pane_cli_action(
+                    command,
+                    floating,
+                    close_on_exit,
+                    false,
+                    block_until_exit,
+                ))
+                .0,
         }
     }
 
