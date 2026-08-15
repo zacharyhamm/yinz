@@ -281,6 +281,21 @@ pub enum StripRow {
     Agent { pane_id: u32, text: String },
 }
 
+/// The agent strip as the hocus-agents pane should draw it: the rows, and the
+/// terminal pane the user is looking at.
+///
+/// The focus rides along with the rows rather than on its own message because
+/// the panel needs both to answer either question: which row the cursor belongs
+/// on takes the rows to say which pane ids are agents at all. It is the *raw*
+/// focused pane — a shell or an editor, not only an agent — so the panel can
+/// tell "you are on this agent" from "you were on this agent"; see
+/// `wire::AGENT_STRIP`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Strip {
+    pub rows: Vec<StripRow>,
+    pub focused: Option<u32>,
+}
+
 /// The agent strip: every agent as a line, under a project header and a branch
 /// header.
 ///

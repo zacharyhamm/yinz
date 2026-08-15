@@ -15,13 +15,20 @@
 //! a pane on Enter. `AGENT_STRIP_HELLO` is the reload handshake — a freshly
 //! loaded instance announces itself and hocus answers with the current rows.
 //!
+//! Which pane the user is *in* comes over the same wire, and the cursor follows
+//! it: walking into an agent by any route — the pane keys, a tab switch, a tool
+//! — selects its row here, so the list shows where you are and not only where
+//! you last pointed. Walking onto anything else leaves the row selected and
+//! draws it dim, which is the difference between "you are here" and "here is
+//! where you were".
+//!
 //! The pane is spawned by hocus on load via `launch_or_focus_global_pane_split`,
 //! so the `Ctrl+`` keybinding keeps working unchanged: revealing hocus reveals
 //! the whole strip, and `hide_self()` here hides it likewise.
 
 use std::collections::BTreeMap;
 
-use hocus_proto::agents::StripRow;
+use hocus_proto::agents::{Strip, StripRow};
 use hocus_proto::wire;
 use zellij_tile::prelude::*;
 
@@ -31,6 +38,19 @@ struct State {
     rows: Vec<StripRow>,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
+    /// The last pane hocus reported focused, agent or not.
+    ///
+    /// Two jobs. The selection follows it when it *changes* onto an agent, which
+    /// is what makes walking to a pane move the cursor here — comparing rather
+    /// than assigning is what leaves `j`/`k` alone, since the strip is pushed on
+    /// every snapshot and would otherwise drag the cursor back once a second.
+    /// And the selected row is drawn live only while this names it, so a
+    /// selection you moved off the pane you are in says so.
+    ///
+    /// A `None` from hocus is ignored on both counts: it means the focus is on a
+    /// plugin pane — this one, most often — and coming here to work the list is
+    /// not leaving the agent you were in.
+    focused: Option<u32>,
 }
 
 register_plugin!(State);
@@ -57,14 +77,14 @@ impl ZellijPlugin for State {
         if pipe_message.name != wire::AGENT_STRIP {
             return false;
         }
-        let Some(rows) = pipe_message
+        let Some(strip) = pipe_message
             .payload
             .as_deref()
-            .and_then(|json| serde_json::from_str::<Vec<StripRow>>(json).ok())
+            .and_then(|json| serde_json::from_str::<Strip>(json).ok())
         else {
             return false;
         };
-        self.set_rows(rows)
+        self.set_rows(strip)
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -85,6 +105,7 @@ impl ZellijPlugin for State {
             .selected
             .saturating_sub(rows / 2)
             .min(self.rows.len().saturating_sub(rows));
+        let live = self.live();
         for (index, row) in self.rows.iter().skip(start).take(rows).enumerate() {
             let selected = start + index == self.selected;
             let text = match row {
@@ -94,9 +115,14 @@ impl ZellijPlugin for State {
                 StripRow::Branch(text) => Text::new(text).color_range(3, ..),
                 StripRow::Agent { text, .. } => {
                     let line = Text::new(format!("{} {}", if selected { ">" } else { " " }, text));
-                    match selected {
-                        true => line.color_range(2, ..),
-                        false => line.dim_range(..),
+                    match (selected, live) {
+                        // The selection is a band either way - `selected()` paints
+                        // the row's whole width - so it stays findable when the
+                        // user is somewhere else. Colour against dim is what says
+                        // which of those two it is.
+                        (true, true) => line.selected().color_range(2, ..),
+                        (true, false) => line.selected().dim_range(..),
+                        (false, _) => line.dim_range(..),
                     }
                 },
             };
@@ -145,24 +171,56 @@ impl State {
     /// Take a fresh strip, staying on the agent the selection was on. The
     /// selection follows the pane rather than the row number, so a project
     /// appearing above it does not move what Enter would focus.
-    fn set_rows(&mut self, rows: Vec<StripRow>) -> bool {
+    ///
+    /// Focus moving onto an agent overrides that: the pane the user just walked
+    /// into is where the cursor belongs, whatever it was on before. Focus landing
+    /// anywhere else - a shell, an editor - moves nothing and only dims what is
+    /// selected, because the answer to "which agent" has not changed, only
+    /// whether you are in it.
+    fn set_rows(&mut self, strip: Strip) -> bool {
+        let Strip { rows, focused } = strip;
+        let walked_to = focused
+            .filter(|_| focused != self.focused)
+            .and_then(|pane_id| position_of(&rows, pane_id));
         let was = match self.rows.get(self.selected) {
             Some(StripRow::Agent { pane_id, .. }) => Some(*pane_id),
             _ => None,
         };
-        let selected = was
-            .and_then(|pane_id| {
-                rows.iter().position(
-                    |row| matches!(row, StripRow::Agent { pane_id: id, .. } if *id == pane_id),
-                )
-            })
+        let selected = walked_to
+            .or_else(|| was.and_then(|pane_id| position_of(&rows, pane_id)))
             .or_else(|| rows.iter().position(selectable))
             .unwrap_or(0);
-        let changed = self.rows != rows || self.selected != selected;
+        // Only a real pane replaces the focus: see the field's doc.
+        let focused = focused.or(self.focused);
+        let changed = self.rows != rows
+            || self.selected != selected
+            || self.live() != live(&rows, selected, focused);
         self.rows = rows;
         self.selected = selected;
+        self.focused = focused;
         changed
     }
+
+    /// Whether the selected row is the pane the user is actually in.
+    fn live(&self) -> bool {
+        live(&self.rows, self.selected, self.focused)
+    }
+}
+
+/// Whether the row at `selected` names the focused pane - "you are here", as
+/// against "here is where you were", which is the whole difference between the
+/// two ways a selection is drawn.
+fn live(rows: &[StripRow], selected: usize, focused: Option<u32>) -> bool {
+    matches!(
+        (rows.get(selected), focused),
+        (Some(StripRow::Agent { pane_id, .. }), Some(id)) if *pane_id == id
+    )
+}
+
+/// Where a pane sits in the strip, if it is an agent at all.
+fn position_of(rows: &[StripRow], pane_id: u32) -> Option<usize> {
+    rows.iter()
+        .position(|row| matches!(row, StripRow::Agent { pane_id: id, .. } if *id == pane_id))
 }
 
 fn selectable(row: &StripRow) -> bool {
@@ -223,17 +281,34 @@ mod tests {
         ]
     }
 
+    /// A push from hocus with nobody in a terminal pane - what the sidebar
+    /// having the focus looks like on the wire.
+    fn unfocused(rows: Vec<StripRow>) -> Strip {
+        Strip {
+            rows,
+            focused: None,
+        }
+    }
+
+    /// A push from hocus with `pane_id` focused.
+    fn focused_on(rows: Vec<StripRow>, pane_id: u32) -> Strip {
+        Strip {
+            rows,
+            focused: Some(pane_id),
+        }
+    }
+
     #[test]
     fn a_fresh_strip_lands_on_the_first_agent_not_the_header() {
         let mut state = State::default();
-        assert!(state.set_rows(strip()));
+        assert!(state.set_rows(unfocused(strip())));
         assert_eq!(state.selected, 2);
     }
 
     #[test]
     fn stepping_skips_headers_in_both_directions() {
         let mut state = State::default();
-        state.set_rows(strip());
+        state.set_rows(unfocused(strip()));
         state.selected = step(&state.rows, state.selected, Motion::Down);
         assert_eq!(state.selected, 3);
         state.selected = step(&state.rows, state.selected, Motion::Down);
@@ -278,7 +353,7 @@ mod tests {
     #[test]
     fn jk_walk_the_selection_the_way_the_arrows_do() {
         let mut state = State::default();
-        state.set_rows(strip());
+        state.set_rows(unfocused(strip()));
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
         assert_eq!(state.selected, 3);
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
@@ -293,12 +368,12 @@ mod tests {
     #[test]
     fn a_refresh_follows_the_selected_pane_not_the_row_number() {
         let mut state = State::default();
-        state.set_rows(strip());
+        state.set_rows(unfocused(strip()));
         state.selected = 3; // pane 7
         let mut rows = strip();
         // a new project appears above, shifting every row down
         rows.insert(0, StripRow::Project("aardvark".to_owned()));
-        state.set_rows(rows);
+        state.set_rows(unfocused(rows));
         assert!(matches!(
             state.rows.get(state.selected),
             Some(StripRow::Agent { pane_id: 7, .. })
@@ -308,13 +383,86 @@ mod tests {
     #[test]
     fn a_refresh_that_drops_the_selected_pane_falls_back_to_the_first_agent() {
         let mut state = State::default();
-        state.set_rows(strip());
+        state.set_rows(unfocused(strip()));
         state.selected = 5; // pane 9
         let rows = vec![
             StripRow::Project("hocus".to_owned()),
             agent(3, "  3  claude"),
         ];
-        state.set_rows(rows);
+        state.set_rows(unfocused(rows));
         assert_eq!(state.selected, 1);
+    }
+
+    #[test]
+    fn walking_into_an_agent_pane_moves_the_selection_onto_it() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        assert_eq!(state.selected, 2, "pane 3, for want of anything better");
+
+        assert!(state.set_rows(focused_on(strip(), 9)));
+        assert_eq!(state.selected, 5);
+        assert!(state.live(), "the selected agent is the one we are in");
+    }
+
+    #[test]
+    fn focus_on_something_that_is_not_an_agent_leaves_the_selection_standing() {
+        let mut state = State::default();
+        state.set_rows(focused_on(strip(), 7));
+        assert_eq!(state.selected, 3);
+
+        // pane 4 is a shell, an editor, anything at all - it is in no row
+        assert!(state.set_rows(focused_on(strip(), 4)));
+        assert_eq!(state.selected, 3, "still the agent we were last in");
+        assert!(!state.live(), "but we are no longer in it");
+    }
+
+    #[test]
+    fn focus_on_a_plugin_pane_changes_nothing_at_all() {
+        let mut state = State::default();
+        state.set_rows(focused_on(strip(), 7));
+
+        // hocus sends `None` when a plugin pane has the focus, which is what
+        // coming to this very list to work it looks like
+        assert!(!state.set_rows(unfocused(strip())));
+        assert_eq!(state.selected, 3);
+        assert!(state.live(), "walking into the list is not leaving pane 7");
+    }
+
+    #[test]
+    fn a_push_that_does_not_move_the_focus_leaves_a_jk_selection_alone() {
+        let mut state = State::default();
+        state.set_rows(focused_on(strip(), 3));
+        state.on_key(KeyWithModifier::new(BareKey::Char('j')));
+        assert_eq!(state.selected, 3, "pane 7");
+
+        // the snapshot pushes that keep arriving must not drag the cursor back
+        state.set_rows(focused_on(strip(), 3));
+        assert_eq!(state.selected, 3);
+        assert!(!state.live(), "the cursor left the pane we are in");
+    }
+
+    #[test]
+    fn stepping_off_the_focused_agent_and_back_takes_the_liveness_with_it() {
+        let mut state = State::default();
+        state.set_rows(focused_on(strip(), 7));
+        assert!(state.live());
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('j')));
+        assert!(!state.live(), "selected pane 9, sitting in pane 7");
+        state.on_key(KeyWithModifier::new(BareKey::Char('k')));
+        assert!(state.live());
+    }
+
+    /// A redraw is owed for liveness alone: the rows and the selection can both
+    /// be identical while the band goes from coloured to dim.
+    #[test]
+    fn losing_the_focus_is_worth_a_redraw() {
+        let mut state = State::default();
+        state.set_rows(focused_on(strip(), 3));
+        assert!(state.live());
+
+        assert!(state.set_rows(focused_on(strip(), 4)));
+        assert_eq!(state.selected, 2);
+        assert!(!state.live());
     }
 }

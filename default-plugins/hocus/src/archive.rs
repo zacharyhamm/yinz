@@ -224,28 +224,36 @@ impl State {
     }
 
     /// The agent strip as the hocus-agents pane should draw it.
-    pub(crate) fn current_strip(&self) -> Vec<agents::StripRow> {
-        agents::strip_rows(
-            &self.panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.pane_projects(),
-            &self.pane_branches(),
-        )
+    pub(crate) fn current_strip(&self) -> agents::Strip {
+        agents::Strip {
+            rows: agents::strip_rows(
+                &self.panes,
+                &self.manual_kinds,
+                &self.activity,
+                &self.pane_projects(),
+                &self.pane_branches(),
+            ),
+            // the raw focus, not `last_focused_agent`: the pane puts its cursor on
+            // the agent you moved to and dims it when you move off, and a sticky
+            // value could never say the second thing
+            focused: self.focused_pane,
+        }
     }
 
     /// Send the agent strip to the hocus-agents pane, unless nothing changed
     /// since the last push. `force` sends regardless: the pane asking with
     /// `AGENT_STRIP_HELLO` starts empty whatever was last sent.
     pub(crate) fn push_strip(&mut self, force: bool) {
-        let rows = self.current_strip();
-        if !force && rows == self.last_strip {
+        let strip = self.current_strip();
+        // Focus is part of the comparison, so walking from one agent to another
+        // still pushes even though every row reads the same.
+        if !force && strip == self.last_strip {
             return;
         }
-        if let Ok(payload) = serde_json::to_string(&rows) {
+        if let Ok(payload) = serde_json::to_string(&strip) {
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP).with_payload(payload));
         }
-        self.last_strip = rows;
+        self.last_strip = strip;
     }
 
     /// The deferred half of `show_models`. Returns whether this response was one:
