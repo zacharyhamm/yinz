@@ -8089,17 +8089,17 @@ impl Screen {
         for tab in self.tabs.values() {
             if tab.get_all_pane_ids().contains(&pane_id) {
                 // Both halves of a scrollback-editor pair are refused, and for
-                // different reasons. `suppressed_panes` is keyed by the *visible*
-                // pane, so warping that one makes `Tab::close_pane` swap the
-                // hidden pane back in rather than remove it, handing over the
-                // wrong pty. Warping the hidden one is worse: it passes every
-                // check here, and only `take_released_pane_for_warp` discovers
-                // there is no pane at that id to serialize — by which point the
-                // supervisor has been released and the pane has no owner.
-                if tab
-                    .get_suppressed_panes()
-                    .any(|(id, (_, suppressed))| *id == pane_id || suppressed.pid() == pane_id)
-                {
+                // different reasons. Warping the visible one makes
+                // `Tab::close_pane` swap the hidden pane back in rather than
+                // remove it, handing over the wrong pty. Warping the hidden one is
+                // worse: it passes every check here, and only
+                // `take_released_pane_for_warp` discovers there is nothing at that
+                // id to serialize — by which point the supervisor has been
+                // released and the pane has no owner.
+                if tab.get_suppressed_panes().any(|(id, suppressed)| {
+                    *id == pane_id
+                        || suppressed.restored_by.map(|stand_in| stand_in.pane_id) == Some(pane_id)
+                }) {
                     return Err(
                         "this pane has a scrollback editor open; close it before moving the pane"
                             .to_owned(),
@@ -8226,20 +8226,19 @@ impl Screen {
             .ok_or_else(|| format!("there is no tab {tab_index} in this session"))?;
 
         // A hidden terminal is refused unless it is a stack-list member. The
-        // distinction is not whether it is hidden but *how*: an entry keyed by
-        // some other pane is one half of a pair — a scrollback editor, or a pane
-        // replaced in place — and closing the tab swaps the hidden one back in
-        // rather than removing it, dismantling the tab around a pty nobody
-        // released. A stack-list member is parked under its own id, has a slot in
-        // the layout the tab travels as (see `stack_list_serialization_geoms`),
+        // distinction is not whether it is hidden but *how*: a pane with a
+        // stand-in is one half of a pair — a scrollback editor, or a pane replaced
+        // in place — and closing the tab swaps the hidden one back in rather than
+        // removing it, dismantling the tab around a pty nobody released. A
+        // stack-list member is parked with nothing standing in for it, has a slot
+        // in the layout the tab travels as (see `stack_list_serialization_geoms`),
         // and is taken out by `empty_and_close_tab` with everything else.
         //
         // Hidden *plugin* panes are exempt throughout: they have no process to
         // strand, and `close_tab_by_id` re-homes them into another tab.
-        if tab.get_suppressed_panes().any(|(key, (_, suppressed))| {
-            let hidden = suppressed.pid();
+        if tab.get_suppressed_panes().any(|(hidden, suppressed)| {
             matches!(hidden, PaneId::Terminal(_))
-                && !(*key == hidden && tab.pane_is_stack_list_member(&hidden))
+                && !(suppressed.restored_by.is_none() && tab.pane_is_stack_list_member(hidden))
         }) {
             return Err(
                 "this tab has a pane hidden behind another one; close it before moving the tab"
@@ -9961,9 +9960,16 @@ impl Screen {
     ) {
         {
             let hide_floating_panes = !tab.are_floating_panes_visible();
-            let mut suppressed_panes = HashMap::new();
-            for (triggering_pane_id, p) in tab.get_suppressed_panes() {
-                suppressed_panes.insert(*triggering_pane_id, p);
+            // keyed by the stand-in, which is what the loops below are walking:
+            // a slot occupied by a scrollback editor serializes as the pane the
+            // editor is editing
+            let mut scrollback_editor_subjects: HashMap<PaneId, &Box<dyn Pane>> = HashMap::new();
+            for (_pane_id, suppressed) in tab.get_suppressed_panes() {
+                if let Some(stand_in) = suppressed.restored_by {
+                    if stand_in.is_scrollback_editor {
+                        scrollback_editor_subjects.insert(stand_in.pane_id, &suppressed.pane);
+                    }
+                }
             }
 
             let all_connected_clients: Vec<ClientId> = self
@@ -9992,11 +9998,9 @@ impl Screen {
                     // when dumping the layout we want the "real" pane and not the
                     // editor pane
                     let geom_override = stack_list_geoms.get(pane_id).copied();
-                    let (pane_id, p) = match suppressed_panes.remove(pane_id) {
-                        Some((is_scrollback_editor, suppressed_pane)) if *is_scrollback_editor => {
-                            (suppressed_pane.pid(), suppressed_pane)
-                        },
-                        _ => (*pane_id, p),
+                    let (pane_id, p) = match scrollback_editor_subjects.remove(pane_id) {
+                        Some(subject) => (subject.pid(), subject),
+                        None => (*pane_id, p),
                     };
                     (
                         pane_id,
@@ -10042,11 +10046,9 @@ impl Screen {
                     // is currently only the case the scrollback editing panes, and
                     // when dumping the layout we want the "real" pane and not the
                     // editor pane
-                    match suppressed_panes.remove(pane_id) {
-                        Some((is_scrollback_editor, suppressed_pane)) if *is_scrollback_editor => {
-                            (suppressed_pane.pid(), suppressed_pane)
-                        },
-                        _ => (*pane_id, p),
+                    match scrollback_editor_subjects.remove(pane_id) {
+                        Some(subject) => (subject.pid(), subject),
+                        None => (*pane_id, p),
                     }
                 })
                 .map(|(pane_id, p)| {
