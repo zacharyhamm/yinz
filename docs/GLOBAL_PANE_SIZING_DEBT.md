@@ -36,6 +36,16 @@ group-level repaint is intentionally simpler.
 
 ## Not addressed
 
+Two kinds of cell between a strip and a tab have no writer at all, so they stay blank — and
+because `Boundaries::contribute_color_to_line` only recolours cells something already drew, a
+focused global pane leaves them blank rather than starting a line there:
+
+- a Left or Top strip that does not abut the tab's panes (a tab bar in between) is never grown
+  over by `expand_viewport_over_global_panes`, but `owns_boundary_cell` cedes its tab-facing cell
+  regardless;
+- a `borderless` global pane under `pane_frame_style "full"` cedes that cell too, while the tab
+  draws frames rather than boundaries there.
+
 A left/right global pane declared before a top/bottom one is allocated over the full surface
 rather than the reduced center, so its band can leave rows that no top/bottom strip covers.
 Allocating top/bottom edges first would close the hole. The allocation code carries a `ponytail:`

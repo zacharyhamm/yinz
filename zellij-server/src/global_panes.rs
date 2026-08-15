@@ -5,8 +5,7 @@ use std::{
 };
 
 use crate::{
-    output::{CharacterChunk, Output},
-    panes::terminal_character::TerminalCharacter,
+    output::Output,
     panes::PaneId,
     plugins::PluginInstruction,
     pty::VteBytes,
@@ -14,13 +13,13 @@ use crate::{
     tab::Pane,
     thread_bus::ThreadSenders,
     ui::boundaries::Boundaries,
-    ui::pane_contents_and_ui::PaneContentsAndUi,
+    ui::pane_contents_and_ui::{frame_color, FrameColorState, PaneContentsAndUi},
     ClientId,
 };
 
 use zellij_utils::{
     data::{
-        Direction, Event, GlobalPaneEdge, GlobalPanePlacement, ModeInfo,
+        Direction, Event, GlobalPaneEdge, GlobalPanePlacement, ModeInfo, PaletteColor,
         PaneId as ZellijUtilsPaneId, Resize, ResizeStrategy, Style,
     },
     errors::prelude::*,
@@ -41,6 +40,40 @@ pub struct AllocatedGlobalPanes {
 pub struct GlobalPaneStrip {
     pub geom: PaneGeom,
     pub edge: GlobalPaneEdge,
+}
+
+/// One visible global pane's tab-facing border, and the colour each client's focus gives it.
+///
+/// Deliberately separate from `GlobalPaneStrip`, which is one union rectangle per edge (see
+/// `Screen::strips_from_layout`): the shared cell has to carry the colour of the *individual* pane
+/// it abuts, so same-edge siblings cannot be merged here. Keeping it out of the strips also keeps it
+/// off `Tab::set_global_pane_strips`, whose "changed" answer forces a whole-tab repaint and a
+/// content-offset re-solve - too much for something that moves on every focus change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalPaneBorder {
+    pub geom: PaneGeom,
+    pub edge: GlobalPaneEdge,
+    /// Only clients whose colour can actually win the cell, so this is empty for the common case of
+    /// an unfocused pane with no frame colour override.
+    pub colors: BTreeMap<ClientId, (PaletteColor, usize)>,
+}
+
+impl GlobalPaneBorder {
+    /// `(x, y, length, vertical)` of the line the tab draws between this pane and its own panes.
+    ///
+    /// The counterpart of `GlobalPaneManager::owns_boundary_cell`: for a Left or Top pane these are
+    /// exactly the cells it cedes, and for a Right or Bottom one they fall outside the pane
+    /// altogether, which is why neither reserves anything for them.
+    pub fn tab_facing_line(&self) -> (usize, usize, usize, bool) {
+        let geom = &self.geom;
+        let (cols, rows) = (geom.cols.as_usize(), geom.rows.as_usize());
+        match self.edge {
+            GlobalPaneEdge::Left => (geom.x + cols.saturating_sub(1), geom.y, rows, true),
+            GlobalPaneEdge::Right => (geom.x.saturating_sub(1), geom.y, rows, true),
+            GlobalPaneEdge::Top => (geom.x, geom.y + rows.saturating_sub(1), cols, false),
+            GlobalPaneEdge::Bottom => (geom.x, geom.y.saturating_sub(1), cols, false),
+        }
+    }
 }
 
 /// Grow `viewport` over every global strip that directly abuts it.
@@ -389,9 +422,6 @@ pub struct GlobalPaneManager {
     focused_panes: BTreeMap<ClientId, PaneId>,
     selecting_with_mouse: BTreeMap<ClientId, PaneId>,
     resizing_with_mouse: BTreeMap<ClientId, GlobalBorderHit>,
-    // the split separators last painted per client, so a quiet render tick re-emits nothing
-    // (mirrors `Screen.unowned_strip_fill`)
-    separator_paint: BTreeMap<ClientId, Vec<(usize, usize, usize, bool)>>,
     // the pane boundaries last painted per client, so a quiet render tick re-emits nothing
     boundary_paint: HashMap<ClientId, Boundaries>,
     area: Option<Viewport>,
@@ -423,7 +453,6 @@ impl GlobalPaneManager {
             pane_indices: HashMap::new(),
             focused_panes: BTreeMap::new(),
             selecting_with_mouse: BTreeMap::new(),
-            separator_paint: BTreeMap::new(),
             boundary_paint: HashMap::new(),
             resizing_with_mouse: BTreeMap::new(),
             area: None,
@@ -1033,8 +1062,6 @@ impl GlobalPaneManager {
             global_pane.pane.set_should_render(true);
             global_pane.pane.render_full_viewport();
         }
-        // a forced render repaints everything, split separators included
-        self.separator_paint.clear();
         self.boundary_paint.clear();
     }
 
@@ -1203,6 +1230,69 @@ impl GlobalPaneManager {
 
     pub fn focused_clients(&self) -> HashSet<ClientId> {
         self.focused_panes.keys().copied().collect()
+    }
+
+    /// One `GlobalPaneBorder` per visible pane, positioned by `layout`, so the tab can give the
+    /// boundary it shares with each of them that pane's own frame colour.
+    ///
+    /// The colours are computed here rather than tab-side because this is where the inputs live: the
+    /// same `frame_color` call `render` makes through `PaneContentsAndUi`, with the same empty pane
+    /// group and hover maps, so the shared cell cannot disagree with the pane's own frame.
+    ///
+    /// Geometry comes from `layout` rather than from the panes themselves, for the reason
+    /// `Screen::strips_from_layout` does the same: the render loop walks the panes through one tab's
+    /// positions after another (`set_positions`), so only the layout is this tab's own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tab_facing_borders(
+        &self,
+        layout: &AllocatedGlobalPanes,
+        client_ids: &[ClientId],
+        mode_info: &BTreeMap<ClientId, ModeInfo>,
+        default_mode_info: &ModeInfo,
+        style: Style,
+        session_is_mirrored: bool,
+        multiple_users_exist_in_session: bool,
+    ) -> Vec<GlobalPaneBorder> {
+        if self.pane_frame_style.draws_full_frames() {
+            // each pane draws its own frame over its reserved cells; the tab shares nothing
+            return vec![];
+        }
+        self.panes
+            .iter()
+            .filter(|global_pane| !global_pane.hidden)
+            .filter_map(|global_pane| {
+                let pane_id = global_pane.pane.pid();
+                let geom = *layout.panes.get(&pane_id.into())?;
+                let colors = client_ids
+                    .iter()
+                    .filter_map(|client_id| {
+                        let mode = mode_info.get(client_id).unwrap_or(default_mode_info).mode;
+                        let color = frame_color(
+                            &style,
+                            FrameColorState {
+                                frame_color_override: global_pane.pane.frame_color_override(),
+                                pane_is_focused: self.focused_panes.get(client_id)
+                                    == Some(&pane_id),
+                                pane_is_in_group: false,
+                                mouse_is_hovering_over_pane: false,
+                                multiple_users_exist_in_session,
+                            },
+                            *client_id,
+                            mode,
+                            session_is_mirrored,
+                        )?;
+                        // precedence 0 is `frame_unselected`, which the tab derives from the same
+                        // style anyway - contributing it could only ever be a no-op
+                        (color.1 > 0).then_some((*client_id, color))
+                    })
+                    .collect();
+                Some(GlobalPaneBorder {
+                    geom,
+                    edge: global_pane.placement.edge,
+                    colors,
+                })
+            })
+            .collect()
     }
 
     pub fn placement(&self, pane_id: PaneId) -> Option<GlobalPanePlacement> {
@@ -1924,98 +2014,7 @@ impl GlobalPaneManager {
                 .add_character_chunks_to_client(*client_id, boundary_chunks, None)
                 .with_context(err_context)?;
         }
-        self.paint_split_separators(output, client_ids)
-            .map_err(|error| anyhow!(error))
-            .with_context(err_context)?;
         Ok(())
-    }
-
-    /// Paint the boundary line between panes sharing an edge into the cells `apply_layout`
-    /// reserved for it (full-frame styles skip this - each pane draws its own frame there).
-    /// Only clients whose separators actually moved are painted, so a quiet render tick emits
-    /// nothing; `set_force_render` clears the diff.
-    fn paint_split_separators(
-        &mut self,
-        output: &mut Output,
-        client_ids: &[ClientId],
-    ) -> Result<(), String> {
-        if self.pane_frame_style.draws_full_frames() {
-            return Ok(());
-        }
-        let rects = self.split_separator_rects();
-        let stale: Vec<ClientId> = client_ids
-            .iter()
-            .copied()
-            .filter(|client_id| self.separator_paint.get(client_id) != Some(&rects))
-            .collect();
-        for client_id in &stale {
-            self.separator_paint.insert(*client_id, rects.clone());
-        }
-        if rects.is_empty() || stale.is_empty() {
-            return Ok(());
-        }
-        let mut chunks = vec![];
-        for (x, y, extent, horizontal) in &rects {
-            if *horizontal {
-                chunks.push(CharacterChunk::new(
-                    vec![TerminalCharacter::new_singlewidth('─'); *extent],
-                    *x,
-                    *y,
-                ));
-            } else {
-                for row in 0..*extent {
-                    chunks.push(CharacterChunk::new(
-                        vec![TerminalCharacter::new_singlewidth('│')],
-                        *x,
-                        *y + row,
-                    ));
-                }
-            }
-        }
-        output
-            .add_character_chunks_to_multiple_clients(chunks, stale.into_iter(), None)
-            .map_err(|error| error.to_string())
-    }
-
-    /// The `(x, y, extent, horizontal)` line segments separating panes that share an edge, read
-    /// off the current pane geometry (so they follow `set_positions`). Each non-last strip pane
-    /// contributes its reserved trailing row (left/right strips) or column (top/bottom strips);
-    /// the segment stops short of any cell the tab boundary already owns.
-    fn split_separator_rects(&self) -> Vec<(usize, usize, usize, bool)> {
-        let visible: Vec<&GlobalPane> = self
-            .panes
-            .iter()
-            .filter(|global_pane| !global_pane.hidden)
-            .collect();
-        let mut rects = vec![];
-        for global_pane in &visible {
-            let edge = global_pane.placement.edge;
-            let geom = global_pane.pane.position_and_size();
-            let has_follower = visible.iter().any(|other| {
-                other.placement.edge == edge && {
-                    let other_geom = other.pane.position_and_size();
-                    match edge {
-                        GlobalPaneEdge::Left | GlobalPaneEdge::Right => other_geom.y > geom.y,
-                        GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => other_geom.x > geom.x,
-                    }
-                }
-            });
-            if !has_follower {
-                continue;
-            }
-            let (cols, rows) = (geom.cols.as_usize(), geom.rows.as_usize());
-            let rect = match edge {
-                // stop before the reserved tab-facing column, where the tab draws its boundary
-                GlobalPaneEdge::Left => (geom.x, geom.y + rows - 1, cols.saturating_sub(1), true),
-                GlobalPaneEdge::Right => (geom.x, geom.y + rows - 1, cols, true),
-                GlobalPaneEdge::Top => (geom.x + cols - 1, geom.y, rows.saturating_sub(1), false),
-                GlobalPaneEdge::Bottom => (geom.x + cols - 1, geom.y, rows, false),
-            };
-            if rect.2 > 0 {
-                rects.push(rect);
-            }
-        }
-        rects
     }
 
     pub fn pane(&self, pane_id: PaneId) -> Option<&dyn Pane> {
@@ -2068,7 +2067,9 @@ impl GlobalPaneManager {
     fn apply_layout(&mut self, layout: AllocatedGlobalPanes, area: Viewport) -> Result<(), String> {
         let area_changed = self.area != Some(area);
         // panes with a same-edge pane after them along the strip's long axis reserve their
-        // trailing cell for the split separator `render` paints there
+        // trailing cell for the separator between the two, which the `Boundaries` pass in `render`
+        // paints there - as this pane's bottom (or right) boundary merged with the follower's top
+        // (or left) one, so it carries whichever of them is focused
         let strip_followers: HashSet<ZellijUtilsPaneId> = self
             .panes
             .iter()
@@ -2243,6 +2244,8 @@ impl GlobalPaneManager {
 #[cfg(test)]
 mod tests {
     use super::{allocate_global_panes, GlobalPaneManager};
+    use crate::panes::grid::Grid;
+    use crate::panes::terminal_character::AnsiCode;
     use crate::{
         channels::SenderWithContext,
         output::Output,
@@ -2258,7 +2261,10 @@ mod tests {
     use zellij_utils::data::{Palette, Style};
     use zellij_utils::{
         channels,
-        data::{GlobalPaneEdge, GlobalPanePlacement, ModeInfo, PaneId as ZellijUtilsPaneId},
+        data::{
+            GlobalPaneEdge, GlobalPanePlacement, ModeInfo, PaletteColor,
+            PaneId as ZellijUtilsPaneId,
+        },
         input::layout::PercentOrFixed,
         pane_size::{Dimension, Offset, PaneGeom, SizeInPixels, Viewport},
     };
@@ -3236,6 +3242,253 @@ mod tests {
             .unwrap();
         let rendered = output.serialize().unwrap().remove(&client_id).unwrap();
         assert!(rendered.contains('─'));
+    }
+
+    /// Two panes in a Left strip, `Titles` frames, `pane_id` focused for client 1. Returns the
+    /// separator row's y and the strip's width, plus the rendered output replayed into a grid.
+    fn render_left_strip_with_focus(
+        focus: Option<PaneId>,
+        force_render: bool,
+    ) -> (usize, usize, Grid) {
+        let client_id = 1;
+        let area = Viewport {
+            cols: 40,
+            rows: 20,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::Titles,
+        );
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager
+            .insert(mock_pane(PaneId::Plugin(2)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+        if let Some(pane_id) = focus {
+            manager.focus_pane(pane_id, client_id).unwrap();
+        }
+        if force_render {
+            // what `Screen::focus_global_pane` does on every focus change
+            manager.set_force_render();
+        }
+
+        let mut output = Output::new(
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(None)),
+            true,
+            true,
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+        );
+        output.add_clients(
+            &HashSet::from([client_id]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        manager
+            .render(
+                &mut output,
+                &[client_id],
+                &BTreeMap::new(),
+                &ModeInfo::default(),
+                Style::default(),
+                false,
+                false,
+            )
+            .unwrap();
+        let rendered = output.serialize().unwrap().remove(&client_id).unwrap();
+
+        let upper = manager.pane(PaneId::Plugin(1)).unwrap().position_and_size();
+        let separator_row = upper.y + upper.rows.as_usize() - 1;
+        let mut grid = Grid::new(
+            area.rows,
+            area.cols,
+            Rc::new(RefCell::new(Palette::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Style::default(),
+            false,
+            true,
+            true,
+            true,
+            false,
+        );
+        vte::Parser::new().advance(&mut grid, rendered.as_bytes());
+        (separator_row, upper.cols.as_usize(), grid)
+    }
+
+    #[test]
+    fn a_focused_global_pane_colors_the_separator_it_shares_with_its_strip_sibling() {
+        // whichever side of the separator is focused wins the row: for the upper pane it is its
+        // bottom boundary, for the lower one its top boundary, merged by precedence
+        for focused in [PaneId::Plugin(1), PaneId::Plugin(2)] {
+            let (separator_row, cols, grid) = render_left_strip_with_focus(Some(focused), true);
+            let row = &grid.viewport[separator_row];
+            // the last column is the cell the strip cedes to the tab, which renders nothing here
+            for x in 0..cols - 1 {
+                assert_eq!(
+                    row.columns[x].character, '─',
+                    "column {x} of the separator row with {focused:?} focused"
+                );
+                assert_eq!(
+                    row.columns[x].styles.foreground,
+                    Some(AnsiCode::ColorIndex(154)),
+                    "column {x} of the separator row is not the focused frame colour with \
+                     {focused:?} focused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unfocused_strip_draws_its_separator_without_a_colour() {
+        let (separator_row, cols, grid) = render_left_strip_with_focus(None, true);
+        let row = &grid.viewport[separator_row];
+        for x in 0..cols - 1 {
+            assert_eq!(row.columns[x].character, '─');
+            // `frame_unselected` is None by default, so the glyph is drawn with the default
+            // foreground rather than a colour of its own
+            assert_eq!(
+                row.columns[x].styles.foreground,
+                Some(AnsiCode::Reset),
+                "column {x} of the separator row is coloured while nothing is focused"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_facing_borders_carry_each_global_panes_own_frame_colour() {
+        let area = Viewport {
+            cols: 40,
+            rows: 20,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::Titles,
+        );
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager
+            .insert(mock_pane(PaneId::Plugin(2)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+        manager.focus_pane(PaneId::Plugin(2), 1).unwrap();
+        let layout = manager.tab_layout(area).unwrap();
+
+        let borders = manager.tab_facing_borders(
+            &layout,
+            &[1, 2],
+            &BTreeMap::new(),
+            &ModeInfo::default(),
+            Style::default(),
+            // mirrored, so both clients share `frame_selected` rather than taking per-user colours
+            true,
+            true,
+        );
+        assert_eq!(borders.len(), 2);
+        // only the focused pane contributes, and only for the client focused on it
+        assert!(borders[0].colors.is_empty());
+        assert_eq!(
+            borders[1].colors,
+            BTreeMap::from([(1, (PaletteColor::EightBit(154), 3))])
+        );
+        // the line each of them wants coloured is the column the strip cedes to the tab
+        for border in &borders {
+            let (x, y, length, vertical) = border.tab_facing_line();
+            let geom = &border.geom;
+            assert!(vertical);
+            assert_eq!(x, geom.x + geom.cols.as_usize() - 1);
+            assert_eq!((y, length), (geom.y, geom.rows.as_usize()));
+            assert!(!manager.owns_boundary_cell(x, y));
+        }
+    }
+
+    #[test]
+    fn tab_facing_borders_follow_the_clients_input_mode() {
+        let area = Viewport {
+            cols: 40,
+            rows: 20,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::Titles,
+        );
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+        manager.focus_pane(PaneId::Plugin(1), 1).unwrap();
+        let layout = manager.tab_layout(area).unwrap();
+        let mode_info = BTreeMap::from([(
+            1,
+            ModeInfo {
+                mode: zellij_utils::data::InputMode::Pane,
+                ..Default::default()
+            },
+        )]);
+
+        let borders = manager.tab_facing_borders(
+            &layout,
+            &[1],
+            &mode_info,
+            &ModeInfo::default(),
+            Style::default(),
+            false,
+            false,
+        );
+        // a non-Normal mode swaps `frame_selected` for `frame_highlight` - the same rule a tab pane
+        // follows, because both go through `ui::pane_contents_and_ui::frame_color`
+        assert_eq!(
+            borders[0].colors,
+            BTreeMap::from([(1, (PaletteColor::EightBit(166), 3))])
+        );
+    }
+
+    #[test]
+    fn full_frames_share_no_border_with_the_tab() {
+        let area = Viewport {
+            cols: 40,
+            rows: 20,
+            ..Default::default()
+        };
+        let mut manager = GlobalPaneManager::new(
+            crate::thread_bus::ThreadSenders::default().silently_fail_on_send(),
+            Rc::new(RefCell::new(None)),
+            zellij_utils::input::options::PaneFrameStyle::Full,
+        );
+        manager
+            .insert(mock_pane(PaneId::Plugin(1)), left_percent(25), false)
+            .unwrap();
+        manager.resize(area).unwrap();
+        manager.focus_pane(PaneId::Plugin(1), 1).unwrap();
+        let layout = manager.tab_layout(area).unwrap();
+
+        // each pane draws its own frame over its reserved cells, so there is nothing to recolour
+        assert!(manager
+            .tab_facing_borders(
+                &layout,
+                &[1],
+                &BTreeMap::new(),
+                &ModeInfo::default(),
+                Style::default(),
+                false,
+                false,
+            )
+            .is_empty());
     }
 
     #[test]
