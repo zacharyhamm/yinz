@@ -1185,6 +1185,7 @@ name = "file-finder"
 version = "0.1.0"
 dependencies = [
  "hegeltest",
+ "tempfile",
  "zellij-tile",
 ]
 

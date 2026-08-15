@@ -8,6 +8,14 @@
 //! The plugin itself is never visible: it hides on load and acts purely as the state
 //! machine driving the pane it opened.
 //!
+//! ## Why the title names a tree the script also resolves
+//!
+//! The overlay looks the same in every project, so its frame title says which tree fzf is
+//! listing: the git root's folder and its branch, or the plain folder outside a checkout.
+//! The script resolves that root too, but it does so a process away and after the pane is
+//! already named, so `project` walks for `.git` through the `/host` mount instead —
+//! synchronously, in time for the one rename.
+//!
 //! ## Why a shell script and a temp file
 //!
 //! Plugins cannot read a command pane's stdout — there is no such API — so fzf's
@@ -22,6 +30,7 @@
 //! literally true rather than a new pane at the same coordinates.
 
 mod opener;
+mod project;
 mod script;
 
 use std::collections::BTreeMap;
@@ -36,8 +45,11 @@ const DEFAULT_Y: &str = "15%";
 const DEFAULT_WIDTH: &str = "80%";
 const DEFAULT_HEIGHT: &str = "70%";
 
-/// Frame title while the picker is up.
+/// Frame title while the picker is up, before the tree being searched is named.
 const FINDER_PANE_TITLE: &str = "Find file";
+
+/// Where `change_host_folder` puts the real filesystem root for this plugin.
+const HOST_MOUNT: &str = "/host";
 
 /// Which pane the plugin is currently driving, and what stage it is at.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -142,20 +154,24 @@ impl State {
         // reopen the last file instead of reporting a cancel.
         let _ = std::fs::remove_file(self.host_out_path());
 
+        // `PaneInfo` carries no cwd, so ask the host for the focused pane's live working
+        // directory. The script walks up to the git root from there, and so does the
+        // title — asked once, so the two can never name different directories.
+        let cwd = focused_cwd();
+        let title = finder_title(project::label(Path::new(HOST_MOUNT), &cwd));
+
         let command = CommandToRun {
             path: PathBuf::from("/bin/sh"),
             args: vec![
                 "-c".to_owned(),
                 script::build(&self.config, &self.out_path.to_string_lossy()),
             ],
-            // `PaneInfo` carries no cwd, so ask the host for the focused pane's live
-            // working directory. The script walks up to the git root from there.
-            cwd: Some(focused_cwd()),
+            cwd: Some(cwd),
         };
 
         match open_command_pane_floating(command, self.floating_geometry(), BTreeMap::new()) {
             Some(PaneId::Terminal(pane_id)) => {
-                rename_pane_with_id(PaneId::Terminal(pane_id), FINDER_PANE_TITLE);
+                rename_pane_with_id(PaneId::Terminal(pane_id), &title);
                 self.stage = Stage::Finding { pane_id };
             },
             _ => {
@@ -279,7 +295,7 @@ impl State {
 
     /// The selection file as this plugin sees it, through the `/host` mount.
     fn host_out_path(&self) -> PathBuf {
-        Path::new("/host").join(self.out_path.strip_prefix("/").unwrap_or(&self.out_path))
+        Path::new(HOST_MOUNT).join(self.out_path.strip_prefix("/").unwrap_or(&self.out_path))
     }
 
     fn floating_geometry(&self) -> Option<FloatingPaneCoordinates> {
@@ -291,6 +307,18 @@ impl State {
         } = geometry(&self.config);
         FloatingPaneCoordinates::new(Some(x), Some(y), Some(width), Some(height), None, None)
             .map(FloatingPaneCoordinates::as_overlay)
+    }
+}
+
+/// The finder pane's frame title, naming the tree being searched where there is a name
+/// for it.
+///
+/// The constant stays the prefix rather than being replaced: it is what the eye finds
+/// first, and it is what tells the user this frame is the picker at all.
+fn finder_title(label: Option<String>) -> String {
+    match label {
+        Some(label) => format!("{FINDER_PANE_TITLE} — {label}"),
+        None => FINDER_PANE_TITLE.to_owned(),
     }
 }
 
@@ -363,6 +391,21 @@ mod tests {
         assert_eq!(Stage::Idle.pane_id(), None);
         assert_eq!(Stage::Finding { pane_id: 3 }.pane_id(), Some(3));
         assert_eq!(Stage::Opened { pane_id: 9 }.pane_id(), Some(9));
+    }
+
+    #[test]
+    fn the_title_names_the_tree_being_searched() {
+        assert_eq!(
+            finder_title(Some("zellij (main)".to_owned())),
+            "Find file — zellij (main)"
+        );
+    }
+
+    /// Every integration assertion matches on the bare title, and a nameless tree is
+    /// exactly the case where there is nothing to add to it.
+    #[test]
+    fn a_tree_with_no_name_keeps_the_bare_title() {
+        assert_eq!(finder_title(None), "Find file");
     }
 
     #[test]

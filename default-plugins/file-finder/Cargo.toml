@@ -8,3 +8,4 @@ zellij-tile = { path = "../../zellij-tile" }
 
 [dev-dependencies]
 hegeltest = "0.29.3"
+tempfile = { workspace = true }
