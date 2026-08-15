@@ -2,6 +2,7 @@ use super::{screen_thread_main, CopyOptions, Screen, ScreenInstruction};
 use crate::global_panes::GlobalPaneManager;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
+use crate::pty_host::client::ReleasedPtyHost;
 use crate::route::NotificationEnd;
 use crate::{
     channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
@@ -11,6 +12,7 @@ use insta::assert_snapshot;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use zellij_utils::cli::CliAction;
+use zellij_utils::data::WarpedPane;
 use zellij_utils::data::{Event, EventType, Mouse, Resize, Style, Styling, WebSharing};
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
@@ -18219,10 +18221,26 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     );
 }
 
-/// A tab where terminal 1 has been replaced by a scrollback editor (terminal 9)
-/// and is now suppressed behind it, plus a second tab so the session is never
-/// down to its last pane.
+/// A tab where terminal 1's scrollback is being edited by terminal 9, so 1 is
+/// suppressed behind the editor, plus a second tab so the session is never down
+/// to its last pane.
 fn screen_with_a_scrollback_editor_open() -> Screen {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .replace_pane_with_editor_pane(PaneId::Terminal(9), PaneId::Terminal(1))
+        .expect("TEST");
+    screen
+}
+
+/// The same shape, but the stand-in is an ordinary pane opened over terminal 1
+/// rather than an editor of it - a pane with its own process and its own reason
+/// to exist.
+fn screen_with_a_pane_replaced_in_place() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
@@ -18242,29 +18260,163 @@ fn screen_with_a_scrollback_editor_open() -> Screen {
     screen
 }
 
-#[test]
-fn the_visible_half_of_a_scrollback_editor_pair_cannot_be_warped() {
-    // `Tab::close_pane` would swap the hidden pane back in rather than remove
-    // this one, so the far session would end up holding the wrong pty.
-    let mut screen = screen_with_a_scrollback_editor_open();
+/// Drive the second half of a warp: the supervisor has been released, the pane
+/// has to be serialized and taken out of its tab.
+fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
+    screen
+        .take_released_pane_for_warp(
+            terminal_id,
+            Ok(ReleasedPtyHost {
+                host_id: format!("host-{terminal_id}"),
+                host_pid: 1,
+                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
+            }),
+        )
+        .expect("the pane should have been taken out of its tab")
+}
 
+#[test]
+fn the_visible_half_of_a_scrollback_editor_pair_can_be_warped() {
+    // Warping what you are looking at: the editor goes, and the pane it was
+    // editing comes back into the slot the editor was holding for it - which is
+    // what closing the editor would have done anyway.
+    let mut screen = screen_with_a_scrollback_editor_open();
     assert_eq!(
         screen.check_pane_can_be_warped(Some(PaneId::Terminal(9)), 1),
-        Err("this pane has a scrollback editor open; close it before moving the pane".to_owned())
+        Ok(9)
+    );
+
+    released_pane_for_warp(&mut screen, 9);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        tab.get_static_and_floating_pane_ids()
+            .contains(&PaneId::Terminal(1)),
+        "the pane being edited is back in the grid",
+    );
+    assert_eq!(
+        tab.get_suppressed_panes().count(),
+        0,
+        "and nothing is left suppressed behind a pane that has gone",
     );
 }
 
 #[test]
-fn the_hidden_half_of_a_scrollback_editor_pair_cannot_be_warped() {
-    // The dangerous one. `suppressed_panes` is keyed by the visible pane, so
-    // nothing downstream can find pane 1 to serialize — and `take_released_pane_for_warp`
-    // only discovers that after the supervisor has been released, which would
-    // leave a running pane with no session to go back to.
+fn the_hidden_half_of_a_scrollback_editor_pair_can_be_warped() {
+    // The pane the user actually means when they name terminal 1. It leaves, and
+    // the editor goes with it: an editor whose subject is in another session now
+    // is a dump of a pane that no longer exists.
     let mut screen = screen_with_a_scrollback_editor_open();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Ok(1)
+    );
+
+    released_pane_for_warp(&mut screen, 1);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert_eq!(
+        tab.get_all_pane_ids(),
+        Vec::<PaneId>::new(),
+        "both halves of the pair are gone",
+    );
+}
+
+#[test]
+fn warping_a_pane_being_edited_closes_the_editor_on_the_pty_thread_too() {
+    // The editor is being closed rather than moved, so unlike the warped pane it
+    // has to be reported to the pty thread - otherwise its supervisor and its
+    // child outlive the pane.
+    let mut screen = screen_with_a_scrollback_editor_open();
+    let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+    released_pane_for_warp(&mut screen, 1);
+
+    let closed_by_pty: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::ClosePane(pane_id, _) => vec![pane_id],
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(
+        closed_by_pty,
+        vec![PaneId::Terminal(9)],
+        "the editor is closed; the warped pane is handed over, never closed",
+    );
+}
+
+#[test]
+fn warping_a_pane_replaced_in_place_leaves_the_pane_that_replaced_it() {
+    // Not the editor case: the stand-in has its own process and its own reason to
+    // be on screen. It stays, and simply stops restoring anything.
+    let mut screen = screen_with_a_pane_replaced_in_place();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Ok(1)
+    );
+
+    released_pane_for_warp(&mut screen, 1);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert_eq!(
+        tab.get_all_pane_ids(),
+        vec![PaneId::Terminal(9)],
+        "the pane that replaced it is still here, and nothing is suppressed behind it",
+    );
+}
+
+#[test]
+fn a_pane_a_plugin_hid_can_be_warped() {
+    // Parked under its own id with nothing standing in for it: it is on screen
+    // nowhere, so nothing on screen changes when it leaves.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&1)
+        .expect("TEST")
+        .suppress_pane(PaneId::Terminal(2), None);
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
+        Ok(2)
+    );
+
+    released_pane_for_warp(&mut screen, 2);
+
+    assert_eq!(
+        screen.tabs.get(&1).expect("TEST").get_all_pane_ids(),
+        Vec::<PaneId>::new(),
+    );
+}
+
+#[test]
+fn a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped() {
+    // The pair would take the whole session with it: the editor is closed rather
+    // than left behind, so warping the pane empties the session.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .replace_pane_with_editor_pane(PaneId::Terminal(9), PaneId::Terminal(1))
+        .expect("TEST");
 
     assert_eq!(
         screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Err("this pane has a scrollback editor open; close it before moving the pane".to_owned())
+        Err(
+            "this pane and the scrollback editor open on it are the session's last panes; \
+             moving it would close the session"
+                .to_owned()
+        )
+    );
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(9)), 1),
+        Ok(9),
+        "the editor alone can still go: the pane it was editing is left behind",
     );
 }
 
@@ -18466,6 +18618,178 @@ fn screen_with_a_stack_list() -> Screen {
         "the fixture should have formed a stack list",
     );
     screen
+}
+
+/// The same three-member stack list, but as the whole session: nothing else is
+/// running, so the members are the only panes there are.
+fn screen_with_only_a_stack_list() -> Screen {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    *screen.stacked_pane_list.borrow_mut() = true;
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: None,
+                borderless: None,
+            },
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    }
+    screen
+}
+
+#[test]
+fn a_hidden_stack_list_member_can_be_warped() {
+    // Parked under its own id with a slot of its own: it leaves the list the way
+    // closing it would, and the members that stay are undisturbed.
+    let mut screen = screen_with_a_stack_list();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Ok(1)
+    );
+
+    released_pane_for_warp(&mut screen, 1);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(1)),
+        "the warped member is out of the list",
+    );
+    assert!(
+        tab.pane_is_stack_list_member(&PaneId::Terminal(2))
+            && tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "the other two are still a list",
+    );
+    assert!(
+        tab.pane_is_hidden_stack_list_member(&PaneId::Terminal(2)),
+        "and the member that was visible still is",
+    );
+}
+
+#[test]
+fn warping_the_visible_stack_list_member_promotes_a_hidden_one() {
+    // Nothing is left holding the list's slot in the grid, so a member has to be
+    // put there - the same promotion closing the visible member does.
+    let mut screen = screen_with_a_stack_list();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
+        Ok(3)
+    );
+
+    released_pane_for_warp(&mut screen, 3);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        tab.get_static_and_floating_pane_ids()
+            .contains(&PaneId::Terminal(2)),
+        "a hidden member was promoted into the grid",
+    );
+    assert!(
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "and the warped member is out of the list",
+    );
+}
+
+#[test]
+fn a_stack_list_can_be_warped_away_a_member_at_a_time_until_one_is_left() {
+    // The members are the session's panes even though only one of them is on
+    // screen, so the count that decides "this would close the session" has to see
+    // them: refusing at three panes left would refuse a whole tab's worth of work.
+    let mut screen = screen_with_only_a_stack_list();
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        Ok(1)
+    );
+    released_pane_for_warp(&mut screen, 1);
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
+        Ok(2)
+    );
+    released_pane_for_warp(&mut screen, 2);
+
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
+        Err("this is the session's only pane; moving it would close the session".to_owned()),
+        "the last member is the last pane",
+    );
+}
+
+/// A stack list whose member 3 has a scrollback editor (terminal 8) open on it,
+/// with the list then focused elsewhere - so the editor is the member, and it is
+/// hidden, and it is standing in for pane 3 all at once.
+fn screen_with_an_editor_on_a_hidden_stack_list_member() -> Screen {
+    let mut screen = screen_with_a_stack_list();
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.replace_pane_with_editor_pane(PaneId::Terminal(8), PaneId::Terminal(3))
+        .expect("TEST");
+    tab.focus_hidden_stack_list_member(PaneId::Terminal(1), 1);
+    screen
+}
+
+#[test]
+fn warping_a_hidden_member_that_is_an_editor_hands_its_place_to_the_pane_it_was_editing() {
+    // The editor holds nobody's place while it is off screen, so this is not a
+    // swap: pane 3 has no slot to be put back into, and putting it in one the
+    // editor does not have would lose it. It takes the editor's place in the list
+    // instead, which is what closing the editor there does.
+    let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(8)), 1),
+        Ok(8)
+    );
+
+    released_pane_for_warp(&mut screen, 8);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "the pane that was being edited is a member of the list now",
+    );
+    assert!(
+        tab.get_suppressed_panes()
+            .any(|(pane_id, suppressed)| *pane_id == PaneId::Terminal(3)
+                && suppressed.restored_by.is_none()),
+        "and it is parked in its own right, with nothing standing in for it",
+    );
+    assert!(
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(8)),
+        "while the editor has gone",
+    );
+}
+
+#[test]
+fn warping_a_pane_edited_by_a_hidden_member_takes_that_member_with_it() {
+    // The other direction: the pane leaves, so the editor of it is closed - and
+    // because the editor was a stack-list member, the list has to lose it too
+    // rather than be left pointing at a pane that has gone.
+    let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
+    assert_eq!(
+        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
+        Ok(3)
+    );
+
+    released_pane_for_warp(&mut screen, 3);
+
+    let tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(8))
+            && !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        "neither half of the pair is in the list",
+    );
+    assert!(
+        tab.pane_is_stack_list_member(&PaneId::Terminal(1))
+            && tab.pane_is_stack_list_member(&PaneId::Terminal(2)),
+        "the members that had nothing to do with it are untouched",
+    );
 }
 
 #[test]
