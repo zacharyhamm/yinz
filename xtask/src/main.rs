@@ -7,6 +7,7 @@
 //! This binary is integrated into the `cargo` command line by using an alias in `.cargo/config`.
 
 mod assets;
+mod bench;
 mod build;
 mod ci;
 mod flags;
@@ -161,6 +162,7 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Format(flags) => format::format(shell, flags),
         flags::XtaskCmd::Test(flags) => test::test(shell, flags),
         flags::XtaskCmd::IntegrationTest(flags) => integration_test::integration_test(shell, flags),
+        flags::XtaskCmd::Bench(flags) => bench::bench(shell, flags),
         flags::XtaskCmd::Proto(_flags) => build::proto(shell),
         flags::XtaskCmd::Assets(flags) => assets::assets(shell, flags),
         // Pipelines

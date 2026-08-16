@@ -11,6 +11,7 @@ cargo x test             # plugin tests + per-crate tests
 cargo x format           # rustfmt; --check in CI
 cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
+cargo x bench            # render throughput benchmarks (criterion); not part of CI
 ```
 
 `cargo x` is an alias for `cargo xtask`. `cargo x --help` lists everything.
@@ -36,6 +37,7 @@ forwarded — but each command forwards to a different place:
 | `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build) |
 | `x run` | zellij itself (after `cargo run --`) |
+| `x bench` | criterion (after `cargo bench --`) — criterion flags, not libtest ones |
 | `x ci e2e` | the e2e test runner |
 
 So `cargo x test -p zellij-server` is rejected by xtask (`unexpected flag: -p`), and
@@ -54,6 +56,25 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
   expression), or a bare name filter, which works on either runner.
 
 Finish with a full `cargo x test` before calling work done — that's what CI runs.
+
+## Benchmarks
+
+`cargo x bench` runs `zellij-server/benches/multi_pane_render.rs`: N terminal panes tiled over
+one surface, all fed synthetic pty bytes at once, measured as three criterion groups —
+`ingest` (vte parse only), `frame` (parse + diff + serialize, the headline number) and
+`render_only` (diff + serialize with ingest untimed). Five workloads × pane counts 1–16.
+
+Benchmarks are **not** run by CI and are not part of `cargo x test` (the `[[bench]]` target sets
+`test = false`). Run them by hand around a change to the render path:
+
+```sh
+cargo x bench -- --save-baseline main     # before
+cargo x bench -- --baseline main          # after; criterion prints the deltas
+cargo x bench -- frame/plain_text         # a bare filter narrows the run
+```
+
+First build is slow — `[profile.bench]` optimizes the whole server. Timings are only comparable
+within one machine, and the workloads are seeded so input never drifts between runs.
 
 ## Layout
 
