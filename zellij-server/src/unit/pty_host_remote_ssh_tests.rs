@@ -37,7 +37,7 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
     ];
     let mut seen = std::collections::HashSet::new();
     for host in awkward {
-        let path = local_socket_path(host);
+        let path = local_socket_path("server", host);
         let name = path.file_name().expect("no file name").to_string_lossy();
         assert!(
             !name.contains('/') && !name.contains('@') && !name.contains(':'),
@@ -48,9 +48,58 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
     // Stable across calls, or a reconnect would bind a different socket than the
     // one the forward is on.
     assert_eq!(
-        local_socket_path("build-box"),
-        local_socket_path("build-box")
+        local_socket_path("server", "build-box"),
+        local_socket_path("server", "build-box")
     );
+}
+
+/// `ZELLIJ_SOCK_DIR` is per user, not per session, so a host-only name puts two
+/// of one person's sessions on the same socket. Then the second session's
+/// forward unlinks and rebinds the first's, the first silently routes its panes
+/// through the second's ssh, and whichever closes first deletes the other's
+/// socket.
+#[test]
+fn two_servers_do_not_share_a_forward_socket_for_the_same_host() {
+    assert_ne!(
+        local_socket_path("server-a", "build-box"),
+        local_socket_path("server-b", "build-box"),
+        "two servers would fight over one forward to the same host"
+    );
+}
+
+/// The regression above only holds if each server actually gets a distinct id —
+/// a derived `Default` would hand every one of them the same empty string and
+/// quietly restore the collision.
+#[test]
+fn each_remote_hosts_gets_its_own_identity() {
+    let a = RemoteHosts::new();
+    let b = RemoteHosts::new();
+    assert_ne!(
+        a.forward_socket_path("build-box"),
+        b.forward_socket_path("build-box"),
+        "two RemoteHosts in one process picked the same forward socket"
+    );
+}
+
+/// A socket the owning ssh has gone from is rubbish, but one that is merely
+/// young may belong to a server whose forward is still coming up — and
+/// `start_forward` gives that up to fifteen seconds.
+#[test]
+fn the_sweep_spares_sockets_that_are_too_young_to_judge() {
+    let dir = tempfile::tempdir().expect("tempdir failed");
+    let fresh = dir.path().join("fresh.sock");
+    std::fs::write(&fresh, b"").expect("write failed");
+    let ours = dir.path().join("ours.sock");
+    std::fs::write(&ours, b"").expect("write failed");
+
+    sweep_stale_sockets(dir.path(), &ours);
+
+    assert!(
+        fresh.exists(),
+        "a socket younger than the grace period was swept; a server still binding its \
+         forward would have had it pulled out from under it"
+    );
+    assert!(ours.exists(), "the sweep removed our own socket");
 }
 
 /// The handshake must refuse a version gap rather than proceeding to spawn, and
