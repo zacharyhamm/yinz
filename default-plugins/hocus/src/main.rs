@@ -576,12 +576,17 @@ impl ZellijPlugin for State {
         };
         self.agent_seq = seq;
         self.repositories = reply.repositories;
+        let inset = self.inset_key();
         if let Some(panes) = reply.panes {
             self.apply_poll(panes, reply.activity, reply.summaries, reply.focused);
         }
         // This also answers the branch refresh the agents pane asks for.
         self.push_strip(false);
-        false
+        // A snapshot is otherwise not worth a repaint - nothing else on screen
+        // comes from one. The summary inset does, and it appears and goes with
+        // the user's focus rather than with anything they typed here, so without
+        // this it would wait for the next keystroke to be drawn.
+        self.inset_key() != inset
     }
 }
 
