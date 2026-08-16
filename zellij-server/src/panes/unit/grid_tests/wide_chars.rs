@@ -1,4 +1,7 @@
 use super::*;
+use crate::panes::TerminalCharacter;
+use hegel::generators;
+use unicode_width::UnicodeWidthChar;
 
 #[test]
 fn wide_characters() {
@@ -673,5 +676,113 @@ fn copy_selected_text_from_lines_below() {
     assert_eq!(
         text.unwrap(),
         "mauris in aliquam sem fringilla.\n\nzellij on  mouse-support [?] is 📦"
+    );
+}
+
+// -- the ASCII fast path in `Grid::print` -----------------------------------------------------
+//
+// `print` skips the unicode-width tables for printable ASCII and stamps a width of 1 directly.
+// These pin the assumption that makes that sound, and check the characters that route around it.
+
+fn viewport_line_text(grid: &Grid, line_index: usize) -> String {
+    grid.viewport[line_index]
+        .columns
+        .iter()
+        .map(|character| character.character)
+        .collect()
+}
+
+#[test]
+fn printable_ascii_is_single_width_according_to_the_width_tables_too() {
+    // the fast path asserts this without asking; if a unicode-width bump ever disagreed, panes
+    // would render at the wrong width with no other signal
+    for byte in 0x20..=0x7Eu8 {
+        let c = byte as char;
+        assert!(
+            c.is_ascii_graphic() || c == ' ',
+            "{:?} should be covered by the fast path's predicate",
+            c
+        );
+        assert_eq!(
+            TerminalCharacter::new_singlewidth_styled(c, Default::default()).width(),
+            TerminalCharacter::new_styled(c, Default::default()).width(),
+            "fast path and width tables disagree about {:?}",
+            c
+        );
+    }
+}
+
+#[test]
+fn del_and_control_characters_are_not_taken_by_the_fast_path() {
+    // 0x7f and everything below 0x20 are not `is_ascii_graphic`, so they still consult the tables
+    for byte in [0x00u8, 0x1f, 0x7f] {
+        let c = byte as char;
+        assert!(!(c.is_ascii_graphic() || c == ' '));
+    }
+}
+
+#[test]
+fn dec_special_graphics_characters_keep_their_table_width() {
+    // the charset mapping runs *before* the fast path's ASCII test, so `q` in DEC special
+    // graphics mode arrives as the box-drawing character and must be measured as one
+    let grid = create_grid_with_size_and_raw(5, 20, b"\x1b(0qqqlk\x1b(B abc");
+
+    assert_eq!(
+        viewport_line_text(&grid, 0),
+        "───┌┐ abc",
+        "line-drawing characters should replace the ASCII they were typed as"
+    );
+    assert_eq!(grid.viewport[0].width(), 9);
+}
+
+#[test]
+fn mixed_width_content_lands_in_the_right_columns() {
+    let grid = create_grid_with_size_and_raw(5, 20, "ab你c📦d".as_bytes());
+
+    assert_eq!(viewport_line_text(&grid, 0), "ab你c📦d");
+    assert_eq!(
+        grid.viewport[0].width(),
+        8,
+        "two wide characters take two columns each"
+    );
+}
+
+#[hegel::test]
+fn printed_text_keeps_its_characters_and_its_width(tc: hegel::TestCase) {
+    // Whatever the source of a character's width - the fast path's constant or the unicode
+    // tables - the grid must end up with the characters that were printed, occupying as many
+    // columns as those characters are wide.
+    let drawn: String = tc.draw(generators::text().max_size(60));
+    // `print` is only reached for non-control characters, and a zero-width character has no
+    // column of its own to check
+    let characters: Vec<char> = drawn
+        .chars()
+        .filter(|c| c.width().unwrap_or(0) >= 1)
+        .collect();
+
+    let columns = 200;
+    let mut width_so_far = 0;
+    let mut printed: Vec<char> = Vec::new();
+    for c in characters {
+        let character_width = c.width().unwrap_or(0);
+        if width_so_far + character_width >= columns {
+            break; // stop short of the wrap, which is not what this property is about
+        }
+        width_so_far += character_width;
+        printed.push(c);
+    }
+
+    let text: String = printed.iter().collect();
+    let grid = create_grid_with_size_and_raw(5, columns, text.as_bytes());
+
+    assert_eq!(
+        viewport_line_text(&grid, 0),
+        text,
+        "printed characters should survive"
+    );
+    assert_eq!(
+        grid.viewport[0].width(),
+        width_so_far,
+        "row width should be the sum of the printed characters' widths"
     );
 }

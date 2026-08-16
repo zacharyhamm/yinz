@@ -5833,6 +5833,10 @@ fn is_selection_boundary_character(character: char, word_separators: &str) -> bo
 mod grid_tests;
 
 #[cfg(test)]
+#[path = "./unit/row_tests.rs"]
+mod row_tests;
+
+#[cfg(test)]
 mod osc7_parser_tests {
     use super::parse_osc7_path;
     use std::path::PathBuf;
