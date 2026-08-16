@@ -31,7 +31,7 @@ use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ServerToBrokerMsg, MAX_STREAM_PAYLOAD,
     REMOTE_PROTOCOL_VERSION,
 };
-use super::session::{orphan_timeout, PaneRegistry, PaneSession};
+use super::session::{orphan_timeout, PaneRegistry, PaneSession, ResumeStep};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
 use crate::pty_host::protocol::{
     check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
@@ -112,7 +112,7 @@ pub fn serve_connection(
 
     let request = read_control(&mut reader)?
         .ok_or_else(|| anyhow!("peer closed before asking for a pane"))?;
-    let session = match request {
+    let (session, generation) = match request {
         ServerToBrokerMsg::Spawn {
             cmd,
             failover_cmd,
@@ -137,7 +137,11 @@ pub fn serve_connection(
         // A connection that merely ended is not a teardown. The pane keeps
         // running and keeps buffering, so a reconnect can continue the stream;
         // `reap_orphans` reclaims one that is never picked back up.
-        Ok(Outcome::Disconnected) | Err(_) => session.detach(),
+        //
+        // Only if this connection is still the one holding the pane. A slow
+        // notice of a disconnect that a reconnect has already replaced would
+        // otherwise silence the pane and start an orphan clock on it.
+        Ok(Outcome::Disconnected) | Err(_) => session.detach_if(generation),
     }
     outcome.map(|_| ())
 }
@@ -211,7 +215,7 @@ fn start_pane(
     cmd: zellij_utils::input::command::RunCommand,
     failover_cmd: Option<zellij_utils::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
-) -> Result<Arc<PaneSession>> {
+) -> Result<(Arc<PaneSession>, u64)> {
     let pending = match pty_host_client::spawn(SpawnParams {
         host_bin,
         terminal_id: 0,
@@ -296,31 +300,35 @@ fn start_pane(
 
     // Attaching under the slot lock, rather than after releasing it, closes the
     // window where the callback sees a `Live` session with no wire to use.
-    let early_exit = match session_slot.lock() {
+    let (early_exit, generation) = match session_slot.lock() {
         Ok(mut slot) => {
             let early = match &*slot {
                 PaneSlot::Pending(early) => *early,
                 PaneSlot::Live(_) => None,
             };
-            session.attach(wire.clone());
+            let generation = session.attach(wire.clone());
             *slot = PaneSlot::Live(session.clone());
-            early
+            (early, generation)
         },
-        Err(_) => {
-            session.attach(wire.clone());
-            None
-        },
+        Err(_) => (None, session.attach(wire.clone())),
     };
     if let Some(status) = early_exit {
         session.set_child_exit(status);
     }
 
-    start_output_pump(session.clone())?;
-    start_status_pump(session.clone())?;
+    if let Err(e) =
+        start_output_pump(session.clone()).and_then(|()| start_status_pump(session.clone()))
+    {
+        // A pane nothing is reading is not a pane. Ending it here is better than
+        // leaving a live child on this machine that the server can never see.
+        registry.remove(&token);
+        session.terminate();
+        return Err(e);
+    }
     // The pump may already have drained a pty whose child was gone before any of
     // this ran, and the callback that would have said so found no session.
     report_exit_if_complete(&session);
-    Ok(session)
+    Ok((session, generation))
 }
 
 fn resume_pane(
@@ -328,7 +336,7 @@ fn resume_pane(
     wire: &Wire,
     token: &str,
     received: u64,
-) -> Result<Arc<PaneSession>> {
+) -> Result<(Arc<PaneSession>, u64)> {
     let session = match registry.get(token) {
         Some(session) if !session.is_terminated() => session,
         _ => {
@@ -358,11 +366,57 @@ fn resume_pane(
         return Err(anyhow!("refused a duplicate resume for pane {token}"));
     }
 
+    // Claimed before anything is sent, so a second resume is refused from here
+    // on — but not yet writable by the pumps, which would let new output
+    // overtake the catch-up below.
+    let generation = session.begin_attach();
+    // From here the pane is spoken for, so nothing may return without either
+    // finishing the attach or giving the claim back. A pane abandoned mid-resume
+    // would refuse every later reconnect and, having had its orphan clock
+    // cleared, never be reclaimed either.
+    match catch_up_and_attach(&session, wire, token, received, generation) {
+        Ok(()) => Ok((session, generation)),
+        Err(e) => {
+            session.detach_if(generation);
+            Err(e)
+        },
+    }
+}
+
+/// Bring a resuming connection up to date and hand it the pane.
+fn catch_up_and_attach(
+    session: &Arc<PaneSession>,
+    wire: &Wire,
+    token: &str,
+    received: u64,
+    generation: u64,
+) -> Result<()> {
     let (replay, dropped) = session.replay_from(received);
     send(wire, &BrokerToServerMsg::Resumed { dropped })?;
+    let mut sent_upto = received + dropped;
     if !replay.is_empty() {
         send_output(wire, &replay)?;
+        sent_upto += replay.len() as u64;
     }
+    // Whatever the pane produced while that was in flight, and so on until it
+    // has nothing left to say. Each round is only what the previous round's
+    // sending took, so this converges quickly; a pane that outruns it forever is
+    // a backpressure problem, not a replay one.
+    loop {
+        match session.resume_step(sent_upto, wire, generation) {
+            ResumeStep::Replay { bytes, dropped } => {
+                sent_upto += dropped + bytes.len() as u64;
+                send_output(wire, &bytes)?;
+            },
+            ResumeStep::Attached => break,
+            ResumeStep::Superseded => {
+                return Err(anyhow!(
+                    "another connection claimed pane {token} while this one was catching up"
+                ));
+            },
+        }
+    }
+
     // A child that exited while nobody was attached still has to be reported, or
     // the pane would sit there looking alive. After the replay, so the server
     // has the output before it is told there will be no more, and only once the
@@ -371,7 +425,6 @@ fn resume_pane(
         session.claim_exit_report();
         send(wire, &BrokerToServerMsg::ChildExited { status })?;
     }
-    session.attach(wire.clone());
     // A reconnecting server has no cached status at all — it is a fresh
     // `RemoteConn`. The ticker only reports changes, so without this a pane
     // whose cwd and command are steady would look unknown until something about
@@ -384,7 +437,7 @@ fn resume_pane(
     if let Some(git) = session.git_probe() {
         send(wire, &git_report(&git))?;
     }
-    Ok(session)
+    Ok(())
 }
 
 fn git_report(git: &super::status::GitProbe) -> BrokerToServerMsg {
@@ -440,9 +493,9 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 if last.as_ref() == Some(&probe) {
                     continue;
                 }
-                if let Some(wire) = session.wire() {
+                if let Some((wire, generation)) = session.wire_and_generation() {
                     if send(&wire, &probe.clone().into_report()).is_err() {
-                        session.detach();
+                        session.detach_if(generation);
                         continue;
                     }
                 }
@@ -470,11 +523,11 @@ fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
                         // nobody to send to, these are exactly the bytes a
                         // reconnect will need.
                         session.append_output(chunk);
-                        if let Some(wire) = session.wire() {
+                        if let Some((wire, generation)) = session.wire_and_generation() {
                             if send_output(&wire, chunk).is_err() {
                                 // The server went away mid-write. Not a
                                 // teardown: keep the pane and keep buffering.
-                                session.detach();
+                                session.detach_if(generation);
                             }
                         }
                     },

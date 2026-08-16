@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,39 @@ impl OutputRing {
     }
 }
 
+/// Who, if anyone, this pane is talking to.
+///
+/// The middle state is the point of having one. A resuming connection owns the
+/// pane from the moment it is accepted, but must not be written to by the pumps
+/// until the replay it is owed has reached it — otherwise new output overtakes
+/// the catch-up and the server sees an `Output` frame where it demanded a
+/// `Resumed`.
+enum WireState {
+    Detached,
+    /// Accepted, being brought up to date. `is_attached`, but not writable.
+    Attaching(u64),
+    Attached(super::broker::Wire, u64),
+}
+
+impl WireState {
+    fn generation(&self) -> Option<u64> {
+        match self {
+            WireState::Detached => None,
+            WireState::Attaching(gen) | WireState::Attached(_, gen) => Some(*gen),
+        }
+    }
+}
+
+/// What a resuming connection should do next.
+pub enum ResumeStep {
+    /// Bytes it has still to be sent before it can be attached.
+    Replay { bytes: Vec<u8>, dropped: u64 },
+    /// Caught up, and now attached. The pumps carry it from here.
+    Attached,
+    /// A newer connection claimed the pane while this one was catching up.
+    Superseded,
+}
+
 /// One pane on this machine.
 pub struct PaneSession {
     pub token: String,
@@ -105,8 +138,11 @@ pub struct PaneSession {
     master_fd: RawFd,
     pub child_pid: u32,
     ring: Mutex<OutputRing>,
-    /// `Some` while a server is attached.
-    wire: Mutex<Option<super::broker::Wire>>,
+    /// Who the pane is talking to, and which connection that is.
+    wire: Mutex<WireState>,
+    /// Bumped for every connection that claims the pane, so a connection that
+    /// ended can be told from the one that replaced it.
+    generation: AtomicU64,
     child_exit: Mutex<Option<Option<i32>>>,
     /// Set once the pty has been read to its end, so nothing the child wrote is
     /// still on its way here.
@@ -138,7 +174,8 @@ impl PaneSession {
             master_fd,
             child_pid,
             ring: Mutex::new(OutputRing::new(REPLAY_CAPACITY)),
-            wire: Mutex::new(None),
+            wire: Mutex::new(WireState::Detached),
+            generation: AtomicU64::new(0),
             child_exit: Mutex::new(None),
             output_drained: AtomicBool::new(false),
             exit_reported: AtomicBool::new(false),
@@ -158,28 +195,98 @@ impl PaneSession {
         }
     }
 
-    /// The wire to send on right now, if a server is attached.
+    /// The wire to send on right now, if one is ready to be written to.
     ///
     /// Cloned out rather than held, so a send never keeps the slot locked while
-    /// it blocks on a socket.
+    /// it blocks on a socket. `None` while a connection is still catching up:
+    /// its replay has to land before anything newer does.
     pub fn wire(&self) -> Option<super::broker::Wire> {
-        self.wire.lock().ok().and_then(|w| w.clone())
+        self.wire_and_generation().map(|(wire, _)| wire)
     }
 
-    pub fn attach(&self, wire: super::broker::Wire) {
+    pub fn wire_and_generation(&self) -> Option<(super::broker::Wire, u64)> {
+        match self.wire.lock() {
+            Ok(slot) => match &*slot {
+                WireState::Attached(wire, gen) => Some((wire.clone(), *gen)),
+                WireState::Attaching(_) | WireState::Detached => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    /// Attach a connection that has nothing to catch up on.
+    pub fn attach(&self, wire: super::broker::Wire) -> u64 {
+        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut slot) = self.wire.lock() {
-            *slot = Some(wire);
+            *slot = WireState::Attached(wire, gen);
         }
         if let Ok(mut since) = self.disconnected_since.lock() {
             *since = None;
+        }
+        gen
+    }
+
+    /// Claim the pane for a connection that still owes it a replay.
+    ///
+    /// It counts as attached from here — a second resume must be refused — but
+    /// the pumps stay quiet until `resume_step` says it is caught up.
+    pub fn begin_attach(&self) -> u64 {
+        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(mut slot) = self.wire.lock() {
+            *slot = WireState::Attaching(gen);
+        }
+        if let Ok(mut since) = self.disconnected_since.lock() {
+            *since = None;
+        }
+        gen
+    }
+
+    /// The next thing a resuming connection owes, or the news that it is done.
+    ///
+    /// The emptiness check and the attach happen under the ring lock together,
+    /// and that is the whole point: a chunk the pump appends either lands before
+    /// the check, and so is in this replay, or after the attach, and so the pump
+    /// sends it. It cannot fall between the two and be sent by neither.
+    ///
+    /// No socket write happens under that lock. The connection this replaces may
+    /// be blocked writing to a peer that has gone away without saying so, and
+    /// that write must never be able to hold up the reconnect replacing it.
+    pub fn resume_step(&self, sent_upto: u64, wire: &super::broker::Wire, gen: u64) -> ResumeStep {
+        let Ok(ring) = self.ring.lock() else {
+            return ResumeStep::Superseded;
+        };
+        let (bytes, dropped) = ring.replay_from(sent_upto);
+        if !bytes.is_empty() {
+            return ResumeStep::Replay { bytes, dropped };
+        }
+        match self.wire.lock() {
+            Ok(mut slot) => match slot.generation() {
+                Some(current) if current == gen => {
+                    *slot = WireState::Attached(wire.clone(), gen);
+                    ResumeStep::Attached
+                },
+                _ => ResumeStep::Superseded,
+            },
+            Err(_) => ResumeStep::Superseded,
         }
     }
 
     /// Detach without ending anything. The pane keeps running and keeps
     /// buffering; only the orphan timer starts.
-    pub fn detach(&self) {
+    ///
+    /// Ignored unless the caller is the connection currently holding the pane.
+    /// A connection that has already been replaced must not clear its
+    /// successor's wire — that would silence a healthy pane and, worse, start
+    /// an orphan clock that reaps it out from under a server that is right
+    /// there watching it.
+    pub fn detach_if(&self, gen: u64) {
         if let Ok(mut slot) = self.wire.lock() {
-            *slot = None;
+            if slot.generation() != Some(gen) {
+                return;
+            }
+            *slot = WireState::Detached;
+        } else {
+            return;
         }
         if let Ok(mut since) = self.disconnected_since.lock() {
             if since.is_none() {
@@ -189,7 +296,10 @@ impl PaneSession {
     }
 
     pub fn is_attached(&self) -> bool {
-        self.wire.lock().map(|w| w.is_some()).unwrap_or(false)
+        self.wire
+            .lock()
+            .map(|slot| slot.generation().is_some())
+            .unwrap_or(false)
     }
 
     pub fn replay_from(&self, received: u64) -> (Vec<u8>, u64) {
