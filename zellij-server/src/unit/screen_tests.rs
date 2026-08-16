@@ -17411,6 +17411,8 @@ fn gp06_same_edge_global_panes_split_the_strip() {
     // removing the joiner gives the strip back to the first pane
     assert!(screen.global_panes.remove(PaneId::Terminal(99)).is_some());
     screen.reflow_global_panes().expect("TEST");
+    // the widening happens as part of laying the tabs out over their center
+    screen.render_to_clients().expect("TEST");
     screen.render_to_clients().expect("TEST");
     assert_eq!(
         screen
@@ -17602,6 +17604,8 @@ fn gp08_both_halves_of_a_split_plugin_strip_render() {
         .insert_split(agents_pane, PaneId::Plugin(77), true, None)
         .expect("TEST");
     screen.reflow_global_panes().expect("TEST");
+    // the widening happens as part of laying the tabs out over their center
+    screen.render_to_clients().expect("TEST");
 
     screen
         .global_panes
@@ -18717,6 +18721,89 @@ fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
     assert_eq!(
         screen.check_tab_can_be_warped(Some(0), 1).err(),
         Some("this tab has no panes with a process to move".to_owned())
+    );
+}
+
+#[test]
+fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
+    // The shape this was reported as: with a global pane docked to one side of
+    // the session, the tab's ui strips are widened over it while the panes
+    // between them stay inset, so the tab is not a rectangle and no split line
+    // spans it. That is not a layout, and it used to be refused - "0 of its 4
+    // panes could be placed", with every process in the tab stuck in this
+    // session over the shape of a status bar.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    for pane_id in [2, 3] {
+        tab.new_pane(
+            PaneId::Terminal(pane_id),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    }
+    // Terminal 2 is the tab's full-width bottom strip. Widened over the global
+    // pane's eight columns the way `expand_ui_panes_over_global_strips` widens a
+    // ui pane - written here rather than driven through a render, because what is
+    // being tested is what a tab in that shape does, not when the shape appears.
+    tab.set_pane_selectable(PaneId::Terminal(2), false);
+    let strip = tab.get_pane_with_id_mut(PaneId::Terminal(2)).expect("TEST");
+    let mut widened = strip.position_and_size();
+    let reached_over = 8;
+    assert_eq!(
+        widened.x, 0,
+        "terminal 2 is expected to be the tab's full-width bottom strip",
+    );
+    let cols = widened.cols.as_usize() + reached_over;
+    widened.cols.set_inner(cols);
+    strip.set_geom(widened);
+    for pane_id in [PaneId::Terminal(1), PaneId::Terminal(3)] {
+        let pane = tab.get_pane_with_id_mut(pane_id).expect("TEST");
+        let mut inset = pane.position_and_size();
+        inset.x += reached_over;
+        pane.set_geom(inset);
+    }
+
+    // the premise: the ui strip reaches past the panes under it, so the tab is
+    // not a rectangle and no layout describes it
+    let tab = screen.tabs.get(&0).expect("TEST");
+    let strip = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    let leftmost_pane_under_it = tab
+        .get_tiled_panes()
+        .filter(|(pane_id, _)| **pane_id != PaneId::Terminal(2))
+        .map(|(_, pane)| pane.position_and_size().x)
+        .min()
+        .expect("TEST");
+    assert!(
+        strip.x < leftmost_pane_under_it,
+        "a ui pane beside a global pane should reach past the panes under it \
+         (strip at {}, panes at {leftmost_pane_under_it})",
+        strip.x,
+    );
+
+    let (tab_index, mut terminal_ids, prepared) = screen
+        .check_tab_can_be_warped(Some(0), 1)
+        .expect("a tab whose ui strip reaches past it should still be movable");
+    assert_eq!(tab_index, 0);
+    terminal_ids.sort_unstable();
+    assert_eq!(
+        terminal_ids,
+        vec![1, 2, 3],
+        "every pane in the tab should travel",
+    );
+    assert_eq!(
+        prepared.tiled_panes.len(),
+        terminal_ids.len(),
+        "every terminal that would be released should already have a slot",
     );
 }
 

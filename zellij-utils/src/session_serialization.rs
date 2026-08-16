@@ -187,47 +187,45 @@ fn serialize_tab(
     tiled_panes: &Vec<PaneLayoutManifest>,
     floating_panes: &Vec<PaneLayoutManifest>,
     pane_contents: &mut BTreeMap<String, String>,
-) -> Option<KdlNode> {
+) -> KdlNode {
     let mut serialized_tab = KdlNode::new("tab");
     let mut serialized_tab_children = KdlDocument::new();
-    match get_tiled_panes_layout_from_panegeoms(tiled_panes, None) {
-        Some(tiled_panes_layout) => {
-            let floating_panes_layout = get_floating_panes_layout_from_panegeoms(floating_panes);
-            let tiled_panes = if tiled_panes_layout.children_split_direction
-                != SplitDirection::default()
-                || tiled_panes_layout.children_are_stacked
-            {
-                vec![tiled_panes_layout]
-            } else {
-                tiled_panes_layout.children
-            };
-            serialized_tab
-                .entries_mut()
-                .push(KdlEntry::new_prop("name", tab_name));
-            if is_focused {
-                serialized_tab
-                    .entries_mut()
-                    .push(KdlEntry::new_prop("focus", KdlValue::Bool(true)));
-            }
-            if hide_floating_panes {
-                serialized_tab.entries_mut().push(KdlEntry::new_prop(
-                    "hide_floating_panes",
-                    KdlValue::Bool(true),
-                ));
-            }
-
-            serialize_tiled_and_floating_panes(
-                &tiled_panes,
-                floating_panes_layout,
-                pane_contents,
-                &mut serialized_tab_children,
-            );
-
-            serialized_tab.set_children(serialized_tab_children);
-            Some(serialized_tab)
-        },
-        None => None,
+    // Lossy: a tab whose arrangement is not a tree of splits still comes back
+    // with every one of its panes, arranged as near as a layout gets. The
+    // alternative is dropping the whole tab out of the serialized session.
+    let tiled_panes_layout = tiled_layout_from_panegeoms_lossy(tiled_panes);
+    let floating_panes_layout = get_floating_panes_layout_from_panegeoms(floating_panes);
+    let tiled_panes = if tiled_panes_layout.children_split_direction != SplitDirection::default()
+        || tiled_panes_layout.children_are_stacked
+    {
+        vec![tiled_panes_layout]
+    } else {
+        tiled_panes_layout.children
+    };
+    serialized_tab
+        .entries_mut()
+        .push(KdlEntry::new_prop("name", tab_name));
+    if is_focused {
+        serialized_tab
+            .entries_mut()
+            .push(KdlEntry::new_prop("focus", KdlValue::Bool(true)));
     }
+    if hide_floating_panes {
+        serialized_tab.entries_mut().push(KdlEntry::new_prop(
+            "hide_floating_panes",
+            KdlValue::Bool(true),
+        ));
+    }
+
+    serialize_tiled_and_floating_panes(
+        &tiled_panes,
+        floating_panes_layout,
+        pane_contents,
+        &mut serialized_tab_children,
+    );
+
+    serialized_tab.set_children(serialized_tab_children);
+    serialized_tab
 }
 
 fn serialize_tiled_and_floating_panes(
@@ -724,19 +722,17 @@ fn serialize_multiple_tabs(
         let tiled_panes = tab_layout_manifest.tiled_panes;
         let floating_panes = tab_layout_manifest.floating_panes;
         let hide_floating_panes = tab_layout_manifest.hide_floating_panes;
-        let serialized = serialize_tab(
+        // Every tab serializes: one whose arrangement is not a tree of splits is
+        // approximated rather than dropped, so there is no longer a way for a tab
+        // to fall out of the session it belongs to.
+        serialized_tabs.push(serialize_tab(
             tab_name.clone(),
             tab_layout_manifest.is_focused,
             hide_floating_panes,
             &tiled_panes,
             &floating_panes,
             pane_contents,
-        );
-        if let Some(serialized) = serialized {
-            serialized_tabs.push(serialized);
-        } else {
-            return Err("Failed to serialize session state");
-        }
+        ));
     }
     Ok(serialized_tabs)
 }
@@ -787,9 +783,16 @@ fn stack_layout_from_manifest(
 ) -> Option<TiledPaneLayout> {
     let mut children_stacks: HashMap<usize, Vec<PaneLayoutManifest>> = HashMap::new();
     for p in geoms {
-        if let Some(stack_id) = p.geom.stacked {
-            children_stacks.entry(stack_id).or_default().push(p.clone());
-        }
+        // A pane that is not in a stack has no place in a stack layout, and
+        // dropping it here would produce a layout describing fewer panes than
+        // there are - which is silent: whoever gets the layout has no way to tell
+        // a pane was left out of it. This is only reached when no split was found
+        // anywhere, so the arrangement is not one this can express at all.
+        let stack_id = p.geom.stacked?;
+        children_stacks.entry(stack_id).or_default().push(p.clone());
+    }
+    if children_stacks.is_empty() {
+        return None;
     }
     let mut stack_nodes = vec![];
     for (_stack_id, mut stacked_panes) in children_stacks.into_iter() {
@@ -875,8 +878,11 @@ pub(crate) fn get_tiled_panes_layout_from_panegeoms(
         Some(x) => x,
         None => {
             if geoms.len() > 1 {
-                // this can only happen if all geoms belong to one or more stacks
-                // since stack splits are discounted in the get_splits method
+                // usually this means all geoms belong to one or more stacks,
+                // since stack splits are discounted in the get_splits method -
+                // but it also happens for an arrangement no layout can describe,
+                // which `stack_layout_from_manifest` says `None` to rather than
+                // describing something else
                 return stack_layout_from_manifest(geoms, split_size);
             } else {
                 return Some(tiled_pane_layout_from_manifest(
@@ -903,6 +909,11 @@ pub(crate) fn get_tiled_panes_layout_from_panegeoms(
                 .into_iter()
                 .partition(|g| g.geom.x + g.geom.cols.as_usize() <= v_max),
         };
+        // An empty band would become a leaf built out of no manifest at all - a
+        // pane in the layout that no pane in the tab corresponds to
+        if subgeoms.is_empty() {
+            return None;
+        }
         match get_domain_constraint(&subgeoms, &children_split_direction, (v_min, v_max)) {
             Some(constraint) => {
                 new_geoms.push(subgeoms);
@@ -937,6 +948,295 @@ pub(crate) fn get_tiled_panes_layout_from_panegeoms(
     })
 }
 
+/// A tab's arrangement as a layout: exactly when it can be one, and as close as
+/// a layout gets when it cannot.
+///
+/// Not every arrangement a tab can be in is a layout. A layout is a tree of
+/// splits, while `TiledPanes` keeps a flat map of panes to rectangles, and
+/// nothing holds those rectangles to a shape a tree could have produced - a
+/// tab whose ui strips have been widened over a global pane beside it is not
+/// even a rectangle. `get_tiled_panes_layout_from_panegeoms` says `None` to
+/// those, which is the honest answer to "what layout is this tab", and a useless
+/// one to anybody who has to carry the tab somewhere: refusing loses every pane
+/// rather than the arrangement.
+///
+/// So the arrangement is approximated instead - see [`approximate_tiled_layout`].
+/// There is always an answer: no panes at all comes back as the smallest layout
+/// there is, which describes one empty pane.
+pub(crate) fn tiled_layout_from_panegeoms_lossy(
+    geoms: &Vec<PaneLayoutManifest>,
+) -> TiledPaneLayout {
+    get_tiled_panes_layout_from_panegeoms(geoms, None)
+        .unwrap_or_else(|| approximate_tiled_layout(geoms, None))
+}
+
+/// The panes of one arrangement, grouped so that a stack stays one thing.
+///
+/// A stack is a single slot in the grid that happens to hold several panes, and
+/// cutting between two of its members would arrive as two stacks. So the cuts
+/// below are made between units, never inside one.
+#[derive(Clone)]
+struct ArrangementUnit {
+    members: Vec<PaneLayoutManifest>,
+    is_stack: bool,
+    x: usize,
+    y: usize,
+    cols: usize,
+    rows: usize,
+}
+
+impl ArrangementUnit {
+    fn start(&self, direction: SplitDirection) -> usize {
+        match direction {
+            SplitDirection::Horizontal => self.y,
+            SplitDirection::Vertical => self.x,
+        }
+    }
+    fn end(&self, direction: SplitDirection) -> usize {
+        match direction {
+            SplitDirection::Horizontal => self.y + self.rows,
+            SplitDirection::Vertical => self.x + self.cols,
+        }
+    }
+    /// Doubled, so a unit spanning an odd number of cells still compares exactly.
+    fn twice_center(&self, direction: SplitDirection) -> usize {
+        self.start(direction) + self.end(direction)
+    }
+    fn into_layout(mut self, split_size: Option<SplitSize>) -> TiledPaneLayout {
+        if !self.is_stack {
+            return tiled_pane_layout_from_manifest(self.members.first(), split_size);
+        }
+        self.members.sort_by_key(|member| member.geom.y);
+        TiledPaneLayout {
+            split_size,
+            children_split_direction: SplitDirection::Horizontal,
+            children: self
+                .members
+                .iter()
+                .map(|member| tiled_pane_layout_from_manifest(Some(member), None))
+                .collect(),
+            children_are_stacked: true,
+            ..Default::default()
+        }
+    }
+}
+
+fn arrangement_units(geoms: &[PaneLayoutManifest]) -> Vec<ArrangementUnit> {
+    let mut units: Vec<ArrangementUnit> = Vec::new();
+    let mut stacks: HashMap<usize, usize> = HashMap::new(); // stack id -> unit index
+    for manifest in geoms {
+        let index = match manifest.geom.stacked {
+            Some(stack_id) => *stacks.entry(stack_id).or_insert(units.len()),
+            None => units.len(),
+        };
+        if index == units.len() {
+            units.push(ArrangementUnit {
+                members: vec![],
+                is_stack: manifest.geom.stacked.is_some(),
+                x: manifest.geom.x,
+                y: manifest.geom.y,
+                cols: 0,
+                rows: 0,
+            });
+        }
+        let unit = &mut units[index];
+        // the union of the members' rectangles: a stack's members are meant to sit
+        // one under another, but nothing here depends on their doing so
+        let right = (unit.x + unit.cols).max(manifest.geom.x + manifest.geom.cols.as_usize());
+        let bottom = (unit.y + unit.rows).max(manifest.geom.y + manifest.geom.rows.as_usize());
+        unit.x = unit.x.min(manifest.geom.x);
+        unit.y = unit.y.min(manifest.geom.y);
+        unit.cols = right - unit.x;
+        unit.rows = bottom - unit.y;
+        unit.members.push(manifest.clone());
+    }
+    units
+}
+
+/// Describe an arrangement no layout can describe exactly, without losing a pane.
+///
+/// Total by construction: every manifest becomes exactly one leaf, whatever the
+/// rectangles look like - overlapping, leaving gaps, or not adding up to a
+/// rectangle at all. That is the property that matters, because the caller is
+/// carrying live panes and a missing leaf is a stranded process.
+///
+/// The shape is the best guillotine cut of what is there: the split line, on
+/// either axis, that the fewest panes straddle - and among those, the one that
+/// divides them most evenly. A cut nothing straddles is a real split, so an
+/// arrangement that *is* a tree apart from one wrinkle comes back with the tree
+/// it had and the wrinkle straightened out. Panes that do straddle the line go
+/// to the side their middle is on, which is the least wrong place for them.
+fn approximate_tiled_layout(
+    geoms: &[PaneLayoutManifest],
+    split_size: Option<SplitSize>,
+) -> TiledPaneLayout {
+    layout_from_units(arrangement_units(geoms), split_size)
+}
+
+fn layout_from_units(
+    mut units: Vec<ArrangementUnit>,
+    split_size: Option<SplitSize>,
+) -> TiledPaneLayout {
+    if units.len() == 1 {
+        return units.remove(0).into_layout(split_size);
+    }
+    if units.is_empty() {
+        // no caller can reach this: `tiled_layout_from_panegeoms_lossy` refuses an
+        // empty tab, and every cut below leaves both sides non-empty
+        return TiledPaneLayout {
+            split_size,
+            ..Default::default()
+        };
+    }
+
+    let (direction, mut near, mut far) = best_cut(&units);
+    let extent = |group: &Vec<ArrangementUnit>| -> usize {
+        let start = group
+            .iter()
+            .map(|unit| unit.start(direction))
+            .min()
+            .unwrap_or(0);
+        let end = group
+            .iter()
+            .map(|unit| unit.end(direction))
+            .max()
+            .unwrap_or(0);
+        end.saturating_sub(start)
+    };
+    let (near_extent, far_extent) = (extent(&near), extent(&far));
+    // A side that was asked for in cells is asked for in cells again: a one-row
+    // status strip is 2% of a 46-row tab, and 2% of a smaller one rounds away to
+    // nothing. `get_split_sizes` makes the same distinction from the constraints.
+    let percent = |part: usize| -> Option<SplitSize> {
+        let whole = near_extent + far_extent;
+        if whole == 0 {
+            return Some(SplitSize::Percent(50));
+        }
+        Some(SplitSize::Percent((part * 100 / whole).clamp(1, 99)))
+    };
+    let (near_fixed, far_fixed) = (is_fixed(&near, direction), is_fixed(&far, direction));
+    let (near_size, far_size) = match (near_fixed, far_fixed) {
+        (true, true) => (
+            Some(SplitSize::Fixed(near_extent)),
+            Some(SplitSize::Fixed(far_extent)),
+        ),
+        // the side that is not fixed is left implicit, and takes whatever the
+        // fixed one does not
+        (true, false) => (Some(SplitSize::Fixed(near_extent)), None),
+        (false, true) => (None, Some(SplitSize::Fixed(far_extent))),
+        // neither is fixed: the larger one is left implicit, the way
+        // `get_split_sizes` leaves the largest constraint unsized
+        (false, false) if near_extent > far_extent => (None, percent(far_extent)),
+        (false, false) => (percent(near_extent), None),
+    };
+
+    // sorted so that the panes arrive in the order they were in, which is what
+    // the leaves' order in the tree means to whoever positions them
+    near.sort_by_key(|unit| (unit.y, unit.x));
+    far.sort_by_key(|unit| (unit.y, unit.x));
+    TiledPaneLayout {
+        split_size,
+        children_split_direction: direction,
+        children: vec![
+            layout_from_units(near, near_size),
+            layout_from_units(far, far_size),
+        ],
+        ..Default::default()
+    }
+}
+
+/// Whether a whole side was measured in cells rather than as a share of the tab.
+///
+/// Asked of every pane in it, not of the side as a whole: one percentage
+/// anywhere and the side has to grow with the tab, or that pane's share of it
+/// would be measured against a fixed number of rows.
+fn is_fixed(units: &[ArrangementUnit], direction: SplitDirection) -> bool {
+    units.iter().flat_map(|unit| unit.members.iter()).all(|m| {
+        match direction {
+            SplitDirection::Horizontal => m.geom.rows,
+            SplitDirection::Vertical => m.geom.cols,
+        }
+        .as_percent()
+        .is_none()
+    })
+}
+
+/// Split the units in two: the least bad guillotine cut, on either axis.
+///
+/// Always returns two non-empty groups - with two or more units there is always
+/// a cut with one of them on each side, if only the one that halves them by
+/// position - so the recursion above always gets smaller and always terminates.
+fn best_cut(
+    units: &[ArrangementUnit],
+) -> (SplitDirection, Vec<ArrangementUnit>, Vec<ArrangementUnit>) {
+    let mut best: Option<(usize, usize, SplitDirection, usize)> = None; // straddlers, imbalance, direction, cut
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        let mut candidates: Vec<usize> = units
+            .iter()
+            .flat_map(|unit| [unit.start(direction), unit.end(direction)])
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        for cut in candidates {
+            let straddlers = units
+                .iter()
+                .filter(|unit| unit.start(direction) < cut && unit.end(direction) > cut)
+                .count();
+            let (near, far) = split_units_at(units, direction, cut);
+            if near.is_empty() || far.is_empty() {
+                continue;
+            }
+            let imbalance = near.len().abs_diff(far.len());
+            if best
+                .map(|(best_straddlers, best_imbalance, _, _)| {
+                    (straddlers, imbalance) < (best_straddlers, best_imbalance)
+                })
+                .unwrap_or(true)
+            {
+                best = Some((straddlers, imbalance, direction, cut));
+            }
+        }
+    }
+
+    if let Some((_, _, direction, cut)) = best {
+        let (near, far) = split_units_at(units, direction, cut);
+        return (direction, near, far);
+    }
+
+    // Every unit begins and ends in the same place on both axes - panes lying
+    // exactly on top of each other, which is not an arrangement a tab is supposed
+    // to be in but is one this still has to carry. Halved by position instead.
+    let mut ordered = units.to_vec();
+    ordered.sort_by_key(|unit| (unit.y, unit.x));
+    let far = ordered.split_off(ordered.len() / 2);
+    (SplitDirection::Horizontal, ordered, far)
+}
+
+/// Which side of `cut` each unit belongs on, straddlers going with their middle.
+fn split_units_at(
+    units: &[ArrangementUnit],
+    direction: SplitDirection,
+    cut: usize,
+) -> (Vec<ArrangementUnit>, Vec<ArrangementUnit>) {
+    let mut near = vec![];
+    let mut far = vec![];
+    for unit in units {
+        let goes_near = if unit.end(direction) <= cut {
+            true
+        } else if unit.start(direction) >= cut {
+            false
+        } else {
+            unit.twice_center(direction) <= cut * 2
+        };
+        if goes_near {
+            near.push(unit.clone());
+        } else {
+            far.push(unit.clone());
+        }
+    }
+    (near, far)
+}
+
 fn all_geoms_are_from_the_same_stack(manifests: &Vec<Vec<PaneLayoutManifest>>) -> bool {
     let mut stack_ids = HashSet::new();
     for manifest_group in manifests {
@@ -955,8 +1255,12 @@ pub(crate) fn get_floating_panes_layout_from_panegeoms(
         .map(|m| {
             let mut run = m.run.clone();
             if let Some(cwd) = &m.cwd {
+                // the same merge the tiled path does: a pane with nothing but a
+                // cwd is a pane that should come back in that directory
                 if let Some(r) = run.as_mut() {
                     r.add_cwd(cwd)
+                } else {
+                    run = Some(Run::Cwd(cwd.clone()));
                 }
             }
             FloatingPaneLayout {
@@ -1149,6 +1453,11 @@ fn get_domain_col_constraint(
         let geom = geoms.iter().rfind(|g| g.geom.x == x);
         match geom {
             Some(geom) => {
+                // a zero-width pane would leave `x` where it is and walk this
+                // loop forever
+                if geom.geom.cols.as_usize() == 0 {
+                    return None;
+                }
                 if let Some(size) = geom.geom.cols.as_percent() {
                     percent += size;
                 }
@@ -1177,6 +1486,11 @@ fn get_domain_row_constraint(
         let geom = geoms.iter().rfind(|g| g.geom.y == y);
         match geom {
             Some(geom) => {
+                // a zero-height pane would leave `y` where it is and walk this
+                // loop forever
+                if geom.geom.rows.as_usize() == 0 {
+                    return None;
+                }
                 if let Some(size) = geom.geom.rows.as_percent() {
                     percent += size;
                 }
@@ -2383,6 +2697,166 @@ mod tests {
         };
         let kdl = serialize_session_layout(global_layout_manifest).unwrap();
         assert_snapshot!(kdl.0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Arrangements that are not a tree of splits
+    // ---------------------------------------------------------------------
+
+    fn manifest_at(x: usize, y: usize, cols: usize, rows: usize) -> PaneLayoutManifest {
+        let mut geom = PaneGeom::default();
+        geom.x = x;
+        geom.y = y;
+        geom.cols.set_inner(cols);
+        geom.rows.set_inner(rows);
+        PaneLayoutManifest {
+            geom,
+            ..Default::default()
+        }
+    }
+
+    fn stacked(mut manifest: PaneLayoutManifest, stack_id: usize) -> PaneLayoutManifest {
+        manifest.geom.stacked = Some(stack_id);
+        manifest
+    }
+
+    /// A tab beside a global pane: the ui strips span the screen, the panes
+    /// between them only the part of it the tab has. No split line spans this in
+    /// either direction, and none of it is stacked.
+    fn a_tab_that_is_not_a_rectangle() -> Vec<PaneLayoutManifest> {
+        vec![
+            manifest_at(0, 0, 100, 1),
+            manifest_at(20, 1, 40, 19),
+            manifest_at(60, 1, 40, 19),
+            manifest_at(20, 20, 40, 19),
+            manifest_at(60, 20, 40, 19),
+            manifest_at(0, 39, 100, 1),
+        ]
+    }
+
+    #[test]
+    fn an_arrangement_that_is_not_a_layout_is_refused_rather_than_shrunk() {
+        // It used to come back as a single empty pane standing in for all six -
+        // the shape of bug that loses five panes without saying anything.
+        let arrangement = a_tab_that_is_not_a_rectangle();
+        assert!(get_tiled_panes_layout_from_panegeoms(&arrangement, None).is_none());
+    }
+
+    #[test]
+    fn a_stack_layout_is_refused_when_something_in_it_is_not_stacked() {
+        // `stack_layout_from_manifest` is only reached on the assumption that
+        // everything left is in a stack. When that is wrong, the panes that are
+        // not have nowhere to go, and saying so beats leaving them out.
+        let mixed = vec![
+            stacked(manifest_at(0, 0, 50, 1), 1),
+            stacked(manifest_at(0, 1, 50, 19), 1),
+            manifest_at(50, 0, 50, 20),
+        ];
+        assert!(stack_layout_from_manifest(&mixed, None).is_none());
+        assert!(stack_layout_from_manifest(&vec![manifest_at(0, 0, 50, 20)], None).is_none());
+    }
+
+    #[test]
+    fn an_approximated_arrangement_keeps_every_pane() {
+        let arrangement = a_tab_that_is_not_a_rectangle();
+        let layout = tiled_layout_from_panegeoms_lossy(&arrangement);
+        assert_eq!(layout.pane_count(), arrangement.len());
+    }
+
+    #[test]
+    fn an_approximation_keeps_a_stack_together() {
+        // A stack cut in half arrives as two stacks, so the cuts go between them.
+        let arrangement = vec![
+            manifest_at(0, 0, 100, 1),
+            stacked(manifest_at(20, 1, 80, 1), 1),
+            stacked(manifest_at(20, 2, 80, 1), 1),
+            stacked(manifest_at(20, 3, 80, 36), 1),
+        ];
+        let layout = tiled_layout_from_panegeoms_lossy(&arrangement);
+        assert_eq!(layout.pane_count(), 4);
+
+        fn stack_sizes(layout: &TiledPaneLayout, sizes: &mut Vec<usize>) {
+            if layout.children_are_stacked {
+                sizes.push(layout.children.len());
+            }
+            for child in &layout.children {
+                stack_sizes(child, sizes);
+            }
+        }
+        let mut sizes = vec![];
+        stack_sizes(&layout, &mut sizes);
+        assert_eq!(
+            sizes,
+            vec![3],
+            "the stack should arrive as one stack of three"
+        );
+    }
+
+    #[test]
+    fn an_approximation_puts_the_panes_back_where_they_were() {
+        // The approximation is only reached for arrangements no layout describes,
+        // but it should not be a *different* arrangement when handed one that a
+        // layout does describe - a cut nothing straddles is a real split. Checked
+        // against the arrangements these tests already have: each pane must come
+        // back nearer its own rectangle than any other pane's, which is the
+        // strongest thing that can be asked of something allowed to round.
+        for panegeoms in PANEGEOMS_JSON {
+            // each pane named after its index, so the leaves can be paired with
+            // the panes they came from rather than with wherever they turn up
+            let arrangement: Vec<PaneLayoutManifest> = panegeoms
+                .iter()
+                .map(|pg| parse_panegeom_from_json(pg))
+                .enumerate()
+                .map(|(index, geom)| PaneLayoutManifest {
+                    geom,
+                    run: Some(Run::Cwd(PathBuf::from(index.to_string()))),
+                    ..Default::default()
+                })
+                .collect();
+            let approximated = approximate_tiled_layout(&arrangement, None);
+            assert_eq!(approximated.pane_count(), arrangement.len());
+
+            let mut space = PaneGeom::default();
+            space.cols.set_inner(
+                arrangement
+                    .iter()
+                    .map(|pane| pane.geom.x + pane.geom.cols.as_usize())
+                    .max()
+                    .unwrap(),
+            );
+            space.rows.set_inner(
+                arrangement
+                    .iter()
+                    .map(|pane| pane.geom.y + pane.geom.rows.as_usize())
+                    .max()
+                    .unwrap(),
+            );
+            let positioned = approximated
+                .position_panes_in_space(&space, None, false, false)
+                .unwrap();
+            let landed: Vec<(usize, PaneGeom)> = positioned
+                .into_iter()
+                .map(|(layout, geom)| match layout.run {
+                    Some(Run::Cwd(name)) => {
+                        (name.to_str().unwrap().parse::<usize>().unwrap(), geom)
+                    },
+                    other => panic!("a pane came back without its name: {other:?}"),
+                })
+                .collect();
+            assert_eq!(landed.len(), arrangement.len());
+            let moved_by =
+                |from: &PaneGeom, to: &PaneGeom| from.x.abs_diff(to.x) + from.y.abs_diff(to.y);
+            for (a, landed_a) in &landed {
+                for (b, landed_b) in &landed {
+                    let (was_a, was_b) = (&arrangement[*a].geom, &arrangement[*b].geom);
+                    assert!(
+                        moved_by(was_a, landed_a) + moved_by(was_b, landed_b)
+                            <= moved_by(was_a, landed_b) + moved_by(was_b, landed_a),
+                        "panes {a} and {b} came back in each other's places",
+                    );
+                }
+            }
+        }
     }
 
     // utility functions
