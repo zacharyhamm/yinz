@@ -4,6 +4,7 @@
 //! gives plugins no scrollback of their own, so everything on screen is
 //! recomputed here from `State` each time and all scroll state is ours.
 
+use hocus_proto::agents;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
@@ -17,6 +18,14 @@ const MIN_ROWS: usize = 6;
 const MIN_COLS: usize = 24;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
+/// How wide the idle-summary inset is allowed to get. A box the full width of a
+/// wide pane reads as a second transcript rather than a note about one pane.
+const INSET_MAX_COLS: usize = 64;
+/// Below this the text inside the inset wraps into a column of single words.
+const INSET_MIN_COLS: usize = 20;
+/// Rows of summary the inset draws before it cuts the rest off. Two sentences is
+/// what the model is asked for; this is the ceiling for the ones that ignore it.
+const INSET_MAX_ROWS: usize = 6;
 
 const PROMPT: &str = "> ";
 
@@ -958,6 +967,115 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     state.transcript_rows = layout.transcript_rows;
 
     render_chat(state, body_y, cols, &layout);
+    // After the transcript, not instead of it: this is an overlay, and the last
+    // print at a coordinate is the one that shows — the trick the scroll badges
+    // already turn. The picker path above returns before here; two things
+    // covering the transcript at once is one too many.
+    render_summary_inset(state, body_y, layout.transcript_rows, cols);
+}
+
+/// What the focused agent was last seen doing, in a box over the foot of the
+/// transcript.
+///
+/// Drawn only while an agent pane holds focus, so it is a thing the user reads
+/// *about the pane they are in* while the conversation sits beside it. It goes
+/// as soon as they come back here to type, which is why nothing dismisses it.
+fn render_summary_inset(state: &State, body_y: usize, transcript_rows: usize, cols: usize) {
+    let Some((pane_id, kind, summary)) = state.focused_summary() else {
+        return;
+    };
+    // Room for the frame, a space either side of the text, and a margin column
+    // at each edge of the pane.
+    let width = cols.saturating_sub(2).min(INSET_MAX_COLS);
+    let Some(rows) = inset_rows(pane_id, kind, summary, width, transcript_rows) else {
+        return;
+    };
+
+    let last = rows.len() - 1;
+    let top = body_y + transcript_rows - rows.len();
+    for (index, row) in rows.iter().enumerate() {
+        // Printed across the whole pane width, with the margin as part of the
+        // string: an overlay has to cover the transcript row it sits on, and a
+        // print only paints the columns it is given.
+        let padded = format!(" {row}{}", " ".repeat(cols - width - 1));
+        let text = Text::new(&padded);
+        let text = match index == 0 || index == last {
+            // Border rows are frame all the way across.
+            true => text.dim_range(1..width + 1),
+            // Body rows are frame at each end and the model's words between.
+            false => text.dim_range(1..2).dim_range(width..width + 1),
+        };
+        // Found rather than counted: a label cut to fit may have lost the marker,
+        // and no kind can contain one (`valid_kind` allows no punctuation). The
+        // one is the margin column every row is printed behind.
+        let text = match index == 0 {
+            true => match row.chars().position(|c| c == '!') {
+                Some(at) => text.error_color_range(at + 1..at + 2),
+                None => text,
+            },
+            false => text,
+        };
+        print_text_with_coordinates(text, 0, top + index, Some(cols), None);
+    }
+}
+
+/// The box itself: a header naming the pane, the summary wrapped inside it, and
+/// a footer. Every row is exactly `width` columns.
+///
+/// `None` when there is nowhere to put it — a box narrower than this wraps into a
+/// column of single words, and one shorter has no room for a line of text at all.
+/// Better nothing than either.
+fn inset_rows(
+    pane_id: u32,
+    kind: &str,
+    summary: &agents::Summary,
+    width: usize,
+    height: usize,
+) -> Option<Vec<String>> {
+    let inner = width.saturating_sub(4);
+    if inner < INSET_MIN_COLS || height < 3 {
+        return None;
+    }
+
+    let room = (height - 2).min(INSET_MAX_ROWS);
+    let mut lines = wrap(&summary.text, inner);
+    if lines.len() > room {
+        lines.truncate(room);
+        // The cut is marked rather than silent: a summary that stops mid-sentence
+        // reads as a summary that had nothing more to say.
+        let last = lines.last_mut().expect("room is at least one");
+        while last.width() + 1 > inner {
+            last.pop();
+        }
+        last.push('…');
+    }
+
+    let mut label = format!(" {pane_id} · {kind} ");
+    if summary.awaiting {
+        // The same claim the strip's `!` marker makes, in the one place the user
+        // is already looking.
+        label.push_str("! ");
+    }
+    // A label wider than the box it heads is cut rather than allowed to push the
+    // frame's corner off the row.
+    while label.width() > width - 3 {
+        label.pop();
+    }
+
+    Some(
+        [format!(
+            "┌─{label}{}┐",
+            "─".repeat(width - 3 - label.width())
+        )]
+        .into_iter()
+        .chain(
+            lines
+                .iter()
+                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
+        )
+        .chain([format!("└{}┘", "─".repeat(width - 2))])
+        .collect(),
+    )
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
@@ -2197,5 +2315,93 @@ mod tests {
     fn a_tool_call_summary_is_not_the_loaders_home() {
         let lines = transcript_lines(&[Message::assistant("list_session {}")], 40);
         assert!(!ends_with_empty_reply(&lines));
+    }
+
+    // -- the idle summary inset ---------------------------------------------
+
+    fn summary(text: &str, awaiting: bool) -> agents::Summary {
+        agents::Summary {
+            text: text.to_owned(),
+            title: "running the tests".to_owned(),
+            awaiting,
+            hash: 1,
+        }
+    }
+
+    /// Every row exactly as wide as every other, or the frame does not close and
+    /// the transcript shows through the ragged end of it.
+    #[test]
+    fn the_inset_is_a_box_of_one_width() {
+        let rows = inset_rows(
+            7,
+            "claude",
+            &summary("Ran the tests, all green.", false),
+            30,
+            10,
+        )
+        .expect("room for a box");
+        assert_eq!(rows.len(), 3, "a header, one line of summary, a footer");
+        for row in &rows {
+            assert_eq!(row.width(), 30, "{row}");
+        }
+        assert!(rows[0].starts_with("┌─ 7 · claude ─"), "{}", rows[0]);
+        assert!(rows[0].ends_with('┐'));
+        assert_eq!(
+            rows[1], "│ Ran the tests, all green.  │",
+            "padded to the frame"
+        );
+        assert!(rows[2].starts_with('└') && rows[2].ends_with('┘'));
+    }
+
+    /// The claim the strip's `!` makes, in the box the user is already reading.
+    #[test]
+    fn a_blocked_agent_is_marked_in_the_header() {
+        let rows = inset_rows(7, "claude", &summary("Shall I?", true), 30, 10).expect("a box");
+        assert!(rows[0].contains("! "), "{}", rows[0]);
+        assert_eq!(rows[0].width(), 30);
+        // And an agent that merely finished is not.
+        let rows = inset_rows(7, "claude", &summary("Shall I?", false), 30, 10).expect("a box");
+        assert!(!rows[0].contains('!'), "{}", rows[0]);
+    }
+
+    /// A model told to write two sentences occasionally writes ten, and the box
+    /// has to end above the input either way.
+    #[test]
+    fn a_long_summary_is_cut_to_the_room_there_is_and_marked_where_it_was_cut() {
+        let long = "word ".repeat(200);
+        let rows = inset_rows(7, "claude", &summary(&long, false), 30, 40).expect("a box");
+        assert_eq!(rows.len(), INSET_MAX_ROWS + 2, "the ceiling, not the text");
+        let last = &rows[INSET_MAX_ROWS];
+        assert!(last.contains('…'), "{last}");
+        assert_eq!(last.width(), 30);
+
+        // And the transcript is the tighter of the two ceilings.
+        let rows = inset_rows(7, "claude", &summary(&long, false), 30, 5).expect("a box");
+        assert_eq!(rows.len(), 5);
+    }
+
+    /// Better nothing than a column of single words, or a box drawn over the
+    /// input line because there was nowhere else for it to go.
+    #[test]
+    fn there_is_no_box_where_there_is_no_room_for_one() {
+        let one = summary("Ran the tests.", false);
+        assert!(inset_rows(7, "claude", &one, INSET_MIN_COLS + 3, 10).is_none());
+        assert!(inset_rows(7, "claude", &one, 30, 2).is_none());
+        assert!(
+            inset_rows(7, "claude", &one, 30, 3).is_some(),
+            "just enough"
+        );
+    }
+
+    /// A kind is up to 32 characters and a pane can be in a narrow split, so the
+    /// header can be asked for more room than the box has. The corner survives.
+    #[test]
+    fn a_header_too_wide_for_its_box_is_cut_rather_than_burst() {
+        let kind = "a-very-long-agent-kind-indeed-xx";
+        let rows = inset_rows(7, kind, &summary("Done.", true), 26, 10).expect("a box");
+        for row in &rows {
+            assert_eq!(row.width(), 26, "{row}");
+        }
+        assert!(rows[0].ends_with('┐'), "{}", rows[0]);
     }
 }
