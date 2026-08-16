@@ -10,9 +10,14 @@
 //! One connection per pane. ssh opens a channel per connection to a forwarded
 //! socket, so this needs no multiplexing of its own; the accept loop is the
 //! whole of it.
+//!
+//! A pane, though, is *not* one connection. A connection ending is routine over
+//! a network and says nothing about the process, so the pane lives in a registry
+//! (`session.rs`) and connections attach to and detach from it. A reconnecting
+//! server names its pane by token and says how much output it actually took, and
+//! the replay picks up exactly there.
 
 use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,14 +31,20 @@ use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ServerToBrokerMsg, MAX_STREAM_PAYLOAD,
     REMOTE_PROTOCOL_VERSION,
 };
+use super::session::{orphan_timeout, PaneRegistry, PaneSession};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
-use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
+use crate::pty_host::protocol::{
+    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
+};
 
 /// A socket shared by the several things that need to write to it: the output
-/// pump, the child-exit callback, and (from Phase 3) the status ticker.
-type Wire = Arc<Mutex<UnixStream>>;
+/// pump, the child-exit callback, and the control pump.
+pub type Wire = Arc<Mutex<UnixStream>>;
 
-fn send(wire: &Wire, msg: &BrokerToServerMsg) -> Result<()> {
+/// How often to look for panes nobody has come back for.
+const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn send(wire: &Wire, msg: &BrokerToServerMsg) -> Result<()> {
     let mut sock = wire
         .lock()
         .to_anyhow()
@@ -49,11 +60,34 @@ fn send_output(wire: &Wire, bytes: &[u8]) -> Result<()> {
     protocol::write_output(&mut *sock, bytes)
 }
 
-/// Serve one pane on an accepted connection.
-///
-/// Returns when the connection or the child is done; the caller drops the
-/// supervisor handle, which terminates the pane.
-pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Result<()> {
+/// A `File` view of a descriptor owned by someone else. Never closes it.
+fn borrow_fd(fd: std::os::unix::io::RawFd) -> std::mem::ManuallyDrop<std::fs::File> {
+    use std::os::unix::io::FromRawFd;
+    std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+fn read_control(reader: &mut UnixStream) -> Result<Option<ServerToBrokerMsg>> {
+    match protocol::read_frame(reader)? {
+        None => Ok(None),
+        Some(frame @ Frame::Control(_)) => frame.decode_control().map(Some),
+        Some(other) => Err(anyhow!("expected a control frame, got {other:?}")),
+    }
+}
+
+/// Why the control pump stopped, which decides the pane's fate.
+enum Outcome {
+    /// The server asked for the pane to end.
+    Terminated,
+    /// The connection went away without saying why.
+    Disconnected,
+}
+
+/// Serve one connection: either a new pane, or a reconnect to an existing one.
+pub fn serve_connection(
+    socket: UnixStream,
+    host_bin: &std::path::Path,
+    registry: &Arc<PaneRegistry>,
+) -> Result<()> {
     socket
         .set_nonblocking(false)
         .context("failed to put a broker connection into blocking mode")?;
@@ -62,9 +96,42 @@ pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Resul
         .context("failed to clone a broker connection")?;
     let wire: Wire = Arc::new(Mutex::new(socket));
 
-    // --- handshake ---
-    let hello =
-        read_control(&mut reader)?.ok_or_else(|| anyhow!("peer closed before saying hello"))?;
+    handshake(&mut reader, &wire)?;
+
+    let request = read_control(&mut reader)?
+        .ok_or_else(|| anyhow!("peer closed before asking for a pane"))?;
+    let session = match request {
+        ServerToBrokerMsg::Spawn {
+            cmd,
+            failover_cmd,
+            initial_size,
+        } => start_pane(host_bin, registry, &wire, cmd, failover_cmd, initial_size)?,
+        ServerToBrokerMsg::Resume {
+            pane_token,
+            received,
+        } => resume_pane(registry, &wire, &pane_token, received)?,
+        other => return Err(anyhow!("expected a spawn or a resume, got {other:?}")),
+    };
+
+    let outcome = pump_control(&mut reader, session.master_fd(), session.child_pid);
+    match &outcome {
+        // An explicit terminate is the *only* thing that ends a pane — dropping
+        // the supervisor handle deliberately does not. Without this every closed
+        // remote pane would leave its supervisor and its child running here.
+        Ok(Outcome::Terminated) => {
+            session.terminate();
+            registry.remove(&session.token);
+        },
+        // A connection that merely ended is not a teardown. The pane keeps
+        // running and keeps buffering, so a reconnect can continue the stream;
+        // `reap_orphans` reclaims one that is never picked back up.
+        Ok(Outcome::Disconnected) | Err(_) => session.detach(),
+    }
+    outcome.map(|_| ())
+}
+
+fn handshake(reader: &mut UnixStream, wire: &Wire) -> Result<()> {
+    let hello = read_control(reader)?.ok_or_else(|| anyhow!("peer closed before saying hello"))?;
     match hello {
         ServerToBrokerMsg::Hello {
             protocol_version, ..
@@ -85,25 +152,22 @@ pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Resul
         other => return Err(anyhow!("expected a hello, got {other:?}")),
     }
     send(
-        &wire,
+        wire,
         &BrokerToServerMsg::HelloAck {
             protocol_version: REMOTE_PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
         },
-    )?;
+    )
+}
 
-    // --- spawn ---
-    let (cmd, failover_cmd, initial_size) = match read_control(&mut reader)?
-        .ok_or_else(|| anyhow!("peer closed before asking for a pane"))?
-    {
-        ServerToBrokerMsg::Spawn {
-            cmd,
-            failover_cmd,
-            initial_size,
-        } => (cmd, failover_cmd, initial_size),
-        other => return Err(anyhow!("expected a spawn, got {other:?}")),
-    };
-
+fn start_pane(
+    host_bin: &std::path::Path,
+    registry: &Arc<PaneRegistry>,
+    wire: &Wire,
+    cmd: zellij_utils::input::command::RunCommand,
+    failover_cmd: Option<zellij_utils::input::command::RunCommand>,
+    initial_size: Option<WireWinsize>,
+) -> Result<Arc<PaneSession>> {
     let pending = match pty_host_client::spawn(SpawnParams {
         host_bin,
         terminal_id: 0,
@@ -129,7 +193,7 @@ pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Resul
                 _ => SpawnFailureKind::Other,
             };
             send(
-                &wire,
+                wire,
                 &BrokerToServerMsg::SpawnFailed {
                     kind,
                     message: format!("{e:#}"),
@@ -139,41 +203,113 @@ pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Resul
         },
     };
 
-    // The supervisor reports the child's exit through this callback; forward it
-    // as the one message that means the pane is over.
-    let exit_wire = wire.clone();
+    let token = new_host_id();
+    // The session has to exist before the quit callback can fire, so the exit is
+    // recorded against it rather than lost between spawn and registration.
+    let session_slot: Arc<Mutex<Option<Arc<PaneSession>>>> = Arc::new(Mutex::new(None));
+    let cb_slot = session_slot.clone();
     let spawned = pending.finish(Box::new(move |_pane_id, status, _cmd| {
-        send(&exit_wire, &BrokerToServerMsg::ChildExited { status })
-            .context("failed to report a remote child's exit")
-            .non_fatal();
+        if let Ok(slot) = cb_slot.lock() {
+            if let Some(session) = slot.as_ref() {
+                session.set_child_exit(status);
+                if let Some(wire) = session.wire() {
+                    send(&wire, &BrokerToServerMsg::ChildExited { status })
+                        .context("failed to report a remote child's exit")
+                        .non_fatal();
+                }
+            }
+        }
     }));
 
-    let master_fd = spawned.master.as_raw_fd();
-    let handle = spawned.handle;
-    let child_pid = spawned.child_pid;
-    send(&wire, &BrokerToServerMsg::Spawned)?;
+    let session = Arc::new(PaneSession::new(
+        token.clone(),
+        spawned.handle,
+        spawned.master,
+        spawned.child_pid,
+        wire.clone(),
+    ));
+    if let Ok(mut slot) = session_slot.lock() {
+        *slot = Some(session.clone());
+    }
+    registry.insert(session.clone());
 
-    // --- pump ---
-    // Output on its own thread, control and input on this one. Two blocking
-    // readers is simpler than one poll loop and, with a connection per pane,
-    // costs nothing worth saving.
-    // `master` stays owned here, and both pumps borrow the raw descriptor. If
-    // the output thread owned it, its exit would close the descriptor while
-    // `pump_control` might still be writing to that number — and by then the
-    // number could belong to another pane's pty.
-    let master = spawned.master;
-    let output_wire = wire.clone();
-    let output = thread::Builder::new()
+    send(wire, &BrokerToServerMsg::Spawned { pane_token: token })?;
+    start_output_pump(session.clone())?;
+    Ok(session)
+}
+
+fn resume_pane(
+    registry: &Arc<PaneRegistry>,
+    wire: &Wire,
+    token: &str,
+    received: u64,
+) -> Result<Arc<PaneSession>> {
+    let session = match registry.get(token) {
+        Some(session) if !session.is_terminated() => session,
+        _ => {
+            // Refused rather than silently starting a fresh pane: the server
+            // believes it still has this one on screen, and giving it a
+            // different process under the same pane would be worse than saying
+            // no.
+            send(
+                wire,
+                &BrokerToServerMsg::ResumeRefused {
+                    reason: format!(
+                        "this broker no longer holds pane {token}; it was reclaimed or never \
+                         existed here"
+                    ),
+                },
+            )?;
+            return Err(anyhow!("refused a resume for unknown pane {token}"));
+        },
+    };
+    if session.is_attached() {
+        send(
+            wire,
+            &BrokerToServerMsg::ResumeRefused {
+                reason: format!("pane {token} already has a server attached"),
+            },
+        )?;
+        return Err(anyhow!("refused a duplicate resume for pane {token}"));
+    }
+
+    let (replay, dropped) = session.replay_from(received);
+    send(wire, &BrokerToServerMsg::Resumed { dropped })?;
+    if !replay.is_empty() {
+        send_output(wire, &replay)?;
+    }
+    // A child that exited while nobody was attached still has to be reported, or
+    // the pane would sit there looking alive.
+    if let Some(status) = session.child_exit() {
+        send(wire, &BrokerToServerMsg::ChildExited { status })?;
+    }
+    session.attach(wire.clone());
+    Ok(session)
+}
+
+/// Read the pty and fan it out: always into the replay buffer, and onto the
+/// wire when a server is attached.
+fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
+    thread::Builder::new()
         .name("remote-pane-output".to_owned())
         .spawn(move || {
-            let mut master_read = borrow_fd(master_fd);
+            let mut master = borrow_fd(session.master_fd());
             let mut buf = [0u8; MAX_STREAM_PAYLOAD];
             loop {
-                match master_read.read(&mut buf) {
+                match master.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if send_output(&output_wire, &buf[..n]).is_err() {
-                            break;
+                        let chunk = &buf[..n];
+                        // Buffer first, always. If the send fails or there is
+                        // nobody to send to, these are exactly the bytes a
+                        // reconnect will need.
+                        session.append_output(chunk);
+                        if let Some(wire) = session.wire() {
+                            if send_output(&wire, chunk).is_err() {
+                                // The server went away mid-write. Not a
+                                // teardown: keep the pane and keep buffering.
+                                session.detach();
+                            }
                         }
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -182,51 +318,7 @@ pub fn serve_connection(socket: UnixStream, host_bin: &std::path::Path) -> Resul
             }
         })
         .context("failed to start a remote pane's output pump")?;
-
-    let result = pump_control(&mut reader, master_fd, child_pid);
-    let mut handle = handle;
-    match &result {
-        // An explicit terminate is the *only* thing that ends a supervisor —
-        // dropping the handle deliberately does not. Without this call every
-        // closed remote pane would leave its supervisor and its child running
-        // on this machine forever.
-        Ok(Outcome::Terminated) => handle.terminate(),
-        // A connection that merely ended is not a teardown. The supervisor
-        // holding the pane is exactly what lets the pane be picked back up, so
-        // it is left running on purpose; `zellij pty-host list`/`kill` on this
-        // machine can reclaim one that is never reconnected to.
-        Ok(Outcome::Disconnected) | Err(_) => {
-            log::info!(
-                "a remote pane's connection ended without a terminate; leaving its \
-                 supervisor running so the pane can be picked back up"
-            );
-        },
-    }
-    let _ = output.join();
-    drop(master);
-    result.map(|_| ())
-}
-
-/// A `File` view of a descriptor owned by someone else. Never closes it.
-fn borrow_fd(fd: std::os::unix::io::RawFd) -> std::mem::ManuallyDrop<std::fs::File> {
-    use std::os::unix::io::FromRawFd;
-    std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) })
-}
-
-fn read_control(reader: &mut UnixStream) -> Result<Option<ServerToBrokerMsg>> {
-    match protocol::read_frame(reader)? {
-        None => Ok(None),
-        Some(frame @ Frame::Control(_)) => frame.decode_control().map(Some),
-        Some(other) => Err(anyhow!("expected a control frame, got {other:?}")),
-    }
-}
-
-/// Why the control pump stopped, which decides the supervisor's fate.
-enum Outcome {
-    /// The server asked for the pane to end.
-    Terminated,
-    /// The connection went away without saying why.
-    Disconnected,
+    Ok(())
 }
 
 fn pump_control(
@@ -267,8 +359,8 @@ fn pump_control(
                         signal_child(child_pid, signal);
                     },
                     ServerToBrokerMsg::Terminate => return Ok(Outcome::Terminated),
-                    // A second hello or spawn on a live pane means the peer is
-                    // confused, but the pane is fine; say so and carry on.
+                    // A second hello, spawn or resume on a live pane means the
+                    // peer is confused, but the pane is fine; say so and carry on.
                     other => {
                         log::warn!("unexpected message on a live remote pane: {other:?}");
                     },
@@ -305,6 +397,8 @@ fn signal_child(child_pid: u32, signal: ChildSignal) {
     };
     let _ = nix::sys::signal::kill(pid, Some(sig));
 }
+
+// --- daemon entry points ---
 
 /// The argv flag that turns this binary into a broker, mirroring
 /// `PTY_HOST_FLAG`. Recognised only as argv\[1\], so `main` can branch before
@@ -426,6 +520,17 @@ pub fn serve_forever() -> Result<()> {
 
 /// Accept panes until the listener dies.
 pub fn serve(listener: UnixListener, host_bin: std::path::PathBuf) -> Result<()> {
+    let registry = Arc::new(PaneRegistry::new());
+
+    let reaper_registry = registry.clone();
+    thread::Builder::new()
+        .name("remote-pane-reaper".to_owned())
+        .spawn(move || loop {
+            thread::sleep(REAP_INTERVAL);
+            reaper_registry.reap_orphans(orphan_timeout());
+        })
+        .context("failed to start the remote pane reaper")?;
+
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -435,11 +540,12 @@ pub fn serve(listener: UnixListener, host_bin: std::path::PathBuf) -> Result<()>
             },
         };
         let host_bin = host_bin.clone();
+        let registry = registry.clone();
         thread::Builder::new()
             .name("remote-pane".to_owned())
             .spawn(move || {
-                if let Err(e) = serve_connection(stream, &host_bin) {
-                    log::warn!("remote pane ended: {e:#}");
+                if let Err(e) = serve_connection(stream, &host_bin, &registry) {
+                    log::warn!("remote pane connection ended: {e:#}");
                 }
             })
             .context("failed to start a remote pane thread")?;

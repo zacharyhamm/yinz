@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
 
-use super::conn::RemoteConn;
+use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::protocol::{self, BrokerToServerMsg, Frame, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION};
 use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
 
@@ -109,26 +109,35 @@ impl RemoteHosts {
     /// screen in a state where the far side has not confirmed its child is
     /// running.
     pub fn open_pane(
-        &self,
+        self: &Arc<Self>,
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
-        let forward = self.ensure_forward(host)?;
-        let socket = UnixStream::connect(&forward.local_socket).with_context(|| {
-            format!(
-                "failed to reach the zellij broker on {host} through {}",
-                forward.local_socket.display()
-            )
-        })?;
+        let socket = self.connect(host)?;
         let reader_socket = socket
             .try_clone()
             .context("failed to clone a remote pane's socket")?;
 
-        handshake_and_spawn(&socket, host, cmd, initial_size)?;
+        let pane_token = handshake_and_spawn(&socket, host, cmd, initial_size)?;
 
-        let conn = Arc::new(RemoteConn::new(socket, host.to_owned())?);
+        let conn = Arc::new(RemoteConn::new(
+            socket,
+            host.to_owned(),
+            pane_token,
+            Some(self.clone() as Arc<dyn Reconnector>),
+        )?);
         Ok((conn, reader_socket))
+    }
+
+    fn connect(&self, host: &str) -> Result<UnixStream> {
+        let forward = self.ensure_forward(host)?;
+        UnixStream::connect(&forward.local_socket).with_context(|| {
+            format!(
+                "failed to reach the zellij broker on {host} through {}",
+                forward.local_socket.display()
+            )
+        })
     }
 
     fn ensure_forward(&self, host: &str) -> Result<Arc<HostForward>> {
@@ -155,6 +164,27 @@ impl RemoteHosts {
         if let Ok(mut forwards) = self.forwards.lock() {
             forwards.clear();
         }
+    }
+}
+
+impl Reconnector for RemoteHosts {
+    fn reconnect(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
+        // Drop the cached forward first. The usual reason a pane's connection
+        // died is that the forward did, and reusing a dead one would fail in a
+        // way that looks like the broker refusing us.
+        if let Ok(mut forwards) = self.forwards.lock() {
+            forwards.remove(host);
+        }
+        let socket = self.connect(host)?;
+        let read_socket = socket
+            .try_clone()
+            .context("failed to clone a reconnected pane's socket")?;
+        let dropped = handshake_and_resume(&socket, host, pane_token, received)?;
+        Ok(Reconnected {
+            write_socket: socket,
+            read_socket,
+            dropped,
+        })
     }
 }
 
@@ -313,7 +343,7 @@ fn handshake_and_spawn(
     host: &str,
     cmd: &RunCommand,
     initial_size: Option<WireWinsize>,
-) -> Result<()> {
+) -> Result<String> {
     let mut write_half = socket
         .try_clone()
         .context("failed to clone a remote pane's socket")?;
@@ -321,28 +351,7 @@ fn handshake_and_spawn(
         .try_clone()
         .context("failed to clone a remote pane's socket")?;
 
-    protocol::write_control(
-        &mut write_half,
-        &ServerToBrokerMsg::Hello {
-            protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
-        },
-    )?;
-    match read_broker_msg(&mut read_half)? {
-        BrokerToServerMsg::HelloAck {
-            protocol_version, ..
-        } if protocol_version == REMOTE_PROTOCOL_VERSION => {},
-        BrokerToServerMsg::HelloAck {
-            protocol_version,
-            zellij_version,
-        } => {
-            return Err(anyhow!(
-                "remote pane protocol mismatch with {host}: it speaks v{protocol_version} \
-                 (zellij {zellij_version}), this zellij speaks v{REMOTE_PROTOCOL_VERSION}"
-            ))
-        },
-        other => return Err(anyhow!("expected a hello ack from {host}, got {other:?}")),
-    }
+    say_hello(&mut write_half, &mut read_half, host)?;
 
     protocol::write_control(
         &mut write_half,
@@ -353,7 +362,7 @@ fn handshake_and_spawn(
         },
     )?;
     match read_broker_msg(&mut read_half)? {
-        BrokerToServerMsg::Spawned => Ok(()),
+        BrokerToServerMsg::Spawned { pane_token } => Ok(pane_token),
         BrokerToServerMsg::SpawnFailed { kind, message } => match kind {
             // Rebuilt on this side so the eight `downcast_ref::<ZellijError>()`
             // sites in pty.rs behave for a remote pane exactly as for a local
@@ -367,6 +376,63 @@ fn handshake_and_spawn(
         },
         other => Err(anyhow!(
             "expected a spawn result from {host}, got {other:?}"
+        )),
+    }
+}
+
+/// The version handshake, shared by opening a pane and picking one back up.
+fn say_hello(write_half: &mut UnixStream, read_half: &mut UnixStream, host: &str) -> Result<()> {
+    protocol::write_control(
+        write_half,
+        &ServerToBrokerMsg::Hello {
+            protocol_version: REMOTE_PROTOCOL_VERSION,
+            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+        },
+    )?;
+    match read_broker_msg(read_half)? {
+        BrokerToServerMsg::HelloAck {
+            protocol_version, ..
+        } if protocol_version == REMOTE_PROTOCOL_VERSION => Ok(()),
+        BrokerToServerMsg::HelloAck {
+            protocol_version,
+            zellij_version,
+        } => Err(anyhow!(
+            "remote pane protocol mismatch with {host}: it speaks v{protocol_version} \
+             (zellij {zellij_version}), this zellij speaks v{REMOTE_PROTOCOL_VERSION}"
+        )),
+        other => Err(anyhow!("expected a hello ack from {host}, got {other:?}")),
+    }
+}
+
+/// Pick a pane back up on a fresh connection.
+fn handshake_and_resume(
+    socket: &UnixStream,
+    host: &str,
+    pane_token: &str,
+    received: u64,
+) -> Result<u64> {
+    let mut write_half = socket
+        .try_clone()
+        .context("failed to clone a remote pane's socket")?;
+    let mut read_half = socket
+        .try_clone()
+        .context("failed to clone a remote pane's socket")?;
+
+    say_hello(&mut write_half, &mut read_half, host)?;
+    protocol::write_control(
+        &mut write_half,
+        &ServerToBrokerMsg::Resume {
+            pane_token: pane_token.to_owned(),
+            received,
+        },
+    )?;
+    match read_broker_msg(&mut read_half)? {
+        BrokerToServerMsg::Resumed { dropped } => Ok(dropped),
+        BrokerToServerMsg::ResumeRefused { reason } => {
+            Err(anyhow!("{host} would not give this pane back: {reason}"))
+        },
+        other => Err(anyhow!(
+            "expected a resume result from {host}, got {other:?}"
         )),
     }
 }

@@ -157,7 +157,13 @@ fn a_confirmed_spawn_completes_the_handshake() {
         )
         .expect("write failed");
         let _ = protocol::read_frame(&mut theirs);
-        protocol::write_control(&mut theirs, &BrokerToServerMsg::Spawned).expect("write failed");
+        protocol::write_control(
+            &mut theirs,
+            &BrokerToServerMsg::Spawned {
+                pane_token: "tok".to_owned(),
+            },
+        )
+        .expect("write failed");
         theirs
     });
 

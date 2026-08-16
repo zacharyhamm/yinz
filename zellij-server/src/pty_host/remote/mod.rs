@@ -21,6 +21,7 @@ pub mod broker;
 pub mod conn;
 pub mod protocol;
 pub mod reader;
+pub mod session;
 pub mod ssh;
 
 pub use conn::{RemoteConn, RemoteStatus};

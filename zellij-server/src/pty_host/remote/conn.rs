@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
 };
 
 use zellij_utils::errors::prelude::*;
@@ -68,6 +68,24 @@ struct Outbound {
     broken: bool,
 }
 
+/// What a reconnect produced.
+pub struct Reconnected {
+    pub write_socket: UnixStream,
+    pub read_socket: UnixStream,
+    /// Output bytes lost before the broker's buffer could hold them. Non-zero
+    /// means the replay has a hole in it.
+    pub dropped: u64,
+}
+
+/// How to get this pane's connection back.
+///
+/// A trait so `conn.rs` needs to know nothing about ssh — it holds a pane's
+/// state and speaks frames, and reconnecting is somebody else's transport
+/// problem.
+pub trait Reconnector: Send + Sync {
+    fn reconnect(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected>;
+}
+
 /// A live connection to one pane's broker.
 pub struct RemoteConn {
     outbound: Mutex<Outbound>,
@@ -77,12 +95,28 @@ pub struct RemoteConn {
     /// never be read that way.
     child_exit: Mutex<Option<Option<i32>>>,
     transport_lost: AtomicBool,
-    /// A label for diagnostics: which host this pane lives on.
+    /// A label for diagnostics, and the address to reconnect to.
     host: String,
+    /// How the broker names this pane on a resume.
+    pane_token: String,
+    /// Output bytes actually taken delivery of. The broker replays from exactly
+    /// here, so this must count bytes *handed to the reader's caller*, not bytes
+    /// received off the socket — anything still buffered locally when the
+    /// transport dies has to be replayed.
+    received: AtomicU64,
+    /// The last size sent, kept so a reconnect can nudge the window and make a
+    /// full-screen application redraw.
+    last_size: Mutex<Option<WireWinsize>>,
+    reconnector: Option<Arc<dyn Reconnector>>,
 }
 
 impl RemoteConn {
-    pub fn new(socket: UnixStream, host: String) -> Result<Self> {
+    pub fn new(
+        socket: UnixStream,
+        host: String,
+        pane_token: String,
+        reconnector: Option<Arc<dyn Reconnector>>,
+    ) -> Result<Self> {
         socket
             .set_nonblocking(true)
             .context("failed to make a remote pane's socket non-blocking")?;
@@ -100,6 +134,10 @@ impl RemoteConn {
             child_exit: Mutex::new(None),
             transport_lost: AtomicBool::new(false),
             host,
+            pane_token,
+            received: AtomicU64::new(0),
+            last_size: Mutex::new(None),
+            reconnector,
         })
     }
 
@@ -166,7 +204,88 @@ impl RemoteConn {
     }
 
     pub fn resize(&self, size: WireWinsize) -> Result<()> {
+        if let Ok(mut last) = self.last_size.lock() {
+            *last = Some(size);
+        }
         self.send_control(&ServerToBrokerMsg::Resize(size))
+    }
+
+    /// Make a full-screen application repaint.
+    ///
+    /// After a lossy replay the local grid has been reset, but the remote
+    /// application does not know that and will not redraw until something makes
+    /// it. A window-size change raises `SIGWINCH`, which is the only lever
+    /// available from this side — so send a size that differs, then the real one
+    /// back. Both are ordinary resizes, so nothing else has to understand this.
+    pub fn nudge_for_redraw(&self) {
+        let size = match self.last_size.lock().ok().and_then(|s| *s) {
+            Some(size) if size.cols > 1 => size,
+            // Nothing has sized this pane yet, so there is nothing to nudge and
+            // nothing on screen to repair.
+            _ => return,
+        };
+        let smaller = WireWinsize {
+            cols: size.cols - 1,
+            ..size
+        };
+        let _ = self.send_control(&ServerToBrokerMsg::Resize(smaller));
+        let _ = self.send_control(&ServerToBrokerMsg::Resize(size));
+    }
+
+    pub fn pane_token(&self) -> &str {
+        &self.pane_token
+    }
+
+    /// Whether this pane has any way to get its connection back.
+    ///
+    /// A pane built without a reconnector — a test double, or a transport that
+    /// cannot be re-established — should fail fast rather than sit through a
+    /// backoff schedule that cannot succeed.
+    pub fn can_reconnect(&self) -> bool {
+        self.reconnector.is_some()
+    }
+
+    /// Record output handed to the reader's caller. See `received`.
+    pub fn note_received(&self, bytes: usize) {
+        self.received.fetch_add(bytes as u64, Ordering::SeqCst);
+    }
+
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::SeqCst)
+    }
+
+    /// Re-establish this pane's connection, replacing the outbound socket.
+    ///
+    /// Blocking: it runs ssh. Callers on an async task must push it to a
+    /// blocking pool rather than stalling the runtime.
+    pub fn reconnect(&self) -> Result<(UnixStream, u64)> {
+        let reconnector = self
+            .reconnector
+            .as_ref()
+            .ok_or_else(|| anyhow!("this pane has no way to reconnect"))?;
+        let resumed = reconnector.reconnect(&self.host, &self.pane_token, self.received())?;
+        let mut out = self
+            .outbound
+            .lock()
+            .to_anyhow()
+            .context("failed to lock a remote pane's outbound queue")?;
+        resumed
+            .write_socket
+            .set_nonblocking(true)
+            .context("failed to make a reconnected socket non-blocking")?;
+        // Anything queued belonged to a socket that no longer exists. Input the
+        // user typed into a disconnected pane was never accepted by the far
+        // side, and re-sending a half-written frame would corrupt the stream.
+        out.control.clear();
+        out.input.clear();
+        out.queued_input_bytes = 0;
+        out.offset = 0;
+        out.writing_input = false;
+        out.socket = resumed.write_socket;
+        out.broken = false;
+        drop(out);
+        self.transport_lost.store(false, Ordering::SeqCst);
+        Ok((resumed.read_socket, resumed.dropped))
     }
 
     /// Signal the pane's child.

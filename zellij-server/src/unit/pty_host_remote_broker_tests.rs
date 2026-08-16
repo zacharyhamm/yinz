@@ -11,6 +11,9 @@ use super::*;
 use std::io::Cursor;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::pty_host::remote::session::PaneRegistry;
 
 use crate::pty_host::remote::protocol::{try_decode_frame, write_control, Frame};
 
@@ -19,7 +22,8 @@ fn broker_on_a_pair() -> (UnixStream, std::thread::JoinHandle<Result<()>>) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
     let handle = std::thread::spawn(move || {
         // No pane is ever spawned in these tests, so the path is never used.
-        serve_connection(theirs, &PathBuf::from("/nonexistent"))
+        let registry = Arc::new(PaneRegistry::new());
+        serve_connection(theirs, &PathBuf::from("/nonexistent"), &registry)
     });
     (ours, handle)
 }

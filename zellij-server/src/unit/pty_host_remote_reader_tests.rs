@@ -8,7 +8,10 @@ use crate::pty_host::remote::protocol::{write_control, write_output};
 fn reader_pair() -> (RemoteReader, Arc<RemoteConn>, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
     let for_conn = ours.try_clone().expect("clone failed");
-    let conn = Arc::new(RemoteConn::new(for_conn, "build-box".to_owned()).expect("conn failed"));
+    let conn = Arc::new(
+        RemoteConn::new(for_conn, "build-box".to_owned(), "tok".to_owned(), None)
+            .expect("conn failed"),
+    );
     let reader = RemoteReader::new(conn.clone(), ours).expect("reader failed");
     (reader, conn, theirs)
 }
@@ -150,4 +153,218 @@ async fn output_larger_than_the_callers_buffer_is_not_truncated() {
         got.extend_from_slice(&buf[..n]);
     }
     assert_eq!(got, payload);
+}
+
+// ---- reconnect ----
+//
+// The point of all of this: a dropped link must not end a pane whose process is
+// still running on the other machine.
+
+use crate::pty_host::remote::conn::{Reconnected, Reconnector};
+use std::sync::mpsc;
+use std::sync::Mutex;
+
+/// Hands back a fresh socketpair each time, and tells the test about it so it
+/// can play the broker on the other end.
+struct TestReconnector {
+    peers: mpsc::Sender<UnixStream>,
+    dropped: u64,
+    /// The `received` value each reconnect was asked to resume from — the number
+    /// a real broker would replay from.
+    seen: Mutex<Vec<u64>>,
+    fail_first: Mutex<u32>,
+}
+
+impl Reconnector for TestReconnector {
+    fn reconnect(
+        &self,
+        _host: &str,
+        _pane_token: &str,
+        received: u64,
+    ) -> zellij_utils::errors::prelude::Result<Reconnected> {
+        {
+            let mut fails = self.fail_first.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err(zellij_utils::errors::prelude::anyhow!("still down"));
+            }
+        }
+        self.seen.lock().unwrap().push(received);
+        let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+        let read_socket = ours.try_clone().expect("clone failed");
+        self.peers.send(theirs).expect("peer send failed");
+        Ok(Reconnected {
+            write_socket: ours,
+            read_socket,
+            dropped: self.dropped,
+        })
+    }
+}
+
+type ReconnectingPair = (
+    RemoteReader,
+    Arc<RemoteConn>,
+    UnixStream,
+    mpsc::Receiver<UnixStream>,
+    Arc<TestReconnector>,
+);
+
+fn reconnecting_pair(dropped: u64, fail_first: u32) -> ReconnectingPair {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let for_conn = ours.try_clone().expect("clone failed");
+    let (peer_tx, peer_rx) = mpsc::channel();
+    let reconnector = Arc::new(TestReconnector {
+        peers: peer_tx,
+        dropped,
+        seen: Mutex::new(Vec::new()),
+        fail_first: Mutex::new(fail_first),
+    });
+    let conn = Arc::new(
+        RemoteConn::new(
+            for_conn,
+            "build-box".to_owned(),
+            "tok".to_owned(),
+            Some(reconnector.clone() as Arc<dyn Reconnector>),
+        )
+        .expect("conn failed"),
+    );
+    let reader = RemoteReader::new(conn.clone(), ours).expect("reader failed");
+    (reader, conn, theirs, peer_rx, reconnector)
+}
+
+/// Serve replayed bytes on whichever socket the next reconnect produces.
+fn answer_next_reconnect(peer_rx: mpsc::Receiver<UnixStream>, replay: &'static [u8]) {
+    std::thread::spawn(move || {
+        if let Ok(mut peer) = peer_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            let mut framed = Vec::new();
+            write_output(&mut framed, replay).expect("frame failed");
+            let _ = peer.write_all(&framed);
+            let _ = peer.flush();
+            // Hold the socket open, or the reader would see another EOF.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+}
+
+#[tokio::test]
+async fn a_dropped_link_reconnects_instead_of_ending_the_pane() {
+    let (mut reader, conn, mut peer, peer_rx, _rc) = reconnecting_pair(0, 0);
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"before").expect("frame failed");
+    send(&mut peer, &framed);
+    assert_eq!(read_to_string(&mut reader, 6).await, "before");
+
+    answer_next_reconnect(peer_rx, b"after");
+    drop(peer);
+
+    // Everything from here is the reconnect: a notice, then the pane's output
+    // again. Crucially, not `Ok(0)` and not an error.
+    let mut got = String::new();
+    while !got.contains("after") {
+        let mut buf = [0u8; 256];
+        let n = reader
+            .read(&mut buf)
+            .await
+            .expect("a dropped link must not end the pane");
+        assert!(n > 0, "a dropped link must not look like EOF");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(
+        got.contains("disconnected"),
+        "the user should be told: {got}"
+    );
+    assert!(
+        got.contains("reconnected"),
+        "and told when it came back: {got}"
+    );
+    assert_eq!(
+        conn.child_exit(),
+        None,
+        "no exit status may be invented for a transport failure"
+    );
+}
+
+/// The accounting the replay depends on. Notices this side made up must not
+/// count as delivered output, or the broker resumes from the wrong offset and
+/// silently skips real bytes.
+#[tokio::test]
+async fn injected_notices_do_not_count_as_delivered_output() {
+    let (mut reader, conn, mut peer, peer_rx, rc) = reconnecting_pair(0, 0);
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"0123456789").expect("frame failed");
+    send(&mut peer, &framed);
+    assert_eq!(read_to_string(&mut reader, 10).await, "0123456789");
+    assert_eq!(conn.received(), 10);
+
+    answer_next_reconnect(peer_rx, b"more");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("more") {
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+
+    // The reconnect must have asked to resume from 10 — the real bytes taken —
+    // not from 10 plus the length of the banners.
+    let seen = rc.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![10],
+        "resumed from the wrong offset; synthetic bytes leaked into the count"
+    );
+    assert_eq!(
+        conn.received(),
+        14,
+        "only real output counts: 10 before, 4 after"
+    );
+}
+
+/// A replay with a hole cannot be spliced into the grid — it would look like
+/// real output. Clear the screen and say so instead.
+#[tokio::test]
+async fn a_lossy_replay_clears_the_screen_and_says_so() {
+    let (mut reader, _conn, peer, peer_rx, _rc) = reconnecting_pair(4096, 0);
+    answer_next_reconnect(peer_rx, b"fresh");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("fresh") {
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(
+        got.contains("\x1b[2J"),
+        "a lossy replay must clear the grid rather than splice a torn stream: {got:?}"
+    );
+    assert!(
+        got.contains("4096 bytes of output were lost"),
+        "and must say how much was lost: {got}"
+    );
+}
+
+/// A link that is down for a moment is the ordinary case, so one failure must
+/// not end the pane.
+#[tokio::test]
+async fn a_reconnect_retries_before_giving_up() {
+    let (mut reader, _conn, peer, peer_rx, rc) = reconnecting_pair(0, 2);
+    answer_next_reconnect(peer_rx, b"eventually");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("eventually") {
+        let mut buf = [0u8; 256];
+        let n = reader
+            .read(&mut buf)
+            .await
+            .expect("two failures must not end the pane");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert_eq!(
+        *rc.fail_first.lock().unwrap(),
+        0,
+        "both scheduled failures should have been consumed"
+    );
 }

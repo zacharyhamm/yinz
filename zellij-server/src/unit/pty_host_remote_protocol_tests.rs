@@ -42,6 +42,10 @@ fn server_messages() -> Vec<ServerToBrokerMsg> {
         ServerToBrokerMsg::SignalChild(ChildSignal::Int),
         ServerToBrokerMsg::SignalChild(ChildSignal::Kill),
         ServerToBrokerMsg::Terminate,
+        ServerToBrokerMsg::Resume {
+            pane_token: "abc123".to_owned(),
+            received: 123_456,
+        },
     ]
 }
 
@@ -51,7 +55,14 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
             protocol_version: REMOTE_PROTOCOL_VERSION,
             zellij_version: zellij_utils::consts::VERSION.to_owned(),
         },
-        BrokerToServerMsg::Spawned,
+        BrokerToServerMsg::Spawned {
+            pane_token: "abc123".to_owned(),
+        },
+        BrokerToServerMsg::Resumed { dropped: 0 },
+        BrokerToServerMsg::Resumed { dropped: 4096 },
+        BrokerToServerMsg::ResumeRefused {
+            reason: "no such pane".to_owned(),
+        },
         BrokerToServerMsg::SpawnFailed {
             kind: SpawnFailureKind::CommandNotFound,
             message: "no such command".to_owned(),
