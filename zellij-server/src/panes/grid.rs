@@ -4079,8 +4079,13 @@ impl Perform for Grid {
     fn print(&mut self, c: char) {
         let c = self.cursor.charsets[self.active_charset].map(c);
 
-        let terminal_character =
-            TerminalCharacter::new_styled(c, self.cursor.pending_styles.clone());
+        // Printable ASCII is always one cell wide, and is the overwhelming majority of what a
+        // program prints - take it without consulting the unicode-width tables.
+        let terminal_character = if c.is_ascii_graphic() || c == ' ' {
+            TerminalCharacter::new_singlewidth_styled(c, self.cursor.pending_styles.clone())
+        } else {
+            TerminalCharacter::new_styled(c, self.cursor.pending_styles.clone())
+        };
         self.set_preceding_character(terminal_character.clone());
         self.add_character(terminal_character);
     }
