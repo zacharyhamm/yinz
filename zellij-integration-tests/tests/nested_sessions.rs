@@ -335,6 +335,11 @@ fn host_keys_act_on_host_until_focus_enters_the_guest_then_route_to_guest() {
                 && host_grid.contains("Pane #2")
                 && !host_grid.contains("Pane #3")
                 && host_own_tab_bar_settled(host_grid, &guest_session_name)
+                // The guest's own tab bar redraws after its second pane appears, and it is
+                // composited into the host separately. Without waiting for the swap layout
+                // indicator this settles on the frame between the two renders, which snapshots a
+                // guest tab bar that has not caught up with the pane it just gained.
+                && host_grid.contains("VERTICAL")
         },
     );
     assert_snapshot!(
