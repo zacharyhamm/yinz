@@ -43,13 +43,16 @@ summary="$log_dir/summary.txt"
 gates=()
 [[ $skip_build -eq 0 ]] && gates+=("build	cargo x build")
 test_args=""
+integration_test_args=""
 if [[ $with_ignored -eq 1 ]]; then
   test_args=" -- --include-ignored"
+  # nextest has no libtest-style flag; --run-ignored=all is its equivalent.
+  integration_test_args=" --run-ignored=all"
 fi
 gates+=(
   "test	cargo x test$test_args"
   "test-no-web	cargo x test --no-web$test_args"
-  "integration-test	cargo x integration-test"
+  "integration-test	cargo x integration-test$integration_test_args"
   "assets-check	cargo x assets --check"
   "format-check	cargo x format --check"
   "xtask	cargo test -p xtask"

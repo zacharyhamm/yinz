@@ -7,6 +7,7 @@
 #![allow(clippy::redundant_pattern_matching)]
 mod pinned_executor;
 mod pipes;
+mod plugin_limits;
 mod plugin_loader;
 mod plugin_map;
 mod plugin_worker;

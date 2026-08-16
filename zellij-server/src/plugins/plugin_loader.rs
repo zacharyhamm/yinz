@@ -1,3 +1,4 @@
+use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{
     PluginEnv, PluginMap, RunningPlugin, VecDequeInputStream, WriteOutputStream,
 };
@@ -12,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use wasmi::{Engine, Instance, Linker, Module, Store, StoreLimits};
+use wasmi::{Engine, Instance, Linker, Module, Store};
 use wasmi_wasi::sync::WasiCtxBuilder;
 use wasmi_wasi::wasi_common::pipe::{ReadPipe, WritePipe};
 use wasmi_wasi::Dir;
@@ -308,11 +309,11 @@ impl<'a> PluginLoader<'a> {
             intercepting_key_presses: false,
             stdin_pipe,
             stdout_pipe,
-            store_limits: create_optimized_store_limits(),
+            store_limits: PluginResourceLimits::new(self.plugin_id),
         };
         let mut store = Store::new(&self.engine, plugin_env);
 
-        // Apply optimized resource limits for memory efficiency
+        // See `plugin_limits` for what a plugin is allowed to allocate
         store.limiter(|plugin_env| &mut plugin_env.store_limits);
 
         let mut linker = Linker::new(&self.engine);
@@ -432,11 +433,11 @@ impl<'a> PluginLoader<'a> {
             intercepting_key_presses: false,
             stdin_pipe,
             stdout_pipe,
-            store_limits: create_optimized_store_limits(),
+            store_limits: PluginResourceLimits::new(self.plugin_id),
         };
         let mut store = Store::new(&self.engine, plugin_env);
 
-        // Apply optimized resource limits for memory efficiency
+        // See `plugin_limits` for what a plugin is allowed to allocate
         store.limiter(|plugin_env| &mut plugin_env.store_limits);
 
         let mut linker = Linker::new(&self.engine);
@@ -516,17 +517,6 @@ impl<'a> PluginLoader<'a> {
 
         Ok(ctx)
     }
-}
-
-fn create_optimized_store_limits() -> StoreLimits {
-    use wasmi::StoreLimitsBuilder;
-    StoreLimitsBuilder::new()
-        .instances(1) // One instance per plugin
-        .memories(4) // Max 4 linear memories per plugin
-        .memory_size(16 * 1024 * 1024) // 16MB per memory maximum
-        .tables(16) // Small table element limit
-        .trap_on_grow_failure(true) // Fail fast on resource exhaustion
-        .build()
 }
 
 #[cfg(test)]

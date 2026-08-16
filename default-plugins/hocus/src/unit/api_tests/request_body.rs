@@ -258,3 +258,51 @@ fn an_empty_tool_result_is_still_sent() {
         json!([{"role": "tool", "tool_call_id": "call_1", "content": ""}])
     );
 }
+
+/// Every message shape in one transcript, pinned against the literal wire
+/// form. Each is built by its own arm, and they disagree about what an
+/// absent field looks like: the tool-call message must send `content: null`,
+/// while the plain ones must not carry `tool_calls` at all.
+#[test]
+fn request_body_writes_each_message_shape_whole() {
+    let transcript = [
+        Message::user("open htop"),
+        Message::assistant("On it."),
+        Message::tool_calls(vec![call("call_1", "new_pane", r#"{"command":"htop"}"#)]),
+        Message::tool_result("call_1", "opened"),
+    ];
+    assert_eq!(
+        body_value(&test_config(), &transcript)["messages"],
+        json!([
+            {"role": "user", "content": "open htop"},
+            {"role": "assistant", "content": "On it."},
+            {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "new_pane", "arguments": r#"{"command":"htop"}"#},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "opened"},
+        ])
+    );
+}
+
+/// A tool result carries `tool_call_id: Option<String>`, and a `None` has to
+/// go out as `null` rather than as an empty string or a missing key — the
+/// endpoint rejects a tool message with no id field at all, and `""` would
+/// claim to answer a call named `""`.
+#[test]
+fn a_tool_result_with_no_call_id_sends_null_rather_than_dropping_the_field() {
+    let transcript = [Message {
+        role: Role::Tool,
+        content: "orphaned".to_owned(),
+        ..Default::default()
+    }];
+    assert_eq!(
+        body_value(&test_config(), &transcript)["messages"],
+        json!([{"role": "tool", "tool_call_id": null, "content": "orphaned"}])
+    );
+}

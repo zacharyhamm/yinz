@@ -5408,6 +5408,7 @@ dependencies = [
  "uuid",
  "vte 0.15.0",
  "wasmi",
+ "wasmi_core",
  "wasmi_wasi",
  "zellij-utils",
 ]
