@@ -746,6 +746,19 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "todo_edit",
+            "Change a todo item's text.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "text": { "type": "string", "description": "Up to 500 characters." },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                },
+                "required": ["id", "text"],
+            }),
+        ),
+        tool(
             "agent_register",
             "Register an undetected terminal pane as an agent.",
             json!({
@@ -2433,6 +2446,7 @@ mod tests {
             "todo_list",
             "todo_search",
             "todo_done",
+            "todo_edit",
             // Reading Slack is free; only posting stops for a y/n.
             "slack_status",
             "slack_search",
@@ -2737,7 +2751,7 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 49);
+        assert_eq!(names.len(), 50);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
         assert_eq!(confirmed, 11);
     }
@@ -3756,6 +3770,10 @@ mod tests {
         assert_eq!(required("todo_add"), vec!["text".to_owned()]);
         assert_eq!(required("todo_search"), vec!["query".to_owned()]);
         assert_eq!(required("todo_done"), vec!["id".to_owned()]);
+        assert_eq!(
+            required("todo_edit"),
+            vec!["id".to_owned(), "text".to_owned()]
+        );
         assert!(required("todo_list").is_empty());
     }
 
