@@ -27,13 +27,8 @@ use hocus_proto::{agents, projects, todos};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use zellij_tile::prelude::*;
 
-use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator};
+use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator, DEFAULT_MAX_TOOL_ROUNDS};
 use tools::ToolCall;
-
-/// How many times in a row the model may call tools before the tools are taken
-/// away and it has to answer from what it has. Without this a model that keeps
-/// re-listing panes bills the user forever.
-const MAX_TOOL_ROUNDS: usize = 20;
 
 /// How much of a command's stdout or stderr reaches the model. Generous enough
 /// for a day of a Slack channel or a long build log, small enough that one
@@ -586,6 +581,15 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// The configured tool budget, falling back to the default when the config
+    /// failed to resolve — an unconfigured hocus still has to stop looping.
+    pub(crate) fn max_tool_rounds(&self) -> usize {
+        self.cfg
+            .as_ref()
+            .map(|cfg| cfg.max_tool_rounds)
+            .unwrap_or(DEFAULT_MAX_TOOL_ROUNDS)
+    }
+
     pub(crate) fn handle(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(status) => self.on_permissions(status),
@@ -918,14 +922,14 @@ mod tests {
     #[test]
     fn the_last_round_asks_without_tools() {
         let mut state = ready_state();
-        state.tool_rounds = MAX_TOOL_ROUNDS - 1;
+        state.tool_rounds = state.max_tool_rounds() - 1;
 
         let frame = tool_call_frame("call_1", "list_session", "{}");
         state.on_chunk("hocus-1", &frame, false, None);
         state.on_chunk("hocus-1", b"", true, None);
 
         assert!(state.is_receiving(), "asked again");
-        assert_eq!(state.tool_rounds, MAX_TOOL_ROUNDS);
+        assert_eq!(state.tool_rounds, state.max_tool_rounds());
         // Last is the streaming placeholder; the notice sits just before it.
         let notice = &state.messages[state.messages.len() - 2];
         assert_eq!(notice.role, Role::Notice);
@@ -937,7 +941,7 @@ mod tests {
     #[test]
     fn a_model_that_calls_tools_it_was_not_offered_is_stopped() {
         let mut state = ready_state();
-        state.tool_rounds = MAX_TOOL_ROUNDS;
+        state.tool_rounds = state.max_tool_rounds();
 
         let frame = tool_call_frame("call_1", "list_session", "{}");
         state.on_chunk("hocus-1", &frame, false, None);
@@ -1070,7 +1074,7 @@ mod tests {
     fn a_new_question_resets_the_tool_budget() {
         let mut state = ready_state();
         settle(&mut state);
-        state.tool_rounds = MAX_TOOL_ROUNDS;
+        state.tool_rounds = state.max_tool_rounds();
         state.input.insert_char('?');
         state.submit();
 

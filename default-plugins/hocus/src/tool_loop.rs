@@ -53,14 +53,14 @@ impl State {
         }
 
         // Every call answered: hand the results back so the model can use them.
-        // The request at exactly MAX_TOOL_ROUNDS goes out without tools (see
+        // The request at exactly the budget goes out without tools (see
         // `start_request`), so getting past it means the model called a tool it
         // was never offered. Nothing left to try.
         self.tool_rounds += 1;
-        if self.tool_rounds > MAX_TOOL_ROUNDS {
+        let budget = self.max_tool_rounds();
+        if self.tool_rounds > budget {
             self.job_auto_confirm = false;
-            let err =
-                format!("stopped after {MAX_TOOL_ROUNDS} rounds of tool calls without a reply");
+            let err = format!("stopped after {budget} rounds of tool calls without a reply");
             self.messages.push(Message::error(err.clone()));
             self.log("error", serde_json::json!({"error": log::truncate(&err)}));
             return;
