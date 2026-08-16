@@ -38,6 +38,7 @@ const OUTBOUND_CAPACITY: usize = 256 * 1024;
 #[derive(Debug, Clone, Default)]
 pub struct RemoteStatus {
     pub cwd: Option<String>,
+    pub shell_argv: Option<Vec<String>>,
     pub foreground_argv: Option<Vec<String>>,
 }
 

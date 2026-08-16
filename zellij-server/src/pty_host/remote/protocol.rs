@@ -137,6 +137,12 @@ pub enum BrokerToServerMsg {
     /// cannot, because the process is not local.
     StatusReport {
         cwd: Option<String>,
+        /// The argv of the pane's own process.
+        shell_argv: Option<Vec<String>>,
+        /// The argv of whatever currently owns the terminal, when that is
+        /// something other than the pane's own process. Kept distinct because
+        /// the server reports the two differently — an `is_foreground` flag
+        /// rides along to the plugins that classify agents.
         foreground_argv: Option<Vec<String>>,
     },
 }

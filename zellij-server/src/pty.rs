@@ -2757,7 +2757,13 @@ impl Pty {
     pub fn update_and_report_cwds(&mut self) {
         use std::sync::atomic::Ordering;
 
-        let active_terminal_ids: Vec<u32> = self
+        // Local panes are gated on having produced output, because inspecting
+        // them costs a `sysinfo` refresh per pane. Remote panes are not: their
+        // information is pushed up by the broker on its own ticker and is
+        // already sitting in a local cache, so re-reading it costs nothing —
+        // which also means a silent remote agent, one sitting at its prompt
+        // producing nothing, stays visible where a local one would go stale.
+        let active_local: Vec<u32> = self
             .id_to_child_pid
             .keys()
             .copied()
@@ -2768,12 +2774,18 @@ impl Pty {
                     .unwrap_or(false)
             })
             .collect();
+        let remote_ids: Vec<u32> = self
+            .bus
+            .os_input
+            .as_ref()
+            .map(|os_input| os_input.remote_pane_ids())
+            .unwrap_or_default();
 
-        if active_terminal_ids.is_empty() {
+        if active_local.is_empty() && remote_ids.is_empty() {
             return;
         }
 
-        let pids: Vec<_> = active_terminal_ids
+        let pids: Vec<_> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id))
             .copied()
@@ -2786,7 +2798,7 @@ impl Pty {
             .map(|os_input| os_input.get_cwds(pids))
             .unwrap_or_default();
 
-        for terminal_id in &active_terminal_ids {
+        for terminal_id in &active_local {
             let process_id = self.id_to_child_pid.get(terminal_id).copied();
             let cwd = process_id.and_then(|pid| pids_to_cwds.get(&pid).cloned());
             let cmd = process_id.and_then(|pid| pids_to_cmds.get(&pid).cloned());
@@ -2799,16 +2811,47 @@ impl Pty {
             }
         }
 
-        let panes: Vec<(u32, u32)> = active_terminal_ids
+        let panes: Vec<(u32, u32)> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
-        let foreground_cmds = self
+        let mut foreground_cmds = self
             .bus
             .os_input
             .as_ref()
             .map(|os_input| os_input.get_foreground_cmds(&panes, &self.post_command_discovery_hook))
             .unwrap_or_default();
+
+        // The same three facts for a remote pane, from the broker's report
+        // rather than from this machine's process table. Everything downstream
+        // is identical, which is what lets agent detection — pure string
+        // matching over argv — work on a remote pane with no changes at all.
+        for terminal_id in &remote_ids {
+            let status = match self
+                .bus
+                .os_input
+                .as_ref()
+                .and_then(|os_input| os_input.remote_pane_status(*terminal_id))
+            {
+                Some(status) => status,
+                None => continue,
+            };
+            if let Some(cwd) = status.cwd {
+                self.set_terminal_cwd(*terminal_id, PathBuf::from(cwd));
+            }
+            if let Some(shell_argv) = status.shell_argv {
+                self.terminal_cmds.insert(*terminal_id, shell_argv);
+            }
+            if let Some(foreground) = status.foreground_argv {
+                foreground_cmds.insert(*terminal_id, foreground);
+            }
+        }
+
+        let active_terminal_ids: Vec<u32> = active_local
+            .iter()
+            .copied()
+            .chain(remote_ids.iter().copied())
+            .collect();
 
         for terminal_id in &active_terminal_ids {
             let foreground_cmd: Vec<String> = foreground_cmds
@@ -2928,6 +2971,24 @@ impl Pty {
     pub fn get_pane_running_command(&self, pane_id: PaneId) -> GetPaneRunningCommandResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // `hocus-agentd` calls this directly to repair panes the
+                // activity-flag poll missed, so a remote pane has to answer it
+                // too — otherwise a remote agent would only ever be classified
+                // from its title.
+                if let Some(status) = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.remote_pane_status(terminal_id))
+                {
+                    return match status.foreground_argv.or(status.shell_argv) {
+                        Some(argv) => GetPaneRunningCommandResponse::Ok(argv),
+                        None => GetPaneRunningCommandResponse::Err(format!(
+                            "the machine hosting terminal pane {terminal_id} has not reported \
+                             its running command yet"
+                        )),
+                    };
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     // Query OS for current running command
                     if let Some(os_input) = self.bus.os_input.as_ref() {
@@ -2971,6 +3032,24 @@ impl Pty {
     pub fn get_pane_cwd(&self, pane_id: PaneId) -> GetPaneCwdResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // A remote pane's cwd is a path on *its* machine. Reported as-is:
+                // rewriting it would be a lie, and the plugins that consume it
+                // pair it with the host when deciding which project it belongs
+                // to.
+                if let Some(status) = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.remote_pane_status(terminal_id))
+                {
+                    return match status.cwd {
+                        Some(cwd) => GetPaneCwdResponse::Ok(PathBuf::from(cwd)),
+                        None => GetPaneCwdResponse::Err(format!(
+                            "the machine hosting terminal pane {terminal_id} has not reported \
+                             its working directory yet"
+                        )),
+                    };
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     // Query OS for current working directory
                     if let Some(os_input) = self.bus.os_input.as_ref() {

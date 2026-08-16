@@ -1,6 +1,7 @@
 use super::*;
 use crate::os_input_output::ServerOsApi;
 use crate::plugins::PluginInstruction;
+use crate::pty_host::remote::RemoteStatus;
 use crate::thread_bus::Bus;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ struct MockOsApi {
     local_signals: Arc<Mutex<Vec<(u32, &'static str)>>>,
     remote_panes: Arc<Mutex<std::collections::HashSet<u32>>>,
     remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
+    remote_status: Arc<Mutex<HashMap<u32, RemoteStatus>>>,
 }
 
 impl MockOsApi {
@@ -35,7 +37,15 @@ impl MockOsApi {
             local_signals: Arc::new(Mutex::new(Vec::new())),
             remote_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             remote_signals: Arc::new(Mutex::new(Vec::new())),
+            remote_status: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+    fn set_remote_status(&self, terminal_id: u32, status: RemoteStatus) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+        self.remote_status
+            .lock()
+            .unwrap()
+            .insert(terminal_id, status);
     }
     fn mark_remote(&self, terminal_id: u32) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
@@ -109,6 +119,16 @@ impl ServerOsApi for MockOsApi {
             .unwrap()
             .push((terminal_id, signal));
         Ok(())
+    }
+    fn remote_pane_ids(&self) -> Vec<u32> {
+        self.remote_panes.lock().unwrap().iter().copied().collect()
+    }
+    fn remote_pane_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+        self.remote_status
+            .lock()
+            .unwrap()
+            .get(&terminal_id)
+            .cloned()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -735,5 +755,173 @@ fn a_remote_panes_pid_is_not_handed_to_plugins() {
         GetPanePidResponse::Ok(pid) => {
             panic!("a remote pane handed out local pid {pid}");
         },
+    }
+}
+
+// ---- remote panes report from the broker, not from this machine ----
+
+/// A pane whose process is on another machine, holding the status its broker
+/// last reported.
+fn remote_pane(
+    terminal_id: u32,
+    status: RemoteStatus,
+) -> (
+    Pty,
+    MockOsApi,
+    channels::Receiver<(PluginInstruction, ErrorContext)>,
+    channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) {
+    let mock = MockOsApi::new();
+    mock.set_remote_status(terminal_id, status);
+    let (pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    (pty, mock, plugin_rx, screen_rx)
+}
+
+/// The whole point of Phase 3: argv the broker read on its own machine reaches
+/// the same event a local pane's argv would. Agent classification is pure string
+/// matching over that argv, so this is what makes a remote agent detectable at
+/// all — with nothing in the detection layer aware of the difference.
+#[test]
+fn a_remote_panes_foreground_command_is_reported_like_any_other() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let events = collect_command_changed_events(&plugin_rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, PaneId::Terminal(7));
+    assert_eq!(events[0].1, vec!["claude", "--resume"]);
+    assert!(
+        events[0].2,
+        "a foreground command must be flagged as one, or it reads as the shell"
+    );
+}
+
+/// With nothing in the foreground, the pane's own command is reported and
+/// flagged as not-foreground — exactly as for a local pane.
+#[test]
+fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: None,
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let events = collect_command_changed_events(&plugin_rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].1, vec!["/bin/zsh"]);
+    assert!(!events[0].2);
+}
+
+/// A remote pane's cwd is a path on its own machine, and travels unchanged.
+#[test]
+fn a_remote_panes_cwd_is_reported_unchanged() {
+    let (mut pty, _mock, _plugin_rx, screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/srv/build/project".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let cwds = collect_pane_cwd_instructions(&screen_rx);
+    assert_eq!(
+        cwds,
+        vec![(7, Some(PathBuf::from("/srv/build/project")))],
+        "a remote cwd must be reported as-is"
+    );
+}
+
+/// The activity flag exists because inspecting a *local* pane costs a `sysinfo`
+/// refresh. A remote pane's status is already cached locally, so it is read
+/// every tick — otherwise an agent sitting silently at its prompt, which is
+/// precisely the state worth seeing, would never be re-polled.
+#[test]
+fn a_silent_remote_pane_is_still_polled() {
+    let (mut pty, mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    // No activity flag is ever set: this pane has produced no output at all.
+    pty.update_and_report_cwds();
+    let first = collect_command_changed_events(&plugin_rx);
+    assert_eq!(first.len(), 1, "a silent remote pane was skipped entirely");
+
+    mock.set_remote_status(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["vim".to_owned()]),
+        },
+    );
+    pty.update_and_report_cwds();
+    let second = collect_command_changed_events(&plugin_rx);
+    assert_eq!(second.len(), 1, "a change on a silent pane went unreported");
+    assert_eq!(second[0].1, vec!["vim"]);
+}
+
+/// Unchanged status must not re-emit, or every tick would wake every plugin.
+#[test]
+fn an_unchanged_remote_pane_emits_nothing_further() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    pty.update_and_report_cwds();
+    assert_eq!(collect_command_changed_events(&plugin_rx).len(), 1);
+    pty.update_and_report_cwds();
+    assert!(
+        collect_command_changed_events(&plugin_rx).is_empty(),
+        "an unchanged pane should stay quiet"
+    );
+}
+
+/// Plugins ask directly when the poll missed something (`hocus-agentd` repairs
+/// panes this way). A remote pane has to answer from its cache rather than
+/// reporting itself as not running.
+#[test]
+fn a_remote_pane_answers_the_plugin_facing_accessors() {
+    let (pty, _mock, _plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/srv/build/project".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    match pty.get_pane_running_command(PaneId::Terminal(7)) {
+        GetPaneRunningCommandResponse::Ok(argv) => assert_eq!(argv, vec!["claude".to_owned()]),
+        other => panic!("expected the running command, got {other:?}"),
+    }
+    match pty.get_pane_cwd(PaneId::Terminal(7)) {
+        GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
+        other => panic!("expected the cwd, got {other:?}"),
     }
 }
