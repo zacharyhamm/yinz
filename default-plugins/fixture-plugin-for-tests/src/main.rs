@@ -74,6 +74,10 @@ impl ZellijPlugin for State {
             PermissionType::RunActionsAsUser,
             PermissionType::ReadSessionEnvironmentVariables,
             PermissionType::ReadPaneContents,
+            // Needed by the data store round trip below. Without it the host denies the command
+            // and writes no response at all, so the guest's blocking read reports an opaque
+            // deserialization failure rather than a permission error.
+            PermissionType::PluginData,
         ]);
         let should_subscribe_initial_keybinds = configuration
             .get("subscribe_initial_keybinds")
@@ -799,11 +803,14 @@ impl ZellijPlugin for State {
                         hits.first(),
                     ));
                 },
-                BareKey::Char('d')
+                BareKey::Char('k')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
                 {
                     // The whole data store round trip in one keybind: declare, write, read back,
                     // full-text search, count, and watch.
+                    //
+                    // Not Ctrl+Shift+D: that arm is already taken by `get_layout_dir` above, and
+                    // since match arms are tried in order this one would never be reached.
                     self.explicit_string_to_render = Some(match data_store_roundtrip() {
                         Ok(summary) => summary,
                         Err(e) => format!("Data store error: {}", e),
