@@ -684,10 +684,15 @@ impl UnixPtyBackend {
         terminal_id: u32,
         conn: Arc<RemoteConn>,
         read_socket: std::os::unix::net::UnixStream,
+        quit_cb: crate::pty_host::client::QuitCb,
+        cmd: RunCommand,
     ) -> Result<Box<dyn AsyncReader>> {
         let reader = Box::new(
             crate::pty_host::remote::RemoteReader::new(conn.clone(), read_socket)
-                .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?,
+                .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?
+                // The remote counterpart of the supervisor's reader thread: the
+                // one thing that will tell the pty thread this pane has ended.
+                .on_exit(terminal_id, cmd, quit_cb),
         ) as Box<dyn AsyncReader>;
         self.terminal_id_to_transport
             .lock()

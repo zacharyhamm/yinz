@@ -16,13 +16,16 @@
 use std::collections::VecDeque;
 use std::io;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::io::unix::AsyncFd;
+use zellij_utils::input::command::RunCommand;
 
 use super::conn::{RemoteConn, RemoteGitProbe, RemoteStatus};
 use super::protocol::{self, BrokerToServerMsg, Frame};
 use crate::os_input_output::AsyncReader;
+use crate::pty_host::client::QuitCb;
+use crate::PaneId;
 
 pub use async_trait::async_trait;
 
@@ -76,6 +79,18 @@ pub struct RemoteReader {
     /// before it ever touches the socket — so the synthetic bytes are always a
     /// contiguous prefix.
     synthetic_prefix: usize,
+    /// What to tell the pty thread when the pane ends, and what it needs to
+    /// hear: `HoldPane` or `ClosePane`, and `CommandPaneExited` for a plugin
+    /// that is waiting on this pane.
+    ///
+    /// A `Mutex` because `AsyncReader` is `Sync` but a `QuitCb` is not, and
+    /// because taking the callback out of the `Option` is what makes it fire
+    /// exactly once.
+    on_exit: Mutex<Option<QuitCb>>,
+    /// Passed back to the callback, which reports it to the plugin that asked
+    /// for the pane and uses it to re-run a held one.
+    cmd: RunCommand,
+    terminal_id: u32,
 }
 
 impl RemoteReader {
@@ -89,7 +104,34 @@ impl RemoteReader {
             inbuf: Vec::new(),
             finished: false,
             synthetic_prefix: 0,
+            on_exit: Mutex::new(None),
+            cmd: RunCommand::default(),
+            terminal_id: 0,
         })
+    }
+
+    /// Say what to do when the pane ends.
+    ///
+    /// Without this a remote pane never closes itself: `TerminalBytes::listen`
+    /// only breaks its loop, and the instruction that actually retires a pane —
+    /// `ClosePane`, or `HoldPane` — comes from nowhere else.
+    pub fn on_exit(mut self, terminal_id: u32, cmd: RunCommand, quit_cb: QuitCb) -> Self {
+        self.on_exit = Mutex::new(Some(quit_cb));
+        self.cmd = cmd;
+        self.terminal_id = terminal_id;
+        self
+    }
+
+    /// Tell the pty thread the pane is over. Taking the callback out is what
+    /// keeps it to once.
+    fn report_exit(&self, status: Option<i32>) {
+        let cb = match self.on_exit.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        };
+        if let Some(cb) = cb {
+            cb(PaneId::Terminal(self.terminal_id), status, self.cmd.clone());
+        }
     }
 
     fn get_async_fd(&mut self) -> io::Result<&mut AsyncFd<UnixStream>> {
@@ -309,6 +351,21 @@ impl RemoteReader {
 #[async_trait]
 impl AsyncReader for RemoteReader {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        let result = self.read_inner(buf).await;
+        // Both of `TerminalBytes::listen`'s exits, not just the clean one. A
+        // reader that gave up reconnecting, or hit a protocol error, has ended
+        // the pane just as surely — and leaving it unreported is what strands a
+        // dead pane on screen. `child_exit` is `None` in those cases, which is
+        // exactly what a supervisor dying reports on the local path.
+        if matches!(result, Ok(0) | Err(_)) {
+            self.report_exit(self.conn.child_exit().flatten());
+        }
+        result
+    }
+}
+
+impl RemoteReader {
+    async fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         loop {
             // Always hand back buffered output first, even after the child has
             // exited: its last words matter as much as any others.

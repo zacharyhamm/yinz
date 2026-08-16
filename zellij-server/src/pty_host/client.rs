@@ -321,7 +321,7 @@ impl Drop for HostGuard {
     }
 }
 
-type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
+pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 
 fn handshake_and_spawn(
     control: &UnixStream,
