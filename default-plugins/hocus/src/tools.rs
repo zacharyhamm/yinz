@@ -363,8 +363,7 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_index": { "type": "integer", "description": "Defaults to the focused tab." },
-                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
+                    "tab_id": { "type": "integer", "description": "From list_session; defaults to the focused tab." },
                     "to_session": { "type": "string" },
                 },
                 "required": ["to_session"],
@@ -377,9 +376,9 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "from_session": { "type": "string" },
-                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer", "description": "The tab's tab_id in that session." },
                 },
-                "required": ["from_session", "tab_index"],
+                "required": ["from_session", "tab_id"],
             }),
         ),
         tool(
@@ -463,8 +462,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer" },
-                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
+                    "tab_id": { "type": "integer" },
                 },
             }),
         ),
@@ -476,7 +474,6 @@ pub fn specs() -> Value {
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                     "name": { "type": "string" },
                 },
@@ -554,7 +551,6 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "panes": { "type": "array", "items": pane_ref, "minItems": 1 },
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                     "new_tab": { "type": "boolean" },
                     "new_tab_name": { "type": "string" },
@@ -648,7 +644,6 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                 },
             }),
@@ -930,7 +925,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "search_files",
-            "Regex-search git-visible text files inside the active project.",
+            "Regex-search git-visible text files inside the active project; hits carry \
+             1-based file line numbers, ready for read_file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -950,7 +946,7 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Project-relative or returned absolute path." },
-                    "start_line": { "type": "integer", "description": "1-based; defaults to 1." },
+                    "start_line": { "type": "integer", "description": "A file line number, 1-based as every editor counts them; defaults to 1. Unrelated to any ID." },
                     "line_count": { "type": "integer", "description": "Defaults to 300." },
                 },
                 "required": ["path"],
@@ -988,15 +984,8 @@ impl PaneRef {
 
 #[derive(Debug, PartialEq)]
 pub enum MoveDestination {
-    Existing(usize),
     ExistingId(usize),
     New(Option<String>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TabTarget {
-    Index(usize),
-    Id(usize),
 }
 
 #[derive(Debug, PartialEq)]
@@ -1033,7 +1022,7 @@ impl PaneDirection {
 #[derive(Debug, Clone)]
 struct PanePosition {
     id: PaneId,
-    tab_index: usize,
+    tab_position: usize,
     x: usize,
     y: usize,
     columns: usize,
@@ -1071,7 +1060,7 @@ fn plan_swap(
         .iter()
         .find(|pane| pane.id == second_id)
         .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    if first.tab_index != second.tab_index {
+    if first.tab_position != second.tab_position {
         return Err("swap_panes needs both panes in the same tab".to_owned());
     }
     if !first.can_move() || !second.can_move() {
@@ -1081,7 +1070,9 @@ fn plan_swap(
         .ok_or_else(|| "panes are not adjacent; do not retry with move_pane".to_owned())?;
     let neighbors = panes
         .iter()
-        .filter(|pane| pane.id != first.id && pane.tab_index == first.tab_index && pane.can_move())
+        .filter(|pane| {
+            pane.id != first.id && pane.tab_position == first.tab_position && pane.can_move()
+        })
         .filter(|pane| adjacent_direction(first, pane) == Some(direction))
         .count();
     if neighbors != 1 {
@@ -1091,7 +1082,7 @@ fn plan_swap(
     let reverse_neighbors = panes
         .iter()
         .filter(|pane| {
-            pane.id != second.id && pane.tab_index == second.tab_index && pane.can_move()
+            pane.id != second.id && pane.tab_position == second.tab_position && pane.can_move()
         })
         .filter(|pane| adjacent_direction(second, pane) == Some(opposite))
         .count();
@@ -1119,7 +1110,7 @@ fn plan_move(
     let mut neighbors = panes
         .iter()
         .filter(|pane| {
-            pane.id != source.id && pane.tab_index == source.tab_index && pane.can_move()
+            pane.id != source.id && pane.tab_position == source.tab_position && pane.can_move()
         })
         .filter(|pane| adjacent_direction(source, pane) == Some(direction));
     let neighbor = neighbors
@@ -1158,7 +1149,6 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 pub struct Args {
     pub pane_id: Option<u32>,
     pub is_plugin: Option<bool>,
-    pub tab_index: Option<usize>,
     pub tab_id: Option<usize>,
     pub new_tab: bool,
     pub new_tab_name: Option<String>,
@@ -1340,51 +1330,28 @@ impl Args {
     }
 
     pub fn move_destination(&self) -> Result<MoveDestination, String> {
-        match (self.tab_index, self.tab_id, self.new_tab) {
-            (Some(index), None, false) if self.new_tab_name.is_none() => {
-                Ok(MoveDestination::Existing(index))
-            },
-            (None, Some(id), false) if self.new_tab_name.is_none() => {
+        match (self.tab_id, self.new_tab) {
+            (Some(id), false) if self.new_tab_name.is_none() => {
                 Ok(MoveDestination::ExistingId(id))
             },
-            (None, None, true) => Ok(MoveDestination::New(self.new_tab_name.clone())),
-            _ => Err("set exactly one of tab_index, tab_id, or new_tab=true; new_tab_name is only valid for a new tab".to_owned()),
+            (None, true) => Ok(MoveDestination::New(self.new_tab_name.clone())),
+            _ => Err("set exactly one of tab_id or new_tab=true; new_tab_name is only valid for a new tab".to_owned()),
         }
     }
 
-    pub fn tab_target(&self) -> Result<TabTarget, String> {
-        match (self.tab_index, self.tab_id) {
-            (Some(index), None) => Ok(TabTarget::Index(index)),
-            (None, Some(id)) => Ok(TabTarget::Id(id)),
-            (None, None) => {
-                Err("tab_index or tab_id is required; call list_session to get them".to_owned())
-            },
-            (Some(_), Some(_)) => {
-                Err("give exactly one of tab_index or tab_id, not both".to_owned())
-            },
-        }
-    }
-
-    /// Like [`Self::tab_target`], but `warp_tab` treats an absent target as
-    /// permission rather than an error: it means "the tab in focus".
-    pub fn tab_target_or_focused(&self) -> Result<Option<TabTarget>, String> {
-        match (self.tab_index, self.tab_id) {
-            (None, None) => Ok(None),
-            _ => self.tab_target().map(Some),
-        }
+    pub fn tab_target(&self) -> Result<usize, String> {
+        self.tab_id
+            .ok_or_else(|| "tab_id is required; call list_session to get them".to_owned())
     }
 
     /// `focus` and `rename` take either a tab or a pane pair. `None` means the
     /// call named no tab at all, so the caller falls through to the pane path.
-    pub fn tab_or_pane_target(&self) -> Option<Result<TabTarget, String>> {
-        if self.tab_index.is_none() && self.tab_id.is_none() {
-            return None;
-        }
-        Some(match self.tab_target() {
-            Ok(_) if self.pane_id.is_some() || self.is_plugin.is_some() => {
-                Err("give exactly one of pane pair, tab_index, or tab_id".to_owned())
-            },
-            target => target,
+    pub fn tab_or_pane_target(&self) -> Option<Result<usize, String>> {
+        let tab_id = self.tab_id?;
+        Some(if self.pane_id.is_some() || self.is_plugin.is_some() {
+            Err("give exactly one of pane pair or tab_id".to_owned())
+        } else {
+            Ok(tab_id)
         })
     }
 
@@ -1674,11 +1641,11 @@ fn glob_for(pattern: &str) -> String {
     }
 }
 
-/// Zellij returns a stable tab id here, while every Hocus tab tool consumes the
-/// tab's current 0-based position. Do not hand the model an incompatible id.
+/// Zellij hands back the stable id of the tab the panes landed in, which is
+/// exactly what every Hocus tab tool takes, so it goes straight to the model.
 fn moved_panes_result(tab_id: Option<usize>) -> String {
     match tab_id {
-        Some(_) => "moved; call list_session for the tab's current index".to_owned(),
+        Some(id) => format!("moved to tab_id {id}"),
         None => "zellij did not move the panes; call list_session and check the pane ids and the \
              destination tab"
             .to_owned(),
@@ -1688,8 +1655,8 @@ fn moved_panes_result(tab_id: Option<usize>) -> String {
 /// What the session looks like, in the only two terms a move cares about.
 #[derive(Debug, Default, PartialEq)]
 pub struct SessionTabs {
-    /// `(position, tab_id)` for every tab, in display order.
-    pub tabs: Vec<(usize, usize)>,
+    /// The stable `tab_id` of every tab, in display order.
+    pub tabs: Vec<usize>,
     /// Every pane in the session, tabs flattened.
     pub panes: Vec<PaneId>,
 }
@@ -1703,15 +1670,13 @@ fn describe_pane(pane: PaneId) -> String {
 
 /// Refuse a move the session cannot satisfy, naming the argument that is wrong.
 ///
-/// Zellij answers a bad tab or a stale pane id with a bare "did not move" (see
-/// `moved_panes_result`), which leaves the model to guess which of its arguments was
-/// the problem — and the likeliest guess, retrying with `tab_index` instead of
-/// `tab_id`, points at a different tab rather than the same one. The snapshot needed
-/// to answer properly is one we already have.
+/// Zellij answers a bad tab or a stale pane id with a bare "did not move", which
+/// leaves the model to guess which of its arguments was the problem. The snapshot
+/// needed to answer properly is one we already have.
 ///
-/// Note that `tab_index` is a position and shifts whenever a tab closes, while
-/// `tab_id` is stable; a session that has closed a tab has different values for the
-/// two, and each is only valid in its own space.
+/// A tab's display position is not a `tab_id` and shifts whenever a tab closes, so
+/// a session that has closed a tab has different values for the two. Passing a
+/// position here names a different tab, or none at all — hence the explicit check.
 pub fn check_move_to_tab(
     destination: &MoveDestination,
     panes: &[PaneId],
@@ -1726,23 +1691,12 @@ pub fn check_move_to_tab(
     match destination {
         MoveDestination::New(_) => Ok(()),
         MoveDestination::ExistingId(id) => {
-            if session.tabs.iter().any(|(_, tab_id)| tab_id == id) {
+            if session.tabs.contains(id) {
                 Ok(())
             } else {
                 Err(format!(
                     "no tab with tab_id {id} in this session; call list_session for the current \
-                     tab_ids"
-                ))
-            }
-        },
-        MoveDestination::Existing(index) => {
-            if session.tabs.iter().any(|(position, _)| position == index) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "no tab at tab_index {index}; this session has {} tabs; call list_session \
-                     (prefer tab_id, it does not shift when tabs close)",
-                    session.tabs.len()
+                     tab_ids (a tab_id is not a position in the tab bar)"
                 ))
             }
         },
@@ -1829,11 +1783,7 @@ mod host {
                 "closed".to_owned()
             }),
             "close_tab" => match args.tab_target() {
-                Ok(TabTarget::Index(index)) => {
-                    close_tab_with_index(index);
-                    "closed".to_owned()
-                },
-                Ok(TabTarget::Id(id)) => {
+                Ok(id) => {
                     close_tab_with_id(id as u64);
                     "closed".to_owned()
                 },
@@ -1898,7 +1848,10 @@ mod host {
                     })
                     .collect();
                 json!({
-                    "tab_index": tab.position,
+                    // A label, not an address: this is the number the tab bar
+                    // shows the user, and it shifts whenever a tab closes.
+                    // Every tool takes tab_id.
+                    "tab_number": tab.position + 1,
                     "tab_id": tab.tab_id,
                     "name": tab.name,
                     "active": tab.active,
@@ -1955,7 +1908,14 @@ mod host {
                                 })
                             })
                             .collect();
-                        json!({ "tab_index": tab.position, "name": tab.name, "panes": panes })
+                        // tab_id is what warp_tab_here takes; tab_number is only
+                        // the label that session's tab bar shows.
+                        json!({
+                            "tab_number": tab.position + 1,
+                            "tab_id": tab.tab_id,
+                            "name": tab.name,
+                            "panes": panes,
+                        })
                     })
                     .collect();
                 json!({ "session": session.name, "tabs": tabs })
@@ -2041,13 +2001,15 @@ mod host {
         }
     }
 
-    /// A tab index in *this* session, from `tab_index`/`tab_id`, defaulting to
-    /// whichever tab is focused when neither is given.
+    /// The stable `tab_id` of a tab in *this* session, defaulting to whichever
+    /// tab is focused when the call named none.
     ///
-    /// `warp_tab_to_session` only knows about positions, while the model may
-    /// have named the tab by its stable id (or not named one at all) - so the
-    /// resolution happens here, against the same snapshot `list_session` reads.
-    fn resolve_tab_index(target: Option<TabTarget>) -> Result<usize, String> {
+    /// The warp path is keyed by tab id, not by display position: `Screen.tabs`
+    /// is "Keyed by tab.id (stable identifier)" and `check_tab_can_be_warped`
+    /// looks the value up there directly. Handing it a position warps whichever
+    /// tab happens to own that number as an id — a different tab entirely once
+    /// the session has closed one.
+    fn resolve_tab_id(target: Option<usize>) -> Result<usize, String> {
         let snapshot =
             get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
         let session = snapshot
@@ -2056,12 +2018,11 @@ mod host {
             .find(|session| session.is_current_session)
             .ok_or_else(|| "the current session is not in the session list".to_owned())?;
         match target {
-            Some(TabTarget::Index(index)) => Ok(index),
-            Some(TabTarget::Id(id)) => session
+            Some(id) => session
                 .tabs
                 .iter()
                 .find(|tab| tab.tab_id == id)
-                .map(|tab| tab.position)
+                .map(|tab| tab.tab_id)
                 .ok_or_else(|| {
                     format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids")
                 }),
@@ -2069,7 +2030,7 @@ mod host {
                 .tabs
                 .iter()
                 .find(|tab| tab.active)
-                .map(|tab| tab.position)
+                .map(|tab| tab.tab_id)
                 .ok_or_else(|| "no tab is focused".to_owned()),
         }
     }
@@ -2078,12 +2039,10 @@ mod host {
         let Some(to_session) = args.to_session.as_deref() else {
             return "to_session is required; call list_other_sessions for the names".to_owned();
         };
-        let target = match args.tab_target_or_focused() {
-            Ok(target) => target,
-            Err(error) => return error,
-        };
-        let tab_index = match resolve_tab_index(target) {
-            Ok(index) => index,
+        // Unlike every other tab tool, `warp_tab` reads an absent tab as
+        // permission rather than an omission: it means "the tab in focus".
+        let tab_id = match resolve_tab_id(args.tab_id) {
+            Ok(id) => id,
             Err(error) => return error,
         };
         match other_session_exists(to_session) {
@@ -2095,7 +2054,7 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_tab_to_session(tab_index, to_session) {
+        match warp_tab_to_session(tab_id, to_session) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -2104,8 +2063,8 @@ mod host {
         let Some(from_session) = args.from_session.as_deref() else {
             return "from_session is required; call list_other_sessions for the names".to_owned();
         };
-        let Some(tab_index) = args.tab_index else {
-            return "tab_index is required; call list_other_sessions for the tab's index in \
+        let Some(tab_id) = args.tab_id else {
+            return "tab_id is required; call list_other_sessions for the tab's tab_id in \
                      that session"
                 .to_owned();
         };
@@ -2118,7 +2077,7 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_tab_from_session(tab_index, from_session) {
+        match warp_tab_from_session(tab_id, from_session) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -2260,11 +2219,7 @@ mod host {
 
     fn focus(args: &Args) -> String {
         match args.tab_or_pane_target() {
-            Some(Ok(TabTarget::Index(index))) => {
-                go_to_tab(index as u32);
-                format!("focused tab {index}")
-            },
-            Some(Ok(TabTarget::Id(id))) => {
+            Some(Ok(id)) => {
                 go_to_tab_with_id(id as u64);
                 format!("focused tab {id}")
             },
@@ -2283,15 +2238,7 @@ mod host {
             return "name is required".to_owned();
         };
         match args.tab_or_pane_target() {
-            Some(Ok(TabTarget::Index(index))) => {
-                // Work around Zellij bug: PluginCommand::RenameTab expects 1-based index
-                // (see Zellij screen.rs RenameTab saturating_sub(1)), while go_to_tab
-                // correctly adds +1 server-side. Until Zellij is fixed, compensate here.
-                // The stable tab_id path avoids this entirely.
-                rename_tab((index as u32).wrapping_add(1), name);
-                format!("renamed tab {index}")
-            },
-            Some(Ok(TabTarget::Id(id))) => {
+            Some(Ok(id)) => {
                 rename_tab_with_id(id as u64, name);
                 format!("renamed tab {id}")
             },
@@ -2364,7 +2311,7 @@ mod host {
                         } else {
                             PaneId::Terminal(pane.id)
                         },
-                        tab_index: tab.position,
+                        tab_position: tab.position,
                         x: pane.pane_x,
                         y: pane.pane_y,
                         columns: pane.pane_columns,
@@ -2417,11 +2364,7 @@ mod host {
             .find(|session| session.is_current_session)
             .ok_or_else(|| "the current session is not in the session list".to_owned())?;
         Ok(SessionTabs {
-            tabs: session
-                .tabs
-                .iter()
-                .map(|tab| (tab.position, tab.tab_id))
-                .collect(),
+            tabs: session.tabs.iter().map(|tab| tab.tab_id).collect(),
             panes: session
                 .tabs
                 .iter()
@@ -2455,7 +2398,6 @@ mod host {
             }
         }
         let target = match destination {
-            MoveDestination::Existing(index) => break_panes_to_tab_with_index(&panes, index, false),
             MoveDestination::ExistingId(id) => break_panes_to_tab_with_id(&panes, id, false),
             MoveDestination::New(name) => break_panes_to_new_tab(&panes, name, false),
         };
@@ -2522,1458 +2464,6 @@ pub fn dispatch(_call: &ToolCall) -> String {
 
 // ---------------------------------------------------------------------------
 
+#[path = "./unit/tools_tests/mod.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn confirmation_policy_lists_tools_correctly() {
-        for name in [
-            "rerun_pane",
-            "clear_pane",
-            "send_input",
-            "agent_send",
-            "agent_control",
-            // Forgetting a project is the one project tool that takes
-            // something away.
-            "project_forget",
-            "slack_post",
-            // Moving a pane takes it off the screen, and briefly leaves it
-            // belonging to no session at all.
-            "warp_pane",
-            "warp_pane_here",
-            "adopt_orphaned_pane",
-        ] {
-            assert!(needs_confirmation(name), "{name} should be confirmed");
-        }
-        for name in [
-            "list_session",
-            // Listing is always free, including the two that look outward.
-            "list_other_sessions",
-            "list_orphaned_panes",
-            "read_pane",
-            "new_pane",
-            "new_tab",
-            "focus",
-            "rename",
-            "move_pane",
-            "swap_panes",
-            "resize_pane",
-            "toggle_pane",
-            "move_panes_to_tab",
-            "stack_panes",
-            "set_pane_pinned",
-            "set_floating_pane_geometry",
-            "scroll_pane",
-            "web_search",
-            "schedule",
-            "unschedule",
-            "agent_register",
-            "agent_list",
-            "close_pane",
-            "close_tab",
-            // A todo tool only writes to a file of the user's own notes.
-            "todo_add",
-            "todo_list",
-            "todo_search",
-            "todo_done",
-            "todo_edit",
-            // Reading Slack is free; only posting stops for a y/n.
-            "slack_status",
-            "slack_search",
-            "slack_read",
-            "slack_backfill",
-            // Reading the project's own files changes nothing, and the root
-            // check is what keeps them the project's own.
-            "find_files",
-            "search_files",
-            "read_file",
-        ] {
-            assert!(!needs_confirmation(name), "{name} should not be confirmed");
-        }
-    }
-
-    fn argv(name: &str, arguments: &str) -> Result<Vec<String>, String> {
-        slack_argv(name, &Args::parse(arguments).unwrap())
-    }
-
-    fn project() -> Project {
-        Project {
-            name: "hocus".to_owned(),
-            root: "/work/hocus".to_owned(),
-            remote: None,
-            worktree_status: None,
-            common_dir: None,
-            discovered: false,
-        }
-    }
-
-    fn file_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
-        let args = Args::parse(arguments).unwrap();
-        let target = resolve_in_root(&project(), args.path.as_deref())?;
-        file_argv(name, &args, &target)
-    }
-
-    #[test]
-    fn a_relative_path_is_taken_from_the_project_root() {
-        assert_eq!(
-            resolve_in_root(&project(), Some("src/main.rs")).unwrap(),
-            "/work/hocus/src/main.rs"
-        );
-        // The whole project when the model names no path at all.
-        assert_eq!(resolve_in_root(&project(), None).unwrap(), "/work/hocus");
-        assert_eq!(
-            resolve_in_root(&project(), Some("  ")).unwrap(),
-            "/work/hocus"
-        );
-    }
-
-    /// An absolute path is what `find_files` and `search_files` hand back, so
-    /// feeding one straight to `read_file` has to work.
-    #[test]
-    fn an_absolute_path_inside_the_root_is_kept() {
-        assert_eq!(
-            resolve_in_root(&project(), Some("/work/hocus/src/main.rs")).unwrap(),
-            "/work/hocus/src/main.rs"
-        );
-    }
-
-    #[test]
-    fn a_path_that_climbs_out_of_the_project_is_refused() {
-        assert_eq!(
-            resolve_in_root(&project(), Some("../secrets")),
-            Err("path must not contain a .. component".to_owned())
-        );
-        // Rejected even though it lands back inside: resolving it needs the
-        // filesystem, and refusing is the answer that needs no filesystem.
-        assert!(resolve_in_root(&project(), Some("src/../src/main.rs")).is_err());
-    }
-
-    #[test]
-    fn an_absolute_path_outside_the_project_is_refused() {
-        assert_eq!(
-            resolve_in_root(&project(), Some("/etc/passwd")),
-            Err("path must be inside project hocus".to_owned())
-        );
-    }
-
-    /// The trap a plain string prefix falls into: `/work/hocus-evil` starts with
-    /// `/work/hocus` as text but is a different folder.
-    #[test]
-    fn a_sibling_whose_name_extends_the_root_is_outside_it() {
-        assert!(resolve_in_root(&project(), Some("/work/hocus-evil/x")).is_err());
-    }
-
-    #[test]
-    fn find_files_wraps_a_bare_name_and_leaves_a_glob_alone() {
-        assert_eq!(
-            file_argv_for("find_files", r#"{"pattern": "tool_loop"}"#).unwrap(),
-            [
-                "rg",
-                "--files",
-                "--glob",
-                "*tool_loop*",
-                "--",
-                "/work/hocus"
-            ]
-        );
-        assert_eq!(
-            file_argv_for("find_files", r#"{"pattern": "*.rs", "path": "src"}"#).unwrap(),
-            ["rg", "--files", "--glob", "*.rs", "--", "/work/hocus/src"]
-        );
-        // A pattern with a separator is a path shape the model meant literally.
-        assert_eq!(glob_for("src/**/main.rs"), "src/**/main.rs");
-    }
-
-    #[test]
-    fn search_files_passes_the_query_after_a_flag_of_its_own() {
-        assert_eq!(
-            file_argv_for("search_files", r#"{"query": "fn main"}"#).unwrap(),
-            [
-                "rg",
-                "--line-number",
-                "--with-filename",
-                "--color",
-                "never",
-                "-e",
-                "fn main",
-                "--",
-                "/work/hocus"
-            ]
-        );
-        // A query that looks like an option is still a pattern, because `-e`
-        // consumes the next argument whatever it says.
-        let argv = file_argv_for("search_files", r#"{"query": "--help"}"#).unwrap();
-        assert_eq!(argv[argv.len() - 3..], ["--help", "--", "/work/hocus"]);
-    }
-
-    #[test]
-    fn search_files_adds_only_the_options_it_was_given() {
-        let argv = file_argv_for(
-            "search_files",
-            r#"{"query": "x", "case_insensitive": true, "glob": "*.rs"}"#,
-        )
-        .unwrap();
-        assert!(argv.contains(&"--ignore-case".to_owned()));
-        assert_eq!(argv.iter().filter(|a| *a == "--glob").count(), 1);
-        assert!(!file_argv_for("search_files", r#"{"query": "x"}"#)
-            .unwrap()
-            .contains(&"--ignore-case".to_owned()));
-    }
-
-    #[test]
-    fn read_file_asks_for_the_window_it_was_given() {
-        assert_eq!(
-            file_argv_for(
-                "read_file",
-                r#"{"path": "src/main.rs", "start_line": 10, "line_count": 5}"#
-            )
-            .unwrap(),
-            ["sed", "-n", "10,14p", "--", "/work/hocus/src/main.rs"]
-        );
-    }
-
-    /// An unbounded read would be cut mid-line by MAX_TOOL_OUTPUT after the host
-    /// had already read the whole file, so the default window is a real one.
-    #[test]
-    fn read_file_bounds_a_request_that_names_no_window() {
-        assert_eq!(
-            file_argv_for("read_file", r#"{"path": "x"}"#).unwrap()[2],
-            format!("1,{FILE_TOOL_LINES}p")
-        );
-    }
-
-    #[test]
-    fn file_tools_reject_a_missing_required_argument() {
-        assert!(file_argv_for("find_files", "{}").is_err());
-        assert!(file_argv_for("search_files", r#"{"query": "  "}"#).is_err());
-        assert!(file_argv_for("read_file", "{}").is_err());
-    }
-
-    /// `read_file` returns what was asked for; a listing is capped so a search of
-    /// a large repository does not fill the transcript.
-    #[test]
-    fn only_listings_are_capped() {
-        let args = Args::parse(r#"{"max_results": 5}"#).unwrap();
-        assert_eq!(file_line_cap("read_file", &args), None);
-        assert_eq!(file_line_cap("search_files", &args), Some(5));
-        assert_eq!(
-            file_line_cap("find_files", &Args::default()),
-            Some(FILE_TOOL_LINES)
-        );
-        // Asking for everything still stops somewhere.
-        let huge = Args::parse(r#"{"max_results": 99999}"#).unwrap();
-        assert_eq!(
-            file_line_cap("find_files", &huge),
-            Some(MAX_FILE_TOOL_LINES)
-        );
-    }
-
-    #[test]
-    fn slack_argv_maps_each_tool_onto_its_dobbs_command() {
-        assert_eq!(argv("slack_status", "{}").unwrap(), ["status"]);
-        assert_eq!(
-            argv("slack_search", r#"{"query": "deploy NOT staging"}"#).unwrap(),
-            ["search", "deploy NOT staging"]
-        );
-        // A channel name is passed through as written; dobbs resolves it.
-        assert_eq!(
-            argv(
-                "slack_read",
-                r##"{"channel": "#general", "from": "2026-08-01"}"##
-            )
-            .unwrap(),
-            [
-                "export-channel",
-                "-channel",
-                "#general",
-                "-from",
-                "2026-08-01"
-            ]
-        );
-        assert_eq!(
-            argv("slack_backfill", r#"{"channel": "C1", "to": "2026-08-08"}"#).unwrap(),
-            ["backfill-channel", "-channel", "C1", "-to", "2026-08-08"]
-        );
-        assert_eq!(
-            argv(
-                "slack_post",
-                r#"{"channel": "C1", "text": "hi", "thread": "1.2"}"#
-            )
-            .unwrap(),
-            ["post", "-channel", "C1", "-text", "hi", "-thread", "1.2"]
-        );
-    }
-
-    /// An absent optional flag must be left out entirely rather than passed
-    /// empty: dobbs reads `-from ""` as open, but `-channel ""` as an error.
-    #[test]
-    fn slack_argv_omits_absent_and_blank_options() {
-        assert_eq!(
-            argv(
-                "slack_read",
-                r#"{"channel": "eng", "workspace": "  ", "to": ""}"#
-            )
-            .unwrap(),
-            ["export-channel", "-channel", "eng"]
-        );
-    }
-
-    #[test]
-    fn slack_argv_rejects_missing_required_arguments() {
-        for (name, arguments, field) in [
-            ("slack_search", "{}", "query"),
-            ("slack_read", r#"{"from": "2026-08-01"}"#, "channel"),
-            ("slack_backfill", "{}", "channel"),
-            ("slack_post", r#"{"text": "hi"}"#, "channel"),
-            ("slack_post", r#"{"channel": "C1", "text": "  "}"#, "text"),
-        ] {
-            let error = argv(name, arguments).unwrap_err();
-            assert!(error.starts_with(field), "{name}: {error}");
-        }
-        assert!(argv("slack_nope", "{}")
-            .unwrap_err()
-            .contains("no such tool"));
-    }
-
-    /// The four Slack tools are intercepted in `run_head` by name, so the list
-    /// and the advertised schemas have to stay in step.
-    #[test]
-    fn every_slack_tool_is_advertised() {
-        let specs = specs();
-        let names: Vec<&str> = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|spec| spec["function"]["name"].as_str().unwrap())
-            .collect();
-        for name in SLACK_TOOLS {
-            assert!(names.contains(&name), "{name} is not advertised");
-        }
-    }
-
-    #[test]
-    fn schedule_advertises_optional_automatic_confirmation() {
-        let specs = specs();
-        let schedule = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == "schedule")
-            .unwrap();
-        let field = &schedule["function"]["parameters"]["properties"]["auto_confirm"];
-
-        assert_eq!(field["type"], "boolean");
-        assert!(!schedule["function"]["parameters"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|name| name == "auto_confirm"));
-    }
-
-    /// The confirmation prompt is the only thing standing between the model and
-    /// a closed pane, so every advertised tool must be in the table above.
-    #[test]
-    fn every_advertised_tool_is_covered_by_the_confirmation_table() {
-        let specs = specs();
-        let names: Vec<&str> = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|spec| spec["function"]["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names.len(), 52);
-        let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-        assert_eq!(confirmed, 13);
-    }
-
-    fn call(name: &str, arguments: &str) -> ToolCall {
-        ToolCall {
-            id: "1".into(),
-            name: name.into(),
-            arguments: arguments.into(),
-        }
-    }
-
-    /// The same guard as the confirmation table above, one layer along: a tool
-    /// that stops to ask and then cannot say what it will do is a prompt with
-    /// nothing in it but the model's JSON.
-    #[test]
-    fn every_confirmed_tool_says_what_it_will_do() {
-        for name in names().iter().filter(|name| needs_confirmation(name)) {
-            let sentence = consequence(&call(name, "{}"));
-            assert!(sentence.is_some(), "{name} should say what it will do");
-            assert!(
-                !sentence.expect("checked").trim().is_empty(),
-                "{name}'s consequence should not be blank"
-            );
-        }
-    }
-
-    #[test]
-    fn a_tool_that_never_asks_has_no_consequence() {
-        assert_eq!(consequence(&call("list_session", "{}")), None);
-    }
-
-    /// `schedule` is not in the confirmation table, but asking for standing
-    /// permission stops `pump_tools` all the same - and only then.
-    #[test]
-    fn scheduling_only_says_anything_when_it_asks_for_standing_permission() {
-        assert_eq!(
-            consequence(&call(
-                "schedule",
-                r#"{"prompt":"check ci","auto_confirm":true}"#
-            )),
-            Some("lets every run of this job use tools without stopping to ask again".into())
-        );
-        assert_eq!(
-            consequence(&call("schedule", r#"{"prompt":"check ci"}"#)),
-            None
-        );
-    }
-
-    #[test]
-    fn a_consequence_names_the_pane_it_will_act_on() {
-        assert_eq!(
-            consequence(&call("send_input", r#"{"pane_id":3,"text":"hi"}"#)),
-            Some("types into pane 3, as if you had typed it yourself".into())
-        );
-    }
-
-    /// `agent_control`'s argument is a verb, and interrupting is not restarting.
-    #[test]
-    fn agent_control_says_which_of_its_verbs_is_about_to_run() {
-        let restart = consequence(&call(
-            "agent_control",
-            r#"{"pane_id":7,"action":"restart"}"#,
-        ));
-        assert_eq!(
-            restart,
-            Some("restarts the agent in pane 7, losing its conversation".into())
-        );
-        let close = consequence(&call("agent_control", r#"{"pane_id":7,"action":"close"}"#));
-        assert_eq!(
-            close,
-            Some("closes pane 7 and the agent running in it".into())
-        );
-    }
-
-    /// Arguments the model got wrong are exactly when a prompt must not go quiet.
-    #[test]
-    fn a_consequence_survives_arguments_that_do_not_parse() {
-        let sentence = consequence(&call("send_input", "not json at all"));
-        assert_eq!(
-            sentence,
-            Some("types into a pane, as if you had typed it yourself".into())
-        );
-    }
-
-    #[test]
-    fn arguments_are_one_readable_line_each_rather_than_json() {
-        assert_eq!(
-            argument_lines(&call("send_input", r#"{"pane_id":3,"text":"git push"}"#)),
-            vec!["pane_id: 3", "text: git push"]
-        );
-    }
-
-    #[test]
-    fn an_empty_argument_object_contributes_no_lines() {
-        assert!(argument_lines(&call("clear_pane", "{}")).is_empty());
-        assert!(argument_lines(&call("clear_pane", "")).is_empty());
-    }
-
-    #[test]
-    fn arguments_that_do_not_parse_are_shown_verbatim_rather_than_dropped() {
-        assert_eq!(
-            argument_lines(&call("send_input", "not json at all")),
-            vec!["not json at all"]
-        );
-    }
-
-    #[test]
-    fn the_confirmation_block_names_the_call_what_it_does_and_what_it_was_given() {
-        assert_eq!(
-            confirmation_detail(&call("clear_pane", r#"{"pane_id":4}"#)),
-            vec![
-                "clear_pane",
-                "  throws away pane 4's scrollback; it cannot be scrolled back",
-                "  pane_id: 4",
-            ]
-        );
-    }
-
-    /// A toast is read from a pane that has nothing to do with hocus, so it has
-    /// to say who is asking before it says what for.
-    #[test]
-    fn the_toast_says_who_is_asking_before_the_block() {
-        let toast = confirmation_toast(&call("clear_pane", r#"{"pane_id":4}"#));
-        let mut lines = toast.lines();
-        assert_eq!(lines.next(), Some(TOAST_HEADLINE));
-        assert_eq!(lines.next(), Some("clear_pane"));
-        assert!(toast.ends_with("  pane_id: 4"), "got {toast:?}");
-    }
-
-    /// `agent_control` is the one tool whose argument is a verb rather than a target,
-    /// so the set of verbs has to be closed at the schema, not at dispatch.
-    #[test]
-    fn agent_control_schema_has_a_closed_action_set() {
-        let specs = specs();
-        let control = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == "agent_control")
-            .unwrap();
-        let parameters = &control["function"]["parameters"];
-        assert_eq!(
-            parameters["properties"]["action"]["enum"],
-            json!(["interrupt", "restart", "close"]),
-        );
-        assert_eq!(parameters["required"], json!(["pane_id", "action"]));
-    }
-
-    /// An agent is always a terminal pane, so no agent tool takes `is_plugin` — and
-    /// `agent_send` takes either input form alone, so neither is required.
-    #[test]
-    fn agent_schemas_require_a_pane_and_never_a_pane_kind() {
-        let specs = specs();
-        for (name, required) in [
-            ("agent_register", json!(["pane_id", "kind"])),
-            ("agent_list", Value::Null),
-            ("agent_send", json!(["pane_id"])),
-            ("agent_control", json!(["pane_id", "action"])),
-            // The one agent tool with no pane to name: its pane does not exist yet.
-            ("agent_spawn", json!(["command"])),
-        ] {
-            let parameters = specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["parameters"]
-                .clone();
-            assert_eq!(parameters["required"], required, "{name}");
-            assert!(parameters["properties"]["is_plugin"].is_null(), "{name}");
-        }
-    }
-
-    #[test]
-    fn every_spec_has_a_description_and_an_object_schema() {
-        for spec in specs().as_array().unwrap() {
-            let function = &spec["function"];
-            assert_eq!(spec["type"], "function");
-            assert!(function["name"].is_string());
-            assert!(!function["description"].as_str().unwrap().is_empty());
-            assert_eq!(function["parameters"]["type"], "object");
-        }
-    }
-
-    #[test]
-    fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
-        let specs = specs();
-        for (name, cues) in [
-            (
-                "move_pane",
-                &["swap_panes", "set_floating_pane_geometry"][..],
-            ),
-            ("warp_pane_here", &["list_other_sessions"][..]),
-            ("schedule", &["unschedule"][..]),
-            ("slack_read", &["backfill"][..]),
-            ("slack_post", &["immediately"][..]),
-            ("agent_send", &["listed agent"][..]),
-            ("find_files", &["active project"][..]),
-            ("search_files", &["active project"][..]),
-            ("read_file", &["active project"][..]),
-            ("close_pane", &["process"][..]),
-        ] {
-            let description = specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["description"]
-                .as_str()
-                .unwrap();
-            for cue in cues {
-                assert!(description.contains(cue), "{name} is missing {cue:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn swap_panes_schema_requires_exactly_two_complete_pane_refs() {
-        let specs = specs();
-        let swap = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == "swap_panes")
-            .unwrap();
-        let panes = &swap["function"]["parameters"]["properties"]["panes"];
-        assert_eq!(swap["function"]["parameters"]["required"], json!(["panes"]));
-        assert_eq!(panes["minItems"], 2);
-        assert_eq!(panes["maxItems"], 2);
-        assert_eq!(panes["items"]["required"], json!(["pane_id", "is_plugin"]));
-    }
-
-    /// An open string here would let the model invent `"float"` and only find
-    /// out at dispatch; a closed enum makes the provider reject it first.
-    #[test]
-    fn every_warp_schema_has_a_closed_placement_set() {
-        let specs = specs();
-        for name in ["warp_pane", "warp_pane_here", "adopt_orphaned_pane"] {
-            let spec = specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .unwrap_or_else(|| panic!("{name} should be advertised"));
-            assert_eq!(
-                spec["function"]["parameters"]["properties"]["placement"]["enum"],
-                json!(["new_tab", "focused_tab", "floating"]),
-                "{name} should take a closed set of placements",
-            );
-        }
-    }
-
-    /// `warp_pane_here` deliberately takes no `is_plugin`: a plugin pane has no
-    /// process to move, and `list_other_sessions` never offers one.
-    #[test]
-    fn the_warp_schemas_require_a_destination_and_a_pane() {
-        let specs = specs();
-        for (name, required) in [
-            ("warp_pane", json!(["pane_id", "is_plugin", "to_session"])),
-            ("warp_pane_here", json!(["from_session", "pane_id"])),
-            ("adopt_orphaned_pane", json!(["host_id"])),
-            ("list_other_sessions", Value::Null),
-            ("list_orphaned_panes", Value::Null),
-        ] {
-            let spec = specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .unwrap_or_else(|| panic!("{name} should be advertised"));
-            assert_eq!(
-                spec["function"]["parameters"]["required"], required,
-                "{name} requires the wrong arguments",
-            );
-        }
-        let here = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == "warp_pane_here")
-            .unwrap();
-        assert_eq!(
-            here["function"]["parameters"]["properties"]["is_plugin"],
-            Value::Null,
-        );
-    }
-
-    /// The tab warps take no `placement`: a warped tab always lands as its own
-    /// new tab in the receiving session, so there is nothing to choose.
-    #[test]
-    fn the_warp_tab_schemas_require_a_destination_and_take_no_placement() {
-        let specs = specs();
-        for (name, required) in [
-            ("warp_tab", json!(["to_session"])),
-            ("warp_tab_here", json!(["from_session", "tab_index"])),
-        ] {
-            let spec = specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .unwrap_or_else(|| panic!("{name} should be advertised"));
-            assert_eq!(
-                spec["function"]["parameters"]["required"], required,
-                "{name} requires the wrong arguments",
-            );
-            assert_eq!(
-                spec["function"]["parameters"]["properties"]["placement"],
-                Value::Null,
-                "{name} should not offer a placement",
-            );
-        }
-    }
-
-    #[test]
-    fn tab_target_or_focused_defaults_to_none() {
-        assert_eq!(Args::default().tab_target_or_focused(), Ok(None));
-    }
-
-    #[test]
-    fn tab_target_or_focused_resolves_like_tab_target_when_given() {
-        let by_index = Args {
-            tab_index: Some(2),
-            ..Args::default()
-        };
-        assert_eq!(
-            by_index.tab_target_or_focused(),
-            Ok(Some(TabTarget::Index(2)))
-        );
-        let by_id = Args {
-            tab_id: Some(9),
-            ..Args::default()
-        };
-        assert_eq!(by_id.tab_target_or_focused(), Ok(Some(TabTarget::Id(9))));
-        let both = Args {
-            tab_index: Some(1),
-            tab_id: Some(2),
-            ..Args::default()
-        };
-        assert!(both.tab_target_or_focused().is_err());
-    }
-
-    #[test]
-    fn an_absent_placement_lands_the_pane_in_a_tab_of_its_own() {
-        assert_eq!(Args::default().placement(), Ok(WarpPlacement::NewTab));
-    }
-
-    #[test]
-    fn every_advertised_placement_parses() {
-        for (name, expected) in [
-            ("new_tab", WarpPlacement::NewTab),
-            ("focused_tab", WarpPlacement::FocusedTab),
-            ("floating", WarpPlacement::Floating),
-        ] {
-            let args = Args {
-                placement: Some(name.to_owned()),
-                ..Args::default()
-            };
-            assert_eq!(args.placement(), Ok(expected), "{name} should parse");
-        }
-    }
-
-    #[test]
-    fn an_invented_placement_is_answered_with_the_ones_that_exist() {
-        let args = Args {
-            placement: Some("float".to_owned()),
-            ..Args::default()
-        };
-        let error = args.placement().expect_err("float is not a placement");
-        for legal in ["new_tab", "focused_tab", "floating"] {
-            assert!(
-                error.contains(legal),
-                "the error should name {legal}, got: {error}"
-            );
-        }
-    }
-
-    /// `to` belongs to the Slack tools; a warp that quietly read it would send
-    /// the pane to a channel name.
-    #[test]
-    fn the_warp_arguments_do_not_collide_with_the_slack_ones() {
-        let args = Args::parse(r##"{"to":"#general","to_session":"other"}"##).unwrap();
-        assert_eq!(args.to, Some("#general".to_owned()));
-        assert_eq!(args.to_session, Some("other".to_owned()));
-    }
-
-    #[test]
-    fn empty_arguments_parse_as_defaults() {
-        assert!(Args::parse("").unwrap().pane_id.is_none());
-        assert!(Args::parse("{}").unwrap().pane_id.is_none());
-    }
-
-    #[test]
-    fn unknown_argument_keys_are_ignored_rather_than_failing_the_call() {
-        let args = Args::parse(r#"{"pane_id":3,"invented_by_the_model":true}"#).unwrap();
-        assert_eq!(args.pane_id, Some(3));
-    }
-
-    #[test]
-    fn malformed_arguments_report_an_error_instead_of_panicking() {
-        assert!(Args::parse("{not json").is_err());
-    }
-
-    #[test]
-    fn a_string_command_absorbs_the_args_array() {
-        let args = Args::parse(r#"{"command":"git","args":["status","--short"]}"#).unwrap();
-        assert_eq!(args.command_words(), ["git", "status", "--short"]);
-    }
-
-    #[test]
-    fn an_array_command_is_taken_whole() {
-        let args = Args::parse(r#"{"command":["git","status"]}"#).unwrap();
-        assert_eq!(args.command_words(), ["git", "status"]);
-    }
-
-    #[test]
-    fn a_missing_command_yields_no_words() {
-        assert!(Args::parse(r#"{"floating":true}"#)
-            .unwrap()
-            .command_words()
-            .is_empty());
-    }
-
-    #[test]
-    fn multi_pane_arguments_require_complete_pane_pairs() {
-        let error = Args::parse(r#"{"panes":[{"pane_id":3}]}"#).unwrap_err();
-        assert!(error.contains("is_plugin"), "{error}");
-    }
-
-    #[test]
-    fn moving_panes_requires_exactly_one_destination() {
-        let neither = Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}]}"#).unwrap();
-        assert!(neither.move_destination().is_err());
-
-        let both = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1,"new_tab":true}"#,
-        )
-        .unwrap();
-        assert!(both.move_destination().is_err());
-
-        let existing =
-            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1}"#).unwrap();
-        assert_eq!(
-            existing.move_destination().unwrap(),
-            MoveDestination::Existing(1)
-        );
-
-        let new = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false}],"new_tab":true,"new_tab_name":"logs"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            new.move_destination().unwrap(),
-            MoveDestination::New(Some("logs".into()))
-        );
-
-        let by_id =
-            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_id":47}"#).unwrap();
-        assert_eq!(
-            by_id.move_destination().unwrap(),
-            MoveDestination::ExistingId(47)
-        );
-
-        let both_ways =
-            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1,"tab_id":47}"#)
-                .unwrap();
-        assert!(both_ways.move_destination().is_err());
-
-        let id_and_new = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_id":47,"new_tab":true}"#,
-        )
-        .unwrap();
-        assert!(id_and_new.move_destination().is_err());
-    }
-
-    #[test]
-    fn a_tab_target_needs_exactly_one_of_index_or_id() {
-        assert_eq!(
-            Args::parse(r#"{"tab_index":2}"#)
-                .unwrap()
-                .tab_target()
-                .unwrap(),
-            TabTarget::Index(2)
-        );
-        assert_eq!(
-            Args::parse(r#"{"tab_id":47}"#)
-                .unwrap()
-                .tab_target()
-                .unwrap(),
-            TabTarget::Id(47)
-        );
-        assert!(Args::parse("{}").unwrap().tab_target().is_err());
-        assert!(Args::parse(r#"{"tab_index":2,"tab_id":47}"#)
-            .unwrap()
-            .tab_target()
-            .is_err());
-    }
-
-    #[test]
-    fn naming_no_tab_leaves_focus_and_rename_on_the_pane_path() {
-        assert!(Args::parse(r#"{"pane_id":3,"is_plugin":false}"#)
-            .unwrap()
-            .tab_or_pane_target()
-            .is_none());
-
-        let both = Args::parse(r#"{"pane_id":3,"is_plugin":false,"tab_index":2}"#).unwrap();
-        assert_eq!(
-            both.tab_or_pane_target().unwrap().unwrap_err(),
-            "give exactly one of pane pair, tab_index, or tab_id"
-        );
-
-        // A half-supplied pane pair still counts as naming a pane.
-        let half = Args::parse(r#"{"is_plugin":false,"tab_id":47}"#).unwrap();
-        assert!(half.tab_or_pane_target().unwrap().is_err());
-
-        assert_eq!(
-            Args::parse(r#"{"tab_id":47}"#)
-                .unwrap()
-                .tab_or_pane_target()
-                .unwrap()
-                .unwrap(),
-            TabTarget::Id(47)
-        );
-    }
-
-    #[test]
-    fn stacking_requires_two_panes() {
-        let args = Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}]}"#).unwrap();
-        assert_eq!(
-            args.pane_ids(2).unwrap_err(),
-            "at least 2 panes are required"
-        );
-    }
-
-    #[test]
-    fn swapping_requires_exactly_two_panes() {
-        let one = Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}]}"#).unwrap();
-        assert_eq!(
-            one.swap_pane_ids().unwrap_err(),
-            "swap_panes needs exactly two panes"
-        );
-
-        let two = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false},{"pane_id":4,"is_plugin":true}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            two.swap_pane_ids().unwrap(),
-            [PaneId::Terminal(3), PaneId::Plugin(4)]
-        );
-
-        let three = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false},{"pane_id":4,"is_plugin":false},{"pane_id":5,"is_plugin":false}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            three.swap_pane_ids().unwrap_err(),
-            "swap_panes needs exactly two panes"
-        );
-    }
-
-    #[test]
-    fn floating_geometry_accepts_cells_and_percentages() {
-        let args = Args::parse(r#"{"x":"2","y":"10%","width":"50%","height":"12"}"#).unwrap();
-        let geometry = args.floating_geometry().unwrap();
-        assert!(geometry.x.is_some());
-        assert!(geometry.y.is_some());
-        assert!(geometry.width.is_some());
-        assert!(geometry.height.is_some());
-    }
-
-    #[test]
-    fn floating_geometry_rejects_empty_invalid_and_zero_sizes() {
-        assert!(Args::parse("{}").unwrap().floating_geometry().is_err());
-        assert!(Args::parse(r#"{"x":"101%"}"#)
-            .unwrap()
-            .floating_geometry()
-            .is_err());
-        assert!(Args::parse(r#"{"width":"0"}"#)
-            .unwrap()
-            .floating_geometry()
-            .is_err());
-    }
-
-    #[test]
-    fn rerun_rejects_plugin_panes() {
-        let args = Args::parse(r#"{"pane_id":3,"is_plugin":true}"#).unwrap();
-        assert_eq!(
-            args.terminal_pane_id().unwrap_err(),
-            "rerun_pane only supports terminal command panes"
-        );
-    }
-
-    fn positioned_pane(id: u32, x: usize, y: usize, columns: usize, rows: usize) -> PanePosition {
-        PanePosition {
-            id: PaneId::Terminal(id),
-            tab_index: 0,
-            x,
-            y,
-            columns,
-            rows,
-            visible: true,
-            selectable: true,
-            floating: false,
-            fullscreen: false,
-            floating_layer_visible: false,
-        }
-    }
-
-    #[test]
-    fn swap_planner_maps_each_unique_shared_edge_to_its_direction() {
-        let source = positioned_pane(1, 10, 10, 10, 10);
-        for (target, expected) in [
-            (positioned_pane(2, 0, 10, 10, 10), PaneDirection::Left),
-            (positioned_pane(2, 20, 10, 10, 10), PaneDirection::Right),
-            (positioned_pane(2, 10, 0, 10, 10), PaneDirection::Up),
-            (positioned_pane(2, 10, 20, 10, 10), PaneDirection::Down),
-        ] {
-            assert_eq!(
-                plan_swap(&[source.clone(), target], source.id, PaneId::Terminal(2)).unwrap(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn swap_planner_rejects_panes_that_cannot_be_safely_swapped() {
-        let source = positioned_pane(1, 0, 0, 10, 10);
-        let target = positioned_pane(2, 10, 0, 10, 10);
-        assert_eq!(
-            plan_swap(&[source.clone(), target.clone()], source.id, source.id).unwrap_err(),
-            "swap_panes needs two different panes"
-        );
-
-        let mut other_tab = target.clone();
-        other_tab.tab_index = 1;
-        assert_eq!(
-            plan_swap(&[source.clone(), other_tab], source.id, target.id).unwrap_err(),
-            "swap_panes needs both panes in the same tab"
-        );
-
-        let mut floating = target.clone();
-        floating.floating = true;
-        assert_eq!(
-            plan_swap(&[source.clone(), floating], source.id, target.id).unwrap_err(),
-            "swap_panes only supports visible selectable tiled panes"
-        );
-
-        let mut hidden = target.clone();
-        hidden.visible = false;
-        assert_eq!(
-            plan_swap(&[source.clone(), hidden], source.id, target.id).unwrap_err(),
-            "swap_panes only supports visible selectable tiled panes"
-        );
-
-        let mut unselectable = target.clone();
-        unselectable.selectable = false;
-        assert_eq!(
-            plan_swap(&[source.clone(), unselectable], source.id, target.id).unwrap_err(),
-            "swap_panes only supports visible selectable tiled panes"
-        );
-
-        assert_eq!(
-            plan_swap(std::slice::from_ref(&source), source.id, target.id).unwrap_err(),
-            "pane is not in the current session; call list_session again"
-        );
-
-        let distant = positioned_pane(2, 11, 0, 10, 10);
-        assert_eq!(
-            plan_swap(&[source.clone(), distant], source.id, target.id).unwrap_err(),
-            "panes are not adjacent; do not retry with move_pane"
-        );
-    }
-
-    #[test]
-    fn swap_planner_rejects_an_edge_with_multiple_possible_neighbors() {
-        let source = positioned_pane(1, 0, 0, 10, 10);
-        let upper = positioned_pane(2, 10, 0, 10, 5);
-        let lower = positioned_pane(3, 10, 5, 10, 5);
-        assert_eq!(
-            plan_swap(&[source.clone(), upper.clone(), lower], source.id, upper.id).unwrap_err(),
-            "the requested edge has multiple adjacent panes; swap is ambiguous"
-        );
-
-        let left = positioned_pane(1, 0, 0, 10, 5);
-        let right = positioned_pane(2, 10, 0, 10, 10);
-        let lower_left = positioned_pane(3, 0, 5, 10, 5);
-        assert_eq!(
-            plan_swap(
-                &[left.clone(), right.clone(), lower_left],
-                left.id,
-                right.id
-            )
-            .unwrap_err(),
-            "the requested edge has multiple adjacent panes; swap is ambiguous"
-        );
-    }
-
-    #[test]
-    fn planners_reject_tabs_where_zellij_will_not_move_tiled_panes() {
-        let source = positioned_pane(1, 0, 0, 10, 10);
-        let target = positioned_pane(2, 10, 0, 10, 10);
-
-        let mut fullscreen = source.clone();
-        fullscreen.fullscreen = true;
-        assert!(plan_move(
-            &[fullscreen, target.clone()],
-            source.id,
-            PaneDirection::Right
-        )
-        .is_err());
-
-        let mut floating_layer = source.clone();
-        floating_layer.floating_layer_visible = true;
-        assert!(plan_swap(&[floating_layer, target], source.id, PaneId::Terminal(2)).is_err());
-    }
-
-    #[test]
-    fn move_planner_requires_one_unique_neighbor_in_the_requested_direction() {
-        let source = positioned_pane(1, 0, 0, 10, 10);
-        let target = positioned_pane(2, 10, 0, 10, 10);
-        assert_eq!(
-            plan_move(
-                &[source.clone(), target.clone()],
-                source.id,
-                PaneDirection::Right
-            )
-            .unwrap(),
-            target.id
-        );
-
-        assert_eq!(
-            plan_move(
-                std::slice::from_ref(&source),
-                source.id,
-                PaneDirection::Right
-            )
-            .unwrap_err(),
-            "there is no adjacent pane in that direction"
-        );
-
-        let lower = positioned_pane(3, 10, 5, 10, 5);
-        assert_eq!(
-            plan_move(
-                &[source.clone(), target, lower],
-                source.id,
-                PaneDirection::Right
-            )
-            .unwrap_err(),
-            "the requested direction has multiple adjacent panes; move is ambiguous"
-        );
-    }
-
-    #[test]
-    fn pane_direction_rejects_unknown_names() {
-        assert_eq!(
-            PaneDirection::parse(Some("diagonal")).unwrap_err(),
-            "direction must be left, right, up or down"
-        );
-    }
-
-    #[test]
-    fn send_input_schema_requires_a_pane_and_advertises_the_closed_key_set() {
-        let specs = specs();
-        let send_input = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == "send_input")
-            .unwrap();
-        assert_eq!(
-            send_input["function"]["parameters"]["required"],
-            json!(["pane_id", "is_plugin"])
-        );
-        assert_eq!(
-            send_input["function"]["parameters"]["properties"]["keys"]["items"]["enum"],
-            json!([
-                "enter",
-                "tab",
-                "escape",
-                "backspace",
-                "delete",
-                "insert",
-                "up",
-                "down",
-                "left",
-                "right",
-                "home",
-                "end",
-                "page_up",
-                "page_down",
-                "ctrl_a",
-                "ctrl_b",
-                "ctrl_c",
-                "ctrl_d",
-                "ctrl_e",
-                "ctrl_f",
-                "ctrl_k",
-                "ctrl_l",
-                "ctrl_u",
-                "ctrl_w",
-                "ctrl_y",
-                "ctrl_z"
-            ])
-        );
-    }
-
-    #[test]
-    fn send_input_encodes_text_before_keys() {
-        let args = Args::parse(r#"{"text":"hé","keys":["enter"]}"#).unwrap();
-        assert_eq!(
-            args.input_chunks(false).unwrap(),
-            vec![b"h\xc3\xa9".to_vec(), b"\r".to_vec()]
-        );
-    }
-
-    #[test]
-    fn send_input_brackets_only_the_text_and_only_when_asked() {
-        let args = Args::parse(r#"{"text":"hé","keys":["enter"]}"#).unwrap();
-        assert_eq!(
-            args.input_chunks(true).unwrap(),
-            vec![
-                b"\x1b[200~".to_vec(),
-                b"h\xc3\xa9".to_vec(),
-                b"\x1b[201~".to_vec(),
-                b"\r".to_vec(),
-            ]
-        );
-        // No text, no markers: a lone key must stay a lone key so Zellij's own
-        // key adjustment still matches the whole buffer.
-        let keys_only = Args::parse(r#"{"keys":["up"]}"#).unwrap();
-        assert_eq!(
-            keys_only.input_chunks(true).unwrap(),
-            vec![b"\x1b[A".to_vec()]
-        );
-    }
-
-    #[test]
-    fn send_input_encodes_every_named_key() {
-        let args = Args::parse(
-            r#"{"keys":["enter","tab","escape","backspace","delete","insert","up","down","left","right","home","end","page_up","page_down","ctrl_a","ctrl_b","ctrl_c","ctrl_d","ctrl_e","ctrl_f","ctrl_k","ctrl_l","ctrl_u","ctrl_w","ctrl_y","ctrl_z"]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            args.input_chunks(false).unwrap(),
-            vec![
-                vec![13],
-                vec![9],
-                vec![27],
-                vec![127],
-                vec![27, 91, 51, 126],
-                vec![27, 91, 50, 126],
-                vec![27, 91, 65],
-                vec![27, 91, 66],
-                vec![27, 91, 68],
-                vec![27, 91, 67],
-                vec![27, 91, 72],
-                vec![27, 91, 70],
-                vec![27, 91, 53, 126],
-                vec![27, 91, 54, 126],
-                vec![1],
-                vec![2],
-                vec![3],
-                vec![4],
-                vec![5],
-                vec![6],
-                vec![11],
-                vec![12],
-                vec![21],
-                vec![23],
-                vec![25],
-                vec![26],
-            ]
-        );
-    }
-
-    #[test]
-    fn send_input_rejects_empty_and_unknown_input() {
-        assert_eq!(
-            Args::parse("{}").unwrap().input_chunks(true).unwrap_err(),
-            "send_input needs non-empty text or at least one key"
-        );
-        let unknown = Args::parse(r#"{"keys":["f13"]}"#).unwrap();
-        assert_eq!(
-            unknown.input_chunks(true).unwrap_err(),
-            "unsupported key: f13"
-        );
-    }
-
-    #[test]
-    fn tab_move_result_does_not_mislabel_zellij_stable_tab_id_as_an_index() {
-        assert_eq!(
-            moved_panes_result(Some(47)),
-            "moved; call list_session for the tab's current index"
-        );
-        assert!(
-            moved_panes_result(None).starts_with("zellij did not move the panes"),
-            "and a failure says so rather than claiming a move"
-        );
-    }
-
-    /// Two tabs in a session that has closed a tab: positions {0, 1}, ids {2, 3}. Every
-    /// id here is invalid as a position and vice versa, so a check that confuses the
-    /// two cannot pass by accident.
-    fn diverged_session() -> SessionTabs {
-        SessionTabs {
-            tabs: vec![(0, 2), (1, 3)],
-            panes: vec![PaneId::Terminal(2), PaneId::Terminal(4)],
-        }
-    }
-
-    #[test]
-    fn moving_panes_to_a_missing_tab_id_names_the_id() {
-        let error = check_move_to_tab(
-            &MoveDestination::ExistingId(9),
-            &[PaneId::Terminal(2)],
-            &diverged_session(),
-        )
-        .unwrap_err();
-        assert!(error.contains("tab_id 9"), "{error}");
-    }
-
-    #[test]
-    fn moving_panes_to_an_out_of_range_tab_index_names_the_index_and_the_count() {
-        let error = check_move_to_tab(
-            &MoveDestination::Existing(7),
-            &[PaneId::Terminal(2)],
-            &diverged_session(),
-        )
-        .unwrap_err();
-        assert!(error.contains("tab_index 7"), "{error}");
-        assert!(error.contains("2 tabs"), "{error}");
-    }
-
-    #[test]
-    fn a_tab_id_and_a_tab_index_are_checked_in_their_own_spaces() {
-        let session = diverged_session();
-        let panes = [PaneId::Terminal(2)];
-        // id 3 exists, and so does position 1 — they are the same tab, named two ways
-        assert!(check_move_to_tab(&MoveDestination::ExistingId(3), &panes, &session).is_ok());
-        assert!(check_move_to_tab(&MoveDestination::Existing(1), &panes, &session).is_ok());
-        // ...while position 3 and id 1 exist in neither space
-        assert!(check_move_to_tab(&MoveDestination::Existing(3), &panes, &session).is_err());
-        assert!(check_move_to_tab(&MoveDestination::ExistingId(1), &panes, &session).is_err());
-    }
-
-    #[test]
-    fn moving_a_pane_that_is_not_in_the_session_names_the_pane() {
-        let error = check_move_to_tab(
-            &MoveDestination::ExistingId(3),
-            &[PaneId::Terminal(2), PaneId::Terminal(99)],
-            &diverged_session(),
-        )
-        .unwrap_err();
-        assert!(error.contains("pane 99"), "{error}");
-    }
-
-    #[test]
-    fn moving_panes_to_a_new_tab_has_no_destination_to_check() {
-        assert!(check_move_to_tab(
-            &MoveDestination::New(None),
-            &[PaneId::Terminal(2)],
-            &SessionTabs::default()
-        )
-        .is_err());
-        assert!(check_move_to_tab(
-            &MoveDestination::New(None),
-            &[PaneId::Terminal(2)],
-            &diverged_session()
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn summarize_omits_an_empty_argument_object() {
-        let call = ToolCall {
-            id: "1".into(),
-            name: "list_session".into(),
-            arguments: "{}".into(),
-        };
-        assert_eq!(summarize(&call), "list_session");
-    }
-
-    #[test]
-    fn summarize_shows_the_arguments_verbatim() {
-        let call = ToolCall {
-            id: "1".into(),
-            name: "close_pane".into(),
-            arguments: r#"{"pane_id":3,"is_plugin":false}"#.into(),
-        };
-        assert_eq!(
-            summarize(&call),
-            r#"close_pane {"pane_id":3,"is_plugin":false}"#
-        );
-    }
-
-    #[test]
-    fn a_bare_command_takes_no_arguments() {
-        assert_eq!(
-            parse_command("/list_session"),
-            Ok(("list_session".to_owned(), "{}".to_owned()))
-        );
-    }
-
-    /// The point of the pairs: values must come out typed, under the names `Args`
-    /// actually deserializes.
-    #[test]
-    fn pairs_are_typed_and_land_on_the_right_args_fields() {
-        let (name, arguments) = parse_command("/read_pane pane_id=3 is_plugin=false").unwrap();
-        assert_eq!(name, "read_pane");
-        let args = Args::parse(&arguments).unwrap();
-        assert_eq!(args.pane_id, Some(3));
-        assert_eq!(args.is_plugin, Some(false));
-
-        let (_, arguments) = parse_command("/new_pane name=logs floating=true").unwrap();
-        let args = Args::parse(&arguments).unwrap();
-        assert_eq!(args.name.as_deref(), Some("logs"));
-        assert!(args.floating);
-
-        let json = r#"/stack_panes panes=[{"pane_id":1,"is_plugin":false}]"#;
-        let (_, arguments) = parse_command(json).unwrap();
-        assert_eq!(Args::parse(&arguments).unwrap().panes.len(), 1);
-    }
-
-    #[test]
-    fn a_json_rest_is_passed_through_verbatim() {
-        assert_eq!(
-            parse_command(r#"/rename {"name": "my tab"}"#),
-            Ok(("rename".to_owned(), r#"{"name": "my tab"}"#.to_owned()))
-        );
-    }
-
-    #[test]
-    fn a_token_without_an_equals_is_rejected() {
-        assert!(parse_command("/read_pane 3").is_err());
-        assert!(parse_command("/").is_err());
-    }
-
-    #[test]
-    fn names_lists_the_advertised_tools() {
-        let names = names();
-        assert_eq!(names.len(), specs().as_array().unwrap().len());
-        assert!(names.contains(&"new_pane".to_owned()));
-    }
-
-    /// The one argument each todo tool cannot work without. `todo_list` needs
-    /// none: it falls back to the active project.
-    #[test]
-    fn the_todo_tools_require_their_key_argument() {
-        let specs = specs();
-        let required = |name: &str| -> Vec<String> {
-            specs
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|spec| spec["function"]["name"] == name)
-                .map(|spec| {
-                    spec["function"]["parameters"]["required"]
-                        .as_array()
-                        .map(|names| {
-                            names
-                                .iter()
-                                .map(|name| name.as_str().unwrap().to_owned())
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .expect("the tool is advertised")
-        };
-        assert_eq!(required("todo_add"), vec!["text".to_owned()]);
-        assert_eq!(required("todo_search"), vec!["query".to_owned()]);
-        assert_eq!(required("todo_done"), vec!["id".to_owned()]);
-        assert_eq!(
-            required("todo_edit"),
-            vec!["id".to_owned(), "text".to_owned()]
-        );
-        assert!(required("todo_list").is_empty());
-    }
-
-    #[test]
-    fn args_parse_reads_the_todo_fields() {
-        let args = Args::parse(
-            r#"{"id":7,"parent_id":3,"include_done":true,"all_projects":true,"undo":true}"#,
-        )
-        .unwrap();
-
-        assert_eq!(args.id, Some(7));
-        assert_eq!(args.parent_id, Some(3));
-        assert!(args.include_done);
-        assert!(args.all_projects);
-        assert!(args.undo);
-    }
-}
+mod tools_tests;
