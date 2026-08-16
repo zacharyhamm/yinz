@@ -8468,5 +8468,5 @@ mod tab_tests;
 mod tab_integration_tests;
 
 #[cfg(test)]
-#[path = "./unit/layout_applier_tests.rs"]
+#[path = "./unit/layout_applier_tests/mod.rs"]
 mod layout_applier_tests;
