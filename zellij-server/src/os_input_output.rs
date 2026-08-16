@@ -5,7 +5,9 @@ use crate::{panes::PaneId, ClientId};
 use interprocess::local_socket::Stream as LocalSocketStream;
 
 use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
-use crate::pty_host::remote::{protocol::ChildSignal, ssh::RemoteHosts, RemoteStatus};
+use crate::pty_host::remote::{
+    conn::RemoteGitProbe, protocol::ChildSignal, ssh::RemoteHosts, RemoteStatus,
+};
 // Re-exported: it is what `ServerOsApi::adopt_terminal` returns, so anything
 // implementing that trait outside this crate — the integration tests' fake
 // backend — needs to be able to name it.
@@ -509,6 +511,19 @@ pub trait ServerOsApi: Send + Sync {
     fn remote_pane_ids(&self) -> Vec<u32> {
         Vec::new()
     }
+    /// What git last said about a remote pane's working directory, unparsed.
+    ///
+    /// Raw on purpose: `hocus-agentd`'s `poll::repository` already turns exactly
+    /// this into a checkout identity, including the awkward part where a
+    /// repository with no commits writes its identity to stdout and *then* exits
+    /// 128. Parsing here would duplicate that and drift from it.
+    fn remote_pane_git_probe(&self, _terminal_id: u32) -> Option<RemoteGitProbe> {
+        None
+    }
+    /// The machine a pane runs on, or `None` if it runs on this one.
+    fn remote_pane_host(&self, _terminal_id: u32) -> Option<String> {
+        None
+    }
     /// Hand a pane's supervisor over without killing it, so another session can
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
@@ -617,6 +632,12 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn remote_pane_ids(&self) -> Vec<u32> {
         self.pty_backend.remote_pane_ids()
+    }
+    fn remote_pane_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
+        self.pty_backend.remote_git_probe(terminal_id)
+    }
+    fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
+        self.pty_backend.remote_host(terminal_id)
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())

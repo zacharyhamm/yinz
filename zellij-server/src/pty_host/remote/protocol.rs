@@ -132,6 +132,18 @@ pub enum BrokerToServerMsg {
     /// over"; a transport failure must never be read that way, or a dropped
     /// packet closes a pane whose process is still perfectly alive.
     ChildExited { status: Option<i32> },
+    /// What git says about the pane's working directory, unparsed.
+    ///
+    /// Base64 because git's `--null` config output is not text and would not
+    /// survive a JSON string. Sent when the cwd changes rather than on every
+    /// status tick: a checkout's identity does not change while you sit in it,
+    /// and forking two git processes per second per pane would be absurd.
+    GitProbe {
+        cwd: String,
+        exit_code: Option<i32>,
+        metadata_base64: String,
+        config_base64: String,
+    },
     /// What the broker can see about the pane from its own machine: the things
     /// the local server would otherwise get from `sysinfo` and `tcgetpgrp`, and
     /// cannot, because the process is not local.

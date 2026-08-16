@@ -17,8 +17,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use zellij_utils::errors::prelude::*;
-
 use crate::pty_host::client::PtyHostHandle;
 
 /// How much output to keep for a pane whose server is not currently connected.
@@ -102,6 +100,9 @@ pub struct PaneSession {
     /// `Some` while a server is attached.
     wire: Mutex<Option<super::broker::Wire>>,
     child_exit: Mutex<Option<Option<i32>>>,
+    /// The last git probe, kept so a reconnecting server gets the pane's project
+    /// straight away rather than waiting for its cwd to happen to change.
+    git_probe: Mutex<Option<super::status::GitProbe>>,
     disconnected_since: Mutex<Option<Instant>>,
     terminated: AtomicBool,
 }
@@ -124,6 +125,7 @@ impl PaneSession {
             ring: Mutex::new(OutputRing::new(REPLAY_CAPACITY)),
             wire: Mutex::new(Some(wire)),
             child_exit: Mutex::new(None),
+            git_probe: Mutex::new(None),
             disconnected_since: Mutex::new(None),
             terminated: AtomicBool::new(false),
         }
@@ -190,6 +192,16 @@ impl PaneSession {
 
     pub fn child_exit(&self) -> Option<Option<i32>> {
         self.child_exit.lock().ok().and_then(|s| *s)
+    }
+
+    pub fn set_git_probe(&self, probe: super::status::GitProbe) {
+        if let Ok(mut slot) = self.git_probe.lock() {
+            *slot = Some(probe);
+        }
+    }
+
+    pub fn git_probe(&self) -> Option<super::status::GitProbe> {
+        self.git_probe.lock().ok().and_then(|p| p.clone())
     }
 
     /// End the pane. The only thing that does.

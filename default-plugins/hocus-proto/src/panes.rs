@@ -36,6 +36,7 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
             // the only word on where a pane was came from `CwdChanged` — heard
             // once, and never again by anyone who missed it.
             cwd: pane.cwd.clone(),
+            host: pane.host.clone(),
             // Order matters: a held pane has also exited, and "waiting to be re-run"
             // is the more useful of the two things to say.
             status: if pane.is_held {

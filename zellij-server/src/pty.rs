@@ -1480,6 +1480,7 @@ impl Pty {
 
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.report_terminal_host(terminal_id);
         if let Some(child_pid) = child_pid {
             self.id_to_child_pid.insert(terminal_id, child_pid);
             self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
@@ -1738,6 +1739,7 @@ impl Pty {
                     });
                     self.task_handles.insert(terminal_id, terminal_bytes);
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
+                    self.report_terminal_host(terminal_id);
                 },
                 _ => match run_command {
                     Some(run_command) => {
@@ -1916,6 +1918,7 @@ impl Pty {
                     });
                     self.task_handles.insert(terminal_id, terminal_bytes);
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
+                    self.report_terminal_host(terminal_id);
                 },
                 _ => match run_command {
                     Some(run_command) => {
@@ -2237,6 +2240,7 @@ impl Pty {
                 self.id_to_child_pid.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
+                self.forget_terminal_host(id);
                 self.terminal_cmds.remove(&id);
                 self.terminal_foreground_cmds.remove(&id);
                 self.bus
@@ -2364,6 +2368,7 @@ impl Pty {
 
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.report_terminal_host(terminal_id);
         self.id_to_child_pid.insert(terminal_id, child_pid);
         // No requested cwd: an adopted pane asked for nothing, and its process
         // has been running long enough that the OS answers reliably.
@@ -2719,6 +2724,31 @@ impl Pty {
     /// Terminal ids are handed out again after a pane closes, so a folder left
     /// behind here is not merely wasted space — it is the wrong answer for
     /// whichever pane inherits the id.
+    /// Tell Screen which machine a pane runs on, so it can reach the plugins
+    /// that decide what a pane *is* — two panes in the same folder on different
+    /// machines are in different folders, and anything keying on the path alone
+    /// would merge them.
+    fn report_terminal_host(&mut self, terminal_id: u32) {
+        let host = self
+            .bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.remote_pane_host(terminal_id));
+        if host.is_some() {
+            let _ = self
+                .bus
+                .senders
+                .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
+        }
+    }
+
+    fn forget_terminal_host(&mut self, terminal_id: u32) {
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None));
+    }
+
     fn forget_terminal_cwd(&mut self, terminal_id: u32) {
         if self.terminal_cwds.remove(&terminal_id).is_some() {
             let _ = self

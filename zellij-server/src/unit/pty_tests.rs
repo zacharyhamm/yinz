@@ -26,6 +26,7 @@ struct MockOsApi {
     remote_panes: Arc<Mutex<std::collections::HashSet<u32>>>,
     remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
     remote_status: Arc<Mutex<HashMap<u32, RemoteStatus>>>,
+    remote_hosts: Arc<Mutex<HashMap<u32, String>>>,
 }
 
 impl MockOsApi {
@@ -38,7 +39,15 @@ impl MockOsApi {
             remote_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             remote_signals: Arc::new(Mutex::new(Vec::new())),
             remote_status: Arc::new(Mutex::new(HashMap::new())),
+            remote_hosts: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+    fn set_remote_host(&self, terminal_id: u32, host: &str) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+        self.remote_hosts
+            .lock()
+            .unwrap()
+            .insert(terminal_id, host.to_owned());
     }
     fn set_remote_status(&self, terminal_id: u32, status: RemoteStatus) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
@@ -129,6 +138,9 @@ impl ServerOsApi for MockOsApi {
             .unwrap()
             .get(&terminal_id)
             .cloned()
+    }
+    fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
+        self.remote_hosts.lock().unwrap().get(&terminal_id).cloned()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -226,6 +238,18 @@ fn make_pty_with_screen_receiver(
     bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
     let pty = Pty::new(bus, false, None, None);
     (pty, plugin_rx, screen_rx)
+}
+
+fn collect_pane_host_instructions(
+    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) -> Vec<(u32, Option<String>)> {
+    let mut updates = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let ScreenInstruction::UpdatePaneHost(terminal_id, host) = instruction {
+            updates.push((terminal_id, host));
+        }
+    }
+    updates
 }
 
 fn collect_pane_cwd_instructions(
@@ -924,4 +948,59 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
         GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
         other => panic!("expected the cwd, got {other:?}"),
     }
+}
+
+/// A pane's host reaches Screen, which is what puts it on `PaneInfo` for the
+/// plugins that decide which project a pane belongs to.
+#[test]
+fn a_remote_panes_host_is_announced_to_screen() {
+    let mock = MockOsApi::new();
+    mock.set_remote_status(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.report_terminal_host(7);
+
+    let hosts = collect_pane_host_instructions(&screen_rx);
+    assert_eq!(hosts, vec![(7, Some("build-box".to_owned()))]);
+}
+
+/// Local panes are the overwhelming majority, and must stay silent — an
+/// announcement per pane would be noise, and a `Some` on a local pane would make
+/// every consumer treat it as elsewhere.
+#[test]
+fn a_local_pane_announces_no_host() {
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.report_terminal_host(3);
+
+    assert!(
+        collect_pane_host_instructions(&screen_rx).is_empty(),
+        "a local pane should say nothing about a host"
+    );
+}
+
+/// Closing a pane retracts it, or Screen would keep attributing a recycled
+/// terminal id to a machine it has nothing to do with.
+#[test]
+fn closing_a_pane_retracts_its_host() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    let _ = pty.close_pane(PaneId::Terminal(7));
+
+    let hosts = collect_pane_host_instructions(&screen_rx);
+    assert!(
+        hosts.contains(&(7, None)),
+        "closing a pane should retract its host, got {hosts:?}"
+    );
 }

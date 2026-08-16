@@ -42,6 +42,22 @@ pub struct RemoteStatus {
     pub foreground_argv: Option<Vec<String>>,
 }
 
+/// What git said about a remote pane's working directory, unparsed.
+///
+/// Carried to the plugins that attribute panes to projects, which already know
+/// how to read exactly this. Kept raw so the parsing stays in one place rather
+/// than being duplicated for remote panes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RemoteGitProbe {
+    /// The machine this was run on, so two checkouts at the same path on
+    /// different hosts stay distinct.
+    pub host: String,
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+    pub metadata: Vec<u8>,
+    pub config: Vec<u8>,
+}
+
 /// Two queues rather than one, because control messages must overtake queued
 /// input.
 ///
@@ -95,6 +111,7 @@ pub struct RemoteConn {
     /// the *only* thing that means the pane is over — a transport failure must
     /// never be read that way.
     child_exit: Mutex<Option<Option<i32>>>,
+    git_probe: Mutex<Option<RemoteGitProbe>>,
     transport_lost: AtomicBool,
     /// A label for diagnostics, and the address to reconnect to.
     host: String,
@@ -133,6 +150,7 @@ impl RemoteConn {
             }),
             status: Mutex::new(RemoteStatus::default()),
             child_exit: Mutex::new(None),
+            git_probe: Mutex::new(None),
             transport_lost: AtomicBool::new(false),
             host,
             pane_token,
@@ -369,6 +387,16 @@ impl RemoteConn {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| RemoteStatus::default())
+    }
+
+    pub fn set_git_probe(&self, probe: RemoteGitProbe) {
+        if let Ok(mut slot) = self.git_probe.lock() {
+            *slot = Some(probe);
+        }
+    }
+
+    pub fn git_probe(&self) -> Option<RemoteGitProbe> {
+        self.git_probe.lock().ok().and_then(|p| p.clone())
     }
 
     pub fn set_child_exit(&self, status: Option<i32>) {

@@ -491,6 +491,7 @@ message PaneInfo {
     optional action.GlobalPanePlacement global_placement = 26;
     bool is_hidden = 27;
     optional string cwd = 28;
+    optional string host = 29;   // the machine the pane runs on, unset for local panes
 }
 
 message IndexInPaneGroup {

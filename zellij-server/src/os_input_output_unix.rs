@@ -36,7 +36,9 @@ use std::{
 
 use zellij_utils::{errors::prelude::*, input::command::RunCommand};
 
-use crate::pty_host::remote::{protocol::ChildSignal, RemoteConn, RemoteStatus};
+use crate::pty_host::remote::{
+    conn::RemoteGitProbe, protocol::ChildSignal, RemoteConn, RemoteStatus,
+};
 use crate::pty_host::{
     client::{self as pty_host_client, PtyHostHandle, ReleasedPtyHost, SpawnParams},
     protocol::{WireTermios, WireWinsize},
@@ -733,6 +735,26 @@ impl UnixPtyBackend {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// What git last said about a remote pane's working directory.
+    pub fn remote_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()?
+            .get(&terminal_id)?
+            .remote()
+            .and_then(|conn| conn.git_probe())
+    }
+
+    /// The machine a pane runs on, or `None` if it runs on this one.
+    pub fn remote_host(&self, terminal_id: u32) -> Option<String> {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()?
+            .get(&terminal_id)?
+            .remote()
+            .map(|conn| conn.host().to_owned())
     }
 
     /// Deliver a signal to a remote pane's child, by name rather than by pid.

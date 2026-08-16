@@ -293,6 +293,7 @@ pub enum ScreenContext {
     HoldPane,
     UpdatePaneName,
     UpdatePaneCwd,
+    UpdatePaneHost,
     UndoRenamePane,
     NewTab,
     ApplyLayout,

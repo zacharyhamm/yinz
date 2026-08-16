@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use tokio::io::unix::AsyncFd;
 
-use super::conn::{RemoteConn, RemoteStatus};
+use super::conn::{RemoteConn, RemoteGitProbe, RemoteStatus};
 use super::protocol::{self, BrokerToServerMsg, Frame};
 use crate::os_input_output::AsyncReader;
 
@@ -236,6 +236,24 @@ impl RemoteReader {
             BrokerToServerMsg::ChildExited { status } => {
                 self.conn.set_child_exit(status);
                 true
+            },
+            BrokerToServerMsg::GitProbe {
+                cwd,
+                exit_code,
+                metadata_base64,
+                config_base64,
+            } => {
+                use crate::pty_host::protocol::decode_buffered;
+                let metadata = decode_buffered(&metadata_base64).unwrap_or_default();
+                let config = decode_buffered(&config_base64).unwrap_or_default();
+                self.conn.set_git_probe(RemoteGitProbe {
+                    host: self.conn.host().to_owned(),
+                    cwd,
+                    exit_code,
+                    metadata,
+                    config,
+                });
+                false
             },
             BrokerToServerMsg::StatusReport {
                 cwd,
