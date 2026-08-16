@@ -8,6 +8,15 @@
 //! a different size: a layout is proportional, and the receiving session
 //! positions it against its own viewport.
 //!
+//! Not every arrangement is a layout, though. A layout is a tree of splits and
+//! `TiledPanes` is a flat map of rectangles, so a tab can be in shapes no tree
+//! describes — a tab beside a global pane, whose ui strips are widened over it,
+//! is not even a rectangle. Those are approximated rather than refused
+//! (`tiled_layout_from_panegeoms_lossy`): every pane travels, and the
+//! arrangement is the nearest one a layout can hold. A warp moves running
+//! processes, and losing the lot of them to keep a border in place is the wrong
+//! trade.
+//!
 //! What this module adds on top is an *order*. The receiving side fills the
 //! layout's terminal slots positionally — `position_new_panes` walks the
 //! flattened layout and pops the head of a queue of terminal ids for every slot
@@ -20,8 +29,7 @@ use std::path::PathBuf;
 use crate::input::layout::{FloatingPaneLayout, PercentOrFixed, Run, TiledPaneLayout};
 use crate::pane_size::Size;
 use crate::session_serialization::{
-    get_floating_panes_layout_from_panegeoms, get_tiled_panes_layout_from_panegeoms,
-    PaneLayoutManifest,
+    get_floating_panes_layout_from_panegeoms, tiled_layout_from_panegeoms_lossy, PaneLayoutManifest,
 };
 
 /// A tab's arrangement, plus which pane belongs in each of its terminal slots.
@@ -83,8 +91,7 @@ pub fn layout_for_warped_tab(
     viewport: Size,
 ) -> Result<WarpedTabLayout, String> {
     let tiled_order = tiled_slot_order(tiled)?;
-    let tiled_layout = get_tiled_panes_layout_from_panegeoms(&tiled.to_vec(), None)
-        .ok_or_else(|| "this tab's arrangement could not be expressed as a layout".to_owned())?;
+    let tiled_layout = tiled_layout_from_panegeoms_lossy(&tiled.to_vec());
 
     let mut floating_layout = get_floating_panes_layout_from_panegeoms(&floating.to_vec());
     scale_floating_to_viewport(&mut floating_layout, viewport);
@@ -135,8 +142,10 @@ fn tiled_slot_order(tiled: &[PaneLayoutManifest]) -> Result<Vec<usize>, String> 
         })
         .collect();
 
-    let probe = get_tiled_panes_layout_from_panegeoms(&marked, None)
-        .ok_or_else(|| "this tab's arrangement could not be expressed as a layout".to_owned())?;
+    // The same builder the real layout goes through, on the same geometry: the
+    // markers change what is *in* the leaves, never where they are, so both take
+    // the same branch and this order describes the layout that travels.
+    let probe = tiled_layout_from_panegeoms_lossy(&marked);
     let order: Vec<usize> = probe
         .extract_run_instructions()
         .iter()
@@ -145,8 +154,14 @@ fn tiled_slot_order(tiled: &[PaneLayoutManifest]) -> Result<Vec<usize>, String> 
 
     // Every terminal pane must appear exactly once. A layout that dropped one
     // would land the remaining panes in the wrong slots, and a layout that
-    // repeated one would put the same supervisor in two places — both worth
-    // refusing the warp over, because both are silent once the tab has arrived.
+    // repeated one would put the same supervisor in two places — both silent
+    // once the tab has arrived, so both are checked here rather than assumed.
+    //
+    // Not expected to fire: `tiled_layout_from_panegeoms_lossy` gives every pane
+    // a leaf whatever the arrangement looks like, so this failing means the
+    // builder has lost that property, and refusing the warp is the safe answer
+    // to that. It is not a shape of tab the user can be in — nothing they could
+    // rearrange makes it happen — so there is nothing to tell them to undo.
     let expected = tiled.iter().filter(|m| !is_plugin(m)).count();
     let mut seen: Vec<usize> = order.clone();
     seen.sort_unstable();
