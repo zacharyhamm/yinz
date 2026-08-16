@@ -26,6 +26,11 @@ use crate::os_input_output::AsyncReader;
 
 pub use async_trait::async_trait;
 
+/// How many times to try before admitting the pane is gone.
+const RECONNECT_ATTEMPTS: u32 = 8;
+const RECONNECT_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+const RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct RemoteReader {
     conn: Arc<RemoteConn>,
     /// Holds the socket before reactor registration; `None` after promotion.
@@ -40,6 +45,15 @@ pub struct RemoteReader {
     inbuf: Vec<u8>,
     /// Set once `ChildExited` has been seen and the decoded backlog is drained.
     finished: bool,
+    /// How many bytes at the front of `decoded` this side made up rather than
+    /// received.
+    ///
+    /// They must not count towards `received`, or the broker would replay from
+    /// the wrong place and silently skip real output. Injection only happens
+    /// while `decoded` is empty — the read loop hands back buffered output
+    /// before it ever touches the socket — so the synthetic bytes are always a
+    /// contiguous prefix.
+    synthetic_prefix: usize,
 }
 
 impl RemoteReader {
@@ -52,6 +66,7 @@ impl RemoteReader {
             decoded: VecDeque::new(),
             inbuf: Vec::new(),
             finished: false,
+            synthetic_prefix: 0,
         })
     }
 
@@ -67,12 +82,119 @@ impl RemoteReader {
     }
 
     /// Move as much as will fit from the decoded backlog into `buf`.
+    ///
+    /// This is also where delivery is counted. It has to be here rather than at
+    /// the socket: the broker replays from what we *took*, and anything sitting
+    /// in `decoded` or `inbuf` when the transport dies was never handed to the
+    /// grid, so it still has to come again.
     fn drain_into(&mut self, buf: &mut [u8]) -> usize {
         let n = self.decoded.len().min(buf.len());
         for (slot, byte) in buf.iter_mut().zip(self.decoded.drain(..n)) {
             *slot = byte;
         }
+        let synthetic = self.synthetic_prefix.min(n);
+        self.synthetic_prefix -= synthetic;
+        self.conn.note_received(n - synthetic);
         n
+    }
+
+    /// Put bytes of our own into the stream, excluded from delivery accounting.
+    fn inject(&mut self, bytes: &[u8]) {
+        self.decoded.extend(bytes);
+        self.synthetic_prefix += bytes.len();
+    }
+
+    /// Get the pane's connection back, blocking this reader until it is up.
+    ///
+    /// Parking here rather than returning an error is the whole mechanism:
+    /// `TerminalBytes::listen` has exactly two exits, `Ok(0)` and `Err`, and
+    /// both tear the pane down and kill the child. For a local pty that is
+    /// right — the master closing *is* the child going away. Over a network it
+    /// is not, and a pane whose process is running perfectly well on another
+    /// machine must not be closed because a packet went missing.
+    async fn reconnect(&mut self) -> Result<(), io::Error> {
+        self.conn.mark_transport_lost();
+        if !self.conn.can_reconnect() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                format!(
+                    "lost the connection to {} while its pane was still running, and this pane \
+                     has no way to reconnect",
+                    self.conn.host()
+                ),
+            ));
+        }
+        // Whatever was mid-flight belongs to a socket that no longer exists; a
+        // partial frame would resume mid-length and read payload as a header.
+        self.inbuf.clear();
+        self.async_fd = None;
+        self.pending = None;
+        self.announce_disconnected();
+
+        let mut delay = RECONNECT_INITIAL_DELAY;
+        for attempt in 1..=RECONNECT_ATTEMPTS {
+            tokio::time::sleep(delay).await;
+            // `reconnect` runs ssh, so it must not run on the async runtime.
+            let conn = self.conn.clone();
+            let result = tokio::task::spawn_blocking(move || conn.reconnect())
+                .await
+                .map_err(|e| io::Error::other(format!("reconnect task failed: {e}")))?;
+
+            match result {
+                Ok((socket, dropped)) => {
+                    socket.set_nonblocking(true)?;
+                    self.pending = Some(socket);
+                    self.on_reconnected(dropped);
+                    return Ok(());
+                },
+                Err(e) => {
+                    log::warn!(
+                        "reconnect to {} failed (attempt {attempt}/{RECONNECT_ATTEMPTS}): {e:#}",
+                        self.conn.host()
+                    );
+                    delay = (delay * 2).min(RECONNECT_MAX_DELAY);
+                },
+            }
+        }
+
+        // Out of attempts. Now — and only now — is this pane genuinely over, and
+        // the error is the honest report of why.
+        Err(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            format!(
+                "gave up reconnecting to {} after {RECONNECT_ATTEMPTS} attempts",
+                self.conn.host()
+            ),
+        ))
+    }
+
+    /// Tell the user, in the pane itself.
+    ///
+    /// There is no "pane disconnected" render path in this codebase, and adding
+    /// one is a Screen/Tab/Pane change out of proportion to the need. Synthetic
+    /// bytes go through the ordinary output path, so nothing else has to know.
+    fn announce_disconnected(&mut self) {
+        let notice = format!(
+            "\r\n\x1b[33m── disconnected from {} — reconnecting ──\x1b[0m\r\n",
+            self.conn.host()
+        );
+        self.inject(notice.as_bytes());
+    }
+
+    fn on_reconnected(&mut self, dropped: u64) {
+        if dropped == 0 {
+            let notice = "\x1b[32m── reconnected ──\x1b[0m\r\n";
+            self.inject(notice.as_bytes());
+            return;
+        }
+        // A replay with a hole cannot simply be continued: splicing a torn
+        // middle into the grid produces a corrupt screen that looks like real
+        // output. Clear it, say so, and make the application repaint.
+        let notice = format!(
+            "\x1b[2J\x1b[H\x1b[33m── reconnected; {dropped} bytes of output were lost ──\x1b[0m\r\n"
+        );
+        self.inject(notice.as_bytes());
+        self.conn.nudge_for_redraw();
     }
 
     /// Pull whole frames out of `inbuf`, routing each by kind. Returns whether
@@ -159,8 +281,9 @@ impl AsyncReader for RemoteReader {
             let n = match read {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
-                    self.conn.mark_transport_lost();
-                    return Err(e);
+                    log::warn!("remote pane read failed ({e}); trying to reconnect");
+                    self.reconnect().await?;
+                    continue;
                 },
                 Err(_would_block) => continue,
             };
@@ -168,22 +291,19 @@ impl AsyncReader for RemoteReader {
             if n == 0 {
                 // The socket hit EOF. What that means depends entirely on
                 // whether the broker told us why.
-                return match self.conn.child_exit() {
+                match self.conn.child_exit() {
                     Some(_) => {
                         self.finished = true;
-                        Ok(0)
+                        return Ok(0);
                     },
                     None => {
-                        self.conn.mark_transport_lost();
-                        Err(io::Error::new(
-                            io::ErrorKind::ConnectionReset,
-                            format!(
-                                "lost the connection to {} while its pane was still running",
-                                self.conn.host()
-                            ),
-                        ))
+                        // The pane is still running on the other machine; only
+                        // the path to it is gone. Go and get it back rather than
+                        // reporting an end that has not happened.
+                        self.reconnect().await?;
+                        continue;
                     },
-                };
+                }
             }
 
             self.inbuf.extend_from_slice(&chunk[..n]);

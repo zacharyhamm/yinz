@@ -91,6 +91,16 @@ pub enum ServerToBrokerMsg {
     Resize(WireWinsize),
     SignalChild(ChildSignal),
     Terminate,
+    /// Pick a pane back up on a fresh connection after the transport dropped.
+    ///
+    /// `received` is how many output bytes this side has actually taken
+    /// delivery of. The broker replays from exactly there, so a reconnect is a
+    /// continuation of the stream rather than a guess at one — the local grid is
+    /// a byte-stream consumer that already holds the pre-outage state.
+    Resume {
+        pane_token: String,
+        received: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,8 +111,19 @@ pub enum BrokerToServerMsg {
     },
     /// The child is running.
     ///
-    /// Carries no pid, deliberately — see `ChildSignal`.
-    Spawned,
+    /// Carries no pid, deliberately — see `ChildSignal`. The token is how the
+    /// pane is named on a later `Resume`; it is meaningful only to the broker
+    /// that issued it.
+    Spawned { pane_token: String },
+    /// The pane has been picked back up.
+    ///
+    /// `dropped` is how many output bytes were lost before the buffer could hold
+    /// them — non-zero means the replay has a hole in it, and the stream cannot
+    /// simply be continued.
+    Resumed { dropped: u64 },
+    /// The named pane is not one this broker still holds: it was never known, or
+    /// it was reclaimed while nobody was connected.
+    ResumeRefused { reason: String },
     SpawnFailed {
         kind: SpawnFailureKind,
         message: String,
