@@ -2914,6 +2914,11 @@ mod tests {
     /// subdirectory has no answer of its own until a fresh probe lands. The
     /// agent is in the checkout it was in a moment ago, and on screen the wait
     /// read as it losing its project and getting it back.
+    ///
+    /// The *branch* is not borrowed the same way, and that asymmetry is the
+    /// point: a folder below a checkout is as likely to be a worktree of it — on
+    /// its own branch — as a subdirectory of it, and nothing in what has been
+    /// probed says which. The project survives the wait; the branch waits.
     #[test]
     fn an_agent_in_a_subdirectory_keeps_the_project_of_its_checkout() {
         let mut state = state_with_panes();
@@ -2930,10 +2935,96 @@ mod tests {
             state.pane_projects().get(&3).map(String::as_str),
             Some("hocus")
         );
+        assert!(
+            state.pane_branches().get(&3).is_none(),
+            "but a branch is never borrowed from a folder above",
+        );
+    }
+
+    /// The reported bug. A worktree nested inside the checkout it came from is,
+    /// to everything that has only the probed folders to go on, the same shape
+    /// as a subdirectory of that checkout — so the stand-in that keeps a project
+    /// steady handed this pane the *primary's* branch, and the picker filed a
+    /// `topic` agent under `main` beside the agent really working there.
+    #[test]
+    fn a_worktree_nested_in_its_checkout_never_shows_the_primary_branch() {
+        let mut state = state_with_panes();
+        state.panes[0].cwd = Some(NESTED_WORKTREE.to_owned());
+        state
+            .repositories
+            .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "main"));
+
+        assert_eq!(
+            state.pane_branches().get(&3),
+            None,
+            "no answer is not the same as the answer from the folder above",
+        );
+
+        // And once the daemon has asked about the folder the pane is actually
+        // in, the real answer lands.
+        state.repositories.insert(
+            NESTED_WORKTREE.to_owned(),
+            worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
+        );
         assert_eq!(
             state.pane_branches().get(&3).map(String::as_str),
-            Some("topic"),
-            "the branch header follows the same stand-in"
+            Some("topic")
+        );
+    }
+
+    /// The narrowing is about the branch alone: a nested worktree is still the
+    /// same project as the checkout above it, and says so from the first
+    /// snapshot rather than after a round trip.
+    #[test]
+    fn a_nested_worktree_keeps_the_project_of_the_repository_above_it() {
+        let mut state = state_with_panes();
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        state.panes[0].cwd = Some(NESTED_WORKTREE.to_owned());
+        state
+            .repositories
+            .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "main"));
+
+        assert_eq!(
+            state.pane_projects().get(&3).map(String::as_str),
+            Some("hocus")
+        );
+    }
+
+    /// Two worktrees of one repository, nested the way this one keeps them:
+    /// one project header, and the branch headers doing all the work of telling
+    /// the two agents apart.
+    #[test]
+    fn nested_worktree_agents_group_under_their_own_branches() {
+        let mut state = idle_state();
+        state.set_panes(vec![
+            agent_in(3, "/work/hocus", 1),
+            agent_in(5, NESTED_WORKTREE, 2),
+        ]);
+        state.projects.insert(
+            "hocus".to_owned(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        state.repositories = BTreeMap::from([
+            ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
+            (
+                NESTED_WORKTREE.to_owned(),
+                worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
+            ),
+        ]);
+        settle(&mut state);
+
+        assert_eq!(
+            agent_entry_texts(&state),
+            [
+                "hocus",
+                "  main",
+                "  3  codex  running  tab 1",
+                "  topic",
+                "  5  codex  running  tab 2",
+            ]
         );
     }
 
@@ -3064,6 +3155,26 @@ mod tests {
         }
     }
 
+    /// A linked worktree of `primary`, as the daemon's probe would report it.
+    ///
+    /// Its own root and its own branch, sharing the primary's git directory —
+    /// which is what makes the two one project and the branch the only thing
+    /// telling their agents apart.
+    fn worktree_of(root: &str, primary: &str, branch: &str) -> projects::Repository {
+        projects::Repository {
+            root: root.to_owned(),
+            remote: None,
+            worktree_status: Some(projects::WorktreeStatus::Linked),
+            common_dir: Some(format!("{primary}/.git")),
+            branch: Some(branch.to_owned()),
+        }
+    }
+
+    /// Where this repository really keeps its worktrees: inside the checkout
+    /// they came from. Git puts them wherever it is asked to, and under the
+    /// primary is an ordinary place to ask for.
+    const NESTED_WORKTREE: &str = "/work/hocus/.claude/worktrees/topic";
+
     /// One turn of the whole loop: the daemon's snapshot reaches hocus *and*
     /// hocus-store, the store discovers projects from it and pushes the registry
     /// back. Discovery lives in the store now, so a test that only called
@@ -3098,14 +3209,25 @@ mod tests {
         probe: fn(&str) -> projects::Repository,
         focused: Option<u32>,
     ) {
-        let repositories: Vec<projects::Repository> = panes
+        let probed: Vec<(String, projects::Repository)> = panes
             .iter()
             .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.as_deref().map(probe))
+            .filter_map(|pane| {
+                let cwd = pane.cwd.clone()?;
+                let repository = probe(&cwd);
+                Some((cwd, repository))
+            })
             .collect();
-        state.repositories = repositories
-            .iter()
-            .map(|repository| (repository.root.clone(), repository.clone()))
+        // Keyed by the pane's folder, which is what the daemon keys it by —
+        // `finish_git_probe` inserts under the folder it asked about, not under
+        // the checkout root that answered. The two are the same folder only when
+        // a pane sits at the top of its checkout, and a fixture that always put
+        // them there was the reason the stand-in path below was never driven the
+        // way a session drives it.
+        state.repositories = probed.iter().cloned().collect();
+        let repositories: Vec<projects::Repository> = probed
+            .into_iter()
+            .map(|(_, repository)| repository)
             .collect();
         state.apply_poll(panes, agents::Activity::new(), focused);
         // The snapshot handler pushes the strip on every snapshot, not only the
@@ -4334,6 +4456,107 @@ mod tests {
             "the restarted daemon is heard once more"
         );
         assert!(state.panes.is_empty());
+    }
+
+    /// The same, reached the way a reloaded daemon really reaches it: it
+    /// announces itself with `AGENT_HELLO`, and the handshake is what has to drop
+    /// the watermark. Testing only `subscribe_to_agentd` left the wiring between
+    /// the two free to be deleted, and a hocus that ignores every snapshot for the
+    /// rest of the session shows a strip frozen at the moment the daemon reloaded.
+    #[test]
+    fn a_daemon_that_announces_itself_is_heard_again() {
+        let mut state = state_with_panes();
+        state.pipe(agent_snapshot(9));
+        assert_eq!(state.agent_seq, 9);
+
+        state.pipe(PipeMessage {
+            source: PipeSource::Plugin(1),
+            name: wire::AGENT_HELLO.to_owned(),
+            payload: None,
+            args: BTreeMap::new(),
+            is_private: true,
+        });
+
+        state.pipe(agent_snapshot_with(1, panes_with_agent()));
+        assert_eq!(state.agent_seq, 1, "the restarted daemon is merged again");
+        assert!(!state.panes.is_empty());
+    }
+
+    /// The two worktree agents as a daemon snapshot, with `focused` moved.
+    ///
+    /// Built with the folders keyed the way `finish_git_probe` keys them, and
+    /// with the nested layout, so this is the shape a real session produces.
+    fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Plugin(1),
+            name: wire::AGENT_SNAPSHOT.to_owned(),
+            payload: Some(
+                serde_json::to_string(&PollReply {
+                    panes: Some(vec![
+                        agent_in(3, "/work/hocus", 1),
+                        agent_in(5, NESTED_WORKTREE, 2),
+                    ]),
+                    activity: agents::Activity::new(),
+                    manual_kinds: BTreeMap::new(),
+                    repositories: BTreeMap::from([
+                        ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
+                        (
+                            NESTED_WORKTREE.to_owned(),
+                            worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
+                        ),
+                    ]),
+                    focused,
+                })
+                .expect("serialize"),
+            ),
+            args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
+            is_private: true,
+        }
+    }
+
+    /// The reported symptom, at the layer the user sees it: walking between two
+    /// agents must move the cursor and nothing else. Every snapshot replaces
+    /// `repositories` wholesale, so anything that churns the folders on a focus
+    /// change takes the branch headers with it.
+    #[test]
+    fn walking_between_worktree_agents_keeps_both_branch_headers() {
+        let mut state = idle_state();
+        settle(&mut state);
+
+        let headers = |state: &State| -> Vec<String> {
+            state
+                .current_strip()
+                .rows
+                .into_iter()
+                .filter_map(|row| match row {
+                    agents::StripRow::Branch(text) => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        state.pipe(nested_worktree_snapshot(1, Some(3)));
+        let expected = headers(&state);
+        assert_eq!(expected, ["  main", "  topic"], "both branches are known");
+        let branches = state.pane_branches();
+
+        // Onto the other agent, then onto the sidebar, which is no terminal pane
+        // at all and reports no focus.
+        for (seq, focused) in [(2, Some(5)), (3, None), (4, Some(3))] {
+            state.pipe(nested_worktree_snapshot(seq, focused));
+            assert_eq!(
+                headers(&state),
+                expected,
+                "the branch headers moved on a focus change to {focused:?}",
+            );
+            assert_eq!(state.pane_branches(), branches);
+        }
+
+        assert_eq!(
+            state.last_strip.focused,
+            Some(3),
+            "the focus itself did move — this is not a test that nothing happened",
+        );
     }
 
     /// A todo change is a write and an answer, in that order, with nothing in

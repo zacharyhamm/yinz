@@ -1091,6 +1091,39 @@ mod tests {
         );
     }
 
+    /// An agent whose folder has not been asked about yet has no branch to
+    /// group under, and waits under the header that says so rather than joining
+    /// whichever branch happens to be nearby. The shape matters: this is what
+    /// the picker draws for the round trip between a pane appearing in a
+    /// worktree and Git answering about it, and it must not read as a claim.
+    #[test]
+    fn an_agent_whose_branch_is_not_known_yet_waits_under_its_own_header() {
+        let panes = vec![
+            in_folder(3, "codex", "/work/hocus", 1),
+            in_folder(4, "claude", "/work/hocus/.claude/worktrees/topic", 2),
+        ];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[(3, "hocus"), (4, "hocus")]),
+            // Pane 4's folder is in the project, but no probe has answered for
+            // it yet.
+            &branches(&[(3, "main")]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                project("hocus"),
+                branch("main"),
+                agent(3, "  3  codex  running  tab 1"),
+                branch("no branch"),
+                agent(4, "  4  claude  running  tab 2"),
+            ],
+        );
+    }
+
     #[test]
     fn tab_projects_agree_only_when_one_project_owns_the_tab() {
         let global = AgentPane {

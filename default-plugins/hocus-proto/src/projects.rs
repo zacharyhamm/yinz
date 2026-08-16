@@ -986,6 +986,32 @@ mod tests {
         }
     }
 
+    /// Git puts a worktree wherever it is asked to, and inside the checkout it
+    /// came from is an ordinary place to ask for. Discovery makes no second
+    /// project out of one — the containing root already owns the folder — so the
+    /// two agents share a project header and only their branches tell them
+    /// apart. That is what makes the branch the thing worth getting right.
+    #[test]
+    fn a_worktree_nested_in_its_primary_checkout_is_one_project() {
+        let mut projects = Registry::new();
+        let primary = git("/work/hocus", None, WorktreeStatus::Primary);
+        let nested = git(
+            "/work/hocus/.claude/worktrees/topic",
+            None,
+            WorktreeStatus::Linked,
+        );
+
+        discover(&mut projects, &[primary.clone(), nested.clone()]);
+
+        assert_eq!(projects.len(), 1, "one project: {projects:?}");
+        let project = projects.values().next().expect("a project");
+        assert_eq!(project.root, "/work/hocus");
+        assert_eq!(
+            for_cwd(&projects, &nested.root).map(|p| &p.name),
+            Some(&project.name)
+        );
+    }
+
     #[test]
     fn worktrees_with_the_same_remote_are_one_project() {
         let mut projects = Registry::new();
