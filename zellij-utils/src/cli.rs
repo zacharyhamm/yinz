@@ -1036,6 +1036,11 @@ pub enum CliAction {
         /// Start the command suspended, only running it after the you first press ENTER
         #[clap(short, long, requires("command"))]
         start_suspended: bool,
+        /// Run the pane on another machine over ssh, given as an ssh destination
+        /// (a host, an alias from your ssh config, or user@host). Needs a zellij
+        /// of the same version on its PATH there.
+        #[clap(long, value_parser, requires("command"))]
+        remote_host: Option<String>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
         #[clap(long, value_parser)]

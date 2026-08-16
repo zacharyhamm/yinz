@@ -28,6 +28,28 @@ fn main() {
         zellij_server::pty_host::run_pty_host(label);
     }
 
+    // A broker is reached over ssh, which runs a *login-less* command with a
+    // minimal environment, so it branches here for the same reasons as the
+    // supervisor. `ensure` must also keep stdout clean — its one JSON line is
+    // the contract the connecting side parses.
+    #[cfg(unix)]
+    if let Some(mode) = zellij_server::pty_host::remote::broker::broker_invocation() {
+        let result = match mode.as_str() {
+            "ensure" => zellij_server::pty_host::remote::broker::ensure(),
+            "serve" => zellij_server::pty_host::remote::broker::serve_forever(),
+            other => Err(zellij_utils::errors::prelude::anyhow!(
+                "unknown --pty-broker mode {other:?}, expected 'ensure' or 'serve'"
+            )),
+        };
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
+            },
+        }
+    }
+
     configure_logger();
     create_config_and_cache_folders();
     let opts = CliArgs::parse();
@@ -119,6 +141,9 @@ fn main() {
 
             let command_cli_action = CliAction::NewPane {
                 command,
+                // `zellij run`/`edit` stay local for now; remote panes are
+                // reached through `zellij action new-pane --remote-host`.
+                remote_host: None,
                 plugin: None,
                 direction,
                 cwd,
@@ -176,6 +201,7 @@ fn main() {
             let unblock_condition = None;
             let command_cli_action = CliAction::NewPane {
                 command: vec![],
+                remote_host: None,
                 plugin: Some(url),
                 direction: None,
                 cwd,

@@ -1061,6 +1061,7 @@ pub fn send_cli_new_pane_action_with_default_parameters() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: None,
         command: vec![],
         plugin: None,
@@ -1177,6 +1178,7 @@ pub fn send_cli_new_pane_action_with_split_direction() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -1238,6 +1240,7 @@ pub fn send_cli_new_pane_action_with_command_and_cwd() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: Some(Direction::Right),
         command: vec!["htop".into()],
         plugin: None,
@@ -1307,6 +1310,7 @@ pub fn send_cli_new_pane_action_with_floating_pane_and_coordinates() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: Some(Direction::Right),
         command: vec!["htop".into()],
         plugin: None,

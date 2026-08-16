@@ -27,6 +27,7 @@ use std::{
 };
 
 use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
@@ -2187,6 +2188,42 @@ impl Pty {
             Some(Run::Plugin(_)) => Ok(None),
         }
     }
+    /// Deliver a signal to a pane's child, wherever that child lives.
+    ///
+    /// The remote check comes first, and deliberately so. For a remote pane
+    /// `id_to_child_pid` holds nothing usable, and a pid from another machine is
+    /// worse than no pid at all: pid spaces are per-machine, so it names some
+    /// unrelated *local* process, and a `SIGKILL` meant for a pane lands on it.
+    /// Asking "is this pane remote" before "what is its pid" is what keeps that
+    /// from being possible.
+    fn signal_pane_child(&self, terminal_id: u32, signal: ChildSignal) {
+        let err_context = || format!("failed to send {signal:?} to pane {terminal_id}");
+        let os_input = match self.bus.os_input.as_ref() {
+            Some(os_input) => os_input,
+            None => return,
+        };
+        if os_input.is_remote_pane(terminal_id) {
+            os_input
+                .signal_remote_child(terminal_id, signal)
+                .with_context(err_context)
+                .non_fatal();
+            return;
+        }
+        match self.id_to_child_pid.get(&terminal_id) {
+            Some(&child_pid) => {
+                let result = match signal {
+                    ChildSignal::Hup => os_input.kill(child_pid),
+                    ChildSignal::Int => os_input.send_sigint(child_pid),
+                    ChildSignal::Kill => os_input.force_kill(child_pid),
+                };
+                result.with_context(err_context).non_fatal();
+            },
+            None => {
+                log::warn!("Terminal pane {terminal_id} not found or not running");
+            },
+        }
+    }
+
     pub fn close_pane(&mut self, id: PaneId) -> Result<()> {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
@@ -2194,17 +2231,10 @@ impl Pty {
                 if let Some(handle) = self.task_handles.remove(&id) {
                     handle.abort();
                 }
-                if let Some(child_pid) = self.id_to_child_pid.remove(&id) {
-                    let err_context = || format!("failed to kill child processes for pane {id}");
-                    self.bus
-                        .os_input
-                        .as_mut()
-                        .with_context(err_context)
-                        .fatal()
-                        .kill(child_pid)
-                        .with_context(err_context)
-                        .non_fatal();
-                }
+                // Signal before forgetting the pid: the helper needs it, and for
+                // a remote pane there is no pid to forget in the first place.
+                self.signal_pane_child(id, ChildSignal::Hup);
+                self.id_to_child_pid.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
                 self.terminal_cmds.remove(&id);
@@ -2842,21 +2872,9 @@ impl Pty {
     }
 
     pub fn send_sigint_to_pane(&self, pane_id: PaneId) {
-        let err_context = || format!("failed to send SIGINT to pane {:?}", pane_id);
-
         match pane_id {
             PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    self.bus
-                        .os_input
-                        .as_ref()
-                        .context("no OS I/O interface found")
-                        .and_then(|os_input| os_input.send_sigint(child_pid))
-                        .with_context(err_context)
-                        .non_fatal();
-                } else {
-                    log::warn!("Terminal pane {} not found or not running", terminal_id);
-                }
+                self.signal_pane_child(terminal_id, ChildSignal::Int);
             },
             PaneId::Plugin(plugin_id) => {
                 log::warn!("Cannot send SIGINT to plugin pane {}", plugin_id);
@@ -2865,21 +2883,9 @@ impl Pty {
     }
 
     pub fn send_sigkill_to_pane(&self, pane_id: PaneId) {
-        let err_context = || format!("failed to send SIGKILL to pane {:?}", pane_id);
-
         match pane_id {
             PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    self.bus
-                        .os_input
-                        .as_ref()
-                        .context("no OS I/O interface found")
-                        .and_then(|os_input| os_input.force_kill(child_pid))
-                        .with_context(err_context)
-                        .non_fatal();
-                } else {
-                    log::warn!("Terminal pane {} not found or not running", terminal_id);
-                }
+                self.signal_pane_child(terminal_id, ChildSignal::Kill);
             },
             PaneId::Plugin(plugin_id) => {
                 log::warn!("Cannot send SIGKILL to plugin pane {}", plugin_id);
@@ -2890,6 +2896,21 @@ impl Pty {
     pub fn get_pane_pid(&self, pane_id: PaneId) -> GetPanePidResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // A remote pane's pid is meaningful only on its own machine.
+                // Handing it to a plugin invites exactly the mistake this whole
+                // boundary exists to prevent — the plugin would `kill` or `stat`
+                // whatever local process happens to hold that number.
+                if self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .is_some_and(|os_input| os_input.is_remote_pane(terminal_id))
+                {
+                    return GetPanePidResponse::Err(format!(
+                        "Terminal pane {terminal_id} runs on another machine, so it has no pid \
+                         meaningful on this one"
+                    ));
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     GetPanePidResponse::Ok(child_pid as i32)
                 } else {

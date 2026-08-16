@@ -134,6 +134,7 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -202,6 +203,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: None,
         command: vec![],
         plugin: None,
@@ -321,6 +323,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -388,6 +391,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         pty_receiver
     );
     let cli_new_pane_action = CliAction::NewPane {
+        remote_host: None,
         direction: None,
         command: vec!["ls".into()],
         plugin: None,
