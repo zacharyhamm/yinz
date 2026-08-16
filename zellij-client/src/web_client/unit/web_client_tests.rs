@@ -25,10 +25,64 @@ use zellij_utils::{
     data::LayoutInfo,
     ipc::{ClientToServerMsg, ServerToClientMsg},
     pane_size::Size,
-    web_authentication_tokens::{create_token, delete_db, revoke_token},
+    web_authentication_tokens as auth_tokens,
 };
 
 use serial_test::serial;
+
+// A temporary directory holding this test process's private auth-token database and config file.
+//
+// These tests delete the token database wholesale between tests, and token names are unique per
+// database. Against the machine-global default path that is fine within one process — every test
+// here is `#[serial]` — but not across processes: a second test run (another worktree, a
+// rust-analyzer test run, a dev web server) will unlink the file mid-query, surfacing as
+// `SQLITE_READONLY_DIRECTORY`, `SQLITE_IOERR`, or a spurious 401 when a session cookie is
+// invalidated. Pointing each process at its own directory removes the shared resource entirely.
+lazy_static::lazy_static! {
+    static ref TEST_TMP_DIR: tempfile::TempDir = {
+        let dir = tempfile::Builder::new()
+            .prefix("zellij-web-client-tests-")
+            .tempdir()
+            .expect("failed to create temp dir for tests");
+        std::env::set_var(
+            zellij_utils::web_authentication_tokens::DB_PATH_ENV_VAR,
+            dir.path().join("tokens.db"),
+        );
+        dir
+    };
+}
+
+/// Ensures [`TEST_TMP_DIR`] exists and the DB path override is set before the database is touched.
+fn ensure_isolated_db() {
+    lazy_static::initialize(&TEST_TMP_DIR);
+}
+
+/// Per-process path for the config file the test servers are pointed at, replacing a single
+/// `temp_dir()/test_config.kdl` shared by every test and every concurrent run.
+fn test_config_path() -> std::path::PathBuf {
+    ensure_isolated_db();
+    TEST_TMP_DIR.path().join("test_config.kdl")
+}
+
+// Thin wrappers that shadow the `web_authentication_tokens` imports, so that every existing call
+// site in this file routes through `ensure_isolated_db()` without needing to be touched.
+fn delete_db() -> Result<(), zellij_utils::web_authentication_tokens::TokenError> {
+    ensure_isolated_db();
+    auth_tokens::delete_db()
+}
+
+fn create_token(
+    name: Option<String>,
+    read_only: bool,
+) -> Result<(String, String), zellij_utils::web_authentication_tokens::TokenError> {
+    ensure_isolated_db();
+    auth_tokens::create_token(name, read_only)
+}
+
+fn revoke_token(name: &str) -> Result<bool, zellij_utils::web_authentication_tokens::TokenError> {
+    ensure_isolated_db();
+    auth_tokens::revoke_token(name)
+}
 
 mod tests {
     use super::*;
@@ -46,7 +100,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
 
         let server_handle = tokio::spawn(async move {
             serve_web_client(
@@ -154,7 +208,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
 
         let server_handle = tokio::spawn(async move {
             serve_web_client(
@@ -1193,7 +1247,7 @@ mod tests {
         let port = addr.port();
         let ip = addr.ip();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
         let server_handle = tokio::spawn(async move {
             serve_web_client(
                 config,
@@ -1288,7 +1342,7 @@ mod tests {
         let port = addr.port();
         let ip = addr.ip();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
         let server_handle = tokio::spawn(async move {
             serve_web_client(
                 config,
@@ -1453,7 +1507,7 @@ mod tests {
         let port = addr.port();
         let ip = addr.ip();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
         let server_handle = tokio::spawn(async move {
             serve_web_client(
                 config,
@@ -1559,7 +1613,7 @@ mod tests {
         let port = addr.port();
         let ip = addr.ip();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
         let server_handle = tokio::spawn(async move {
             serve_web_client(
                 config,
@@ -2395,7 +2449,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
 
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
         let server_handle = tokio::spawn(serve_web_client(
             config,
             options,
@@ -2704,7 +2758,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
+        let temp_config_path = test_config_path();
 
         let server_handle = tokio::spawn(async move {
             serve_web_client(

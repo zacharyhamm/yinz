@@ -63,6 +63,10 @@ signal-hook = { workspace = true }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
+# The plugin tests share process-global state (`ZELLIJ_SESSION_NAME` and the directories derived
+# from it), so they are serialized against each other with `#[serial(plugin_tests)]`. Only that
+# group is serialized; the rest of the crate's tests still run in parallel alongside it.
+serial_test = "3.0"
 tempfile = "3.2.0"
 wasmi = { version = "1.1.0", features = ["std"] }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
