@@ -1035,3 +1035,192 @@ pub fn guest_modal_no_modal_passes_input_through() {
         Some(crate::tab::AdjustedInput::WriteBytesToTerminal(_))
     ));
 }
+
+// -- pty ingest batching ----------------------------------------------------------------------
+//
+// `handle_pty_bytes` forwards whole runs of non-escape bytes at once while the kitty interceptor
+// is between sequences, instead of driving the state machine a byte at a time. The result has to
+// be identical no matter where a pty read happens to be cut, so these feed the same bytes at
+// every chunk size and compare the pane that comes out.
+
+fn make_pane_for_ingest() -> TerminalPane {
+    let mut fake_win_size = PaneGeom::default();
+    fake_win_size.cols.set_inner(121);
+    fake_win_size.rows.set_inner(20);
+    TerminalPane::new(
+        1,
+        fake_win_size,
+        Style::default(),
+        0,
+        String::new(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(Some(SizeInPixels {
+            width: 8,
+            height: 21,
+        }))),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        None,
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    )
+}
+
+/// Everything that distinguishes one ingested stream from another: what landed on the grid, how
+/// many kitty commands were taken, and whether anything was left queued for a later drain.
+fn ingest(bytes: &[u8], chunk_size: usize) -> (String, u64, Vec<u8>) {
+    let mut pane = make_pane_for_ingest();
+    for chunk in bytes.chunks(chunk_size) {
+        pane.handle_pty_bytes(Vec::from(chunk));
+    }
+    (
+        pane.grid.dump_screen(false),
+        pane.grid.kitty_commands_handled(),
+        pane.pending_pty_input.iter().copied().collect(),
+    )
+}
+
+const INGEST_CORPUS: &[u8] = b"plain text \x1b[31mred\x1b[0m more text\r\n\
+        \x1b_Gq=2,a=d,d=A\x1b\\ after the apc\r\n\
+        \x1b]0;a title\x07 and an osc\r\n\
+        \x1b\x1b[1mbold after a doubled escape\x1b[0m\r\n\
+        \x1b_Xnot a kitty sequence\x1b\\ tail";
+
+#[test]
+pub fn pty_ingest_puts_the_expected_text_on_the_grid() {
+    // The absolute oracle for the tests below, which only compare chunkings against each other:
+    // a mistake in the batch loop that fires at every chunk size would be invisible to them.
+    let (screen, kitty_commands_handled, pending) = ingest(INGEST_CORPUS, INGEST_CORPUS.len());
+
+    let lines: Vec<&str> = screen.lines().map(|line| line.trim_end()).collect();
+    assert_eq!(
+        &lines[..5],
+        &[
+            "plain text red more text",
+            " after the apc",
+            " and an osc",
+            "bold after a doubled escape",
+            " tail",
+        ],
+        "the escape sequences should have been consumed, not printed"
+    );
+    assert_eq!(
+        kitty_commands_handled, 1,
+        "the kitty sequence should have been captured rather than forwarded to vte"
+    );
+    assert!(pending.is_empty(), "nothing should be left queued");
+}
+
+#[test]
+pub fn pty_ingest_is_identical_however_the_bytes_are_chunked() {
+    let whole = ingest(INGEST_CORPUS, INGEST_CORPUS.len());
+    for chunk_size in [1, 2, 3, 5, 13, 64, INGEST_CORPUS.len()] {
+        assert_eq!(
+            ingest(INGEST_CORPUS, chunk_size),
+            whole,
+            "chunk size {}",
+            chunk_size
+        );
+    }
+}
+
+#[test]
+pub fn pty_ingest_handles_escapes_at_the_edges_of_a_read() {
+    // the batch loop finds the run of ordinary bytes before the next escape; these are the inputs
+    // where that run is empty, is the whole buffer, or ends the buffer
+    let inputs: Vec<&[u8]> = vec![
+        b"\x1b",
+        b"\x1bA",
+        b"A\x1b",
+        b"\x1b\x1b",
+        b"\x1b\x1b\x1b\x1b",
+        b"no escapes here at all",
+        b"\x1b_Gq=2,a=d,d=A\x1b\\",
+        b"A\x1b_Gq=2,a=d,d=A\x1b\\B\x1b_Gq=2,a=d,d=B\x1b\\C",
+    ];
+    // two captured sequences, and only the surrounding letters reach the grid
+    let (screen, kitty_commands_handled, _) = ingest(inputs[7], usize::MAX);
+    assert_eq!(screen.lines().next().unwrap().trim_end(), "ABC");
+    assert_eq!(kitty_commands_handled, 2);
+
+    for input in inputs {
+        let whole = ingest(input, input.len().max(1));
+        for chunk_size in 1..=input.len().max(1) {
+            assert_eq!(
+                ingest(input, chunk_size),
+                whole,
+                "input {:?} at chunk size {}",
+                input,
+                chunk_size
+            );
+        }
+    }
+}
+
+#[test]
+pub fn a_kitty_sequence_split_across_two_reads_is_still_captured() {
+    // the interceptor is mid-sequence when the second read arrives, so that read must not be
+    // batched as a run of ordinary bytes
+    let mut pane = make_pane_for_ingest();
+    pane.handle_pty_bytes(Vec::from(&b"A\x1b_Gq=2,a=d,"[..]));
+    assert_eq!(
+        pane.grid.kitty_commands_handled(),
+        0,
+        "the sequence has not terminated yet"
+    );
+
+    pane.handle_pty_bytes(Vec::from(&b"d=A\x1b\\B"[..]));
+
+    assert_eq!(pane.grid.kitty_commands_handled(), 1);
+    assert_eq!(
+        pane.grid
+            .dump_screen(false)
+            .lines()
+            .next()
+            .unwrap()
+            .trim_end(),
+        "AB",
+        "only the letters around the sequence should reach the grid"
+    );
+
+    // and the split delivery is indistinguishable from a single one
+    let (whole_screen, whole_commands, _) = ingest(b"A\x1b_Gq=2,a=d,d=A\x1b\\B", usize::MAX);
+    assert_eq!(pane.grid.dump_screen(false), whole_screen);
+    assert_eq!(pane.grid.kitty_commands_handled(), whole_commands);
+}
+
+#[test]
+pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_escape() {
+    // The batch loop advances the index by a whole run at once, and the interceptor's swallow
+    // branch then re-queues from `index - 1` - the escape it just consumed. This is the input
+    // that puts a batched run between the two: an OSC that has to be forwarded to the host, a run
+    // of ordinary bytes, and then a kitty sequence whose opening escape triggers the flush.
+    let mut pane = make_pane_for_ingest();
+    pane.handle_pty_bytes(Vec::from(
+        &b"\x1b]10;?\x07plain\x1b_Gq=2,a=d,d=A\x1b\\tail"[..],
+    ));
+
+    assert_eq!(
+        pane.drain_forwarded_queries().len(),
+        1,
+        "the OSC 10 query should have been forwarded to the host"
+    );
+    assert_eq!(
+        pane.drain_pending_pty_input(),
+        b"plain\x1b_Gq=2,a=d,d=A\x1b\\tail".to_vec(),
+        "the batched run vte had not consumed yet, followed by everything from the kitty \
+         sequence's escape onwards, must be replayed after the reply"
+    );
+    assert_eq!(
+        pane.grid.kitty_commands_handled(),
+        0,
+        "the kitty sequence was queued, not handled, so it is not lost"
+    );
+}
