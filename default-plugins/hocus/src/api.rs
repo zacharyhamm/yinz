@@ -4,8 +4,8 @@
 //! Nothing in this module calls the Zellij host, so it is all unit-testable on
 //! the host triple (see `make test`).
 
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::tools::{self, ToolCall};
@@ -261,6 +261,76 @@ pub fn request_body(cfg: &Config, transcript: &[Message], allow_tools: bool) -> 
     request_body_with_project(cfg, transcript, allow_tools, None)
 }
 
+/// The request as it goes on the wire.
+///
+/// Borrowed rather than built with `json!`, because the alternative costs the
+/// transcript twice over at once. A `serde_json::Value` tree clones every
+/// message's content and boxes every node, and it has to be alive at the same
+/// moment as both the transcript it was built from and the bytes serialized out
+/// of it. Wasm linear memory never shrinks — there is no `memory.shrink` — so
+/// the momentary peak, not the resting size, is what the host's memory limiter
+/// sees and traps on. Serializing borrowed data straight to bytes skips the
+/// middle copy entirely.
+#[derive(Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    stream: bool,
+    messages: Vec<WireMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<serde_json::Value>,
+}
+
+/// One message, in whichever of the three shapes the endpoint expects. An enum
+/// rather than one struct of optional fields because the shapes disagree about
+/// what "absent" means: a tool result omitting `tool_call_id` is malformed and
+/// must send `null`, while a plain message must not carry the key at all.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireMessage<'a> {
+    /// `Cow` because the system message is built here, while every transcript
+    /// content is borrowed from the transcript.
+    Text {
+        role: &'static str,
+        content: Cow<'a, str>,
+    },
+    /// `content` is present-and-null — the unit serializes to `null` — rather
+    /// than skipped: ours is a human-readable summary for the transcript, and
+    /// the `tool_calls` array is the real payload.
+    Calls {
+        role: &'static str,
+        content: (),
+        tool_calls: Vec<WireToolCall<'a>>,
+    },
+    ToolResult {
+        role: &'static str,
+        tool_call_id: Option<&'a str>,
+        content: &'a str,
+    },
+}
+
+#[derive(Serialize)]
+struct WireToolCall<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: WireFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct WireFunction<'a> {
+    name: &'a str,
+    arguments: &'a str,
+}
+
+impl<'a> WireMessage<'a> {
+    fn text(role: &'static str, content: impl Into<Cow<'a, str>>) -> Self {
+        WireMessage::Text {
+            role,
+            content: content.into(),
+        }
+    }
+}
+
 pub fn request_body_with_project(
     cfg: &Config,
     transcript: &[Message],
@@ -268,7 +338,7 @@ pub fn request_body_with_project(
     project: Option<(&str, &str)>,
 ) -> Vec<u8> {
     let send_tools = cfg.tools && allow_tools;
-    let mut messages: Vec<serde_json::Value> = Vec::with_capacity(transcript.len() + 1);
+    let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
     let mut system = if cfg.tools {
         Some(match &cfg.system_prompt {
             Some(custom) => format!("{TOOL_FIRST_PROMPT}\n\n{custom}"),
@@ -295,64 +365,64 @@ pub fn request_body_with_project(
         }
     }
     if let Some(system) = system {
-        messages.push(json!({ "role": "system", "content": system }));
+        messages.push(WireMessage::text("system", system));
     }
     for message in transcript {
         match message.role {
-            Role::User => messages.push(json!({ "role": "user", "content": message.content })),
+            Role::User => messages.push(WireMessage::text("user", &message.content)),
             // The tool call the model asked for. `content` holds our own
             // human-readable summary for the transcript, so it is deliberately
             // not sent - the tool_calls array is the real payload.
-            Role::Assistant if !message.tool_calls.is_empty() => messages.push(json!({
-                "role": "assistant",
-                "content": serde_json::Value::Null,
-                "tool_calls": message.tool_calls.iter().map(tool_call_json).collect::<Vec<_>>(),
-            })),
+            Role::Assistant if !message.tool_calls.is_empty() => {
+                messages.push(WireMessage::Calls {
+                    role: "assistant",
+                    content: (),
+                    tool_calls: message.tool_calls.iter().map(wire_tool_call).collect(),
+                })
+            },
             // An empty assistant message is the streaming placeholder, which has
             // nothing to say yet.
             Role::Assistant if !message.content.is_empty() => {
-                messages.push(json!({ "role": "assistant", "content": message.content }))
+                messages.push(WireMessage::text("assistant", &message.content))
             },
             // Every tool call must be answered or the next request is malformed,
             // so this arm has no content-based skip.
-            Role::Tool => messages.push(json!({
-                "role": "tool",
-                "tool_call_id": message.tool_call_id,
-                "content": message.content,
-            })),
+            Role::Tool => messages.push(WireMessage::ToolResult {
+                role: "tool",
+                tool_call_id: message.tool_call_id.as_deref(),
+                content: &message.content,
+            }),
             // Error and Notice lines are our own UI, not conversation - sending
             // them back would have the model apologise for our HTTP failures.
             _ => continue,
         }
     }
 
-    let mut body = json!({
-        "model": cfg.model,
-        "stream": true,
-        "messages": messages,
-    });
-    if send_tools {
-        body["tools"] = tools::specs();
-    }
+    let body = ChatRequest {
+        model: &cfg.model,
+        stream: true,
+        messages,
+        tools: send_tools.then(tools::specs),
+    };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
 }
 
-fn tool_call_json(call: &ToolCall) -> serde_json::Value {
+fn wire_tool_call(call: &ToolCall) -> WireToolCall<'_> {
     // `arguments` is echoed back verbatim, and providers 400 with "arguments
     // must be valid json" on anything that is not a JSON object. A no-argument
     // call commonly streams as `""`, which dispatch accepts (see
     // `tools::Args::parse`) but the next request would be rejected for.
     let valid =
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments).is_ok();
-    json!({
-        "id": call.id,
-        "type": "function",
-        "function": {
-            "name": call.name,
-            "arguments": if valid { call.arguments.as_str() } else { "{}" },
+    WireToolCall {
+        id: &call.id,
+        kind: "function",
+        function: WireFunction {
+            name: &call.name,
+            arguments: if valid { call.arguments.as_str() } else { "{}" },
         },
-    })
+    }
 }
 
 /// Best-effort human-readable message from a non-2xx response body.
@@ -723,6 +793,7 @@ struct ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
@@ -1438,6 +1509,54 @@ mod tests {
         assert_eq!(
             body["messages"],
             json!([{"role": "tool", "tool_call_id": "call_1", "content": ""}])
+        );
+    }
+
+    /// Every message shape in one transcript, pinned against the literal wire
+    /// form. Each is built by its own arm, and they disagree about what an
+    /// absent field looks like: the tool-call message must send `content: null`,
+    /// while the plain ones must not carry `tool_calls` at all.
+    #[test]
+    fn request_body_writes_each_message_shape_whole() {
+        let transcript = [
+            Message::user("open htop"),
+            Message::assistant("On it."),
+            Message::tool_calls(vec![call("call_1", "new_pane", r#"{"command":"htop"}"#)]),
+            Message::tool_result("call_1", "opened"),
+        ];
+        assert_eq!(
+            body_value(&test_config(), &transcript)["messages"],
+            json!([
+                {"role": "user", "content": "open htop"},
+                {"role": "assistant", "content": "On it."},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "new_pane", "arguments": r#"{"command":"htop"}"#},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "opened"},
+            ])
+        );
+    }
+
+    /// A tool result carries `tool_call_id: Option<String>`, and a `None` has to
+    /// go out as `null` rather than as an empty string or a missing key — the
+    /// endpoint rejects a tool message with no id field at all, and `""` would
+    /// claim to answer a call named `""`.
+    #[test]
+    fn a_tool_result_with_no_call_id_sends_null_rather_than_dropping_the_field() {
+        let transcript = [Message {
+            role: Role::Tool,
+            content: "orphaned".to_owned(),
+            ..Default::default()
+        }];
+        assert_eq!(
+            body_value(&test_config(), &transcript)["messages"],
+            json!([{"role": "tool", "tool_call_id": null, "content": "orphaned"}])
         );
     }
 
