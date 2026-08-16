@@ -937,6 +937,21 @@ pub fn plan_set_done(
     Ok((mutations, change))
 }
 
+/// Plan changing an item's text.
+///
+/// One update over the single row the id names — ids are unique in a list, so no
+/// root scoping is needed beyond confirming the item is in this list at all.
+pub fn plan_edit(list: &List, id: u64, text: &str) -> Result<(Vec<Mutation>, String), String> {
+    let text = clean_text(text)?;
+    if find_text(&list.items, id).is_none() {
+        return Err(format!("no todo item {id} in this project; call todo_list"));
+    }
+    let mutation = Mutation::update("todo", Pred::eq("id", id))
+        .set("text", text.clone())
+        .build();
+    Ok((vec![mutation], text))
+}
+
 /// Plan moving a project's list to a new root.
 ///
 /// One update over every row of the old root. The old file-backed version had to
@@ -1361,6 +1376,39 @@ mod tests {
                 .set("done", false)
                 .build()
         );
+    }
+
+    #[test]
+    fn planning_an_edit_writes_one_row() {
+        let list = List {
+            next_id: 2,
+            items: vec![item(1, "old text", vec![])],
+        };
+        let (mutations, text) = plan_edit(&list, 1, "new text").expect("planned");
+        assert_eq!(text, "new text");
+        assert_eq!(
+            mutations,
+            vec![Mutation::update("todo", Pred::eq("id", 1u64))
+                .set("text", "new text")
+                .build()]
+        );
+    }
+
+    #[test]
+    fn planning_an_edit_rejects_an_unknown_id() {
+        let list = List::default();
+        let error = plan_edit(&list, 7, "text").expect_err("no such item");
+        assert!(error.contains("no todo item 7 in this project"), "{error}");
+    }
+
+    #[test]
+    fn planning_an_edit_rejects_text_that_is_too_long() {
+        let list = List {
+            next_id: 2,
+            items: vec![item(1, "old text", vec![])],
+        };
+        let long = "x".repeat(MAX_TEXT + 1);
+        assert!(plan_edit(&list, 1, &long).is_err());
     }
 
     #[test]
