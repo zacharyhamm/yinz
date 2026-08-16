@@ -172,6 +172,38 @@ fn handshake(reader: &mut UnixStream, wire: &Wire) -> Result<()> {
     )
 }
 
+/// What the quit callback talks to, before and after the session exists.
+///
+/// One lock rather than two slots. With the exit and the session behind separate
+/// locks the callback can find no session, the registration can find no exit,
+/// and each concludes the other will deal with it.
+enum PaneSlot {
+    /// No session yet. `Some(status)` if the child got here first.
+    Pending(Option<Option<i32>>),
+    Live(Arc<PaneSession>),
+}
+
+/// Tell the server the child exited, if that can be said yet, and only once.
+///
+/// Called from both things that might learn it last: the quit callback, and the
+/// output pump reaching the end of the pty. Whichever arrives second sends.
+fn report_exit_if_complete(session: &PaneSession) {
+    let Some(status) = session.exit_is_reportable() else {
+        return;
+    };
+    // Nobody is listening. Deliberately without claiming: the resume is what
+    // will tell the next server, and it needs the right to send still going.
+    let Some(wire) = session.wire() else {
+        return;
+    };
+    if !session.claim_exit_report() {
+        return;
+    }
+    send(&wire, &BrokerToServerMsg::ChildExited { status })
+        .context("failed to report a remote child's exit")
+        .non_fatal();
+}
+
 fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
@@ -216,21 +248,27 @@ fn start_pane(
     };
 
     let token = new_host_id();
-    // The session has to exist before the quit callback can fire, so the exit is
-    // recorded against it rather than lost between spawn and registration.
-    let session_slot: Arc<Mutex<Option<Arc<PaneSession>>>> = Arc::new(Mutex::new(None));
+    // `finish` starts the thread that watches for the child, so the callback is
+    // live from here on — before there is a session to record against. A child
+    // that exits in that window leaves its status in `Pending`, and the
+    // registration below picks it up.
+    let session_slot = Arc::new(Mutex::new(PaneSlot::Pending(None)));
     let cb_slot = session_slot.clone();
     let spawned = pending.finish(Box::new(move |_pane_id, status, _cmd| {
-        if let Ok(slot) = cb_slot.lock() {
-            if let Some(session) = slot.as_ref() {
-                session.set_child_exit(status);
-                if let Some(wire) = session.wire() {
-                    send(&wire, &BrokerToServerMsg::ChildExited { status })
-                        .context("failed to report a remote child's exit")
-                        .non_fatal();
-                }
-            }
-        }
+        let session = match cb_slot.lock() {
+            Ok(mut slot) => match &mut *slot {
+                PaneSlot::Live(session) => session.clone(),
+                PaneSlot::Pending(early) => {
+                    *early = Some(status);
+                    return;
+                },
+            },
+            Err(_) => return,
+        };
+        session.set_child_exit(status);
+        // Not sent from here. The child being gone is only half of it; the pty
+        // may still have its last words in flight.
+        report_exit_if_complete(&session);
     }));
 
     let session = Arc::new(PaneSession::new(
@@ -238,16 +276,50 @@ fn start_pane(
         spawned.handle,
         spawned.master,
         spawned.child_pid,
-        wire.clone(),
     ));
-    if let Ok(mut slot) = session_slot.lock() {
-        *slot = Some(session.clone());
-    }
     registry.insert(session.clone());
 
-    send(wire, &BrokerToServerMsg::Spawned { pane_token: token })?;
+    // Before the wire is attached, so nothing can reach the server ahead of the
+    // message that tells it the pane exists.
+    if let Err(e) = send(
+        wire,
+        &BrokerToServerMsg::Spawned {
+            pane_token: token.clone(),
+        },
+    ) {
+        // Otherwise the pane sits in the registry attached to nobody, and with
+        // no orphan clock running it is never reclaimed either.
+        registry.remove(&token);
+        session.terminate();
+        return Err(e);
+    }
+
+    // Attaching under the slot lock, rather than after releasing it, closes the
+    // window where the callback sees a `Live` session with no wire to use.
+    let early_exit = match session_slot.lock() {
+        Ok(mut slot) => {
+            let early = match &*slot {
+                PaneSlot::Pending(early) => *early,
+                PaneSlot::Live(_) => None,
+            };
+            session.attach(wire.clone());
+            *slot = PaneSlot::Live(session.clone());
+            early
+        },
+        Err(_) => {
+            session.attach(wire.clone());
+            None
+        },
+    };
+    if let Some(status) = early_exit {
+        session.set_child_exit(status);
+    }
+
     start_output_pump(session.clone())?;
     start_status_pump(session.clone())?;
+    // The pump may already have drained a pty whose child was gone before any of
+    // this ran, and the callback that would have said so found no session.
+    report_exit_if_complete(&session);
     Ok(session)
 }
 
@@ -292,8 +364,11 @@ fn resume_pane(
         send_output(wire, &replay)?;
     }
     // A child that exited while nobody was attached still has to be reported, or
-    // the pane would sit there looking alive.
-    if let Some(status) = session.child_exit() {
+    // the pane would sit there looking alive. After the replay, so the server
+    // has the output before it is told there will be no more, and only once the
+    // pty is drained, so there really is no more.
+    if let Some(status) = session.exit_is_reportable() {
+        session.claim_exit_report();
         send(wire, &BrokerToServerMsg::ChildExited { status })?;
     }
     session.attach(wire.clone());
@@ -404,9 +479,16 @@ fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
                         }
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    // `EIO` rather than EOF is what a master gives once the last
+                    // slave is closed, so this is the ordinary end, not a fault.
                     Err(_) => break,
                 }
             }
+            // The pty is finished, so anything the child wrote has been read and
+            // buffered. Only now can its exit be reported without cutting the
+            // last of its output off.
+            session.mark_output_drained();
+            report_exit_if_complete(&session);
         })
         .context("failed to start a remote pane's output pump")?;
     Ok(())

@@ -133,3 +133,83 @@ fn the_replayed_bytes_are_the_ones_that_actually_followed(tc: hegel::TestCase) {
          plus whatever was admitted as dropped"
     );
 }
+
+mod exit_reporting {
+    use super::*;
+    use crate::pty_host::client::PtyHostHandle;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    /// A session with a socketpair standing in for the supervisor and another
+    /// for the pty. The peer ends come back so the caller can keep them alive.
+    fn session() -> (PaneSession, UnixStream, UnixStream) {
+        let (control, control_peer) = UnixStream::pair().expect("socketpair failed");
+        let (master, master_peer) = UnixStream::pair().expect("socketpair failed");
+        let session = PaneSession::new(
+            "token".to_owned(),
+            PtyHostHandle::for_test(control),
+            OwnedFd::from(master),
+            std::process::id(),
+        );
+        (session, control_peer, master_peer)
+    }
+
+    /// The server stops reading at `ChildExited`, so saying it early does not
+    /// merely reorder the output — it loses it. A pane that prints and exits in
+    /// the same breath is the ordinary case, not a corner one.
+    #[test]
+    fn an_exit_is_not_reportable_until_the_pty_has_been_drained() {
+        let (session, _control, _master) = session();
+        session.set_child_exit(Some(7));
+        assert!(
+            session.exit_is_reportable().is_none(),
+            "the child's exit was reportable while its output could still be in flight"
+        );
+
+        session.mark_output_drained();
+        assert_eq!(
+            session.exit_is_reportable(),
+            Some(Some(7)),
+            "a drained pty and a reaped child is everything needed to report the exit"
+        );
+    }
+
+    /// Draining is half of it, and on its own says nothing.
+    #[test]
+    fn a_drained_pty_alone_reports_nothing() {
+        let (session, _control, _master) = session();
+        session.mark_output_drained();
+        assert!(
+            session.exit_is_reportable().is_none(),
+            "a pane whose pty closed but whose child has not been reaped has no status to give"
+        );
+    }
+
+    /// Two things race to report it — the quit callback and the output pump —
+    /// and the server must be told once.
+    #[test]
+    fn only_the_first_claim_may_report_the_exit() {
+        let (session, _control, _master) = session();
+        session.set_child_exit(Some(0));
+        session.mark_output_drained();
+
+        assert!(session.claim_exit_report(), "the first claim must succeed");
+        assert!(
+            !session.claim_exit_report(),
+            "a second claim would send the server a duplicate ChildExited"
+        );
+    }
+
+    /// A pane is built before the connection that asked for it attaches. If that
+    /// gap started the orphan clock, the reaper could take a pane that is being
+    /// set up.
+    #[test]
+    fn a_newly_built_pane_is_detached_but_not_yet_orphaned() {
+        let (session, _control, _master) = session();
+        assert!(!session.is_attached(), "a pane is born detached");
+        assert!(
+            session.orphaned_for().is_none(),
+            "the orphan clock must not start until a connection has actually been lost"
+        );
+    }
+}

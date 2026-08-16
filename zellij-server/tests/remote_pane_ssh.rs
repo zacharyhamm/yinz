@@ -843,6 +843,52 @@ fn a_remote_child_exiting_is_reported_as_a_child_exit() {
     pane.close();
 }
 
+/// A child can be gone before the broker has finished registering the pane it
+/// belongs to. The exit has to be held and replayed rather than dropped on the
+/// floor, or the pane sits on screen looking alive until the orphan timeout.
+#[test]
+#[ignore]
+fn a_child_that_exits_immediately_is_still_reported() {
+    let hosts = start();
+    // Nothing to print and nothing to wait for: the fastest possible exit, which
+    // is the one that races registration.
+    let pane = open_pane(&hosts, "exit 3");
+
+    pane.wait_until_ended(SETTLE)
+        .expect("a child that exited before registration finished should still end cleanly");
+    assert_eq!(
+        pane.conn.child_exit(),
+        Some(Some(3)),
+        "the exit of a child that beat its own registration was lost"
+    );
+}
+
+/// The exit must never overtake the output. The server stops reading at
+/// `ChildExited`, so an exit reported before the pty is drained does not
+/// reorder the output — it discards it.
+#[test]
+#[ignore]
+fn everything_a_child_printed_arrives_even_when_it_exits_at_once() {
+    let hosts = start();
+    let marker = marker("burst");
+    // Enough to outrun a single pty read, so the exit has real output to race.
+    let pane = open_pane(
+        &hosts,
+        &format!("i=1; while [ $i -le 200 ]; do echo {marker}-$i; i=$((i+1)); done; exit 0"),
+    );
+
+    pane.wait_until_ended(SETTLE)
+        .expect("a clean child exit should not surface as a transport error");
+
+    let output = pane.output();
+    for i in 1..=200 {
+        assert!(
+            output.contains(&format!("{marker}-{i}")),
+            "line {i} of 200 never arrived — the exit was reported before the pty was drained"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What only the far machine can see
 // ---------------------------------------------------------------------------
