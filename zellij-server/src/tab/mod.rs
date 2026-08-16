@@ -8464,7 +8464,7 @@ pub fn pane_info_for_pane(
 mod tab_tests;
 
 #[cfg(test)]
-#[path = "./unit/tab_integration_tests.rs"]
+#[path = "./unit/tab_integration_tests/mod.rs"]
 mod tab_integration_tests;
 
 #[cfg(test)]
