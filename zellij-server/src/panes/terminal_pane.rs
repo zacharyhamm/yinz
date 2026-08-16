@@ -240,6 +240,24 @@ impl Pane for TerminalPane {
         let mut index = 0;
         let mut capture_started = false;
         while index < bytes.len() {
+            // Between sequences the interceptor forwards every non-escape byte unchanged and stays
+            // in the same state, so the whole run up to the next escape can be copied at once.
+            // Ordinary program output is almost entirely such runs, and driving them through the
+            // state machine one byte at a time - each one rebuilding a `ForwardBytes` and calling
+            // `extend_from_slice` on a single byte - was the second-largest cost in pty ingest.
+            if self.kitty_interceptor.is_in_ground_state() {
+                let rest = &bytes[index..];
+                let run_length = rest
+                    .iter()
+                    .position(|byte| *byte == 0x1b)
+                    .unwrap_or(rest.len());
+                if run_length > 0 {
+                    forwarded.extend_from_slice(&rest[..run_length]);
+                    index += run_length;
+                    capture_started = false;
+                    continue;
+                }
+            }
             let byte = bytes[index];
             index += 1;
             match self.kitty_interceptor.advance(byte) {
