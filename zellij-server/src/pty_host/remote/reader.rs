@@ -222,13 +222,18 @@ impl RemoteReader {
 
     /// Pull whole frames out of `inbuf`, routing each by kind. Returns whether
     /// the child's exit has now been reported.
+    ///
+    /// Keeps going after the exit rather than returning on it. The broker sends
+    /// the output before the exit, but the two can land in one read, and
+    /// stopping at the exit would drop whatever shared the buffer with it.
     fn consume_frames(&mut self) -> io::Result<bool> {
+        let mut ended = false;
         loop {
             let decoded = protocol::try_decode_frame(&self.inbuf)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e:#}")))?;
             let (frame, consumed) = match decoded {
                 Some(pair) => pair,
-                None => return Ok(false),
+                None => return Ok(ended),
             };
             self.inbuf.drain(..consumed);
             match frame {
@@ -246,7 +251,7 @@ impl RemoteReader {
                         io::Error::new(io::ErrorKind::InvalidData, format!("{e:#}"))
                     })?;
                     if self.handle_control(msg) {
-                        return Ok(true);
+                        ended = true;
                     }
                 },
             }

@@ -108,6 +108,12 @@ pub struct PaneSession {
     /// `Some` while a server is attached.
     wire: Mutex<Option<super::broker::Wire>>,
     child_exit: Mutex<Option<Option<i32>>>,
+    /// Set once the pty has been read to its end, so nothing the child wrote is
+    /// still on its way here.
+    output_drained: AtomicBool,
+    /// Set once the exit has actually been put on a wire, so the two things that
+    /// might do it — the quit callback and the output pump — cannot both.
+    exit_reported: AtomicBool,
     /// The last git probe, kept so a reconnecting server gets the pane's project
     /// straight away rather than waiting for its cwd to happen to change.
     git_probe: Mutex<Option<super::status::GitProbe>>,
@@ -116,13 +122,14 @@ pub struct PaneSession {
 }
 
 impl PaneSession {
-    pub fn new(
-        token: String,
-        handle: PtyHostHandle,
-        master: OwnedFd,
-        child_pid: u32,
-        wire: super::broker::Wire,
-    ) -> Self {
+    /// Born detached. The connection that asked for the pane attaches only once
+    /// it has been told the pane exists, so nothing can reach the wire ahead of
+    /// the `Spawned` that names it.
+    ///
+    /// `disconnected_since` starts `None` rather than being set by `detach()`:
+    /// that is what keeps the reaper away from a pane in the moment between
+    /// being built and being attached.
+    pub fn new(token: String, handle: PtyHostHandle, master: OwnedFd, child_pid: u32) -> Self {
         let master_fd = master.as_raw_fd();
         Self {
             token,
@@ -131,8 +138,10 @@ impl PaneSession {
             master_fd,
             child_pid,
             ring: Mutex::new(OutputRing::new(REPLAY_CAPACITY)),
-            wire: Mutex::new(Some(wire)),
+            wire: Mutex::new(None),
             child_exit: Mutex::new(None),
+            output_drained: AtomicBool::new(false),
+            exit_reported: AtomicBool::new(false),
             git_probe: Mutex::new(None),
             disconnected_since: Mutex::new(None),
             terminated: AtomicBool::new(false),
@@ -200,6 +209,29 @@ impl PaneSession {
 
     pub fn child_exit(&self) -> Option<Option<i32>> {
         self.child_exit.lock().ok().and_then(|s| *s)
+    }
+
+    /// The pty gave up its end. Nothing the child wrote is still in flight.
+    pub fn mark_output_drained(&self) {
+        self.output_drained.store(true, Ordering::SeqCst);
+    }
+
+    /// The exit status, but only once it is safe to send.
+    ///
+    /// Both facts have to be in: that the child went, and that everything it
+    /// wrote has been read. Reporting on the first alone races the output pump,
+    /// and the server stops reading at `ChildExited` — so a pane that printed
+    /// and exited in the same breath would show nothing at all.
+    pub fn exit_is_reportable(&self) -> Option<Option<i32>> {
+        if !self.output_drained.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.child_exit()
+    }
+
+    /// Take the right to send the exit. True for the first caller only.
+    pub fn claim_exit_report(&self) -> bool {
+        !self.exit_reported.swap(true, Ordering::SeqCst)
     }
 
     pub fn set_git_probe(&self, probe: super::status::GitProbe) {
