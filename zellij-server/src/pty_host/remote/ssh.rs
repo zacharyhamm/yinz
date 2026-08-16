@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,7 +33,9 @@ use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::protocol::{self, BrokerToServerMsg, Frame, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION};
-use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
+use crate::pty_host::protocol::{
+    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
+};
 
 /// How long to wait for the forwarded socket to become connectable.
 const FORWARD_READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -75,12 +77,26 @@ fn ensure_local_socket_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// One local socket per host; every pane on that host multiplexes through it as
-/// a separate connection, and therefore a separate ssh channel.
-fn local_socket_path(host: &str) -> PathBuf {
+/// One local socket per host *per server*; every pane on that host multiplexes
+/// through it as a separate connection, and therefore a separate ssh channel.
+///
+/// Keyed by the server as well as the host because `ZELLIJ_SOCK_DIR` is per
+/// user, not per session. On a host-only key two zellij sessions belonging to
+/// the same person land on the same path, and then: the second `start_forward`
+/// unlinks and rebinds the socket the first is using, so the first silently
+/// starts routing its panes through the second's ssh; `ensure_forward`'s
+/// liveness probe connects happily to that foreign socket and reports all is
+/// well; and whichever session closes first deletes the other's socket on its
+/// way out.
+///
+/// Folded into the digest rather than appended to it. The path ends up in a
+/// `sockaddr_un` with 108 bytes to spare — 104 on macOS, where the temp dir
+/// alone is nearly 50 — and it is already close enough that adding anything
+/// would push it over.
+fn local_socket_path(instance: &str, host: &str) -> PathBuf {
     // A host may be an alias, a user@host, or contain characters a path cannot
     // hold, so key by a digest rather than the name itself.
-    let digest = blake3_short(host);
+    let digest = blake3_short(&format!("{host}\0{instance}"));
     local_socket_dir().join(format!("{digest}.sock"))
 }
 
@@ -94,8 +110,59 @@ fn blake3_short(input: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// The ControlMaster socket, which stays keyed by host alone.
+///
+/// Unlike the forward there is no collision to fix here: nothing unlinks or
+/// rebinds it, and `ControlMaster=auto` is built for exactly this — several
+/// processes sharing one authenticated connection. Making it per-server would
+/// cost a full handshake per host per reconnect and buy nothing.
 fn control_path(host: &str) -> PathBuf {
     local_socket_dir().join(format!("{}.ctl", blake3_short(host)))
+}
+
+/// How long a socket nobody answers on has to have been there before it is
+/// treated as abandoned.
+///
+/// `start_forward` polls for up to `FORWARD_READY_TIMEOUT` waiting for its ssh
+/// to bind, so a socket younger than this may belong to a server that is still
+/// starting up rather than to one that died.
+const STALE_SOCKET_AGE: Duration = Duration::from_secs(60);
+
+/// Remove forward sockets left behind by servers that are gone.
+///
+/// Per-server socket names cost the one bit of tidying the shared name gave for
+/// free: a crashed server's socket used to be reclaimed by the next server that
+/// wanted the same path. Nothing reclaims it now, so this does.
+///
+/// A live forward always accepts locally, even when the broker behind it is
+/// unreachable, so failing to connect really does mean the ssh that bound it is
+/// gone.
+fn sweep_stale_sockets(dir: &Path, ours: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == ours || path.extension().and_then(|e| e.to_str()) != Some("sock") {
+            continue;
+        }
+        let old_enough = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| {
+                m.elapsed()
+                    .map(|age| age > STALE_SOCKET_AGE)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !old_enough {
+            continue;
+        }
+        if UnixStream::connect(&path).is_ok() {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// A live ssh forward to one host. Dropping it tears the forward down.
@@ -114,14 +181,33 @@ impl Drop for HostForward {
 }
 
 /// Every host this session has panes on.
-#[derive(Default)]
 pub struct RemoteHosts {
     forwards: Mutex<HashMap<String, Arc<HostForward>>>,
+    /// What makes this server's forward sockets its own. See
+    /// `local_socket_path`.
+    instance: String,
+}
+
+impl Default for RemoteHosts {
+    // Written out rather than derived: a derived `String::default()` would give
+    // every server the same empty instance id, which is the collision this
+    // exists to prevent, and nothing would fail loudly enough to notice.
+    fn default() -> Self {
+        Self {
+            forwards: Mutex::new(HashMap::new()),
+            instance: new_host_id(),
+        }
+    }
 }
 
 impl RemoteHosts {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Where this server's forward to `host` listens.
+    pub fn forward_socket_path(&self, host: &str) -> PathBuf {
+        local_socket_path(&self.instance, host)
     }
 
     /// Open a pane on `host`, returning its connection and the reader's socket.
@@ -175,7 +261,7 @@ impl RemoteHosts {
             }
             forwards.remove(host);
         }
-        let forward = Arc::new(start_forward(host)?);
+        let forward = Arc::new(start_forward(&self.instance, host)?);
         forwards.insert(host.to_owned(), forward.clone());
         Ok(forward)
     }
@@ -212,6 +298,10 @@ impl Reconnector for RemoteHosts {
 /// Ask the remote where its broker listens, starting one if needed.
 pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
     ensure_local_socket_dir()?;
+    // ssh's ControlPath is bound as a unix socket too, and overflowing
+    // `sun_path` there fails deep inside ssh with a message about multiplexing
+    // rather than about the length.
+    check_socket_path_length(&control_path(host))?;
     let mut child = Command::new("ssh")
         .args(ssh_common_args(host))
         .arg(host)
@@ -321,12 +411,13 @@ fn ssh_forward_args() -> Vec<String> {
     ]
 }
 
-fn start_forward(host: &str) -> Result<HostForward> {
+fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
     let endpoint = bootstrap(host)?;
 
-    ensure_local_socket_dir()?;
-    let local_socket = local_socket_path(host);
+    let dir = ensure_local_socket_dir()?;
+    let local_socket = local_socket_path(instance, host);
     check_socket_path_length(&local_socket)?;
+    sweep_stale_sockets(&dir, &local_socket);
     // ssh refuses to bind over an existing file, and a stale one from a crashed
     // session is the common case. The failure it produces otherwise names only
     // the bind, not the reason.

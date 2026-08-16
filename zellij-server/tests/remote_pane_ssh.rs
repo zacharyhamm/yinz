@@ -679,6 +679,55 @@ fn two_panes_on_one_host_share_one_ssh_forward() {
     second.close();
 }
 
+/// Sharing is *within* a server, never between two. Two zellij sessions belong
+/// to the same user and so share `ZELLIJ_SOCK_DIR`; on a host-keyed socket name
+/// they would land on the same path, and the second would unlink and rebind the
+/// first's socket — after which the first routes its panes through the second's
+/// ssh, and the first to close deletes the other's socket.
+#[test]
+#[ignore]
+fn two_servers_on_one_host_keep_their_forwards_to_themselves() {
+    let env = test_env();
+    proxy_set_enabled(true);
+    let before = local_forward_count(env);
+
+    let first_server = Arc::new(RemoteHosts::new());
+    let second_server = Arc::new(RemoteHosts::new());
+    assert_ne!(
+        first_server.forward_socket_path(HOST),
+        second_server.forward_socket_path(HOST),
+        "two servers picked the same forward socket for the same host"
+    );
+
+    let first_marker = marker("two-servers-one");
+    let second_marker = marker("two-servers-two");
+    let first = open_pane(&first_server, &idle_marked(&first_marker));
+    let second = open_pane(&second_server, &idle_marked(&second_marker));
+    first.wait_for_output(&format!("{first_marker}-started"));
+    second.wait_for_output(&format!("{second_marker}-started"));
+
+    assert_eq!(
+        local_forward_count(env),
+        before + 2,
+        "two servers should have one forward each, not one between them"
+    );
+
+    // Closing the first must leave the second's pane working: on a shared path
+    // the first server's teardown unlinks the socket the second is using.
+    drop(first);
+    first_server.shutdown();
+
+    second.send_line("");
+    second.wait_for_output_within(&format!("{second_marker}-started"), Duration::from_secs(5));
+    let third_marker = marker("two-servers-three");
+    let third = open_pane(&second_server, &idle_marked(&third_marker));
+    third.wait_for_output(&format!("{third_marker}-started"));
+
+    second.close();
+    third.close();
+    second_server.shutdown();
+}
+
 // ---------------------------------------------------------------------------
 // A pane, for real
 // ---------------------------------------------------------------------------
