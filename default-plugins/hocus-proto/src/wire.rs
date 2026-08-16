@@ -80,6 +80,13 @@ pub struct PollReply {
     /// answer it: a global pane hears no `PaneUpdate` of its own.
     #[serde(default)]
     pub focused: Option<u32>,
+    /// What the model last said about each idle agent's pane.
+    ///
+    /// Only the daemon can answer this: it is the one thing watching for the busy→idle
+    /// edge, and it holds the endpoint. Rides with the snapshot rather than on a message
+    /// of its own because a summary is only ever read beside the pane it is about.
+    #[serde(default)]
+    pub summaries: agents::Summaries,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the

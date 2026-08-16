@@ -3832,6 +3832,13 @@ pub enum PluginCommand {
     GetPaneInfo(PaneId),
     GetTabInfo(usize), // tab_id
     GetSessionEnvironmentVariables,
+    /// The KDL configuration block declared for one plugin alias, by alias name.
+    ///
+    /// A plugin's own configuration already reaches it through `load`; this is for
+    /// reading a *different* plugin's, which nothing else answers. `SessionInfo.plugins`
+    /// comes closest but is keyed on running plugins, so it cannot speak for an alias
+    /// whose plugin has never been launched.
+    GetPluginAliasConfiguration(String), // alias name
     OpenCommandPaneInNewTab(CommandToRun, Context),
     OpenPluginPaneInNewTab {
         plugin_url: String,

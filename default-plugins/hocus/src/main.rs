@@ -284,6 +284,9 @@ pub struct State {
     pending_agent_panes: BTreeSet<u32>,
     /// Consecutive unchanged scrollback observations from hocus-agentd.
     activity: agents::Activity,
+    /// What the daemon's model last made of each idle agent's pane. Read-only here: the
+    /// daemon is the only writer, the same way it is for `activity`.
+    summaries: agents::Summaries,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
@@ -400,6 +403,7 @@ impl Default for State {
             manual_kinds: BTreeMap::new(),
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
+            summaries: agents::Summaries::new(),
             agent_seq: 0,
             mono_ms: 0,
             log_seq: 0,
@@ -572,12 +576,17 @@ impl ZellijPlugin for State {
         };
         self.agent_seq = seq;
         self.repositories = reply.repositories;
+        let inset = self.inset_key();
         if let Some(panes) = reply.panes {
-            self.apply_poll(panes, reply.activity, reply.focused);
+            self.apply_poll(panes, reply.activity, reply.summaries, reply.focused);
         }
         // This also answers the branch refresh the agents pane asks for.
         self.push_strip(false);
-        false
+        // A snapshot is otherwise not worth a repaint - nothing else on screen
+        // comes from one. The summary inset does, and it appears and goes with
+        // the user's focus rather than with anything they typed here, so without
+        // this it would wait for the next keystroke to be drawn.
+        self.inset_key() != inset
     }
 }
 

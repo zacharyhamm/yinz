@@ -20,7 +20,7 @@ use zellij_utils::{
     input::command::TerminalAction,
     input::keybinds::Keybinds,
     input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
-    input::plugins::PluginConfig,
+    input::plugins::{PluginAliases, PluginConfig},
 };
 use zellij_utils::{data::PermissionType, errors::prelude::*};
 
@@ -347,6 +347,9 @@ pub struct PluginEnv {
     pub layout_dir: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
+    /// The `plugins { }` alias table, shared with `WasmBridge` so it stays current across
+    /// config reloads. Read only by `GetPluginAliasConfiguration`.
+    pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     pub input_pipes_to_unblock: Arc<Mutex<HashSet<String>>>,
     pub input_pipes_to_block: Arc<Mutex<HashSet<String>>>,
     pub default_mode: InputMode,

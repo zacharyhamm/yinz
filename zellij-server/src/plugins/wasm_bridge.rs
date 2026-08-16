@@ -101,6 +101,7 @@ pub struct LoadingContext {
     pub tab_index: Option<usize>,
     pub path_to_default_shell: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
+    pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
     pub builtin_plugins_dir: Option<PathBuf>,
@@ -148,6 +149,7 @@ impl LoadingContext {
             plugin_id,
             path_to_default_shell: wasm_bridge.path_to_default_shell.clone(),
             session_env_vars: wasm_bridge.session_env_vars.clone(),
+            plugin_aliases: wasm_bridge.plugin_aliases.clone(),
             plugin_cwd: cwd.unwrap_or_else(|| wasm_bridge.zellij_cwd.clone()),
             default_shell: wasm_bridge.default_shell.clone(),
             layout_dir: wasm_bridge.layout_dir.clone(),
@@ -213,6 +215,15 @@ pub struct WasmBridge {
     downloader: Downloader,
     previous_pane_render_report: Option<PaneRenderReport>,
     pub last_session_save_time: Arc<Mutex<Option<u64>>>, // milliseconds since UNIX epoch
+    /// The `plugins { }` block, for plugins asking what a *different* alias was
+    /// configured with (`PluginCommand::GetPluginAliasConfiguration`).
+    ///
+    /// Shared rather than cloned into each `PluginEnv` because it is the one piece of
+    /// plugin state that must survive a config reload: `detect_and_notify_plugin_config_changes`
+    /// is handed the new table and writes it here, so a plugin that asks after the reload
+    /// is answered with what the user just wrote rather than with what was on disk at
+    /// server start.
+    pub plugin_aliases: Arc<Mutex<PluginAliases>>,
 }
 
 impl WasmBridge {
@@ -231,6 +242,7 @@ impl WasmBridge {
         available_layout_errors: Vec<LayoutWithError>,
         default_mode: InputMode,
         default_keybinds: Keybinds,
+        plugin_aliases: PluginAliases,
     ) -> Self {
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
@@ -282,6 +294,7 @@ impl WasmBridge {
             downloader,
             previous_pane_render_report: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
+            plugin_aliases: Arc::new(Mutex::new(plugin_aliases)),
         }
     }
     pub fn load_plugin(
@@ -2053,6 +2066,12 @@ impl WasmBridge {
         shutdown_send: Sender<()>,
     ) -> Result<()> {
         let err_context = || "failed to detect plugin config changes";
+
+        // Before notifying anyone: this is the only place the thread is handed a fresh
+        // alias table, and `GetPluginAliasConfiguration` answers out of it. Without this
+        // a plugin asking after a config reload would be told what was on disk when the
+        // server started.
+        *self.plugin_aliases.lock().unwrap() = new_plugins.clone();
 
         // Get all running plugins
         let running_plugins = self.plugin_map.lock().unwrap().running_plugins();

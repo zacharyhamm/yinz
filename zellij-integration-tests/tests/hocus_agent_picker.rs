@@ -186,7 +186,11 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     // then the agent row with the list's selection on it, then the chat title.
     let project = row("hocus-project");
     assert_eq!(row("  trunk"), project + 1, "the branch header under it");
-    assert_eq!(row(">   0  claude"), project + 2, "the selected agent row");
+    assert_eq!(
+        row(">     0  claude"),
+        project + 2,
+        "the selected agent row"
+    );
     assert!(
         row("hocus — ") > project + 2,
         "the conversation is below the agent list:\n{}",
@@ -462,7 +466,7 @@ fn the_agent_list_is_its_own_pane_and_the_sidebar_hides_as_one_strip() {
     // pane above the conversation.
     let no_project = row("no project");
     assert_eq!(row("  no branch"), no_project + 1);
-    assert_eq!(row(">   0  claude  running"), no_project + 2);
+    assert_eq!(row(">     0  claude  running"), no_project + 2);
     let title = row("hocus — ");
     assert!(
         title > no_project + 2,
