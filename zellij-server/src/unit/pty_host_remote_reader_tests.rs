@@ -1,9 +1,10 @@
 use super::*;
 
-use std::io::Write;
+use std::io::{Read as _, Write};
 use std::os::unix::net::UnixStream;
 
-use crate::pty_host::remote::protocol::{write_control, write_output};
+use crate::pty_host::protocol::WireWinsize;
+use crate::pty_host::remote::protocol::{write_control, write_output, ServerToBrokerMsg};
 
 fn reader_pair() -> (RemoteReader, Arc<RemoteConn>, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
@@ -370,6 +371,85 @@ async fn a_dropped_link_reconnects_instead_of_ending_the_pane() {
         conn.child_exit(),
         None,
         "no exit status may be invented for a transport failure"
+    );
+}
+
+/// A resize made while the link was down never reached the broker: the send
+/// failed on a broken connection and the outbound queues were cleared behind it.
+/// Nothing else will ever mention it either — the size is only sent when it
+/// changes — so the reconnect has to, or the remote application keeps drawing at
+/// the old shape inside a grid that has since changed.
+#[tokio::test]
+async fn a_resize_made_during_an_outage_is_sent_again_on_reconnect() {
+    let (mut reader, conn, peer, peer_rx, _rc) = reconnecting_pair(0, 0);
+    conn.resize(WireWinsize {
+        cols: 80,
+        rows: 24,
+        width_in_pixels: 0,
+        height_in_pixels: 0,
+    })
+    .expect("the first resize goes over a healthy link");
+
+    // The link dies, and the user reshapes the window while it is down.
+    drop(peer);
+    let taken = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = taken.clone();
+    std::thread::spawn(move || {
+        if let Ok(peer) = peer_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            *sink.lock().expect("poisoned") = Some(peer);
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+
+    let mut buf = [0u8; 256];
+    let read = reader.read(&mut buf);
+    tokio::pin!(read);
+    // Resize into the outage: `last_size` records it, the send cannot land.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = conn.resize(WireWinsize {
+        cols: 120,
+        rows: 40,
+        width_in_pixels: 0,
+        height_in_pixels: 0,
+    });
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut read).await;
+
+    // Whatever the broker is told after the reconnect must include the new size.
+    let mut peer = taken
+        .lock()
+        .expect("poisoned")
+        .take()
+        .expect("the reconnect never produced a socket");
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .expect("failed to set a read timeout");
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = peer.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        seen.extend_from_slice(&chunk[..n]);
+        if seen.len() > 2048 {
+            break;
+        }
+    }
+    let resized_to_the_new_size = std::iter::successors(Some(seen.as_slice()), |rest| {
+        protocol::try_decode_frame(rest)
+            .ok()
+            .flatten()
+            .map(|(_, consumed)| &rest[consumed..])
+    })
+    .filter_map(|rest| protocol::try_decode_frame(rest).ok().flatten())
+    .any(|(frame, _)| {
+        matches!(
+            frame.decode_control::<ServerToBrokerMsg>(),
+            Ok(ServerToBrokerMsg::Resize(size)) if size.cols == 120 && size.rows == 40
+        )
+    });
+    assert!(
+        resized_to_the_new_size,
+        "the size the pane was given during the outage never reached the broker, so the \
+         remote application is still drawing at the old one"
     );
 }
 

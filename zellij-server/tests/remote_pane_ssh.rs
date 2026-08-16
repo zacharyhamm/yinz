@@ -823,6 +823,54 @@ fn a_resize_reaches_the_remote_pty() {
     pane.close();
 }
 
+/// A window resized while the link was down has to take effect when it comes
+/// back. The send fails on a broken connection and the outbound queues are
+/// cleared behind it, and nothing else will ever mention the size again — it
+/// only goes out when it changes — so the far pty would otherwise stay the shape
+/// it was before the outage, and the application keep drawing to it.
+#[test]
+#[ignore]
+fn a_resize_during_an_outage_reaches_the_pty_after_the_reconnect() {
+    let hosts = start();
+    let marker = marker("resize-outage");
+    let pane = open_pane(
+        &hosts,
+        &format!("trap 'stty size' 28; echo {marker}-ready; while :; do sleep 0.2; done"),
+    );
+    pane.wait_for_output(&format!("{marker}-ready"));
+
+    pane.conn
+        .resize(WireWinsize {
+            cols: 80,
+            rows: 24,
+            width_in_pixels: 0,
+            height_in_pixels: 0,
+        })
+        .expect("failed to resize a remote pane");
+    pane.wait_for_output("24 80");
+
+    with_link_down(|| {
+        std::thread::sleep(Duration::from_millis(500));
+        // Deliberately ignored: over a dead link this cannot land, and that it
+        // is remembered anyway is the whole point.
+        let _ = pane.conn.resize(WireWinsize {
+            cols: 120,
+            rows: 40,
+            width_in_pixels: 0,
+            height_in_pixels: 0,
+        });
+    });
+
+    let seen = pane.wait_for_output_within("40 120", Duration::from_secs(30));
+    assert!(
+        seen.contains("40 120"),
+        "the size set during the outage never reached the far pty, so the remote \
+         application is still drawing at the old one: {seen}"
+    );
+
+    pane.close();
+}
+
 /// A pid means nothing off its own machine, so signals travel symbolically and
 /// the broker resolves them against the child it actually owns.
 #[test]
