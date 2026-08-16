@@ -250,6 +250,12 @@ impl RemoteReader {
         if dropped == 0 {
             let notice = "\x1b[32m── reconnected ──\x1b[0m\r\n";
             self.inject(notice.as_bytes());
+            // A resize during the outage never reached the broker — the send
+            // failed on a broken connection and the queues were cleared behind
+            // it — so the pane on the far machine is still the shape it was
+            // before. Nothing else will say so: the size only goes out when it
+            // changes, and from here it never changes again.
+            self.conn.resend_size();
             return;
         }
         // A replay with a hole cannot simply be continued: splicing a torn

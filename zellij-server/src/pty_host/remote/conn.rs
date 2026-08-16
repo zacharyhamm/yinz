@@ -229,6 +229,28 @@ impl RemoteConn {
         self.send_control(&ServerToBrokerMsg::Resize(size))
     }
 
+    /// Tell the broker the size again, whatever it currently believes.
+    ///
+    /// A resize made while the transport was down updated `last_size` and then
+    /// failed to send — `send_control` refuses a broken connection, and the
+    /// queues are cleared on the way through `mark_transport_lost` and
+    /// `reconnect` besides. So a reconnect has to say it again, or the remote
+    /// application keeps drawing at the size it had before the outage inside a
+    /// grid that has since changed shape.
+    ///
+    /// Unlike `nudge_for_redraw` this is a plain resize, and deliberately: if
+    /// the size did not in fact change, the broker's `TIOCSWINSZ` is a no-op, no
+    /// `SIGWINCH` is raised, and a reconnect that changed nothing costs the user
+    /// no repaint.
+    pub fn resend_size(&self) {
+        // No `cols > 1` guard here — that belongs to the nudge's wiggle. Any
+        // size is worth resending; only never having had one is a no-op.
+        let Some(size) = self.last_size.lock().ok().and_then(|s| *s) else {
+            return;
+        };
+        let _ = self.send_control(&ServerToBrokerMsg::Resize(size));
+    }
+
     /// Make a full-screen application repaint.
     ///
     /// After a lossy replay the local grid has been reset, but the remote
