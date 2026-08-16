@@ -3477,7 +3477,7 @@ mod tests {
     /// real against the temporary store, so there is nothing left to drift.
     fn todo_result(state: &mut State, name: &str, arguments: &str) -> Option<String> {
         let call = agent_call(name, arguments);
-        if !matches!(name, "todo_add" | "todo_done") {
+        if !matches!(name, "todo_add" | "todo_done" | "todo_edit") {
             return state.run_local(&call);
         }
         Some(match state.todo_write(&call) {
@@ -3542,6 +3542,41 @@ mod tests {
         assert_eq!(
             todo_result(&mut state, "todo_done", "{}"),
             Some("id is required".to_owned()),
+        );
+        assert_eq!(
+            todo_result(&mut state, "todo_edit", "{}"),
+            Some("id is required".to_owned()),
+        );
+        assert_eq!(
+            todo_result(&mut state, "todo_edit", r#"{"id":1}"#),
+            Some("text is required".to_owned()),
+        );
+    }
+
+    #[test]
+    fn a_todo_edit_changes_its_text() {
+        let mut state = state_with_project();
+        todo(&mut state, "todo_add", r#"{"text":"ship the parser"}"#);
+
+        let edited = todo(
+            &mut state,
+            "todo_edit",
+            r#"{"id":1,"text":"ship the parser faster"}"#,
+        );
+        assert_eq!(edited["id"], 1);
+        assert_eq!(edited["text"], "ship the parser faster");
+        assert_eq!(
+            stored_list(&state, "/work/hocus").items[0].text,
+            "ship the parser faster"
+        );
+    }
+
+    #[test]
+    fn a_todo_edit_rejects_an_unknown_id() {
+        let mut state = state_with_project();
+        assert_eq!(
+            todo_result(&mut state, "todo_edit", r#"{"id":1,"text":"x"}"#),
+            Some("no todo item 1 in this project; call todo_list".to_owned()),
         );
     }
 

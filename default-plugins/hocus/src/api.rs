@@ -1237,7 +1237,7 @@ mod tests {
         let mut cfg = test_config();
         cfg.tools = true;
         let body = body_value(&cfg, &[Message::user("hi")]);
-        assert_eq!(body["tools"].as_array().unwrap().len(), 49);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 50);
     }
 
     #[test]

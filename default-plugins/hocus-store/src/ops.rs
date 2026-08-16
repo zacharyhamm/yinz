@@ -109,7 +109,7 @@ fn todo_root(
 /// Kept beside the planners rather than inside them because the runner has to
 /// know before it can build the view they take.
 fn needs_list(op: &str) -> bool {
-    matches!(op, "todo_add" | "todo_done" | "todo_list")
+    matches!(op, "todo_add" | "todo_done" | "todo_edit" | "todo_list")
 }
 
 /// Plan a mutation: what to write, and what to say about it.
@@ -193,6 +193,26 @@ pub fn plan_mutate(
                         "done": change.done,
                         "cascaded": change.cascaded,
                         "reopened": change.reopened,
+                    })
+                    .to_string(),
+                ),
+            ))
+        },
+        "todo_edit" => {
+            let (Some(id), Some(text)) =
+                (args.get("id").and_then(Value::as_u64), arg(args, "text"))
+            else {
+                return Err("id and text are required".to_owned());
+            };
+            let (_, name) = todo_root(&view.projects, args)?;
+            let (mutations, text) = todos::plan_edit(&view.list(), id, text)?;
+            Ok((
+                mutations,
+                Reply::Fixed(
+                    json!({
+                        "project": name,
+                        "id": id,
+                        "text": text,
                     })
                     .to_string(),
                 ),
@@ -426,6 +446,8 @@ mod tests {
         for (op, args) in [
             ("todo_add", json!({ "project": "work" })),
             ("todo_done", json!({ "project": "work" })),
+            ("todo_edit", json!({ "project": "work" })),
+            ("todo_edit", json!({ "project": "work", "id": 1 })),
             ("project_remember", json!({ "name": "x" })),
             ("project_forget", json!({})),
         ] {
@@ -488,6 +510,47 @@ mod tests {
         )
         .expect("reopened");
         assert_eq!(field(&undone, "done"), false);
+    }
+
+    #[test]
+    fn editing_a_todo_changes_its_text() {
+        let backend = backend();
+        let added = run_mutate(
+            &backend,
+            "todo_add",
+            &json!({ "project": "work", "text": "ship it" }),
+        )
+        .expect("added");
+        let id = field(&added, "id").as_u64().expect("id");
+
+        let edited = run_mutate(
+            &backend,
+            "todo_edit",
+            &json!({ "project": "work", "id": id, "text": "ship it faster" }),
+        )
+        .expect("edited");
+        assert_eq!(field(&edited, "id"), id);
+        assert_eq!(field(&edited, "text"), "ship it faster");
+
+        let listed = run_query(
+            &backend,
+            "todo_list",
+            &json!({ "project": "work", "include_done": true }),
+        )
+        .expect("listed");
+        assert!(listed.contains("ship it faster"), "got {listed}");
+    }
+
+    #[test]
+    fn editing_an_unknown_todo_is_an_error() {
+        let backend = backend();
+        let error = run_mutate(
+            &backend,
+            "todo_edit",
+            &json!({ "project": "work", "id": 999, "text": "x" }),
+        )
+        .expect_err("no such item");
+        assert!(error.contains("no todo item 999"), "got {error}");
     }
 
     #[test]
