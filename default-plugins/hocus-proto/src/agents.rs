@@ -311,25 +311,36 @@ pub const SUMMARY_CHARS: usize = 6000;
 /// The longest summary worth storing. A model told to be brief occasionally is not, and a
 /// row of the agent list has nowhere to put an essay.
 const SUMMARY_TEXT_CHARS: usize = 400;
+/// The longest title worth keeping. A pane name has a frame to fit in, and a model asked
+/// for four words occasionally writes a sentence.
+const SUMMARY_TITLE_CHARS: usize = 40;
 /// Below this there is nothing to summarise — a pane that has only drawn a prompt.
 const SUMMARY_MIN_CHARS: usize = 40;
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You are watching one terminal pane in which a coding \
 agent is running. You will be shown the tail of that pane. Reply with a single JSON object \
-and nothing else - no prose, no markdown, no code fences. The object has exactly two keys: \
-\"summary\", one or two plain sentences describing the current state of the session and \
-what was last done; and \"awaiting\", true only if the agent has stopped and is waiting for \
+and nothing else - no prose, no markdown, no code fences. The object has exactly three \
+keys: \"summary\", one or two plain sentences describing the current state of the session \
+and what was last done; \"awaiting\", true only if the agent has stopped and is waiting for \
 the user to answer a question or confirm an action it proposed, false if it merely finished \
-its work. A completed task is not awaiting. A permission prompt, a yes/no question, or a \
-menu of choices is awaiting.";
+its work; and \"title\", at most four words naming the task the agent is working on, with \
+no trailing punctuation, to be used as the name of the pane. A completed task is not \
+awaiting. A permission prompt, a yes/no question, or a menu of choices is awaiting.";
 
 /// What the model said about an idle agent's pane.
 ///
-/// Held in memory by `hocus-agentd` and shipped in its snapshot. Only `awaiting` is drawn
-/// today; `text` is carried for a presentation that does not exist yet.
+/// Held in memory by `hocus-agentd` and shipped in its snapshot. `awaiting` is the strip's
+/// `!` marker, `text` is the inset hocus draws over its transcript, and `title` is what the
+/// daemon renames the pane to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
     pub text: String,
+    /// A few words naming the task, for the pane's name.
+    ///
+    /// Empty when the model did not answer with one — a summary is worth keeping without a
+    /// title, and the rename is simply skipped. See [`rename_title`].
+    #[serde(default)]
+    pub title: String,
     /// Whether the agent is blocked on the user rather than merely finished.
     #[serde(default)]
     pub awaiting: bool,
@@ -345,6 +356,14 @@ pub struct Summary {
 
 /// Pane id → what the model last said about it.
 pub type Summaries = BTreeMap<u32, Summary>;
+
+/// The name to give the pane this summary describes, or `None` when there is none worth
+/// giving. One rule, so the daemon and its tests cannot disagree about what an empty title
+/// means.
+pub fn rename_title(summary: &Summary) -> Option<&str> {
+    let title = summary.title.trim();
+    (!title.is_empty()).then_some(title)
+}
 
 /// Whether a pane holds enough to be worth asking about.
 pub fn worth_summarizing(text: &str) -> bool {
@@ -422,23 +441,33 @@ fn first_json_object(text: &str) -> Option<&str> {
 /// `None` is an ordinary outcome for a background caller: no summary is stored, the flag
 /// stays as it was, and the next idle edge asks again.
 pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
+    /// One string key, trimmed, stripped of control characters the way `tail` strips
+    /// them, and capped. Empty for a key the model left out.
+    fn field(object: &Value, key: &str, cap: usize) -> String {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            // Same convention as `tail`: a control character is not content.
+            .filter(|c| !c.is_control())
+            .take(cap)
+            .collect()
+    }
+
     let response: Value = serde_json::from_slice(body).ok()?;
     let content = response.pointer("/choices/0/message/content")?.as_str()?;
     let object: Value = serde_json::from_str(first_json_object(content)?).ok()?;
-    let text: String = object
-        .get("summary")?
-        .as_str()?
-        .trim()
-        .chars()
-        // Same convention as `tail`: a control character is not content.
-        .filter(|c| !c.is_control())
-        .take(SUMMARY_TEXT_CHARS)
-        .collect();
+    let text = field(&object, "summary", SUMMARY_TEXT_CHARS);
     if text.is_empty() {
         return None;
     }
     Some(Summary {
         text,
+        // Not required: a summary without a title is still worth drawing, and only the
+        // rename goes without.
+        title: field(&object, "title", SUMMARY_TITLE_CHARS),
         // Absent means false: a model that forgot the key has not claimed the agent is
         // blocked, and a spurious flag is worse than a missing one.
         awaiting: object
@@ -894,6 +923,7 @@ mod tests {
                     *pane_id,
                     Summary {
                         text: "did a thing".to_owned(),
+                        title: "a thing".to_owned(),
                         awaiting: *awaiting,
                         hash: 1,
                     },
@@ -1274,6 +1304,57 @@ mod tests {
         assert!(parse_summary(&completion(r#"{"summary":"hi""#), 1).is_none());
         // A well-formed error response has no content to read.
         assert!(parse_summary(br#"{"error":{"message":"nope"}}"#, 1).is_none());
+    }
+
+    #[test]
+    fn parse_summary_reads_the_title_the_pane_is_named_after() {
+        let summary = parse_summary(
+            &completion(
+                r#"{"summary":"Ran the tests.","awaiting":false,"title":"running the tests"}"#,
+            ),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title, "running the tests");
+        assert_eq!(rename_title(&summary), Some("running the tests"));
+    }
+
+    /// A title is a nicety, a summary is the point. A model that answered only the two keys
+    /// it used to be asked for still gets its summary drawn - it simply does not rename the
+    /// pane.
+    #[test]
+    fn a_summary_without_a_title_is_still_a_summary() {
+        for content in [
+            r#"{"summary":"Done.","awaiting":false}"#,
+            r#"{"summary":"Done.","title":"   "}"#,
+            r#"{"summary":"Done.","title":42}"#,
+        ] {
+            let summary = parse_summary(&completion(content), 1).expect(content);
+            assert_eq!(summary.text, "Done.", "{content}");
+            assert_eq!(rename_title(&summary), None, "{content}");
+        }
+    }
+
+    /// The title travels the same wrapped-in-whatever path the summary does.
+    #[test]
+    fn parse_summary_digs_the_title_out_of_a_fence() {
+        let summary = parse_summary(
+            &completion("```json\n{\"summary\":\"Waiting.\",\"title\":\"fixing resize\"}\n```"),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title, "fixing resize");
+    }
+
+    #[test]
+    fn a_long_title_is_cut_to_something_a_pane_frame_could_hold() {
+        let long = "x".repeat(SUMMARY_TITLE_CHARS * 2);
+        let summary = parse_summary(
+            &completion(&json!({"summary": "Done.", "title": long}).to_string()),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title.chars().count(), SUMMARY_TITLE_CHARS);
     }
 
     #[test]
