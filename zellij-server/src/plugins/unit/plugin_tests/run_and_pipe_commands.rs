@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn run_command_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -85,7 +85,7 @@ pub fn run_command_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn run_command_with_env_vars_and_cwd_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -169,7 +169,7 @@ pub fn run_command_with_env_vars_and_cwd_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn web_request_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -253,7 +253,7 @@ pub fn web_request_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn unblock_input_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -341,7 +341,7 @@ pub fn unblock_input_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn block_input_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -430,7 +430,7 @@ pub fn block_input_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn pipe_output_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -526,7 +526,7 @@ pub fn pipe_output_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn pipe_message_to_plugin_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -619,7 +619,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn switch_session_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -709,7 +709,7 @@ pub fn switch_session_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn switch_session_with_layout_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -799,7 +799,7 @@ pub fn switch_session_with_layout_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn switch_session_with_layout_and_cwd_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -886,7 +886,7 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn disconnect_other_clients_plugins_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -973,7 +973,7 @@ pub fn disconnect_other_clients_plugins_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn reconfigure_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1060,7 +1060,7 @@ pub fn reconfigure_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn run_plugin_in_specific_cwd() {
     // note that this test might sometimes fail when run alone without the rest of the suite due to
     // timing issues

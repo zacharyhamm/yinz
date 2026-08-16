@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn start_or_reload_plugin() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -78,7 +78,7 @@ pub fn start_or_reload_plugin() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn quit_zellij_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -162,7 +162,7 @@ pub fn quit_zellij_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn detach_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -246,7 +246,7 @@ pub fn detach_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_file_floating_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -334,7 +334,7 @@ pub fn open_file_floating_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_file_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -422,7 +422,7 @@ pub fn open_file_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_file_with_line_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -511,7 +511,7 @@ pub fn open_file_with_line_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_file_with_line_floating_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -599,7 +599,7 @@ pub fn open_file_with_line_floating_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_terminal_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -683,7 +683,7 @@ pub fn open_terminal_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_terminal_floating_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -767,7 +767,7 @@ pub fn open_terminal_floating_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_command_pane_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -851,7 +851,7 @@ pub fn open_command_pane_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_command_pane_floating_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn close_tab_with_index_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -78,7 +78,7 @@ pub fn close_tab_with_index_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn break_panes_to_new_tab_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -155,7 +155,7 @@ pub fn break_panes_to_new_tab_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn break_panes_to_tab_with_index_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -232,7 +232,7 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn break_panes_to_tab_with_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn hide_pane_with_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -78,7 +78,7 @@ pub fn hide_pane_with_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn show_pane_with_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -155,7 +155,7 @@ pub fn show_pane_with_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn open_command_pane_background_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -243,7 +243,7 @@ pub fn open_command_pane_background_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn rerun_command_pane_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -320,7 +320,7 @@ pub fn rerun_command_pane_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn resize_pane_with_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -397,7 +397,7 @@ pub fn resize_pane_with_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn edit_scrollback_for_pane_with_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -474,7 +474,7 @@ pub fn edit_scrollback_for_pane_with_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn write_to_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -551,7 +551,7 @@ pub fn write_to_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn write_chars_to_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -628,7 +628,7 @@ pub fn write_chars_to_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn move_pane_with_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -705,7 +705,7 @@ pub fn move_pane_with_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn move_pane_with_pane_id_in_direction_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -782,7 +782,7 @@ pub fn move_pane_with_pane_id_in_direction_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn clear_screen_for_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -859,7 +859,7 @@ pub fn clear_screen_for_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn scroll_up_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -936,7 +936,7 @@ pub fn scroll_up_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn scroll_down_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1013,7 +1013,7 @@ pub fn scroll_down_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn scroll_to_top_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1090,7 +1090,7 @@ pub fn scroll_to_top_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn scroll_to_bottom_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1167,7 +1167,7 @@ pub fn scroll_to_bottom_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn page_scroll_up_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1244,7 +1244,7 @@ pub fn page_scroll_up_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn page_scroll_down_in_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1321,7 +1321,7 @@ pub fn page_scroll_down_in_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn toggle_pane_id_fullscreen_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -1398,7 +1398,7 @@ pub fn toggle_pane_id_fullscreen_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn toggle_pane_embed_or_eject_for_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory

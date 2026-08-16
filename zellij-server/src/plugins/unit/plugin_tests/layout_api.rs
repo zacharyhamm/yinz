@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn generate_random_name_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -92,7 +92,7 @@ pub fn generate_random_name_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn dump_layout_success_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -188,7 +188,7 @@ pub fn dump_layout_success_plugin_command() {
 /// The engine itself is covered by unit tests in `zellij-utils`; what this covers is the hop those
 /// cannot reach — protobuf encode, the JSON-wrapped pipe, dispatch, and decode back in the guest.
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn data_store_plugin_commands() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -245,12 +245,12 @@ pub fn data_store_plugin_commands() {
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Ctrl+Shift+D runs the whole data store round trip in the fixture plugin
+    // Ctrl+Shift+K runs the whole data store round trip in the fixture plugin
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(
-            KeyWithModifier::new(BareKey::Char('d'))
+            KeyWithModifier::new(BareKey::Char('k'))
                 .with_ctrl_modifier()
                 .with_shift_modifier(),
         ),
@@ -279,7 +279,7 @@ pub fn data_store_plugin_commands() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn dump_layout_not_found_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -370,7 +370,7 @@ pub fn dump_layout_not_found_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn get_layout_dir_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -461,7 +461,7 @@ pub fn get_layout_dir_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn get_focused_pane_info_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -547,7 +547,7 @@ pub fn get_focused_pane_info_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn dump_session_layout_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -632,7 +632,7 @@ pub fn dump_session_layout_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn dump_session_layout_for_tab_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -717,7 +717,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn parse_layout_success_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -808,7 +808,7 @@ pub fn parse_layout_success_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn parse_layout_error_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -899,7 +899,7 @@ pub fn parse_layout_error_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_success_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -990,7 +990,7 @@ pub fn save_layout_success_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_already_exists_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1095,7 +1095,7 @@ pub fn save_layout_already_exists_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_with_overwrite_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1186,7 +1186,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_invalid_kdl_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1277,7 +1277,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn rename_layout_success_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1382,7 +1382,7 @@ pub fn rename_layout_success_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn rename_layout_not_found_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1473,7 +1473,7 @@ pub fn rename_layout_not_found_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn delete_layout_success_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1591,7 +1591,7 @@ pub fn delete_layout_success_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn delete_layout_not_found_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1682,7 +1682,7 @@ pub fn delete_layout_not_found_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_path_traversal_blocked_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1773,7 +1773,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn edit_layout_plugin_command() {
     let temp_host_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_host_folder.path());
@@ -1878,7 +1878,7 @@ pub fn edit_layout_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn override_layout_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());

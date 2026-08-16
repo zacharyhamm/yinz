@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn generate_random_name_permission_denied() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -99,7 +99,7 @@ pub fn generate_random_name_permission_denied() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn save_layout_permission_denied() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -197,7 +197,7 @@ pub fn save_layout_permission_denied() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn plugin_receives_config_change_event() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -317,7 +317,7 @@ pub fn plugin_receives_config_change_event() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn plugin_does_not_receive_event_when_config_unchanged() {
     // Test that plugin does NOT receive event when config hasn't changed
     let temp_folder = tempdir().unwrap();
@@ -430,7 +430,7 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn get_session_environment_variables_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());

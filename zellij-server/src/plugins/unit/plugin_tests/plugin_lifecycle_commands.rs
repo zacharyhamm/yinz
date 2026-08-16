@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn reload_plugin_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -72,7 +72,7 @@ pub fn reload_plugin_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn load_new_plugin_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -143,7 +143,7 @@ pub fn load_new_plugin_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn rebind_keys_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -230,7 +230,7 @@ pub fn rebind_keys_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn list_clients_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -307,7 +307,7 @@ pub fn list_clients_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn before_close_plugin_event() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -384,7 +384,7 @@ pub fn before_close_plugin_event() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn show_cursor_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -465,7 +465,7 @@ pub fn show_cursor_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn hide_cursor_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -547,7 +547,7 @@ pub fn hide_cursor_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn copy_to_clipboard_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -628,7 +628,7 @@ pub fn copy_to_clipboard_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn run_action_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -709,7 +709,7 @@ pub fn run_action_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn send_sigint_to_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -800,7 +800,7 @@ pub fn send_sigint_to_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn send_sigkill_to_pane_id_plugin_command() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -891,7 +891,7 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn copy_to_clipboard_without_permission() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -980,7 +980,7 @@ pub fn copy_to_clipboard_without_permission() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn run_action_without_permission() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());

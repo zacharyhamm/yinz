@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/permissions.rs
 expression: "format!(\"{:#?}\", permissions)"
 ---
 Some(
@@ -18,5 +18,6 @@ Some(
         RunActionsAsUser,
         WriteToClipboard,
         ReadSessionEnvironmentVariables,
+        PluginData,
     ],
 )

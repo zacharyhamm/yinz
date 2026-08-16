@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn load_new_plugin_from_hd() {
     // here we load our fixture plugin into the plugin thread, and then send it an update message
     // expecting tha thte plugin will log the received event and render it later after the update
@@ -87,7 +87,7 @@ pub fn load_new_plugin_from_hd() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn shared_plugin_has_one_instance_serving_all_clients() {
     // a plugin declared with `shared true` is loaded once for the client that loaded it, and is
     // not re-instantiated when a second client connects. an event directed at the second client
@@ -174,7 +174,7 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn load_new_plugin_with_plugin_alias() {
     // here we load our fixture plugin into the plugin thread, and then send it an update message
     // expecting tha thte plugin will log the received event and render it later after the update
@@ -260,7 +260,7 @@ pub fn load_new_plugin_with_plugin_alias() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn plugin_workers() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -346,7 +346,7 @@ pub fn plugin_workers() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn plugin_workers_persist_state() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -441,7 +441,7 @@ pub fn plugin_workers_persist_state() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn can_subscribe_to_hd_events() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn set_pane_regex_highlights_via_plugin() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -94,7 +94,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn clear_pane_highlights_via_plugin() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -178,7 +178,7 @@ pub fn clear_pane_highlights_via_plugin() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn highlight_clicked_event_delivered_to_plugin() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
