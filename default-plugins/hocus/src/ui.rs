@@ -610,7 +610,7 @@ fn word_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> 
     lines
 }
 
-fn render_markdown_block(block: &MdBlock, cols: usize) -> Vec<VLine> {
+fn render_markdown_block(block: &MdBlock, cols: usize, role: Role) -> Vec<VLine> {
     let body_width = cols.saturating_sub(block.prefix.width()).max(1);
     let bodies = if block.hard_wrap {
         hard_wrap_styled(&block.chars, body_width)
@@ -635,16 +635,22 @@ fn render_markdown_block(block: &MdBlock, cols: usize) -> Vec<VLine> {
             let mut styles = vec![prefix_style; prefix.chars().count()];
             text.extend(body.iter().map(|styled| styled.ch));
             styles.extend(body.into_iter().map(|styled| styled.style));
-            VLine {
-                text,
-                role: Role::Assistant,
-                styles,
-            }
+            VLine { text, role, styles }
         })
         .collect()
 }
 
 fn markdown_lines(text: &str, cols: usize) -> Vec<VLine> {
+    markdown_lines_as(text, cols, Role::Assistant)
+}
+
+/// `markdown_lines`, for a message that is not the assistant speaking.
+///
+/// The role rides through to every line rather than being patched on
+/// afterwards, because `ends_with_empty_reply` reads it: an empty
+/// `Role::Assistant` line at the tail *is* the streaming placeholder, so a
+/// presented result that rendered to nothing would otherwise be given a spinner.
+fn markdown_lines_as(text: &str, cols: usize, role: Role) -> Vec<VLine> {
     let sanitized = sanitize(text);
     let mut renderer = MarkdownRenderer::default();
     for event in Parser::new_ext(&sanitized, Options::empty()) {
@@ -655,7 +661,7 @@ fn markdown_lines(text: &str, cols: usize) -> Vec<VLine> {
     if renderer.blocks.is_empty() {
         return vec![VLine {
             text: String::new(),
-            role: Role::Assistant,
+            role,
             styles: Vec::new(),
         }];
     }
@@ -667,7 +673,7 @@ fn markdown_lines(text: &str, cols: usize) -> Vec<VLine> {
         if index > 0 && !(renderer.blocks[index - 1].compact && block.compact) {
             lines.push(VLine::blank());
         }
-        lines.extend(render_markdown_block(block, cols));
+        lines.extend(render_markdown_block(block, cols, role));
     }
     lines
 }
@@ -756,6 +762,17 @@ pub fn transcript(messages: &[crate::Message], cols: usize) -> Transcript {
             lines.extend(markdown_lines(&message.content, cols));
             continue;
         }
+        // A tool the user typed, drawn as the answer they asked for rather than
+        // as context for the model. `content` is untouched and is still what
+        // gets sent; this is only what the pane shows.
+        //
+        // No `fn:` prefix: the presenter opens with a heading, which says the
+        // same thing, and a five-column prefix would fight the markdown
+        // renderer's own indents and narrow every code fence.
+        if let Some(display) = message.display.as_deref() {
+            lines.extend(markdown_lines_as(display, cols, message.role));
+            continue;
+        }
         let prefix = prefix_for(message.role);
         let indent = " ".repeat(prefix.chars().count());
         let body_width = match message.role {
@@ -797,6 +814,10 @@ pub fn transcript(messages: &[crate::Message], cols: usize) -> Transcript {
 /// placeholder is ever mutated in place (`State::append_to_reply`), and
 /// `State::mutable_len` is which message that is; every other change to the
 /// transcript is a push, a pop or a clear, all of which move the count.
+///
+/// `Message::display` needs no field of its own here for the same reason: it is
+/// set once, when the message is pushed, and a push moves the count. The
+/// placeholder never carries one.
 pub type TranscriptKey = (usize, usize, usize);
 
 /// `transcript`, memoised on the state. Wrapping the whole transcript is the
@@ -823,7 +844,13 @@ fn styled(line: &VLine) -> Text {
     let text = Text::new(&line.text);
     let mut text = match line.role {
         Role::Error => text.error_color_range(..),
-        Role::Notice | Role::Tool => text.dim_range(..),
+        Role::Notice => text.dim_range(..),
+        // A presented result carries its own styling, one entry per character;
+        // dimming the whole line would flatten every colour it asked for. A raw
+        // result has no styles at all — the plain `wrap` path leaves the vector
+        // empty — and still reads as the aside it is.
+        Role::Tool if line.styles.is_empty() => text.dim_range(..),
+        Role::Tool => text,
         // Colour levels 0-3 resolve against the user's theme host-side, so this
         // follows whatever palette they've configured. Colouring the pad along
         // with the text is free: a foreground colour on a space shows nothing.
@@ -1548,6 +1575,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["fn:  1", "2", "3", "… 7 more lines"]
         );
+    }
+
+    /// A presented result is drawn as markdown, with the heading styled and no
+    /// `fn:` prefix competing with the renderer's own indents.
+    #[test]
+    fn a_presented_result_is_rendered_as_markdown() {
+        let message =
+            Message::tool_result_shown("manual-1", "{}", Some("## agents\n\n- one\n- two".into()));
+        let lines = transcript_lines(&[message], 80);
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.trim_end()).collect();
+        assert_eq!(texts, vec!["agents", "", "• one", "• two"]);
+        // The heading is bold; nothing carries the `fn:` prefix.
+        assert!(lines[0].styles.iter().all(|style| style.bold));
+        assert!(!texts.iter().any(|text| text.starts_with("fn:")));
+    }
+
+    /// `styled` dims a whole tool line, which would flatten every colour a
+    /// presented result asked for — so it must not, when there is styling.
+    #[test]
+    fn a_presented_result_keeps_its_own_styling() {
+        let plain = VLine {
+            text: "raw".to_owned(),
+            role: Role::Tool,
+            styles: Vec::new(),
+        };
+        let presented = VLine {
+            text: "shown".to_owned(),
+            role: Role::Tool,
+            styles: vec![MdStyle::default(); 5],
+        };
+        // A Text carries its styling opaquely, so compare against the two
+        // renderings we know are meant to differ.
+        assert_eq!(
+            format!("{:?}", styled(&plain)),
+            format!("{:?}", Text::new("raw").dim_range(..))
+        );
+        assert_ne!(
+            format!("{:?}", styled(&presented)),
+            format!("{:?}", Text::new("shown").dim_range(..))
+        );
+    }
+
+    /// An empty `Role::Assistant` line at the tail is how the renderer spots the
+    /// streaming placeholder. A presented result must never be mistaken for one.
+    #[test]
+    fn a_presented_result_is_not_mistaken_for_the_streaming_placeholder() {
+        let lines = transcript_lines(
+            &[Message::tool_result_shown(
+                "manual-1",
+                "{}",
+                Some(String::new()),
+            )],
+            80,
+        );
+        assert!(!ends_with_empty_reply(&lines));
     }
 
     /// The output of a tool the user typed is the reason they typed it, so none
