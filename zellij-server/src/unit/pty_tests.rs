@@ -18,6 +18,12 @@ struct MockOsApi {
     cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
     cmds: Arc<Mutex<HashMap<u32, Vec<String>>>>,
     cmds_by_ppid: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Every pid-addressed signal, recorded so a test can assert one was never
+    /// sent. This is the whole point for remote panes: the failure being guarded
+    /// against is a signal that *is* delivered, to the wrong process.
+    local_signals: Arc<Mutex<Vec<(u32, &'static str)>>>,
+    remote_panes: Arc<Mutex<std::collections::HashSet<u32>>>,
+    remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
 }
 
 impl MockOsApi {
@@ -26,7 +32,19 @@ impl MockOsApi {
             cwds: Arc::new(Mutex::new(HashMap::new())),
             cmds: Arc::new(Mutex::new(HashMap::new())),
             cmds_by_ppid: Arc::new(Mutex::new(HashMap::new())),
+            local_signals: Arc::new(Mutex::new(Vec::new())),
+            remote_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            remote_signals: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+    fn mark_remote(&self, terminal_id: u32) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+    }
+    fn local_signals(&self) -> Vec<(u32, &'static str)> {
+        self.local_signals.lock().unwrap().clone()
+    }
+    fn remote_signals(&self) -> Vec<(u32, ChildSignal)> {
+        self.remote_signals.lock().unwrap().clone()
     }
     fn set_cwd(&self, pid: u32, path: PathBuf) {
         self.cwds.lock().unwrap().insert(pid, path);
@@ -70,13 +88,26 @@ impl ServerOsApi for MockOsApi {
     fn tcdrain(&self, _: u32) -> anyhow::Result<()> {
         Ok(())
     }
-    fn kill(&self, _: u32) -> anyhow::Result<()> {
+    fn kill(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGHUP"));
         Ok(())
     }
-    fn force_kill(&self, _: u32) -> anyhow::Result<()> {
+    fn force_kill(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGKILL"));
         Ok(())
     }
-    fn send_sigint(&self, _: u32) -> anyhow::Result<()> {
+    fn send_sigint(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGINT"));
+        Ok(())
+    }
+    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+        self.remote_panes.lock().unwrap().contains(&terminal_id)
+    }
+    fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> anyhow::Result<()> {
+        self.remote_signals
+            .lock()
+            .unwrap()
+            .push((terminal_id, signal));
         Ok(())
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -611,4 +642,98 @@ fn osc7_then_poll_skips_terminal() {
         cwd_events.is_empty() && cmd_events.is_empty(),
         "poll after osc7 should skip terminal since flag was cleared"
     );
+}
+
+// ---- remote panes must never signal a local process ----
+//
+// pid spaces are per-machine. A remote pane's child pid, used locally, does not
+// fail — it names whatever local process happens to hold that number, so a
+// `SIGKILL` aimed at a pane lands on something unrelated. These pin that the
+// remote check happens before the pid lookup, at every site that signals.
+
+/// Build a pty holding a pane whose recorded pid is one that must never be
+/// signalled, and mark that pane remote.
+fn pty_with_remote_pane(terminal_id: u32, bystander_pid: u32) -> (Pty, MockOsApi) {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    // A stale pid in the map is exactly the hazard: something has to be there
+    // for the wrong branch to find.
+    pty.id_to_child_pid.insert(terminal_id, bystander_pid);
+    os_api.mark_remote(terminal_id);
+    (pty, os_api)
+}
+
+#[test]
+fn closing_a_remote_pane_does_not_signal_a_local_process() {
+    let (mut pty, os_api) = pty_with_remote_pane(7, 4242);
+    let _ = pty.close_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's close signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
+}
+
+#[test]
+fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
+    let (pty, os_api) = pty_with_remote_pane(7, 4242);
+    pty.send_sigint_to_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's SIGINT signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Int)]);
+}
+
+#[test]
+fn sigkill_to_a_remote_pane_does_not_signal_a_local_process() {
+    let (pty, os_api) = pty_with_remote_pane(7, 4242);
+    pty.send_sigkill_to_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's SIGKILL signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Kill)]);
+}
+
+/// The same refactor must leave local panes exactly as they were.
+#[test]
+fn a_local_pane_is_still_signalled_by_pid() {
+    let os_api = MockOsApi::new();
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let mut pty = pty;
+    pty.id_to_child_pid.insert(3, 909);
+
+    pty.send_sigint_to_pane(PaneId::Terminal(3));
+    pty.send_sigkill_to_pane(PaneId::Terminal(3));
+    let _ = pty.close_pane(PaneId::Terminal(3));
+
+    assert_eq!(
+        os_api.local_signals(),
+        vec![(909, "SIGINT"), (909, "SIGKILL"), (909, "SIGHUP")]
+    );
+    assert!(os_api.remote_signals().is_empty());
+}
+
+/// Handing a remote pid to a plugin invites the same mistake one layer out.
+#[test]
+fn a_remote_panes_pid_is_not_handed_to_plugins() {
+    let (pty, _os_api) = pty_with_remote_pane(7, 4242);
+    match pty.get_pane_pid(PaneId::Terminal(7)) {
+        GetPanePidResponse::Err(msg) => {
+            assert!(
+                msg.contains("another machine"),
+                "the refusal should say why, got: {msg}"
+            );
+        },
+        GetPanePidResponse::Ok(pid) => {
+            panic!("a remote pane handed out local pid {pid}");
+        },
+    }
 }

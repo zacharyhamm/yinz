@@ -5,6 +5,7 @@ use crate::{panes::PaneId, ClientId};
 use interprocess::local_socket::Stream as LocalSocketStream;
 
 use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
+use crate::pty_host::remote::{protocol::ChildSignal, ssh::RemoteHosts, RemoteStatus};
 // Re-exported: it is what `ServerOsApi::adopt_terminal` returns, so anything
 // implementing that trait outside this crate — the integration tests' fake
 // backend — needs to be able to name it.
@@ -381,6 +382,9 @@ pub struct ServerOsInputOutput {
     pty_backend: PtyBackendImpl,
     client_senders: Arc<Mutex<HashMap<ClientId, ClientSender>>>,
     cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16, Option<u16>, Option<u16>)>>>>,
+    /// ssh forwards to the machines this session has remote panes on. One per
+    /// host, shared by every pane there.
+    remote_hosts: Arc<RemoteHosts>,
 }
 
 /// A null `AsyncReader` for held panes (produces EOF immediately).
@@ -480,6 +484,24 @@ pub trait ServerOsApi: Send + Sync {
     fn set_pty_host_enabled(&self, _enabled: bool) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
+    /// Whether this pane's process lives on another machine.
+    ///
+    /// The question every pid-shaped operation has to ask first. `id_to_child_pid`
+    /// holds nothing usable for a remote pane, and a pid from another machine is
+    /// worse than no pid: it will happily name an unrelated *local* process, so
+    /// a `kill` meant for a pane lands somewhere else entirely.
+    fn is_remote_pane(&self, _terminal_id: u32) -> bool {
+        false
+    }
+    /// What the far side last reported about a remote pane: the cwd and
+    /// foreground command the local `sysinfo` and `tcgetpgrp` cannot see.
+    fn remote_pane_status(&self, _terminal_id: u32) -> Option<RemoteStatus> {
+        None
+    }
+    /// Signal a remote pane's child, by name rather than by pid.
+    fn signal_remote_child(&self, _terminal_id: u32, _signal: ChildSignal) -> Result<()> {
+        Err(anyhow!("this backend does not support remote panes"))
+    }
     /// Hand a pane's supervisor over without killing it, so another session can
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
@@ -538,6 +560,24 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
 
+        if let Some(host) = cmd.remote_host.clone() {
+            let (conn, reader_socket) = self
+                .remote_hosts
+                .open_pane(&host, &cmd, None)
+                .with_context(|| format!("failed to open a pane on {host}"))?;
+            let async_reader = self
+                .pty_backend
+                .register_remote_terminal(terminal_id, conn, reader_socket)
+                .with_context(err_context)?;
+            // Deliberately no pid. The child's pid is meaningful only on its own
+            // machine, and handing one back here would put it in
+            // `id_to_child_pid`, where every consumer would treat it as local —
+            // `kill`, `sysinfo`, and the plugin-facing `GetPanePid` alike.
+            // `None` makes those paths skip the pane instead, which is what the
+            // remote-aware replacements rely on.
+            return Ok((terminal_id, async_reader, None));
+        }
+
         let (async_reader, child_fd) = self
             .pty_backend
             .spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id)
@@ -558,6 +598,15 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn tcdrain(&self, terminal_id: u32) -> Result<()> {
         self.pty_backend.tcdrain(terminal_id)
+    }
+    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+        self.pty_backend.is_remote(terminal_id)
+    }
+    fn remote_pane_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+        self.pty_backend.remote_status(terminal_id)
+    }
+    fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
+        self.pty_backend.signal_remote_child(terminal_id, signal)
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -752,6 +801,11 @@ impl ServerOsApi for ServerOsInputOutput {
     #[cfg(not(windows))]
     fn shutdown_pty_hosts(&self) {
         self.pty_backend.shutdown_pty_hosts();
+        // The ssh forwards go with them. The brokers and their panes on the far
+        // side survive by design — only an explicit terminate ends those — but
+        // leaving forwards behind would leak an ssh process and a bound socket
+        // per host on the way out.
+        self.remote_hosts.shutdown();
     }
     #[cfg(not(windows))]
     fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
@@ -804,6 +858,7 @@ impl Clone for Box<dyn ServerOsApi> {
 pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
     Ok(ServerOsInputOutput {
         pty_backend: PtyBackendImpl::new()?,
+        remote_hosts: Arc::new(RemoteHosts::new()),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         cached_resizes: Arc::new(Mutex::new(None)),
     })

@@ -123,6 +123,7 @@ fn sh(script: &str) -> RunCommand {
         hold_on_start: false,
         originating_plugin: None,
         use_terminal_title: false,
+        remote_host: None,
     }
 }
 
@@ -519,6 +520,7 @@ fn a_missing_command_is_reported_rather_than_panicking() {
             hold_on_start: false,
             originating_plugin: None,
             use_terminal_title: false,
+            remote_host: None,
         },
         failover_cmd: None,
         termios: None,

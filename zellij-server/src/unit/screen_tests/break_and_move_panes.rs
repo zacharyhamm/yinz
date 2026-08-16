@@ -978,6 +978,7 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         pty_receiver
     );
     let cli_action = CliAction::NewPane {
+        remote_host: None,
         direction: None,
         command: vec!["bash".into()],
         plugin: None,

@@ -19,6 +19,7 @@ pub mod client;
 pub mod fdpass;
 pub mod host;
 pub mod protocol;
+pub mod remote;
 
 pub use host::{run_pty_host, serve, ServeConfig};
 

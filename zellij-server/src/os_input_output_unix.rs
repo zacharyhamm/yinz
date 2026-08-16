@@ -36,9 +36,10 @@ use std::{
 
 use zellij_utils::{errors::prelude::*, input::command::RunCommand};
 
+use crate::pty_host::remote::{protocol::ChildSignal, RemoteConn, RemoteStatus};
 use crate::pty_host::{
     client::{self as pty_host_client, PtyHostHandle, ReleasedPtyHost, SpawnParams},
-    protocol::WireTermios,
+    protocol::{WireTermios, WireWinsize},
 };
 
 pub use async_trait::async_trait;
@@ -281,11 +282,53 @@ fn handle_terminal(
     }
 }
 
+/// How a pane's pty is reached.
+///
+/// Deliberately an enum rather than an `Option<RawFd>`: a pane whose process
+/// lives on another machine has no local descriptor, and every operation that
+/// used to dereference one has to answer for that case. Keeping the arms
+/// exhaustive means a new transport is a compile error at each site that must
+/// handle it, rather than a silent fall-through to "no fd found" — or, worse, to
+/// a descriptor or pid that belongs to something else entirely.
+pub(crate) enum PaneTransport {
+    /// The id is allocated but nothing is spawned yet (`reserve_terminal_id`).
+    /// A pane sits here between being reserved and being started, and `hold_on_start`
+    /// panes sit here indefinitely.
+    Reserved,
+    /// A pty master this server holds directly, whether it came from an
+    /// in-process `openpty` or over `SCM_RIGHTS` from a local supervisor.
+    Local(RawFd),
+    /// A pty owned by a broker on another machine. There is no descriptor and no
+    /// usable pid on this side; every operation is a frame on the connection.
+    Remote(Arc<RemoteConn>),
+}
+
+impl PaneTransport {
+    /// The local master descriptor, if this pane has one.
+    ///
+    /// Only for operations that are genuinely fd-shaped and have no meaning
+    /// otherwise. Prefer matching exhaustively where a non-local pane needs its
+    /// own answer rather than "no fd".
+    fn local_fd(&self) -> Option<RawFd> {
+        match self {
+            PaneTransport::Reserved | PaneTransport::Remote(_) => None,
+            PaneTransport::Local(fd) => Some(*fd),
+        }
+    }
+
+    fn remote(&self) -> Option<&Arc<RemoteConn>> {
+        match self {
+            PaneTransport::Reserved | PaneTransport::Local(_) => None,
+            PaneTransport::Remote(conn) => Some(conn),
+        }
+    }
+}
+
 /// The Unix PTY backend. Manages native PTY file descriptors and signals.
 #[derive(Clone)]
 pub(crate) struct UnixPtyBackend {
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
-    terminal_id_to_raw_fd: Arc<Mutex<BTreeMap<u32, Option<RawFd>>>>,
+    terminal_id_to_transport: Arc<Mutex<BTreeMap<u32, PaneTransport>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
     /// Whether panes are spawned under a detachable pty-host supervisor. Set once
     /// per session from config; see `ServerOsApi::set_pty_host_enabled`.
@@ -339,7 +382,7 @@ impl UnixPtyBackend {
         };
         Ok(Self {
             orig_termios: Arc::new(Mutex::new(current_termios)),
-            terminal_id_to_raw_fd: Arc::new(Mutex::new(BTreeMap::new())),
+            terminal_id_to_transport: Arc::new(Mutex::new(BTreeMap::new())),
             next_terminal_id_counter: Arc::new(AtomicU32::new(0)),
             pty_host_enabled: Arc::new(AtomicBool::new(false)),
             host_bin,
@@ -439,10 +482,10 @@ impl UnixPtyBackend {
                     Ok(pending) => {
                         let spawned = pending.finish(quit_cb);
                         let master_fd = spawned.master.into_raw_fd();
-                        self.terminal_id_to_raw_fd
+                        self.terminal_id_to_transport
                             .lock()
                             .to_anyhow()?
-                            .insert(terminal_id, Some(master_fd));
+                            .insert(terminal_id, PaneTransport::Local(master_fd));
                         self.terminal_id_to_host
                             .lock()
                             .to_anyhow()?
@@ -483,10 +526,10 @@ impl UnixPtyBackend {
             quit_cb,
             terminal_id,
         )?;
-        self.terminal_id_to_raw_fd
+        self.terminal_id_to_transport
             .lock()
             .to_anyhow()?
-            .insert(terminal_id, Some(pid_primary));
+            .insert(terminal_id, PaneTransport::Local(pid_primary));
         let async_reader = Box::new(
             RawFdAsyncReader::new(pid_primary)
                 .map_err(|e| anyhow::anyhow!("failed to create async reader: {}", e))?,
@@ -508,19 +551,34 @@ impl UnixPtyBackend {
                 terminal_id, rows, cols
             )
         };
-        match self
-            .terminal_id_to_raw_fd
+        let transports = self
+            .terminal_id_to_transport
             .lock()
             .to_anyhow()
-            .with_context(err_context)?
-            .get(&terminal_id)
-        {
-            Some(Some(fd)) => {
+            .with_context(err_context)?;
+        match transports.get(&terminal_id) {
+            Some(PaneTransport::Local(fd)) => {
                 if cols > 0 && rows > 0 {
                     set_terminal_size_using_fd(*fd, cols, rows, width_in_pixels, height_in_pixels);
                 }
             },
-            _ => {
+            Some(PaneTransport::Remote(conn)) => {
+                if cols > 0 && rows > 0 {
+                    let conn = conn.clone();
+                    // The map lock is dropped before the send: a slow link must
+                    // not hold every other pane's resize behind it.
+                    drop(transports);
+                    conn.resize(WireWinsize {
+                        cols,
+                        rows,
+                        width_in_pixels: width_in_pixels.unwrap_or(0),
+                        height_in_pixels: height_in_pixels.unwrap_or(0),
+                    })
+                    .with_context(err_context)
+                    .non_fatal();
+                }
+            },
+            Some(PaneTransport::Reserved) | None => {
                 Err::<(), _>(anyhow!("failed to find terminal fd for id {terminal_id}"))
                     .with_context(err_context)
                     .non_fatal();
@@ -532,46 +590,70 @@ impl UnixPtyBackend {
     pub fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize> {
         let err_context = || format!("failed to write to stdin of TTY ID {}", terminal_id);
 
-        let fd = match self
-            .terminal_id_to_raw_fd
+        // Resolved to a target before any I/O so the map lock is not held across
+        // a write. Both arms honour the same contract `pty_writer` relies on:
+        // the return is how many bytes were *accepted*, and a short count means
+        // "ask again", never "written".
+        enum Target {
+            Local(RawFd),
+            Remote(Arc<RemoteConn>),
+        }
+        let target = match self
+            .terminal_id_to_transport
             .lock()
             .to_anyhow()
             .with_context(err_context)?
             .get(&terminal_id)
         {
-            Some(Some(fd)) => *fd,
-            _ => {
+            Some(PaneTransport::Local(fd)) => Target::Local(*fd),
+            Some(PaneTransport::Remote(conn)) => Target::Remote(conn.clone()),
+            Some(PaneTransport::Reserved) | None => {
                 return Err(anyhow!("could not find raw file descriptor")).with_context(err_context)
             },
         };
 
-        try_write_to_fd(fd, buf).with_context(err_context)
+        match target {
+            Target::Local(fd) => try_write_to_fd(fd, buf).with_context(err_context),
+            Target::Remote(conn) => conn.write_input(buf).with_context(err_context),
+        }
     }
 
     pub fn tcdrain(&self, terminal_id: u32) -> Result<()> {
         let err_context = || format!("failed to tcdrain to TTY ID {}", terminal_id);
 
         match self
-            .terminal_id_to_raw_fd
+            .terminal_id_to_transport
             .lock()
             .to_anyhow()
             .with_context(err_context)?
             .get(&terminal_id)
         {
-            Some(Some(fd)) => {
+            Some(PaneTransport::Local(fd)) => {
                 termios::tcdrain(unsafe { BorrowedFd::borrow_raw(*fd) }).with_context(err_context)
             },
-            _ => Err(anyhow!("could not find raw file descriptor")).with_context(err_context),
+            // "Wait until the kernel has handed every queued byte to the
+            // terminal" does not survive the trip: the queue that matters is on
+            // the far side, and answering would cost a round trip on the pty
+            // thread to tell the caller something it cannot act on. Nothing
+            // calls this today; a remote pane says "drained" rather than
+            // pretending to a synchronisation it cannot provide.
+            Some(PaneTransport::Remote(_)) => Ok(()),
+            Some(PaneTransport::Reserved) | None => {
+                Err(anyhow!("could not find raw file descriptor")).with_context(err_context)
+            },
         }
     }
 
     pub fn tcgetpgrp(&self, terminal_id: u32) -> Option<i32> {
-        match self.terminal_id_to_raw_fd.lock().ok()?.get(&terminal_id) {
-            Some(Some(fd)) => unistd::tcgetpgrp(unsafe { BorrowedFd::borrow_raw(*fd) })
-                .ok()
-                .map(|pgid| pgid.as_raw()),
-            _ => None,
-        }
+        let fd = self
+            .terminal_id_to_transport
+            .lock()
+            .ok()?
+            .get(&terminal_id)?
+            .local_fd()?;
+        unistd::tcgetpgrp(unsafe { BorrowedFd::borrow_raw(fd) })
+            .ok()
+            .map(|pgid| pgid.as_raw())
     }
 
     pub fn kill(&self, pid: u32) -> Result<()> {
@@ -589,11 +671,74 @@ impl UnixPtyBackend {
         Ok(())
     }
 
+    /// Adopt an already-connected remote pane: record its transport and hand
+    /// back the reader `TerminalBytes` will drive.
+    ///
+    /// The handshake and `Spawn` exchange happen before this — by the time a
+    /// pane exists, the far end has already confirmed the child is running, so
+    /// there is no window in which a pane is on screen but unspawned.
+    pub fn register_remote_terminal(
+        &self,
+        terminal_id: u32,
+        conn: Arc<RemoteConn>,
+        read_socket: std::os::unix::net::UnixStream,
+    ) -> Result<Box<dyn AsyncReader>> {
+        let reader = Box::new(
+            crate::pty_host::remote::RemoteReader::new(conn.clone(), read_socket)
+                .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?,
+        ) as Box<dyn AsyncReader>;
+        self.terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .insert(terminal_id, PaneTransport::Remote(conn));
+        Ok(reader)
+    }
+
+    /// Whether this pane's process lives on another machine.
+    ///
+    /// The question every pid-shaped operation has to ask first: `id_to_child_pid`
+    /// holds nothing usable for a remote pane, and a pid from another machine
+    /// names an unrelated local process rather than nothing at all.
+    pub fn is_remote(&self, terminal_id: u32) -> bool {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()
+            .and_then(|t| t.get(&terminal_id).map(|t| t.remote().is_some()))
+            .unwrap_or(false)
+    }
+
+    /// The last thing the broker reported about a remote pane, or `None` for a
+    /// local one.
+    ///
+    /// Cached rather than queried: the caller is `update_and_report_cwds` on the
+    /// pty thread, and a round trip over a link that may be dead is not
+    /// something that thread can afford.
+    pub fn remote_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()?
+            .get(&terminal_id)?
+            .remote()
+            .map(|conn| conn.status())
+    }
+
+    /// Deliver a signal to a remote pane's child, by name rather than by pid.
+    pub fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
+        let conn = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .and_then(|t| t.remote().cloned())
+            .ok_or_else(|| anyhow!("pane {terminal_id} is not a remote pane"))?;
+        conn.signal_child(signal)
+    }
+
     pub fn reserve_terminal_id(&self, terminal_id: u32) {
-        self.terminal_id_to_raw_fd
+        self.terminal_id_to_transport
             .lock()
             .unwrap()
-            .insert(terminal_id, None);
+            .insert(terminal_id, PaneTransport::Reserved);
     }
 
     pub fn clear_terminal_id(&self, terminal_id: u32) {
@@ -602,10 +747,19 @@ impl UnixPtyBackend {
         // `Drop for Pty` at session shutdown — goes through it. Terminating here
         // means no changes are needed in pty.rs or screen.rs.
         self.terminate_host(terminal_id);
-        self.terminal_id_to_raw_fd
+        let removed = self
+            .terminal_id_to_transport
             .lock()
             .unwrap()
             .remove(&terminal_id);
+        // A remote pane's supervisor is on the far machine, so `terminate_host`
+        // above cannot reach it. Without this the pane would leave a live
+        // process and a live broker behind on every ordinary close.
+        if let Some(PaneTransport::Remote(conn)) = removed {
+            conn.terminate()
+                .with_context(|| format!("failed to terminate remote pane {terminal_id}"))
+                .non_fatal();
+        }
     }
 
     pub fn next_terminal_id(&self) -> Option<u32> {
@@ -636,7 +790,7 @@ impl UnixPtyBackend {
                 )
             })?;
         let released = handle.release();
-        self.terminal_id_to_raw_fd
+        self.terminal_id_to_transport
             .lock()
             .to_anyhow()?
             .remove(&terminal_id);
@@ -661,7 +815,7 @@ impl UnixPtyBackend {
                 // Undo the reservation, but *not* through `clear_terminal_id` —
                 // that terminates the supervisor, and a failed adoption must leave
                 // it running for the next caller.
-                self.terminal_id_to_raw_fd
+                self.terminal_id_to_transport
                     .lock()
                     .to_anyhow()?
                     .remove(&terminal_id);
@@ -683,10 +837,10 @@ impl UnixPtyBackend {
         })?;
         let attached = pending.finish(quit_cb);
         let master_fd = attached.master.into_raw_fd();
-        self.terminal_id_to_raw_fd
+        self.terminal_id_to_transport
             .lock()
             .to_anyhow()?
-            .insert(terminal_id, Some(master_fd));
+            .insert(terminal_id, PaneTransport::Local(master_fd));
         self.terminal_id_to_host
             .lock()
             .to_anyhow()?
