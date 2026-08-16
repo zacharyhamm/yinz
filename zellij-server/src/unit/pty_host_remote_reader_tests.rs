@@ -112,6 +112,94 @@ async fn a_reported_child_exit_ends_the_stream_cleanly() {
     assert_eq!(conn.child_exit(), Some(Some(130)));
 }
 
+/// A recorder for what the pane's end was reported as, and how often.
+fn exit_recorder() -> (Arc<Mutex<Vec<Option<i32>>>>, QuitCb) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let cb: QuitCb = Box::new(move |_pane_id, status, _cmd| {
+        sink.lock().expect("poisoned").push(status);
+    });
+    (seen, cb)
+}
+
+/// `TerminalBytes::listen` only breaks its loop at `Ok(0)`; the instruction that
+/// actually retires the pane comes from this callback and nowhere else. A remote
+/// pane that never fires it sits on screen, dead, until the user closes it.
+#[tokio::test]
+async fn a_child_exit_is_reported_to_the_pty_thread() {
+    let (reader, _conn, mut peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: Some(3) },
+    )
+    .expect("frame failed");
+    send(&mut peer, &framed);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    assert_eq!(reader.read(&mut buf).await.expect("read failed"), 0);
+    assert_eq!(
+        *seen.lock().expect("poisoned"),
+        vec![Some(3)],
+        "the child's exit never reached the pty thread, so nothing will close the pane"
+    );
+}
+
+/// Giving up on a reconnect ends the pane just as surely as the child exiting,
+/// and has to be reported the same way — with no status, exactly as a dead
+/// supervisor is reported on the local path.
+#[tokio::test]
+async fn giving_up_on_a_reconnect_is_reported_as_the_end_of_the_pane() {
+    let (reader, _conn, peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    // No reconnector, so the first transport loss is terminal.
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    reader
+        .read(&mut buf)
+        .await
+        .expect_err("an unreconnectable transport loss must surface as an error");
+    assert_eq!(
+        *seen.lock().expect("poisoned"),
+        vec![None],
+        "a pane that can never come back was left on screen with nothing to close it"
+    );
+}
+
+/// Two exits would close a pane twice, and the second may land on whatever pane
+/// has since taken the id.
+#[tokio::test]
+async fn the_end_of_a_pane_is_reported_only_once() {
+    let (reader, _conn, mut peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: None },
+    )
+    .expect("frame failed");
+    send(&mut peer, &framed);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    for _ in 0..3 {
+        assert_eq!(reader.read(&mut buf).await.expect("read failed"), 0);
+    }
+    assert_eq!(
+        seen.lock().expect("poisoned").len(),
+        1,
+        "the pane's end was reported more than once"
+    );
+}
+
 /// Status is cached from the broker's own machine, because the local server
 /// cannot inspect a process it does not have.
 #[tokio::test]

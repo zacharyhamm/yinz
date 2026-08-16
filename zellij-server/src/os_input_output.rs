@@ -589,7 +589,7 @@ impl ServerOsApi for ServerOsInputOutput {
                 .with_context(|| format!("failed to open a pane on {host}"))?;
             let async_reader = self
                 .pty_backend
-                .register_remote_terminal(terminal_id, conn, reader_socket)
+                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, cmd)
                 .with_context(err_context)?;
             // Deliberately no pid. The child's pid is meaningful only on its own
             // machine, and handing one back here would put it in
@@ -816,6 +816,27 @@ impl ServerOsApi for ServerOsInputOutput {
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+        // A held remote pane re-runs on the machine it was held on. Without this
+        // the command would quietly run *here* under the same pane, and the pane
+        // still open on the far machine would be left to the orphan timeout.
+        if let Some(host) = run_command.remote_host.clone() {
+            // The pane being re-run is held, not closed, so the broker still
+            // holds the session it was held from. Registering over it would drop
+            // this side's only handle on it and leave it to the orphan timeout.
+            self.pty_backend.clear_terminal_id(terminal_id);
+            self.pty_backend.reserve_terminal_id(terminal_id);
+            let (conn, reader_socket) = self
+                .remote_hosts
+                .open_pane(&host, &run_command, None)
+                .with_context(|| format!("failed to re-run a pane on {host}"))?;
+            let async_reader = self
+                .pty_backend
+                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, run_command)
+                .context("failed to re-run a command in a remote terminal")?;
+            // No pid, for the same reason `spawn_terminal` gives none.
+            return Ok((async_reader, None));
+        }
+
         let (async_reader, child_fd) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
