@@ -60,6 +60,7 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 signal-hook = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
 tempfile = "3.2.0"
@@ -68,3 +69,10 @@ rusqlite = { version = "0.30", default-features = false, features = ["bundled"] 
 
 [features]
 web_server_capability = ["zellij-utils/web_server_capability"]
+
+# `test = false` keeps `cargo test` (and therefore `cargo x test`) from building and running the
+# bench binary in test mode, which would slow the test command down for no coverage gain.
+[[bench]]
+name = "multi_pane_render"
+harness = false
+test = false
