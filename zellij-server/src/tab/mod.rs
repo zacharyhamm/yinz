@@ -8460,7 +8460,7 @@ pub fn pane_info_for_pane(
 }
 
 #[cfg(test)]
-#[path = "./unit/tab_tests.rs"]
+#[path = "./unit/tab_tests/mod.rs"]
 mod tab_tests;
 
 #[cfg(test)]
