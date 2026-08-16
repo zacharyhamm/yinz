@@ -59,7 +59,23 @@ impl From<std::io::Error> for TokenError {
 
 type Result<T> = std::result::Result<T, TokenError>;
 
+/// Overrides the location of the token database. Set this to give a process its own database
+/// instead of the machine-global one under [`ZELLIJ_PROJ_DIR`].
+///
+/// Tests need this: they delete and recreate the database wholesale, so two test processes
+/// sharing one file will unlink it out from under each other mid-query. Unlike `ZELLIJ_PROJ_DIR`,
+/// which is a `lazy_static` and therefore frozen at first use, this is read on every call.
+pub const DB_PATH_ENV_VAR: &str = "ZELLIJ_WEB_TOKENS_DB";
+
 fn get_db_path() -> Result<PathBuf> {
+    if let Some(overridden) = std::env::var_os(DB_PATH_ENV_VAR) {
+        let db_path = PathBuf::from(overridden);
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        return Ok(db_path);
+    }
+
     let data_dir = ZELLIJ_PROJ_DIR.data_dir();
     std::fs::create_dir_all(data_dir)?;
 
