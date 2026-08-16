@@ -50,6 +50,10 @@ pub fn needs_confirmation(name: &str) -> bool {
             // the handoff it belongs to no session at all.
             | "warp_pane"
             | "warp_pane_here"
+            // The tab version of the above, with more at stake: every pane in
+            // the tab leaves at once, and warping a session's last tab ends it.
+            | "warp_tab"
+            | "warp_tab_here"
             | "adopt_orphaned_pane"
     )
 }
@@ -117,6 +121,14 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "warp_pane_here" => {
             let session = args.from_session.as_deref().unwrap_or("another session");
             format!("takes {pane} from {session} into this one")
+        },
+        "warp_tab" => {
+            let session = args.to_session.as_deref().unwrap_or("another session");
+            format!("moves a whole tab out to {session}; if it is the last tab, this session ends")
+        },
+        "warp_tab_here" => {
+            let session = args.from_session.as_deref().unwrap_or("another session");
+            format!("takes a tab from {session} into this one")
         },
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
         // Scheduling is otherwise free; handing a job standing permission is the
@@ -342,6 +354,32 @@ pub fn specs() -> Value {
                     "placement": placement.clone(),
                 },
                 "required": ["from_session", "pane_id"],
+            }),
+        ),
+        tool(
+            "warp_tab",
+            "Move a whole tab, all its panes, to another session; defaults to the focused \
+             tab. Can move the session's last tab, ending this session.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_index": { "type": "integer", "description": "Defaults to the focused tab." },
+                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
+                    "to_session": { "type": "string" },
+                },
+                "required": ["to_session"],
+            }),
+        ),
+        tool(
+            "warp_tab_here",
+            "Bring in a tab listed by list_other_sessions.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "from_session": { "type": "string" },
+                    "tab_index": { "type": "integer" },
+                },
+                "required": ["from_session", "tab_index"],
             }),
         ),
         tool(
@@ -1314,6 +1352,15 @@ impl Args {
         }
     }
 
+    /// Like [`Self::tab_target`], but `warp_tab` treats an absent target as
+    /// permission rather than an error: it means "the tab in focus".
+    pub fn tab_target_or_focused(&self) -> Result<Option<TabTarget>, String> {
+        match (self.tab_index, self.tab_id) {
+            (None, None) => Ok(None),
+            _ => self.tab_target().map(Some),
+        }
+    }
+
     /// `focus` and `rename` take either a tab or a pane pair. `None` means the
     /// call named no tab at all, so the caller falls through to the pane path.
     pub fn tab_or_pane_target(&self) -> Option<Result<TabTarget, String>> {
@@ -1710,6 +1757,8 @@ mod host {
             "list_other_sessions" => list_other_sessions(),
             "warp_pane" => warp_pane(&args),
             "warp_pane_here" => warp_pane_here(&args),
+            "warp_tab" => warp_tab(&args),
+            "warp_tab_here" => warp_tab_here(&args),
             "list_orphaned_panes" => list_orphaned_panes_tool(),
             "adopt_orphaned_pane" => adopt_orphaned_pane_tool(&args),
             "read_pane" => with_pane(&args, |pane| read_pane(pane, args.full_scrollback)),
@@ -1893,7 +1942,7 @@ mod host {
                                 })
                             })
                             .collect();
-                        json!({ "name": tab.name, "panes": panes })
+                        json!({ "tab_index": tab.position, "name": tab.name, "panes": panes })
                     })
                     .collect();
                 json!({ "session": session.name, "tabs": tabs })
@@ -1975,6 +2024,88 @@ mod host {
             Ok(true) => {},
         }
         match warp_pane_from_session(PaneId::Terminal(pane_id), from_session, placement) {
+            Ok(message) | Err(message) => message,
+        }
+    }
+
+    /// A tab index in *this* session, from `tab_index`/`tab_id`, defaulting to
+    /// whichever tab is focused when neither is given.
+    ///
+    /// `warp_tab_to_session` only knows about positions, while the model may
+    /// have named the tab by its stable id (or not named one at all) - so the
+    /// resolution happens here, against the same snapshot `list_session` reads.
+    fn resolve_tab_index(target: Option<TabTarget>) -> Result<usize, String> {
+        let snapshot =
+            get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
+        let session = snapshot
+            .live_sessions
+            .iter()
+            .find(|session| session.is_current_session)
+            .ok_or_else(|| "the current session is not in the session list".to_owned())?;
+        match target {
+            Some(TabTarget::Index(index)) => Ok(index),
+            Some(TabTarget::Id(id)) => session
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == id)
+                .map(|tab| tab.position)
+                .ok_or_else(|| {
+                    format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids")
+                }),
+            None => session
+                .tabs
+                .iter()
+                .find(|tab| tab.active)
+                .map(|tab| tab.position)
+                .ok_or_else(|| "no tab is focused".to_owned()),
+        }
+    }
+
+    fn warp_tab(args: &Args) -> String {
+        let Some(to_session) = args.to_session.as_deref() else {
+            return "to_session is required; call list_other_sessions for the names".to_owned();
+        };
+        let target = match args.tab_target_or_focused() {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
+        let tab_index = match resolve_tab_index(target) {
+            Ok(index) => index,
+            Err(error) => return error,
+        };
+        match other_session_exists(to_session) {
+            Ok(false) => {
+                return format!(
+                    "no other session named {to_session:?} is running; call list_other_sessions"
+                )
+            },
+            Err(error) => return error,
+            Ok(true) => {},
+        }
+        match warp_tab_to_session(tab_index, to_session) {
+            Ok(message) | Err(message) => message,
+        }
+    }
+
+    fn warp_tab_here(args: &Args) -> String {
+        let Some(from_session) = args.from_session.as_deref() else {
+            return "from_session is required; call list_other_sessions for the names".to_owned();
+        };
+        let Some(tab_index) = args.tab_index else {
+            return "tab_index is required; call list_other_sessions for the tab's index in \
+                     that session"
+                .to_owned();
+        };
+        match other_session_exists(from_session) {
+            Ok(false) => {
+                return format!(
+                    "no other session named {from_session:?} is running; call list_other_sessions"
+                )
+            },
+            Err(error) => return error,
+            Ok(true) => {},
+        }
+        match warp_tab_from_session(tab_index, from_session) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -2737,9 +2868,9 @@ mod tests {
             .iter()
             .map(|spec| spec["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names.len(), 49);
+        assert_eq!(names.len(), 51);
         let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-        assert_eq!(confirmed, 11);
+        assert_eq!(confirmed, 13);
     }
 
     fn call(name: &str, arguments: &str) -> ToolCall {
@@ -3024,6 +3155,61 @@ mod tests {
             here["function"]["parameters"]["properties"]["is_plugin"],
             Value::Null,
         );
+    }
+
+    /// The tab warps take no `placement`: a warped tab always lands as its own
+    /// new tab in the receiving session, so there is nothing to choose.
+    #[test]
+    fn the_warp_tab_schemas_require_a_destination_and_take_no_placement() {
+        let specs = specs();
+        for (name, required) in [
+            ("warp_tab", json!(["to_session"])),
+            ("warp_tab_here", json!(["from_session", "tab_index"])),
+        ] {
+            let spec = specs
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|spec| spec["function"]["name"] == name)
+                .unwrap_or_else(|| panic!("{name} should be advertised"));
+            assert_eq!(
+                spec["function"]["parameters"]["required"], required,
+                "{name} requires the wrong arguments",
+            );
+            assert_eq!(
+                spec["function"]["parameters"]["properties"]["placement"],
+                Value::Null,
+                "{name} should not offer a placement",
+            );
+        }
+    }
+
+    #[test]
+    fn tab_target_or_focused_defaults_to_none() {
+        assert_eq!(Args::default().tab_target_or_focused(), Ok(None));
+    }
+
+    #[test]
+    fn tab_target_or_focused_resolves_like_tab_target_when_given() {
+        let by_index = Args {
+            tab_index: Some(2),
+            ..Args::default()
+        };
+        assert_eq!(
+            by_index.tab_target_or_focused(),
+            Ok(Some(TabTarget::Index(2)))
+        );
+        let by_id = Args {
+            tab_id: Some(9),
+            ..Args::default()
+        };
+        assert_eq!(by_id.tab_target_or_focused(), Ok(Some(TabTarget::Id(9))));
+        let both = Args {
+            tab_index: Some(1),
+            tab_id: Some(2),
+            ..Args::default()
+        };
+        assert!(both.tab_target_or_focused().is_err());
     }
 
     #[test]
