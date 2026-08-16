@@ -231,20 +231,21 @@ pub fn classify<'a>(
         .or_else(|| pane.detected.as_deref().map(|kind| (kind, "auto")))
 }
 
-/// What one poll did to a pane's activity, for a caller that acts on the change rather
-/// than on the value.
+/// What one poll did to a pane's activity, for a caller that acts on how long a pane has
+/// been still rather than on the label that stillness draws.
 ///
 /// The busy/idle *label* is derived on every render from the poll counter, so nothing
-/// needed this until the daemon grew a reason to act at the moment an agent stops working.
+/// needed this until the daemon grew a reason to act when an agent stops working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Observed {
     /// The pane is showing something new — the agent is working.
     Busy,
-    /// The pane has just held still for a whole poll: the busy→idle edge, and the one
-    /// tick on which an agent has finished a piece of work.
-    WentIdle,
-    /// Still idle, as it was last poll.
-    StillIdle,
+    /// The pane has held still for `polls` consecutive polls.
+    ///
+    /// `1` is the busy→idle edge. It is a weak signal on its own: any pause inside a turn
+    /// crosses it, so a caller that wants an agent to have *stopped* rather than merely
+    /// paused waits for a higher count.
+    Idle { polls: u32 },
 }
 
 /// Fold one poll's pane content into the activity map, and say what that did.
@@ -263,12 +264,7 @@ pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) -> Observed {
     match activity.get_mut(&pane_id) {
         Some((last, polls)) if *last == hash => {
             *polls += 1;
-            // 0 -> 1 is the edge; anything beyond it is a pane that was already idle.
-            if *polls == 1 {
-                Observed::WentIdle
-            } else {
-                Observed::StillIdle
-            }
+            Observed::Idle { polls: *polls }
         },
         _ => {
             activity.insert(pane_id, (hash, 0));
@@ -1112,20 +1108,27 @@ mod tests {
         assert_eq!(activity[&3].1, 0);
     }
 
-    /// The edge the daemon summarises on. It must fire once per stretch of idleness, not
-    /// on every poll of it, or every idle agent would be re-summarised every five seconds.
+    /// What the daemon debounces on. Each poll of a stretch of stillness reports its own
+    /// count, so a caller can pick the length of stillness it acts at and hit it exactly
+    /// once — and a new screen restarts the count from one.
     #[test]
-    fn observe_reports_the_busy_to_idle_edge_exactly_once() {
+    fn observe_counts_the_polls_of_each_stretch_of_stillness() {
         let mut activity = Activity::new();
-        // A first sighting cannot tell "working" from "sitting still", so it is not an edge.
+        // A first sighting cannot tell "working" from "sitting still", so it is not idle.
         assert_eq!(observe(&mut activity, 3, "working"), Observed::Busy);
-        assert_eq!(observe(&mut activity, 3, "working"), Observed::WentIdle);
-        assert_eq!(observe(&mut activity, 3, "working"), Observed::StillIdle);
-        assert_eq!(observe(&mut activity, 3, "working"), Observed::StillIdle);
+        for polls in 1..=4 {
+            assert_eq!(
+                observe(&mut activity, 3, "working"),
+                Observed::Idle { polls }
+            );
+        }
 
-        // Back to work, then idle again: a second stretch earns a second edge.
+        // Back to work, then still again: a second stretch counts from the start.
         assert_eq!(observe(&mut activity, 3, "more"), Observed::Busy);
-        assert_eq!(observe(&mut activity, 3, "more"), Observed::WentIdle);
+        assert_eq!(
+            observe(&mut activity, 3, "more"),
+            Observed::Idle { polls: 1 }
+        );
     }
 
     #[test]

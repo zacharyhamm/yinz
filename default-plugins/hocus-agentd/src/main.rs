@@ -53,6 +53,16 @@ const HOCUS_ALIAS: &str = "hocus";
 /// short enough that a dropped result does not cost the pane its summaries for the session.
 const SUMMARY_TICKS: u32 = 12;
 
+/// How many consecutive unchanged polls a pane must hold before it is summarised — three
+/// ticks, about fifteen seconds.
+///
+/// The busy→idle edge is crossed by any pause, including the one-poll gaps inside a single
+/// agent turn while a tool runs, and each crossing would buy a request describing a screen
+/// the agent is about to leave. Waiting for the count to reach three spends the request on
+/// the screen the agent settles on instead: the counter resets to zero on any new output,
+/// so a burst of short pauses costs nothing and only the last one is paid for.
+const SUMMARY_SETTLE_POLLS: u32 = 3;
+
 /// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
 /// The same scheme the git probes use, for the same reason: results arrive on one event
 /// for the whole plugin.
@@ -765,14 +775,18 @@ impl State {
         for pane_id in running {
             let text = read(pane_id);
             match agents::observe(&mut self.activity, pane_id, &text) {
-                // Deliberately kept rather than dropped. The marker is gated on the pane
-                // being idle (`agents::waiting_marker`), so a working agent already shows
-                // nothing - and keeping the answer, stamped with the screen it was made
-                // from, is what lets an agent that comes back to that same screen be free
-                // rather than another request.
-                agents::Observed::Busy => {},
-                agents::Observed::WentIdle => ask(self, pane_id, &text),
-                agents::Observed::StillIdle => {},
+                // Equality, not `>=`: a pane that goes on holding still asks once for that
+                // stretch, not once every five seconds for as long as it sits there.
+                agents::Observed::Idle { polls } if polls == SUMMARY_SETTLE_POLLS => {
+                    ask(self, pane_id, &text)
+                },
+                // Busy, still settling, or long since settled. Note that a pane going busy
+                // keeps the summary it already has rather than dropping it: the marker is
+                // gated on the pane being idle (`agents::waiting_marker`), so a working
+                // agent already shows nothing - and keeping the answer, stamped with the
+                // screen it was made from, is what lets an agent that comes back to that
+                // same screen be free rather than another request.
+                _ => {},
             }
         }
     }
@@ -1785,11 +1799,24 @@ mod tests {
         }
     }
 
-    /// One agent, polled until it is idle, with the summariser wired to a recorder.
+    /// One poll of every pane, showing `text`, with the summariser wired to `sent`.
     ///
-    /// Returns the state and the requests that went out. `observe_activity_with` is driven
-    /// rather than `start_summary` called directly, so what is under test is the whole
-    /// path from "the pane held still" to "a request left".
+    /// `observe_activity_with` is driven rather than `start_summary` called directly, so
+    /// what is under test is the whole path from "the pane held still" to "a request left".
+    fn poll_showing(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
+        state.observe_activity_with(
+            |_| text.to_owned(),
+            |state, pane_id, text| {
+                if state.summary_due(pane_id, text) {
+                    state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, context| {
+                        sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
+                    });
+                }
+            },
+        );
+    }
+
+    /// One agent, polled until it has settled, and the requests that went out.
     fn idle_agent(text: &'static str) -> (State, Vec<(u32, Vec<u8>)>) {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
@@ -1797,18 +1824,9 @@ mod tests {
         };
         let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
         // The first poll is `Busy` - a single reading cannot tell working from finished -
-        // so it takes two to reach the edge.
-        for _ in 0..2 {
-            state.observe_activity_with(
-                |_| text.to_owned(),
-                |state, pane_id, text| {
-                    if state.summary_due(pane_id, text) {
-                        state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, context| {
-                            sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
-                        });
-                    }
-                },
-            );
+        // and the settle window is counted from the one after it.
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, text, &mut sent);
         }
         (state, sent)
     }
@@ -1853,26 +1871,65 @@ mod tests {
         );
     }
 
-    /// Staying idle is not an edge. Without this every idle agent would be re-summarised
-    /// every five seconds for as long as it sat there.
+    /// Going on holding still is not a new settling. Without this every idle agent would
+    /// be re-summarised every five seconds for as long as it sat there.
     #[test]
     fn sitting_idle_does_not_ask_again() {
         let (mut state, mut sent) = idle_agent(BUSY_PANE);
         state.finish_summary(200, &reply("Done.", false), &context(7, 1));
 
         for _ in 0..3 {
-            state.observe_activity_with(
-                |_| BUSY_PANE.to_owned(),
-                |state, pane_id, text| {
-                    if state.summary_due(pane_id, text) {
-                        state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, ctx| {
-                            sent.push((ctx[SUMMARY_PANE].parse().unwrap(), body));
-                        });
-                    }
-                },
-            );
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
         }
         assert_eq!(sent.len(), 1);
+    }
+
+    /// An agent working through a turn pauses - a tool runs, a file is read - and each
+    /// pause crosses the busy→idle edge. Acting on the edge would buy a request per pause,
+    /// each describing a screen the agent is about to leave.
+    #[test]
+    fn a_burst_of_short_pauses_asks_nothing() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        // Well past the polls a settled pane would need, but never two polls of stillness
+        // in a row, so the count never reaches the window.
+        for round in 0..6 {
+            let text = format!("{BUSY_PANE} step {round}");
+            poll_showing(&mut state, &text, &mut sent);
+            poll_showing(&mut state, &text, &mut sent);
+        }
+        assert!(
+            sent.is_empty(),
+            "no pause lasted long enough to mean the agent had stopped"
+        );
+    }
+
+    /// And when the burst ends, the one request that is paid for describes the screen the
+    /// agent settled on - not any of the ones it passed through.
+    #[test]
+    fn only_the_screen_a_burst_settles_on_is_asked_about() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        for round in 0..3 {
+            let text = format!("{BUSY_PANE} step {round}");
+            poll_showing(&mut state, &text, &mut sent);
+            poll_showing(&mut state, &text, &mut sent);
+        }
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, OTHER_PANE, &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1, "one settling, one request");
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].1).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        assert!(prompt.contains(OTHER_PANE), "the screen it settled on");
+        assert!(!prompt.contains("step 2"), "not the one before it");
     }
 
     /// An agent that starts working again is not waiting on anyone, whatever it was
