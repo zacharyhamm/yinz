@@ -159,3 +159,51 @@ fn a_probe_becomes_the_report_it_claims_to() {
         other => panic!("expected a status report, got {other:?}"),
     }
 }
+
+// ---- the git probe ----
+
+/// The probe runs the same two invocations `hocus-agentd` does, and the parser
+/// on the other end is that plugin's. What matters is that the raw bytes are the
+/// ones that parser expects, so probe this very repository.
+#[test]
+fn a_checkout_reports_its_identity() {
+    let repo = env!("CARGO_MANIFEST_DIR");
+    let git = probe_git(repo);
+
+    let metadata = String::from_utf8_lossy(&git.metadata);
+    let lines: Vec<&str> = metadata.lines().collect();
+    assert!(
+        lines.len() >= 3,
+        "expected at least root, git-dir and common-dir, got {lines:?}"
+    );
+    assert!(
+        std::path::Path::new(lines[0]).is_absolute(),
+        "--path-format=absolute must yield an absolute root, got {:?}",
+        lines[0]
+    );
+    assert_eq!(git.cwd, repo);
+}
+
+/// A directory that is not a checkout is the ordinary case for a pane, and must
+/// come back as a clean answer rather than an error. Git exits 128 there, which
+/// the plugin's parser reads as "not a repository" — distinct from a genuine
+/// failure — so the code has to survive the trip.
+#[test]
+fn a_directory_outside_any_checkout_is_not_a_failure() {
+    let git = probe_git("/");
+    assert!(
+        git.metadata.is_empty() || git.exit_code == Some(128),
+        "expected no identity for a non-repository, got {:?} (exit {:?})",
+        String::from_utf8_lossy(&git.metadata),
+        git.exit_code
+    );
+}
+
+/// A cwd that no longer exists happens whenever a directory is removed under a
+/// running pane. It must not panic or hang.
+#[test]
+fn probing_a_directory_that_is_gone_reports_nothing_useful() {
+    let git = probe_git("/definitely/not/a/real/directory");
+    assert!(git.metadata.is_empty());
+    assert_eq!(git.cwd, "/definitely/not/a/real/directory");
+}

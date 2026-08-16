@@ -286,6 +286,7 @@ mod tests {
             title: title.to_owned(),
             command: command.map(str::to_owned),
             cwd: Some(cwd.to_owned()),
+            host: None,
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,

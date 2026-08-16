@@ -654,6 +654,9 @@ pub struct PaneInfo {
     pub is_hidden: bool,
     #[prost(string, optional, tag="28")]
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    /// the machine the pane runs on, unset for local panes
+    #[prost(string, optional, tag="29")]
+    pub host: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

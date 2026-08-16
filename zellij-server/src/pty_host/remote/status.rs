@@ -97,6 +97,65 @@ pub fn probe(master_fd: RawFd, child_pid: u32) -> Probe {
     }
 }
 
+/// The raw result of asking git about a directory.
+///
+/// Deliberately unparsed. `hocus-agentd`'s `poll::repository` already turns
+/// exactly these three things into a checkout identity, including the awkward
+/// parts — a repository with no commits writes its identity to stdout and *then*
+/// exits 128, so the exit code cannot gate the parse. Shipping raw output means
+/// that logic stays in one place and keeps working for remote panes without
+/// knowing they exist.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GitProbe {
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+    pub metadata: Vec<u8>,
+    pub config: Vec<u8>,
+}
+
+/// The same two invocations `hocus-agentd` runs, against a directory on this
+/// machine.
+///
+/// Kept byte-identical to the plugin's, because the parser on the other end is
+/// the plugin's too — any drift here shows up as a project that silently fails
+/// to resolve rather than as an error.
+pub fn probe_git(cwd: &str) -> GitProbe {
+    use std::process::Command;
+
+    let metadata = Command::new("git")
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .current_dir(cwd)
+        .output()
+        .ok();
+    let config = Command::new("git")
+        .args([
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^(remote\..*\.url|remote\.pushdefault|branch\..*\.remote)$",
+        ])
+        .current_dir(cwd)
+        .output()
+        .ok();
+
+    GitProbe {
+        cwd: cwd.to_owned(),
+        // The metadata command's status is the one that matters; the config
+        // command exits non-zero simply for matching nothing, which is ordinary.
+        exit_code: metadata.as_ref().and_then(|o| o.status.code()),
+        metadata: metadata.map(|o| o.stdout).unwrap_or_default(),
+        config: config.map(|o| o.stdout).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 #[path = "../../unit/pty_host_remote_status_tests.rs"]
 mod pty_host_remote_status_tests;

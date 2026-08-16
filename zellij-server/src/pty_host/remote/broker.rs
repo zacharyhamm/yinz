@@ -291,7 +291,23 @@ fn resume_pane(
     // it happened to change.
     let probe = super::status::probe(session.master_fd(), session.child_pid);
     send(wire, &probe.into_report())?;
+    // The project a pane belongs to is discovered once, on a cwd change that may
+    // have happened long before this reconnect. Replaying it means the pane is
+    // attributed straight away rather than at whatever point it next moves.
+    if let Some(git) = session.git_probe() {
+        send(wire, &git_report(&git))?;
+    }
     Ok(session)
+}
+
+fn git_report(git: &super::status::GitProbe) -> BrokerToServerMsg {
+    use crate::pty_host::protocol::encode_buffered;
+    BrokerToServerMsg::GitProbe {
+        cwd: git.cwd.clone(),
+        exit_code: git.exit_code,
+        metadata_base64: encode_buffered(&git.metadata),
+        config_base64: encode_buffered(&git.config),
+    }
 }
 
 /// How often to look at the pane's process.
@@ -311,12 +327,27 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
         .name("remote-pane-status".to_owned())
         .spawn(move || {
             let mut last: Option<super::status::Probe> = None;
+            let mut last_git_cwd: Option<String> = None;
             loop {
                 thread::sleep(STATUS_INTERVAL);
                 if session.is_terminated() || session.child_exit().is_some() {
                     return;
                 }
                 let probe = super::status::probe(session.master_fd(), session.child_pid);
+
+                // A new working directory may mean a different checkout, which
+                // is the only thing that can change a pane's project.
+                if let Some(cwd) = probe.cwd.clone() {
+                    if last_git_cwd.as_deref() != Some(cwd.as_str()) {
+                        let git = super::status::probe_git(&cwd);
+                        session.set_git_probe(git.clone());
+                        if let Some(wire) = session.wire() {
+                            let _ = send(&wire, &git_report(&git));
+                        }
+                        last_git_cwd = Some(cwd);
+                    }
+                }
+
                 // Only on change: this is a keystroke-free pane's only traffic,
                 // and an idle agent should not keep an ssh channel busy.
                 if last.as_ref() == Some(&probe) {

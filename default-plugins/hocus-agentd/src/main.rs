@@ -800,6 +800,7 @@ mod tests {
             title: command.to_owned(),
             command: Some(command.to_owned()),
             cwd: Some(cwd.to_owned()),
+            host: None,
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,

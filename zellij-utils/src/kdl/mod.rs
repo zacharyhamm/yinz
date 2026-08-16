@@ -7035,6 +7035,7 @@ impl PaneInfo {
             .unwrap_or(false);
 
         let pane_info = PaneInfo {
+            host: None,
             id,
             is_plugin,
             is_focused,
