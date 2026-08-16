@@ -1356,6 +1356,35 @@ mod tests {
         );
     }
 
+    /// The whole point of `Message::display` being display-only: a tool the
+    /// user typed is *shown* as prose and still *sent* as the raw result the
+    /// model's ids and follow-up calls depend on.
+    #[test]
+    fn request_body_sends_the_raw_result_not_its_presentation() {
+        let transcript = [
+            Message::tool_calls(vec![call("call_1", "new_pane", "{}")]),
+            Message::tool_result_shown(
+                "call_1",
+                r#"{"opened":true,"pane_id":7}"#,
+                Some("Opened pane 7.".to_owned()),
+            ),
+        ];
+        let body = body_value(&test_config(), &transcript);
+        assert_eq!(
+            body["messages"][1],
+            json!({
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": r#"{"opened":true,"pane_id":7}"#,
+            })
+        );
+        assert!(
+            !String::from_utf8_lossy(&request_body(&test_config(), &transcript, true))
+                .contains("Opened pane 7"),
+            "the presentation must not reach the model"
+        );
+    }
+
     /// A no-argument call streams as `""` from some providers, and echoing that
     /// back is a 400: "arguments must be valid json".
     #[test]

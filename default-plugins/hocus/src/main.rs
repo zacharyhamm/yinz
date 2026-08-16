@@ -6,6 +6,7 @@ mod events;
 mod history;
 mod log;
 mod message;
+mod present;
 mod tool_loop;
 mod tools;
 mod transitions;
@@ -977,6 +978,47 @@ mod tests {
             Some(state.messages[0].tool_calls[0].id.clone()),
             "the result answers the call"
         );
+    }
+
+    /// A tool the user typed is shown as prose and still recorded as the raw
+    /// result the model reads. Driven through `finish_head` rather than through
+    /// `submit`, because off-wasm `tools::dispatch` answers "tools are
+    /// unavailable outside zellij" and there is nothing structured to present.
+    #[test]
+    fn a_typed_tools_result_is_presented_without_changing_what_is_sent() {
+        let mut state = State::default();
+        let call = ToolCall {
+            id: "manual-0".to_owned(),
+            name: "new_pane".to_owned(),
+            arguments: "{}".to_owned(),
+        };
+        state.pending.push_back(call);
+        state.manual_head = true;
+        state.finish_head(r#"{"opened":true,"pane_id":7}"#);
+
+        let result = state.messages.last().expect("a result was recorded");
+        assert_eq!(
+            result.content, r#"{"opened":true,"pane_id":7}"#,
+            "the model still reads the raw result"
+        );
+        assert_eq!(
+            result.display.as_deref(),
+            Some("Opened pane `7`.\n"),
+            "the pane shows the prose"
+        );
+    }
+
+    /// The model's own calls are context, not answers, and are left alone.
+    #[test]
+    fn a_models_tool_result_is_not_presented() {
+        let mut state = State::default();
+        state.pending.push_back(ToolCall {
+            id: "call_1".to_owned(),
+            name: "new_pane".to_owned(),
+            arguments: "{}".to_owned(),
+        });
+        state.finish_head(r#"{"opened":true,"pane_id":7}"#);
+        assert_eq!(state.messages.last().expect("a result").display, None);
     }
 
     /// Typing the command is the confirmation, so the y/n prompt is skipped.

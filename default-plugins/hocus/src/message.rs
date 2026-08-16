@@ -42,6 +42,17 @@ pub struct Message {
     /// for, not context for the model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub full_output: bool,
+    /// `Role::Tool` only: markdown to draw *instead of* `content`, for a tool
+    /// the user typed. Display-only — `content` is still exactly what
+    /// `api::request_body` sends, so the model reads the same bytes it always
+    /// did.
+    ///
+    /// `None` means draw `content` as it arrived, which is what every result
+    /// the model asked for gets, and what a result we have nothing better to
+    /// say about gets — an error sentence, a bare `cleared`. Falling back
+    /// rather than presenting badly is why this is an `Option`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 impl Message {
@@ -77,8 +88,7 @@ impl Message {
             role: Role::Assistant,
             content: summary,
             tool_calls: calls,
-            tool_call_id: None,
-            full_output: false,
+            ..Message::default()
         }
     }
 
@@ -86,9 +96,8 @@ impl Message {
         Message {
             role: Role::Tool,
             content: content.into(),
-            tool_calls: Vec::new(),
             tool_call_id: Some(id.to_owned()),
-            full_output: false,
+            ..Message::default()
         }
     }
 
@@ -97,6 +106,19 @@ impl Message {
         Message {
             full_output: true,
             ..Message::tool_result(id, content)
+        }
+    }
+
+    /// The result of a tool the user typed, together with the rendering it
+    /// should be shown as. `content` is untouched, so the model is unaffected.
+    pub fn tool_result_shown<S: Into<String>>(
+        id: &str,
+        content: S,
+        display: Option<String>,
+    ) -> Self {
+        Message {
+            display,
+            ..Message::tool_result_full(id, content)
         }
     }
 }
