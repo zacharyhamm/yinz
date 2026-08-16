@@ -1562,6 +1562,10 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified position.
+///
+/// `tab_position` is the 0-based display position, matching [`go_to_tab`]. A position
+/// shifts whenever a tab closes; use [`rename_tab_with_id`] to name a tab that stays
+/// the same one.
 pub fn rename_tab<S>(tab_position: u32, new_name: S)
 where
     S: AsRef<str> + ToString,
@@ -1824,6 +1828,11 @@ pub fn warp_pane_from_session(
 /// Blocks on the same terms as [`warp_pane_to_session`], and for longer — a tab's
 /// worth of supervisors have to be released here and re-attached there.
 ///
+/// Despite the name, `tab_index` is the tab's **stable id**, not its display
+/// position: `Screen` keys its tabs by id and looks this value up there directly.
+/// Passing a position warps whichever tab happens to own that number as an id,
+/// which stops being the same tab as soon as the session closes one.
+///
 /// # Permissions Required
 /// * `ChangeApplicationState`
 pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String, String> {
@@ -1836,7 +1845,8 @@ pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String,
 /// Bring a tab from another session into this one.
 ///
 /// The mirror of [`warp_tab_to_session`]: the source session does the work, so
-/// `tab_index` is an id in *that* session's numbering, not this one's.
+/// `tab_index` is a stable tab id in *that* session's numbering, not this one's,
+/// and not a display position in either.
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`

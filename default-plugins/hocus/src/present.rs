@@ -275,7 +275,7 @@ fn session(value: &Value) -> Option<String> {
         };
         out.push_str(&format!(
             "**{}: {}**{marker}\n\n",
-            number(tab, "tab_index"),
+            number(tab, "tab_number"),
             inline(&name)
         ));
         out.push_str(&pane_table(array(tab, "panes")));
@@ -355,7 +355,7 @@ fn other_sessions(value: &Value) -> Option<String> {
         for tab in array(session, "tabs") {
             out.push_str(&format!(
                 "{}: {}\n\n",
-                number(tab, "tab_index"),
+                number(tab, "tab_number"),
                 inline(&text(tab, "name"))
             ));
             out.push_str(&pane_table(array(tab, "panes")));
@@ -1193,7 +1193,7 @@ mod tests {
     /// The shape `tools::list_session` builds.
     #[test]
     fn a_session_listing_becomes_tabs_of_panes() {
-        let raw = r#"{"session":"work","tabs":[{"tab_index":0,"tab_id":1,"name":"edit",
+        let raw = r#"{"session":"work","tabs":[{"tab_number":1,"tab_id":1,"name":"edit",
             "active":true,"panes":[
               {"pane_id":3,"is_plugin":false,"title":"vim","focused":true,"floating":false,
                "command":"vim","exit_status":null},
@@ -1201,7 +1201,8 @@ mod tests {
                "command":"cargo","exit_status":1}]}]}"#;
         let shown = present(&call("list_session", "{}"), raw).expect("presented");
         assert!(shown.starts_with("## session work\n\n"), "{shown}");
-        assert!(shown.contains("**0: edit** — active"), "{shown}");
+        // The heading carries the number the tab bar shows, not the position.
+        assert!(shown.contains("**1: edit** — active"), "{shown}");
         // The ids lead, because they are what the next command needs, and the
         // columns line up under them.
         assert!(shown.contains("3   *  vim    running"), "{shown}");
@@ -1403,7 +1404,7 @@ mod tests {
     /// the table is fenced precisely so it cannot matter.
     #[test]
     fn a_pane_title_full_of_markup_cannot_restyle_the_transcript() {
-        let raw = r##"{"session":"s","tabs":[{"tab_index":0,"name":"t","active":false,
+        let raw = r##"{"session":"s","tabs":[{"tab_number":1,"tab_id":1,"name":"t","active":false,
             "panes":[{"pane_id":1,"title":"# **x** ```","focused":false}]}]}"##;
         let shown = present(&call("list_session", "{}"), raw).expect("presented");
         let fence_line = shown

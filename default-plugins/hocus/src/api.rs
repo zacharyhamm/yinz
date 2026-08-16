@@ -25,7 +25,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together.";
 /// Sent in place of the tool set on the last round of the tool budget, so the
 /// model answers from what it has instead of insisting it needs another call.
 const BUDGET_SPENT_PROMPT: &str =
@@ -1218,7 +1218,7 @@ mod tests {
     fn hocus_prompt_contract_keeps_global_routing_rules() {
         assert_eq!(
             TOOL_FIRST_PROMPT,
-            "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together."
+            "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together."
         );
     }
 
@@ -1630,7 +1630,7 @@ mod tests {
         let calls = accumulate(&[
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"close_pane","arguments":"{\"pane_id\":"}}]}}]}
 "#,
-            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"close_tab","arguments":"{\"tab_index\":"}}]}}]}
+            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"close_tab","arguments":"{\"tab_id\":"}}]}}]}
 "#,
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}
 "#,
@@ -1648,7 +1648,7 @@ mod tests {
             (calls[1].id.as_str(), calls[1].name.as_str()),
             ("b", "close_tab")
         );
-        assert_eq!(calls[1].arguments, r#"{"tab_index":2}"#);
+        assert_eq!(calls[1].arguments, r#"{"tab_id":2}"#);
     }
 
     /// The SSE framing already survives arbitrary chunk boundaries; this checks

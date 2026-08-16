@@ -363,8 +363,7 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_index": { "type": "integer", "description": "Defaults to the focused tab." },
-                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
+                    "tab_id": { "type": "integer", "description": "From list_session; defaults to the focused tab." },
                     "to_session": { "type": "string" },
                 },
                 "required": ["to_session"],
@@ -377,9 +376,9 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "from_session": { "type": "string" },
-                    "tab_index": { "type": "integer" },
+                    "tab_id": { "type": "integer", "description": "The tab's tab_id in that session." },
                 },
-                "required": ["from_session", "tab_index"],
+                "required": ["from_session", "tab_id"],
             }),
         ),
         tool(
@@ -463,8 +462,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer" },
-                    "tab_id": { "type": "integer", "description": "Prefer over tab_index." },
+                    "tab_id": { "type": "integer" },
                 },
             }),
         ),
@@ -476,7 +474,6 @@ pub fn specs() -> Value {
                 "properties": {
                     "pane_id": pane["pane_id"],
                     "is_plugin": pane["is_plugin"],
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                     "name": { "type": "string" },
                 },
@@ -554,7 +551,6 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "panes": { "type": "array", "items": pane_ref, "minItems": 1 },
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                     "new_tab": { "type": "boolean" },
                     "new_tab_name": { "type": "string" },
@@ -648,7 +644,6 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_index": { "type": "integer" },
                     "tab_id": { "type": "integer" },
                 },
             }),
@@ -930,7 +925,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "search_files",
-            "Regex-search git-visible text files inside the active project.",
+            "Regex-search git-visible text files inside the active project; hits carry \
+             1-based file line numbers, ready for read_file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -950,7 +946,7 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Project-relative or returned absolute path." },
-                    "start_line": { "type": "integer", "description": "1-based; defaults to 1." },
+                    "start_line": { "type": "integer", "description": "A file line number, 1-based as every editor counts them; defaults to 1. Unrelated to any ID." },
                     "line_count": { "type": "integer", "description": "Defaults to 300." },
                 },
                 "required": ["path"],
@@ -988,15 +984,8 @@ impl PaneRef {
 
 #[derive(Debug, PartialEq)]
 pub enum MoveDestination {
-    Existing(usize),
     ExistingId(usize),
     New(Option<String>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TabTarget {
-    Index(usize),
-    Id(usize),
 }
 
 #[derive(Debug, PartialEq)]
@@ -1033,7 +1022,7 @@ impl PaneDirection {
 #[derive(Debug, Clone)]
 struct PanePosition {
     id: PaneId,
-    tab_index: usize,
+    tab_position: usize,
     x: usize,
     y: usize,
     columns: usize,
@@ -1071,7 +1060,7 @@ fn plan_swap(
         .iter()
         .find(|pane| pane.id == second_id)
         .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    if first.tab_index != second.tab_index {
+    if first.tab_position != second.tab_position {
         return Err("swap_panes needs both panes in the same tab".to_owned());
     }
     if !first.can_move() || !second.can_move() {
@@ -1081,7 +1070,9 @@ fn plan_swap(
         .ok_or_else(|| "panes are not adjacent; do not retry with move_pane".to_owned())?;
     let neighbors = panes
         .iter()
-        .filter(|pane| pane.id != first.id && pane.tab_index == first.tab_index && pane.can_move())
+        .filter(|pane| {
+            pane.id != first.id && pane.tab_position == first.tab_position && pane.can_move()
+        })
         .filter(|pane| adjacent_direction(first, pane) == Some(direction))
         .count();
     if neighbors != 1 {
@@ -1091,7 +1082,7 @@ fn plan_swap(
     let reverse_neighbors = panes
         .iter()
         .filter(|pane| {
-            pane.id != second.id && pane.tab_index == second.tab_index && pane.can_move()
+            pane.id != second.id && pane.tab_position == second.tab_position && pane.can_move()
         })
         .filter(|pane| adjacent_direction(second, pane) == Some(opposite))
         .count();
@@ -1119,7 +1110,7 @@ fn plan_move(
     let mut neighbors = panes
         .iter()
         .filter(|pane| {
-            pane.id != source.id && pane.tab_index == source.tab_index && pane.can_move()
+            pane.id != source.id && pane.tab_position == source.tab_position && pane.can_move()
         })
         .filter(|pane| adjacent_direction(source, pane) == Some(direction));
     let neighbor = neighbors
@@ -1158,7 +1149,6 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 pub struct Args {
     pub pane_id: Option<u32>,
     pub is_plugin: Option<bool>,
-    pub tab_index: Option<usize>,
     pub tab_id: Option<usize>,
     pub new_tab: bool,
     pub new_tab_name: Option<String>,
@@ -1340,51 +1330,28 @@ impl Args {
     }
 
     pub fn move_destination(&self) -> Result<MoveDestination, String> {
-        match (self.tab_index, self.tab_id, self.new_tab) {
-            (Some(index), None, false) if self.new_tab_name.is_none() => {
-                Ok(MoveDestination::Existing(index))
-            },
-            (None, Some(id), false) if self.new_tab_name.is_none() => {
+        match (self.tab_id, self.new_tab) {
+            (Some(id), false) if self.new_tab_name.is_none() => {
                 Ok(MoveDestination::ExistingId(id))
             },
-            (None, None, true) => Ok(MoveDestination::New(self.new_tab_name.clone())),
-            _ => Err("set exactly one of tab_index, tab_id, or new_tab=true; new_tab_name is only valid for a new tab".to_owned()),
+            (None, true) => Ok(MoveDestination::New(self.new_tab_name.clone())),
+            _ => Err("set exactly one of tab_id or new_tab=true; new_tab_name is only valid for a new tab".to_owned()),
         }
     }
 
-    pub fn tab_target(&self) -> Result<TabTarget, String> {
-        match (self.tab_index, self.tab_id) {
-            (Some(index), None) => Ok(TabTarget::Index(index)),
-            (None, Some(id)) => Ok(TabTarget::Id(id)),
-            (None, None) => {
-                Err("tab_index or tab_id is required; call list_session to get them".to_owned())
-            },
-            (Some(_), Some(_)) => {
-                Err("give exactly one of tab_index or tab_id, not both".to_owned())
-            },
-        }
-    }
-
-    /// Like [`Self::tab_target`], but `warp_tab` treats an absent target as
-    /// permission rather than an error: it means "the tab in focus".
-    pub fn tab_target_or_focused(&self) -> Result<Option<TabTarget>, String> {
-        match (self.tab_index, self.tab_id) {
-            (None, None) => Ok(None),
-            _ => self.tab_target().map(Some),
-        }
+    pub fn tab_target(&self) -> Result<usize, String> {
+        self.tab_id
+            .ok_or_else(|| "tab_id is required; call list_session to get them".to_owned())
     }
 
     /// `focus` and `rename` take either a tab or a pane pair. `None` means the
     /// call named no tab at all, so the caller falls through to the pane path.
-    pub fn tab_or_pane_target(&self) -> Option<Result<TabTarget, String>> {
-        if self.tab_index.is_none() && self.tab_id.is_none() {
-            return None;
-        }
-        Some(match self.tab_target() {
-            Ok(_) if self.pane_id.is_some() || self.is_plugin.is_some() => {
-                Err("give exactly one of pane pair, tab_index, or tab_id".to_owned())
-            },
-            target => target,
+    pub fn tab_or_pane_target(&self) -> Option<Result<usize, String>> {
+        let tab_id = self.tab_id?;
+        Some(if self.pane_id.is_some() || self.is_plugin.is_some() {
+            Err("give exactly one of pane pair or tab_id".to_owned())
+        } else {
+            Ok(tab_id)
         })
     }
 
@@ -1674,11 +1641,11 @@ fn glob_for(pattern: &str) -> String {
     }
 }
 
-/// Zellij returns a stable tab id here, while every Hocus tab tool consumes the
-/// tab's current 0-based position. Do not hand the model an incompatible id.
+/// Zellij hands back the stable id of the tab the panes landed in, which is
+/// exactly what every Hocus tab tool takes, so it goes straight to the model.
 fn moved_panes_result(tab_id: Option<usize>) -> String {
     match tab_id {
-        Some(_) => "moved; call list_session for the tab's current index".to_owned(),
+        Some(id) => format!("moved to tab_id {id}"),
         None => "zellij did not move the panes; call list_session and check the pane ids and the \
              destination tab"
             .to_owned(),
@@ -1688,8 +1655,8 @@ fn moved_panes_result(tab_id: Option<usize>) -> String {
 /// What the session looks like, in the only two terms a move cares about.
 #[derive(Debug, Default, PartialEq)]
 pub struct SessionTabs {
-    /// `(position, tab_id)` for every tab, in display order.
-    pub tabs: Vec<(usize, usize)>,
+    /// The stable `tab_id` of every tab, in display order.
+    pub tabs: Vec<usize>,
     /// Every pane in the session, tabs flattened.
     pub panes: Vec<PaneId>,
 }
@@ -1703,15 +1670,13 @@ fn describe_pane(pane: PaneId) -> String {
 
 /// Refuse a move the session cannot satisfy, naming the argument that is wrong.
 ///
-/// Zellij answers a bad tab or a stale pane id with a bare "did not move" (see
-/// `moved_panes_result`), which leaves the model to guess which of its arguments was
-/// the problem — and the likeliest guess, retrying with `tab_index` instead of
-/// `tab_id`, points at a different tab rather than the same one. The snapshot needed
-/// to answer properly is one we already have.
+/// Zellij answers a bad tab or a stale pane id with a bare "did not move", which
+/// leaves the model to guess which of its arguments was the problem. The snapshot
+/// needed to answer properly is one we already have.
 ///
-/// Note that `tab_index` is a position and shifts whenever a tab closes, while
-/// `tab_id` is stable; a session that has closed a tab has different values for the
-/// two, and each is only valid in its own space.
+/// A tab's display position is not a `tab_id` and shifts whenever a tab closes, so
+/// a session that has closed a tab has different values for the two. Passing a
+/// position here names a different tab, or none at all — hence the explicit check.
 pub fn check_move_to_tab(
     destination: &MoveDestination,
     panes: &[PaneId],
@@ -1726,23 +1691,12 @@ pub fn check_move_to_tab(
     match destination {
         MoveDestination::New(_) => Ok(()),
         MoveDestination::ExistingId(id) => {
-            if session.tabs.iter().any(|(_, tab_id)| tab_id == id) {
+            if session.tabs.contains(id) {
                 Ok(())
             } else {
                 Err(format!(
                     "no tab with tab_id {id} in this session; call list_session for the current \
-                     tab_ids"
-                ))
-            }
-        },
-        MoveDestination::Existing(index) => {
-            if session.tabs.iter().any(|(position, _)| position == index) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "no tab at tab_index {index}; this session has {} tabs; call list_session \
-                     (prefer tab_id, it does not shift when tabs close)",
-                    session.tabs.len()
+                     tab_ids (a tab_id is not a position in the tab bar)"
                 ))
             }
         },
@@ -1829,11 +1783,7 @@ mod host {
                 "closed".to_owned()
             }),
             "close_tab" => match args.tab_target() {
-                Ok(TabTarget::Index(index)) => {
-                    close_tab_with_index(index);
-                    "closed".to_owned()
-                },
-                Ok(TabTarget::Id(id)) => {
+                Ok(id) => {
                     close_tab_with_id(id as u64);
                     "closed".to_owned()
                 },
@@ -1898,7 +1848,10 @@ mod host {
                     })
                     .collect();
                 json!({
-                    "tab_index": tab.position,
+                    // A label, not an address: this is the number the tab bar
+                    // shows the user, and it shifts whenever a tab closes.
+                    // Every tool takes tab_id.
+                    "tab_number": tab.position + 1,
                     "tab_id": tab.tab_id,
                     "name": tab.name,
                     "active": tab.active,
@@ -1955,7 +1908,14 @@ mod host {
                                 })
                             })
                             .collect();
-                        json!({ "tab_index": tab.position, "name": tab.name, "panes": panes })
+                        // tab_id is what warp_tab_here takes; tab_number is only
+                        // the label that session's tab bar shows.
+                        json!({
+                            "tab_number": tab.position + 1,
+                            "tab_id": tab.tab_id,
+                            "name": tab.name,
+                            "panes": panes,
+                        })
                     })
                     .collect();
                 json!({ "session": session.name, "tabs": tabs })
@@ -2041,13 +2001,15 @@ mod host {
         }
     }
 
-    /// A tab index in *this* session, from `tab_index`/`tab_id`, defaulting to
-    /// whichever tab is focused when neither is given.
+    /// The stable `tab_id` of a tab in *this* session, defaulting to whichever
+    /// tab is focused when the call named none.
     ///
-    /// `warp_tab_to_session` only knows about positions, while the model may
-    /// have named the tab by its stable id (or not named one at all) - so the
-    /// resolution happens here, against the same snapshot `list_session` reads.
-    fn resolve_tab_index(target: Option<TabTarget>) -> Result<usize, String> {
+    /// The warp path is keyed by tab id, not by display position: `Screen.tabs`
+    /// is "Keyed by tab.id (stable identifier)" and `check_tab_can_be_warped`
+    /// looks the value up there directly. Handing it a position warps whichever
+    /// tab happens to own that number as an id — a different tab entirely once
+    /// the session has closed one.
+    fn resolve_tab_id(target: Option<usize>) -> Result<usize, String> {
         let snapshot =
             get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
         let session = snapshot
@@ -2056,12 +2018,11 @@ mod host {
             .find(|session| session.is_current_session)
             .ok_or_else(|| "the current session is not in the session list".to_owned())?;
         match target {
-            Some(TabTarget::Index(index)) => Ok(index),
-            Some(TabTarget::Id(id)) => session
+            Some(id) => session
                 .tabs
                 .iter()
                 .find(|tab| tab.tab_id == id)
-                .map(|tab| tab.position)
+                .map(|tab| tab.tab_id)
                 .ok_or_else(|| {
                     format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids")
                 }),
@@ -2069,7 +2030,7 @@ mod host {
                 .tabs
                 .iter()
                 .find(|tab| tab.active)
-                .map(|tab| tab.position)
+                .map(|tab| tab.tab_id)
                 .ok_or_else(|| "no tab is focused".to_owned()),
         }
     }
@@ -2078,12 +2039,10 @@ mod host {
         let Some(to_session) = args.to_session.as_deref() else {
             return "to_session is required; call list_other_sessions for the names".to_owned();
         };
-        let target = match args.tab_target_or_focused() {
-            Ok(target) => target,
-            Err(error) => return error,
-        };
-        let tab_index = match resolve_tab_index(target) {
-            Ok(index) => index,
+        // Unlike every other tab tool, `warp_tab` reads an absent tab as
+        // permission rather than an omission: it means "the tab in focus".
+        let tab_id = match resolve_tab_id(args.tab_id) {
+            Ok(id) => id,
             Err(error) => return error,
         };
         match other_session_exists(to_session) {
@@ -2095,7 +2054,7 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_tab_to_session(tab_index, to_session) {
+        match warp_tab_to_session(tab_id, to_session) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -2104,8 +2063,8 @@ mod host {
         let Some(from_session) = args.from_session.as_deref() else {
             return "from_session is required; call list_other_sessions for the names".to_owned();
         };
-        let Some(tab_index) = args.tab_index else {
-            return "tab_index is required; call list_other_sessions for the tab's index in \
+        let Some(tab_id) = args.tab_id else {
+            return "tab_id is required; call list_other_sessions for the tab's tab_id in \
                      that session"
                 .to_owned();
         };
@@ -2118,7 +2077,7 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_tab_from_session(tab_index, from_session) {
+        match warp_tab_from_session(tab_id, from_session) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -2260,11 +2219,7 @@ mod host {
 
     fn focus(args: &Args) -> String {
         match args.tab_or_pane_target() {
-            Some(Ok(TabTarget::Index(index))) => {
-                go_to_tab(index as u32);
-                format!("focused tab {index}")
-            },
-            Some(Ok(TabTarget::Id(id))) => {
+            Some(Ok(id)) => {
                 go_to_tab_with_id(id as u64);
                 format!("focused tab {id}")
             },
@@ -2283,15 +2238,7 @@ mod host {
             return "name is required".to_owned();
         };
         match args.tab_or_pane_target() {
-            Some(Ok(TabTarget::Index(index))) => {
-                // Work around Zellij bug: PluginCommand::RenameTab expects 1-based index
-                // (see Zellij screen.rs RenameTab saturating_sub(1)), while go_to_tab
-                // correctly adds +1 server-side. Until Zellij is fixed, compensate here.
-                // The stable tab_id path avoids this entirely.
-                rename_tab((index as u32).wrapping_add(1), name);
-                format!("renamed tab {index}")
-            },
-            Some(Ok(TabTarget::Id(id))) => {
+            Some(Ok(id)) => {
                 rename_tab_with_id(id as u64, name);
                 format!("renamed tab {id}")
             },
@@ -2364,7 +2311,7 @@ mod host {
                         } else {
                             PaneId::Terminal(pane.id)
                         },
-                        tab_index: tab.position,
+                        tab_position: tab.position,
                         x: pane.pane_x,
                         y: pane.pane_y,
                         columns: pane.pane_columns,
@@ -2417,11 +2364,7 @@ mod host {
             .find(|session| session.is_current_session)
             .ok_or_else(|| "the current session is not in the session list".to_owned())?;
         Ok(SessionTabs {
-            tabs: session
-                .tabs
-                .iter()
-                .map(|tab| (tab.position, tab.tab_id))
-                .collect(),
+            tabs: session.tabs.iter().map(|tab| tab.tab_id).collect(),
             panes: session
                 .tabs
                 .iter()
@@ -2455,7 +2398,6 @@ mod host {
             }
         }
         let target = match destination {
-            MoveDestination::Existing(index) => break_panes_to_tab_with_index(&panes, index, false),
             MoveDestination::ExistingId(id) => break_panes_to_tab_with_id(&panes, id, false),
             MoveDestination::New(name) => break_panes_to_new_tab(&panes, name, false),
         };
@@ -3178,7 +3120,7 @@ mod tests {
         let specs = specs();
         for (name, required) in [
             ("warp_tab", json!(["to_session"])),
-            ("warp_tab_here", json!(["from_session", "tab_index"])),
+            ("warp_tab_here", json!(["from_session", "tab_id"])),
         ] {
             let spec = specs
                 .as_array()
@@ -3198,32 +3140,15 @@ mod tests {
         }
     }
 
+    /// A tab is addressed one way only. A display position is not a `tab_id`, so
+    /// there is no second field for the model to reach for and no pair of
+    /// arguments that can disagree.
     #[test]
-    fn tab_target_or_focused_defaults_to_none() {
-        assert_eq!(Args::default().tab_target_or_focused(), Ok(None));
-    }
-
-    #[test]
-    fn tab_target_or_focused_resolves_like_tab_target_when_given() {
-        let by_index = Args {
-            tab_index: Some(2),
-            ..Args::default()
-        };
-        assert_eq!(
-            by_index.tab_target_or_focused(),
-            Ok(Some(TabTarget::Index(2)))
-        );
-        let by_id = Args {
-            tab_id: Some(9),
-            ..Args::default()
-        };
-        assert_eq!(by_id.tab_target_or_focused(), Ok(Some(TabTarget::Id(9))));
-        let both = Args {
-            tab_index: Some(1),
-            tab_id: Some(2),
-            ..Args::default()
-        };
-        assert!(both.tab_target_or_focused().is_err());
+    fn a_tab_position_is_not_an_argument_any_tool_accepts() {
+        let by_position = Args::parse(r#"{"tab_index":2,"tab_number":3}"#).unwrap();
+        assert_eq!(by_position.tab_id, None);
+        assert!(by_position.tab_target().is_err());
+        assert!(by_position.tab_or_pane_target().is_none());
     }
 
     #[test]
@@ -3318,18 +3243,10 @@ mod tests {
         let neither = Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}]}"#).unwrap();
         assert!(neither.move_destination().is_err());
 
-        let both = Args::parse(
-            r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1,"new_tab":true}"#,
-        )
-        .unwrap();
+        let both =
+            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_id":1,"new_tab":true}"#)
+                .unwrap();
         assert!(both.move_destination().is_err());
-
-        let existing =
-            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1}"#).unwrap();
-        assert_eq!(
-            existing.move_destination().unwrap(),
-            MoveDestination::Existing(1)
-        );
 
         let new = Args::parse(
             r#"{"panes":[{"pane_id":3,"is_plugin":false}],"new_tab":true,"new_tab_name":"logs"}"#,
@@ -3347,11 +3264,6 @@ mod tests {
             MoveDestination::ExistingId(47)
         );
 
-        let both_ways =
-            Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_index":1,"tab_id":47}"#)
-                .unwrap();
-        assert!(both_ways.move_destination().is_err());
-
         let id_and_new = Args::parse(
             r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_id":47,"new_tab":true}"#,
         )
@@ -3360,26 +3272,15 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_target_needs_exactly_one_of_index_or_id() {
-        assert_eq!(
-            Args::parse(r#"{"tab_index":2}"#)
-                .unwrap()
-                .tab_target()
-                .unwrap(),
-            TabTarget::Index(2)
-        );
+    fn a_tab_target_is_a_tab_id() {
         assert_eq!(
             Args::parse(r#"{"tab_id":47}"#)
                 .unwrap()
                 .tab_target()
                 .unwrap(),
-            TabTarget::Id(47)
+            47
         );
         assert!(Args::parse("{}").unwrap().tab_target().is_err());
-        assert!(Args::parse(r#"{"tab_index":2,"tab_id":47}"#)
-            .unwrap()
-            .tab_target()
-            .is_err());
     }
 
     #[test]
@@ -3389,10 +3290,10 @@ mod tests {
             .tab_or_pane_target()
             .is_none());
 
-        let both = Args::parse(r#"{"pane_id":3,"is_plugin":false,"tab_index":2}"#).unwrap();
+        let both = Args::parse(r#"{"pane_id":3,"is_plugin":false,"tab_id":47}"#).unwrap();
         assert_eq!(
             both.tab_or_pane_target().unwrap().unwrap_err(),
-            "give exactly one of pane pair, tab_index, or tab_id"
+            "give exactly one of pane pair or tab_id"
         );
 
         // A half-supplied pane pair still counts as naming a pane.
@@ -3405,7 +3306,7 @@ mod tests {
                 .tab_or_pane_target()
                 .unwrap()
                 .unwrap(),
-            TabTarget::Id(47)
+            47
         );
     }
 
@@ -3480,7 +3381,7 @@ mod tests {
     fn positioned_pane(id: u32, x: usize, y: usize, columns: usize, rows: usize) -> PanePosition {
         PanePosition {
             id: PaneId::Terminal(id),
-            tab_index: 0,
+            tab_position: 0,
             x,
             y,
             columns,
@@ -3519,7 +3420,7 @@ mod tests {
         );
 
         let mut other_tab = target.clone();
-        other_tab.tab_index = 1;
+        other_tab.tab_position = 1;
         assert_eq!(
             plan_swap(&[source.clone(), other_tab], source.id, target.id).unwrap_err(),
             "swap_panes needs both panes in the same tab"
@@ -3774,11 +3675,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_move_result_does_not_mislabel_zellij_stable_tab_id_as_an_index() {
-        assert_eq!(
-            moved_panes_result(Some(47)),
-            "moved; call list_session for the tab's current index"
-        );
+    fn a_tab_move_reports_the_stable_id_the_panes_landed_in() {
+        // Zellij answers with the tab's stable id, which is the one thing every
+        // tab tool takes, so it is handed straight back to the model.
+        assert_eq!(moved_panes_result(Some(47)), "moved to tab_id 47");
         assert!(
             moved_panes_result(None).starts_with("zellij did not move the panes"),
             "and a failure says so rather than claiming a move"
@@ -3790,7 +3690,7 @@ mod tests {
     /// two cannot pass by accident.
     fn diverged_session() -> SessionTabs {
         SessionTabs {
-            tabs: vec![(0, 2), (1, 3)],
+            tabs: vec![2, 3],
             panes: vec![PaneId::Terminal(2), PaneId::Terminal(4)],
         }
     }
@@ -3806,28 +3706,22 @@ mod tests {
         assert!(error.contains("tab_id 9"), "{error}");
     }
 
+    /// The whole point of addressing tabs by id alone: a display position that
+    /// happens to name a real tab in the tab bar is still not a `tab_id`, and is
+    /// refused rather than silently acting on whichever tab owns that id.
     #[test]
-    fn moving_panes_to_an_out_of_range_tab_index_names_the_index_and_the_count() {
-        let error = check_move_to_tab(
-            &MoveDestination::Existing(7),
-            &[PaneId::Terminal(2)],
-            &diverged_session(),
-        )
-        .unwrap_err();
-        assert!(error.contains("tab_index 7"), "{error}");
-        assert!(error.contains("2 tabs"), "{error}");
-    }
-
-    #[test]
-    fn a_tab_id_and_a_tab_index_are_checked_in_their_own_spaces() {
+    fn a_display_position_is_refused_where_a_tab_id_is_required() {
         let session = diverged_session();
         let panes = [PaneId::Terminal(2)];
-        // id 3 exists, and so does position 1 — they are the same tab, named two ways
+        // ids 2 and 3 are the session's two tabs
+        assert!(check_move_to_tab(&MoveDestination::ExistingId(2), &panes, &session).is_ok());
         assert!(check_move_to_tab(&MoveDestination::ExistingId(3), &panes, &session).is_ok());
-        assert!(check_move_to_tab(&MoveDestination::Existing(1), &panes, &session).is_ok());
-        // ...while position 3 and id 1 exist in neither space
-        assert!(check_move_to_tab(&MoveDestination::Existing(3), &panes, &session).is_err());
-        assert!(check_move_to_tab(&MoveDestination::ExistingId(1), &panes, &session).is_err());
+        // ...while positions 0 and 1 name the very same two tabs and are not ids
+        assert!(check_move_to_tab(&MoveDestination::ExistingId(0), &panes, &session).is_err());
+        let error =
+            check_move_to_tab(&MoveDestination::ExistingId(1), &panes, &session).unwrap_err();
+        assert!(error.contains("tab_id 1"), "{error}");
+        assert!(error.contains("not a position"), "{error}");
     }
 
     #[test]

@@ -3531,10 +3531,13 @@ fn rename_plugin_pane(env: &PluginEnv, plugin_pane_id: u32, new_name: &str) {
     apply_action!(rename_pane_action, error_msg, env);
 }
 
-fn rename_tab(env: &PluginEnv, tab_index: u32, new_name: &str) {
+fn rename_tab(env: &PluginEnv, tab_position: u32, new_name: &str) {
     let error_msg = || "Failed to rename tab".to_string();
     let rename_tab_action = Action::RenameTab {
-        tab_index,
+        // The plugin API speaks 0-based display positions, as `go_to_tab` does,
+        // while `Action::RenameTab` is 1-based and subtracts one again in
+        // `Screen`. Convert here so the two plugin calls agree.
+        tab_index: tab_position + 1,
         name: new_name.as_bytes().to_vec(),
     };
     apply_action!(rename_tab_action, error_msg, env);

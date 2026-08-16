@@ -786,7 +786,7 @@ mod tests {
             ),
             ("warp_pane_here", r#"{"from_session":"other","pane_id":1}"#),
             ("warp_tab", r#"{"to_session":"other"}"#),
-            ("warp_tab_here", r#"{"from_session":"other","tab_index":0}"#),
+            ("warp_tab_here", r#"{"from_session":"other","tab_id":1}"#),
             ("adopt_orphaned_pane", r#"{"host_id":"abc123"}"#),
         ] {
             let mut state = ready_state();

@@ -312,7 +312,7 @@ impl ZellijPlugin for State {
                     rename_plugin_pane(1, "new plugin_pane_name");
                 },
                 BareKey::Char('x') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    rename_tab(1, "new tab name");
+                    rename_tab(0, "new tab name");
                 },
                 BareKey::Char('z') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     go_to_tab_name(&format!("{:?}", self.configuration));
