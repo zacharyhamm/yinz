@@ -210,6 +210,17 @@ keybinds {
                 move_to_focused_tab true
             }
         }
+        // Land on the agent list, the top pane of the hocus sidebar, without
+        // going through the conversation first. Reveals the strip if it was
+        // hidden, and starts one from scratch — chat pane included — if hocus
+        // is not running at all.
+        bind "Alt g" {
+            LaunchOrFocusPlugin "hocus-agents" {
+                global true
+                edge "left"
+                size "25%"
+            }
+        }
         bind "Alt i" { MoveTab "Left"; }
         bind "Alt o" { MoveTab "Right"; }
         bind "Alt h" "Alt Left" { MoveFocusOrTab "Left"; }
