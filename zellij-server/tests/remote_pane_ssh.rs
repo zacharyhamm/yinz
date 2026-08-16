@@ -1101,6 +1101,52 @@ fn a_pane_survives_a_dropped_connection_and_replays_what_it_missed() {
     pane.close();
 }
 
+/// The same, but against a pane that is talking the whole time.
+///
+/// Reconnecting has a moment where the broker has worked out what to replay but
+/// has not yet handed the pane over. A pane that goes quiet between prints will
+/// almost never produce anything in that moment; a busy one will, and those
+/// bytes belong to neither the replay nor the newly attached wire unless the
+/// two are made to interlock. Several outages, because it is a race.
+#[test]
+#[ignore]
+fn a_busy_pane_loses_nothing_across_a_reconnect() {
+    let hosts = start();
+    let marker = marker("busy");
+    // Fast enough to be mid-sentence when the reconnect lands, slow enough that
+    // a short outage still fits in the replay buffer.
+    let pane = open_pane(
+        &hosts,
+        &format!("i=0; while :; do i=$((i+1)); echo {marker}-$i; sleep 0.005; done"),
+    );
+    pane.wait_for_output(&format!("{marker}-5"));
+
+    for round in 1..=3 {
+        let before = highest_counter(&pane.output(), &marker);
+        with_link_down(|| std::thread::sleep(Duration::from_millis(500)));
+        pane.wait_for_output_within(
+            &format!("{marker}-{}", before + 20),
+            Duration::from_secs(30),
+        );
+
+        let seen = pane.output();
+        assert!(
+            !seen.contains("bytes of output were lost"),
+            "round {round}: a half-second outage should fit in the replay buffer: {seen}"
+        );
+        let highest = highest_counter(&seen, &marker);
+        for i in 1..=highest {
+            assert!(
+                seen.contains(&format!("{marker}-{i}\r\n")),
+                "round {round}: line {i} of {highest} is missing — output produced while the \
+                 pane was being handed over went to neither the replay nor the new connection"
+            );
+        }
+    }
+
+    pane.close();
+}
+
 /// The replay buffer is finite, and an outage can outlast it. What matters then
 /// is that the gap is *admitted* rather than papered over — a pane silently
 /// missing a screenful of output is worse than one that says so.

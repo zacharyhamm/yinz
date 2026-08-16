@@ -134,32 +134,38 @@ fn the_replayed_bytes_are_the_ones_that_actually_followed(tc: hegel::TestCase) {
     );
 }
 
-mod exit_reporting {
-    use super::*;
+/// A session with a socketpair standing in for the supervisor and another for
+/// the pty. The peer ends come back so the caller can keep them alive.
+#[cfg(test)]
+fn test_session() -> (
+    PaneSession,
+    std::os::unix::net::UnixStream,
+    std::os::unix::net::UnixStream,
+) {
     use crate::pty_host::client::PtyHostHandle;
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
 
-    /// A session with a socketpair standing in for the supervisor and another
-    /// for the pty. The peer ends come back so the caller can keep them alive.
-    fn session() -> (PaneSession, UnixStream, UnixStream) {
-        let (control, control_peer) = UnixStream::pair().expect("socketpair failed");
-        let (master, master_peer) = UnixStream::pair().expect("socketpair failed");
-        let session = PaneSession::new(
-            "token".to_owned(),
-            PtyHostHandle::for_test(control),
-            OwnedFd::from(master),
-            std::process::id(),
-        );
-        (session, control_peer, master_peer)
-    }
+    let (control, control_peer) = UnixStream::pair().expect("socketpair failed");
+    let (master, master_peer) = UnixStream::pair().expect("socketpair failed");
+    let session = PaneSession::new(
+        "token".to_owned(),
+        PtyHostHandle::for_test(control),
+        OwnedFd::from(master),
+        std::process::id(),
+    );
+    (session, control_peer, master_peer)
+}
+
+mod exit_reporting {
+    use super::*;
 
     /// The server stops reading at `ChildExited`, so saying it early does not
     /// merely reorder the output — it loses it. A pane that prints and exits in
     /// the same breath is the ordinary case, not a corner one.
     #[test]
     fn an_exit_is_not_reportable_until_the_pty_has_been_drained() {
-        let (session, _control, _master) = session();
+        let (session, _control, _master) = test_session();
         session.set_child_exit(Some(7));
         assert!(
             session.exit_is_reportable().is_none(),
@@ -177,7 +183,7 @@ mod exit_reporting {
     /// Draining is half of it, and on its own says nothing.
     #[test]
     fn a_drained_pty_alone_reports_nothing() {
-        let (session, _control, _master) = session();
+        let (session, _control, _master) = test_session();
         session.mark_output_drained();
         assert!(
             session.exit_is_reportable().is_none(),
@@ -189,7 +195,7 @@ mod exit_reporting {
     /// and the server must be told once.
     #[test]
     fn only_the_first_claim_may_report_the_exit() {
-        let (session, _control, _master) = session();
+        let (session, _control, _master) = test_session();
         session.set_child_exit(Some(0));
         session.mark_output_drained();
 
@@ -205,11 +211,137 @@ mod exit_reporting {
     /// set up.
     #[test]
     fn a_newly_built_pane_is_detached_but_not_yet_orphaned() {
-        let (session, _control, _master) = session();
+        let (session, _control, _master) = test_session();
         assert!(!session.is_attached(), "a pane is born detached");
         assert!(
             session.orphaned_for().is_none(),
             "the orphan clock must not start until a connection has actually been lost"
         );
+    }
+}
+
+mod attaching {
+    use super::*;
+    use crate::pty_host::remote::session::ResumeStep;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
+
+    fn wire() -> crate::pty_host::remote::broker::Wire {
+        let (a, _b) = UnixStream::pair().expect("socketpair failed");
+        // Leaked deliberately: nothing writes to it, and closing the peer would
+        // only give these tests an error path they are not about.
+        std::mem::forget(_b);
+        Arc::new(Mutex::new(a))
+    }
+
+    /// A connection that has already been replaced must not clear its
+    /// successor's wire. Notice of a disconnect can arrive long after a
+    /// reconnect has taken over — the control pump only learns of it when its
+    /// blocking read finally returns — and acting on it then would silence a
+    /// healthy pane and start an orphan clock that reaps it out from under the
+    /// server watching it.
+    #[test]
+    fn a_stale_connection_cannot_detach_a_live_one() {
+        let (session, _control, _master) = test_session();
+        let first = session.attach(wire());
+        let second = session.attach(wire());
+
+        session.detach_if(first);
+
+        assert!(
+            session.is_attached(),
+            "a superseded connection detached the one that replaced it"
+        );
+        assert!(
+            session.orphaned_for().is_none(),
+            "a superseded connection started an orphan clock on a pane that has a server on it"
+        );
+
+        session.detach_if(second);
+        assert!(!session.is_attached(), "the current connection may detach");
+    }
+
+    /// A pane being caught up is spoken for — a second resume has to be refused
+    /// — but must not be written to yet, or new output would overtake the
+    /// replay and the server would see an `Output` frame where it demanded a
+    /// `Resumed`.
+    #[test]
+    fn a_pane_being_caught_up_is_claimed_but_not_yet_writable() {
+        let (session, _control, _master) = test_session();
+        let generation = session.begin_attach();
+
+        assert!(
+            session.is_attached(),
+            "a pane being caught up must refuse a second resume"
+        );
+        assert!(
+            session.wire().is_none(),
+            "the pumps must stay quiet until the replay has landed"
+        );
+
+        assert!(matches!(
+            session.resume_step(0, &wire(), generation),
+            ResumeStep::Attached
+        ));
+        assert!(
+            session.wire().is_some(),
+            "a caught-up connection must be writable"
+        );
+    }
+
+    /// The bug this shape exists to prevent: output produced between the replay
+    /// snapshot and the attach belongs to neither, and is silently lost.
+    #[test]
+    fn output_produced_while_catching_up_is_replayed_not_dropped() {
+        let (session, _control, _master) = test_session();
+        let generation = session.begin_attach();
+
+        // What a resume would send first.
+        let (replay, _) = session.replay_from(0);
+        assert!(replay.is_empty());
+
+        // The pane says something while that is in flight. The pumps cannot send
+        // it — there is no wire yet — so the catch-up has to.
+        session.append_output(b"while you were out");
+
+        match session.resume_step(0, &wire(), generation) {
+            ResumeStep::Replay { bytes, .. } => assert_eq!(
+                bytes, b"while you were out",
+                "output produced during the catch-up was not replayed"
+            ),
+            _ => panic!("a pane with unsent output must not attach yet"),
+        }
+    }
+
+    /// The other half: once attached, the pumps own the stream, and the
+    /// catch-up must not send the same bytes again.
+    #[test]
+    fn a_caught_up_connection_attaches_rather_than_replaying_forever() {
+        let (session, _control, _master) = test_session();
+        let generation = session.begin_attach();
+        session.append_output(b"first");
+
+        let sent = match session.resume_step(0, &wire(), generation) {
+            ResumeStep::Replay { bytes, .. } => bytes.len() as u64,
+            _ => panic!("expected a replay"),
+        };
+        assert!(matches!(
+            session.resume_step(sent, &wire(), generation),
+            ResumeStep::Attached
+        ));
+    }
+
+    /// A resume that lost the pane while catching up must be told, not left to
+    /// write into a stream another connection now owns.
+    #[test]
+    fn a_superseded_catch_up_is_told_so() {
+        let (session, _control, _master) = test_session();
+        let generation = session.begin_attach();
+        let _newer = session.begin_attach();
+
+        assert!(matches!(
+            session.resume_step(0, &wire(), generation),
+            ResumeStep::Superseded
+        ));
     }
 }
