@@ -125,6 +125,10 @@ pub fn chat_message_def() -> EntityDef {
         .attr(AttrDef::json("tool_calls"))
         .attr(AttrDef::text("tool_call_id"))
         .attr(AttrDef::boolean("full_output").required().default(false))
+        // The human-readable rendering of a result the user typed. Deliberately
+        // not `full_text`: `content` is the searchable copy, and indexing this
+        // one as well would return the same message twice for one hit.
+        .attr(AttrDef::text("display"))
 }
 
 /// One line the user has submitted, keyed by its own text.

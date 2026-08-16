@@ -117,11 +117,7 @@ impl State {
         self.pin_to_bottom();
         let line = line.trim();
         if line == "/" || line == "/help" {
-            let help = format!(
-                "/{}  /{}",
-                LOCAL_COMMANDS.join("  /"),
-                tools::names().join("  /")
-            );
+            let help = present::commands();
             self.messages.push(Message::notice(help.clone()));
             self.log(
                 "notice",
@@ -203,7 +199,11 @@ impl State {
             // Cleared with the head it belongs to: whatever is behind it in the
             // queue came from the model and is elided as usual.
             let message = if std::mem::take(&mut self.manual_head) {
-                Message::tool_result_full(&call.id, result_str.clone())
+                // Only what the *user* typed is presented. A result the model
+                // asked for stays exactly as it was: it is context, not an
+                // answer, and it is already elided to three lines.
+                let display = present::present(&call, &result_str);
+                Message::tool_result_shown(&call.id, result_str.clone(), display)
             } else {
                 Message::tool_result(&call.id, result_str.clone())
             };

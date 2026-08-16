@@ -110,6 +110,10 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
         )
         .set("tool_call_id", message.tool_call_id.clone())
         .set("full_output", message.full_output)
+        // Kept rather than recomputed on load: reopening a chat would otherwise
+        // downgrade every result the user typed back to the raw JSON it was
+        // presented to spare them.
+        .set("display", message.display.clone())
         .build()
 }
 
@@ -228,6 +232,10 @@ pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
                         rows.get(row, "full_output"),
                         Some(DataValue::Bool(true))
                     ),
+                    // Absent for every row written before the column existed,
+                    // which reads back as "show the content", i.e. exactly the
+                    // behaviour those chats were archived with.
+                    display: text_at(&rows, row, "display"),
                 },
             ));
         }
@@ -597,6 +605,10 @@ mod tests {
                 content: "the output".to_owned(),
                 tool_call_id: Some("call_1".to_owned()),
                 full_output: true,
+                // Carried through the archive rather than recomputed: reopening
+                // a chat would otherwise show the raw result this spared the
+                // user in the first place.
+                display: Some("## read_pane\n\nthe output".to_owned()),
                 ..Message::default()
             },
             Message::assistant("because the test is flaky"),
