@@ -900,6 +900,20 @@ impl State {
     /// Every `WebRequestResult` in the session reaches this, so the context is what says
     /// the reply is ours at all — the same correlation `finish_git_probe` does.
     fn finish_summary(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
+        self.finish_summary_with(status, body, context, |pane_id, title| {
+            rename_pane_with_id(PaneId::Terminal(pane_id), title)
+        });
+    }
+
+    /// The body of [`finish_summary`], with the one host call injected so the tests can
+    /// watch it — the same shape `observe_activity` and `send_summary` already take.
+    fn finish_summary_with(
+        &mut self,
+        status: u16,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+        rename: impl FnOnce(u32, &str),
+    ) {
         let (Some(pane_id), Some(id)) = (
             context
                 .get(SUMMARY_PANE)
@@ -936,8 +950,39 @@ impl State {
         let Some(summary) = agents::parse_summary(body, hash) else {
             return;
         };
+        if let Some(title) = agents::rename_title(&summary) {
+            if self.title_is_ours_to_take(pane_id) {
+                rename(pane_id, title);
+            }
+        }
         self.summaries.insert(pane_id, summary);
         self.publish();
+    }
+
+    /// Whether renaming this pane would cost us the pane.
+    ///
+    /// `classify` reads the title before anything else, so a pane recognised *only* by
+    /// what its title says — a `zsh` running an agent we have never seen the command for —
+    /// would stop being an agent the moment we wrote a task name over it, and stop being
+    /// polled with it. Rename only where the kind is anchored somewhere the title cannot
+    /// reach: the user's own registration, or the command latch (`settle_latches`), which
+    /// is the memory of a command we demonstrably saw run.
+    fn title_is_ours_to_take(&self, pane_id: u32) -> bool {
+        if self.manual_kinds.contains_key(&pane_id) {
+            return true;
+        }
+        self.panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)
+            .is_some_and(|pane| {
+                pane.detected.is_some()
+                    || pane
+                        .command
+                        .as_deref()
+                        .and_then(agents::kind_from_command)
+                        .is_some()
+            })
     }
 
     fn finish_git_probe(
@@ -1835,11 +1880,37 @@ mod tests {
     const BUSY_PANE: &str = "Running the test suite and waiting for it to finish now...";
     const OTHER_PANE: &str = "Something else entirely happened on this pane instead...";
 
+    /// A model's answer, carrying the title every real answer is asked for.
     fn reply(summary: &str, awaiting: bool) -> Vec<u8> {
+        titled_reply(summary, awaiting, TITLE)
+    }
+
+    /// The title in every [`reply`], and what a pane is expected to be renamed to.
+    const TITLE: &str = "running the tests";
+
+    /// An answer with `title` in it, for the tests that are about the rename. An empty
+    /// `title` stands for the key being useless rather than absent; `parse_summary`
+    /// treats the two the same.
+    fn titled_reply(summary: &str, awaiting: bool, title: &str) -> Vec<u8> {
         format!(
-            r#"{{"choices":[{{"message":{{"content":"{{\"summary\":\"{summary}\",\"awaiting\":{awaiting}}}"}}}}]}}"#
+            r#"{{"choices":[{{"message":{{"content":"{{\"summary\":\"{summary}\",\"awaiting\":{awaiting},\"title\":\"{title}\"}}"}}}}]}}"#
         )
         .into_bytes()
+    }
+
+    /// `finish_summary` with the rename it would have asked the host for handed back
+    /// instead. Every test goes through this: the host is not there to be called.
+    fn finish(
+        state: &mut State,
+        status: u16,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> Vec<(u32, String)> {
+        let mut renames = Vec::new();
+        state.finish_summary_with(status, body, context, |pane_id, title| {
+            renames.push((pane_id, title.to_owned()))
+        });
+        renames
     }
 
     fn context(pane_id: u32, id: u64) -> BTreeMap<String, String> {
@@ -1861,14 +1932,83 @@ mod tests {
             .unwrap()
             .contains(BUSY_PANE));
 
-        state.finish_summary(200, &reply("Ran the tests.", true), &context(7, 1));
+        let renames = finish(
+            &mut state,
+            200,
+            &reply("Ran the tests.", true),
+            &context(7, 1),
+        );
         let summary = state.summaries.get(&7).expect("stored");
         assert_eq!(summary.text, "Ran the tests.");
         assert!(summary.awaiting);
+        assert_eq!(
+            renames,
+            vec![(7, TITLE.to_owned())],
+            "and the pane is named after what the model said it was doing",
+        );
         assert!(
             state.summary_requests.is_empty(),
             "and the request is no longer in flight",
         );
+    }
+
+    /// A title is the only part of an answer that is optional. A model that gave none,
+    /// or gave one made of nothing, leaves the pane called whatever it was called.
+    #[test]
+    fn a_summary_without_a_title_renames_nothing() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        let renames = finish(
+            &mut state,
+            200,
+            &titled_reply("Done.", false, "   "),
+            &context(7, 1),
+        );
+        assert!(renames.is_empty());
+        assert!(state.summaries.contains_key(&7), "but the summary is kept");
+    }
+
+    /// `classify` reads the title first, so renaming a pane we only recognise *by* its
+    /// title would take the pane out of the list and stop it being polled.
+    #[test]
+    fn a_pane_known_only_by_its_title_is_left_named_as_it_is() {
+        let mut state = State {
+            // An agent running at the far end of an ssh session: the command names
+            // nothing we know, so the title is all that makes this pane an agent.
+            panes: Some(vec![agents::AgentPane {
+                command: Some("ssh box".to_owned()),
+                ..pane(7, "claude", "/work")
+            }]),
+            ..State::default()
+        };
+        let mut sent = Vec::new();
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1, "still summarised");
+
+        let renames = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        assert!(renames.is_empty());
+    }
+
+    /// The user's own registration anchors the kind the way the command latch does, so a
+    /// pane registered by hand can be renamed however it was detected.
+    #[test]
+    fn a_hand_registered_pane_can_be_renamed() {
+        let mut state = State {
+            panes: Some(vec![agents::AgentPane {
+                command: Some("ssh box".to_owned()),
+                ..pane(7, "shell", "/work")
+            }]),
+            manual_kinds: BTreeMap::from([(7, "reviewer".to_owned())]),
+            ..State::default()
+        };
+        let mut sent = Vec::new();
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        let renames = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        assert_eq!(renames, vec![(7, TITLE.to_owned())]);
     }
 
     /// Going on holding still is not a new settling. Without this every idle agent would
@@ -1876,7 +2016,7 @@ mod tests {
     #[test]
     fn sitting_idle_does_not_ask_again() {
         let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        state.finish_summary(200, &reply("Done.", false), &context(7, 1));
+        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
 
         for _ in 0..3 {
             poll_showing(&mut state, BUSY_PANE, &mut sent);
@@ -1939,7 +2079,12 @@ mod tests {
     #[test]
     fn going_busy_again_clears_the_flag_without_throwing_the_answer_away() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        state.finish_summary(200, &reply("Waiting on you.", true), &context(7, 1));
+        finish(
+            &mut state,
+            200,
+            &reply("Waiting on you.", true),
+            &context(7, 1),
+        );
         let waiting = |state: &State| {
             agents::strip_rows(
                 state.panes.as_deref().unwrap_or_default(),
@@ -1971,7 +2116,7 @@ mod tests {
     #[test]
     fn an_unchanged_pane_is_not_summarized_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        state.finish_summary(200, &reply("Done.", false), &context(7, 1));
+        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
 
         // Away and back to the same screen: busy, then idle again on identical text.
         state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
@@ -2011,7 +2156,7 @@ mod tests {
     fn a_reply_from_a_superseded_request_is_ignored() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        state.finish_summary(200, &reply("Stale.", true), &context(7, 99));
+        finish(&mut state, 200, &reply("Stale.", true), &context(7, 99));
         assert!(state.summaries.is_empty());
         assert_eq!(
             state.summary_requests.get(&7).map(|r| r.id),
@@ -2020,7 +2165,12 @@ mod tests {
         );
 
         // Nor does a reply for a pane nothing asked about land.
-        state.finish_summary(200, &reply("Nobody asked.", true), &context(8, 1));
+        finish(
+            &mut state,
+            200,
+            &reply("Nobody asked.", true),
+            &context(8, 1),
+        );
         assert!(state.summaries.is_empty());
     }
 
@@ -2031,7 +2181,12 @@ mod tests {
         let (mut state, _) = idle_agent(BUSY_PANE);
         state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
 
-        state.finish_summary(200, &reply("Waiting on you.", true), &context(7, 1));
+        finish(
+            &mut state,
+            200,
+            &reply("Waiting on you.", true),
+            &context(7, 1),
+        );
 
         assert!(state.summaries.is_empty());
     }
@@ -2042,7 +2197,7 @@ mod tests {
     fn a_failed_request_stores_nothing_and_frees_the_pane_to_ask_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        state.finish_summary(500, b"upstream is down", &context(7, 1));
+        finish(&mut state, 500, b"upstream is down", &context(7, 1));
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_requests.is_empty());
@@ -2058,7 +2213,7 @@ mod tests {
     fn an_unusable_answer_is_no_answer() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        state.finish_summary(200, b"{\"choices\":[]}", &context(7, 1));
+        finish(&mut state, 200, b"{\"choices\":[]}", &context(7, 1));
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_requests.is_empty());
@@ -2083,9 +2238,15 @@ mod tests {
             "idle again, so idleness alone cannot tell this answer is stale",
         );
 
-        state.finish_summary(200, &reply("About the old screen.", true), &context(7, 1));
+        let renames = finish(
+            &mut state,
+            200,
+            &reply("About the old screen.", true),
+            &context(7, 1),
+        );
 
         assert!(state.summaries.is_empty());
+        assert!(renames.is_empty(), "and the pane keeps the name it had");
         assert!(
             state.summary_due(7, OTHER_PANE),
             "and the screen it really is on is still owed a request",
@@ -2115,7 +2276,7 @@ mod tests {
     #[test]
     fn a_closed_pane_takes_its_summary_and_its_request_with_it() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        state.finish_summary(200, &reply("Done.", true), &context(7, 1));
+        finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
         assert!(!state.summaries.is_empty());
 
         state.panes = Some(vec![]);
@@ -2135,8 +2296,9 @@ mod tests {
     fn a_web_response_that_is_not_a_summary_is_left_alone() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        state.finish_summary(200, &reply("Not mine.", true), &BTreeMap::new());
-        state.finish_summary(
+        finish(&mut state, 200, &reply("Not mine.", true), &BTreeMap::new());
+        finish(
+            &mut state,
             200,
             &reply("Not mine.", true),
             &BTreeMap::from([("stream_id".to_owned(), "hocus-1".to_owned())]),
