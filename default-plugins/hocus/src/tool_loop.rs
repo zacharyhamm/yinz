@@ -853,10 +853,29 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| {
-                let repository = self.repository_for_cwd(pane.cwd.as_deref()?)?;
-                Some((pane.pane_id, repository.branch.clone()?))
+                let branch = self.branch_for_cwd(pane.cwd.as_deref()?)?;
+                Some((pane.pane_id, branch.to_owned()))
             })
             .collect()
+    }
+
+    /// The branch of the folder itself, never of a folder above it.
+    ///
+    /// The stand-in `repository_for_cwd` offers is right about the project and
+    /// wrong about the branch, and from the probed folders alone the two cases
+    /// cannot be told apart: a checkout at `/repo` with a pane in `/repo/src`
+    /// and a checkout at `/repo` with a *worktree* at `/repo/.claude/worktrees/x`
+    /// present the same two paths and the same single answer. Git's own layout
+    /// puts worktrees wherever it is asked to, and inside the primary checkout
+    /// is an ordinary place to put them.
+    ///
+    /// So this asks only about the folder in hand. A pane whose folder has no
+    /// answer yet groups under "no branch" for the round trip it takes to get
+    /// one — where the stand-in would have filed it under the primary's branch,
+    /// which is a different agent's work. A header that is briefly missing can
+    /// be waited out; one that is confidently wrong cannot.
+    fn branch_for_cwd(&self, cwd: &str) -> Option<&str> {
+        self.repositories.get(cwd)?.branch.as_deref()
     }
 
     /// What Git said about an agent's folder, or about the nearest folder above
@@ -867,6 +886,9 @@ impl State {
     /// probe lands. It is in the same checkout it was in a moment ago, and on
     /// screen the wait reads as the agent losing its project and getting it back.
     /// The exact answer replaces this stand-in as soon as it arrives.
+    ///
+    /// For the project only. The branch goes through `branch_for_cwd`, which
+    /// takes no stand-in — see the reason there.
     fn repository_for_cwd(&self, cwd: &str) -> Option<&projects::Repository> {
         if let Some(repository) = self.repositories.get(cwd) {
             return Some(repository);

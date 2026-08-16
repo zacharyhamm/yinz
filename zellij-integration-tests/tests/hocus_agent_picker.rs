@@ -9,7 +9,7 @@
 //! session with a real grid to read says the split happened, the rows went to
 //! the right pane, and hiding the sidebar takes both panes with it.
 
-use zellij_integration_tests::test_env::write_git_repository;
+use zellij_integration_tests::test_env::{write_git_repository, write_git_worktree};
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 
 /// hocus with the daemon that finds agents for it, as the real config has it,
@@ -162,6 +162,95 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     assert!(
         !screen.text.contains("no project"),
         "nothing fell back to the header that names nothing:\n{}",
+        screen.text,
+    );
+    zellij.quit();
+}
+
+/// The wrong-branch bug, end to end with a real `git worktree`.
+///
+/// Two agents in one repository: one in the primary checkout on `trunk`, one in
+/// a worktree nested inside it on `topic`. Discovery makes no second project out
+/// of the nested worktree — the primary's root already contains its folder — so
+/// both agents sit under one project header and the branch headers are the only
+/// thing telling them apart. Getting the branch wrong therefore does not merely
+/// mislabel a row, it files an agent under another agent's work.
+///
+/// The negative assertion is the point: pane 1 must never appear under `trunk`.
+#[test]
+fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
+    let repository = write_git_repository("hocus-nested", "trunk");
+    let worktree = write_git_worktree(&repository, "topic", "topic");
+    let layout = format!(
+        r#"layout {{
+    global_panes {{
+        pane edge="left" size="50%" focus=true {{
+            plugin location="hocus"
+        }}
+    }}
+    pane cwd="{}"
+    pane cwd="{}"
+}}
+"#,
+        repository.display(),
+        worktree.display(),
+    );
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let primary_agent = zellij.expect_pty_spawn();
+    primary_agent.run_foreground(&["claude"]);
+    primary_agent.output(b"$ ");
+    let worktree_agent = zellij.expect_pty_spawn();
+    worktree_agent.run_foreground(&["claude"]);
+    worktree_agent.output(b"$ ");
+
+    allow(&zellij);
+
+    zellij.wait_until("both branches are on screen", |grid_snapshot| {
+        grid_snapshot.contains("trunk") && grid_snapshot.contains("topic")
+    });
+
+    let screen = zellij.snapshot();
+    let row = |needle: &str| {
+        screen
+            .row_of_line(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is on screen:\n{}", screen.text))
+    };
+    // One project, then the two branches with their own agent under each. The
+    // headers sort by branch name, so `topic` comes after `trunk`.
+    // A branch header per checkout, with that checkout's agent directly beneath
+    // it and nothing else between them. The headers sort by branch name, so
+    // `topic` comes before `trunk`.
+    //
+    // The project's *name* is deliberately not asserted: it is taken from
+    // whichever of the two checkouts is discovered first, and the probes race.
+    // Both agents landing under one project is what matters, and the absence of
+    // the header that names nothing says it.
+    let topic = row("  topic");
+    let trunk = row("  trunk");
+    assert_eq!(
+        row("  1  claude"),
+        topic + 1,
+        "the worktree's agent sits under its own branch:\n{}",
+        screen.text,
+    );
+    assert_eq!(
+        trunk,
+        topic + 2,
+        "one agent row between the two branch headers:\n{}",
+        screen.text,
+    );
+    assert_eq!(
+        row("  0  claude"),
+        trunk + 1,
+        "and the primary's agent under the primary's branch:\n{}",
+        screen.text,
+    );
+    assert!(
+        !screen.text.contains("no project"),
+        "both agents found their project:\n{}",
         screen.text,
     );
     zellij.quit();
