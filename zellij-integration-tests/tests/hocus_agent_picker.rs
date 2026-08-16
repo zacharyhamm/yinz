@@ -43,6 +43,39 @@ load_plugins clear-defaults=true {
 }
 "#;
 
+/// The same plugins, but the binding opens the *agent list* rather than the
+/// conversation — the shipped `Alt g`, under a key the harness can send.
+const HOCUS_AGENTS_BINDING_CONFIG: &str = r#"keybinds {
+  normal {
+    bind "Ctrl b" {
+      LaunchOrFocusPlugin "hocus-agents" {
+        global true
+        edge "left"
+        size "50%"
+      }
+    }
+  }
+}
+plugins {
+  hocus location="zellij:hocus" {
+    shared true
+  }
+  hocus-agents location="zellij:hocus-agents" {
+    shared true
+  }
+  hocus-agentd location="zellij:hocus-agentd"
+}
+load_plugins clear-defaults=true {
+  "hocus-agentd"
+}
+"#;
+
+/// No sidebar at all to begin with: the binding has to build the whole strip.
+const NO_SIDEBAR_LAYOUT: &str = r#"layout {
+    pane name="claude"
+}
+"#;
+
 /// The same, plus the store — which is what actually holds projects.
 ///
 /// The daemon finds the checkout an agent is in; only the store turns one into
@@ -457,6 +490,58 @@ fn the_agent_list_is_its_own_pane_and_the_sidebar_hides_as_one_strip() {
     zellij.wait_until(
         "the conversation survived the round trip",
         |grid_snapshot| grid_snapshot.contains("assigned tab 0 to project marker"),
+    );
+    zellij.quit();
+}
+
+#[test]
+fn opening_the_agent_list_with_nothing_running_builds_the_whole_sidebar() {
+    // The list is a view: hocus computes the rows and pipes them over. So a
+    // binding that opens the list on a session with no sidebar has to end up
+    // with a conversation behind it, or it draws an empty pane forever. The
+    // two halves spawn each other for exactly this reason, and only a real
+    // session says the second half arrived.
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_AGENTS_BINDING_CONFIG)
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
+        .start();
+    let agent = zellij.expect_pty_spawn();
+    agent.output(b"$ ");
+
+    zellij.send_stdin(&keys::ctrl('b'));
+
+    // hocus is the half that asks for permissions, so being asked at all is
+    // the proof that opening the list brought the conversation with it.
+    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
+        grid_snapshot.contains("Allow? (y/n)")
+    });
+    // The binding put focus on the list, which is the whole point of it — so
+    // the answer has to be typed into the pane that asked, one below.
+    zellij.send_stdin(&keys::alt('j'));
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
+        !grid_snapshot.contains("Allow? (y/n)")
+    });
+
+    zellij.wait_until("the agent list is populated", |grid_snapshot| {
+        grid_snapshot.contains("0  claude  running")
+    });
+    zellij.wait_until("the conversation is there too", |grid_snapshot| {
+        grid_snapshot.contains("hocus — ")
+    });
+
+    // And in the usual order: the list on top, the conversation below it, the
+    // same strip hocus builds when it is the one that opens first.
+    let screen = zellij.snapshot();
+    let row = |needle: &str| {
+        screen
+            .row_of_line(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is on screen:\n{}", screen.text))
+    };
+    assert!(
+        row("hocus — ") > row("0  claude  running"),
+        "the conversation sits below the agent list:\n{}",
+        screen.text,
     );
     zellij.quit();
 }

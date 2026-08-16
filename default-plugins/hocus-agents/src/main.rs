@@ -22,9 +22,13 @@
 //! draws it dim, which is the difference between "you are here" and "here is
 //! where you were".
 //!
-//! The pane is spawned by hocus on load via `launch_or_focus_global_pane_split`,
-//! so the `Ctrl+`` keybinding keeps working unchanged: revealing hocus reveals
-//! the whole strip, and `hide_self()` here hides it likewise.
+//! Either half of the strip spawns the other, through the same
+//! `launch_or_focus_global_pane_split` call: hocus splits this pane in above
+//! itself on load, and this pane splits hocus in below itself. So the `Ctrl+``
+//! keybinding keeps working unchanged — revealing hocus reveals the whole
+//! strip, and `hide_self()` here hides it likewise — and a binding that opens
+//! the list directly gets a whole sidebar rather than a view with nothing
+//! feeding it.
 
 use std::collections::BTreeMap;
 
@@ -64,6 +68,26 @@ impl ZellijPlugin for State {
         // so a reload (or a session restore) does not sit empty until the next
         // agentd snapshot.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HELLO));
+        // The chat is the other half of this strip, and it is the half that
+        // computes the rows drawn here. Usually hocus spawns *this* pane and
+        // this call adopts the hocus that did it; when a keybinding got here
+        // first there is no hocus yet, so split one in below. Idempotent
+        // server-side, and a no-op when this is not a global pane — the same
+        // contract hocus relies on in the other direction.
+        launch_or_focus_global_pane_split(
+            "hocus",
+            // the spelling hocus's own binding uses: plugin identity is
+            // (location, configuration), and a second spelling would make a
+            // second pane rather than adopt the one that is there
+            BTreeMap::new(),
+            // below the list, where the conversation belongs
+            false,
+            // sizes the *new* pane, leaving this one the remainder — the same
+            // two-thirds-to-the-chat split the other direction produces
+            Some(PercentOrFixed::Percent(67)),
+            // whoever opened this pane meant to land on the list
+            false,
+        );
     }
 
     fn update(&mut self, event: Event) -> bool {
