@@ -16577,6 +16577,6 @@ pub(crate) fn screen_thread_main(
     Ok(())
 }
 
-#[path = "./unit/screen_tests.rs"]
+#[path = "./unit/screen_tests/mod.rs"]
 #[cfg(test)]
 mod screen_tests;
