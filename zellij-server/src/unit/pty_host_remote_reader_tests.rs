@@ -122,6 +122,7 @@ async fn a_status_report_updates_the_cache_without_disturbing_the_stream() {
         &mut framed,
         &BrokerToServerMsg::StatusReport {
             cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned()]),
         },
     )

@@ -71,10 +71,12 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
         BrokerToServerMsg::ChildExited { status: None },
         BrokerToServerMsg::StatusReport {
             cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
         },
         BrokerToServerMsg::StatusReport {
             cwd: None,
+            shell_argv: None,
             foreground_argv: None,
         },
     ]

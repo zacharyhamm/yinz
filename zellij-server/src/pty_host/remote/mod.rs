@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod reader;
 pub mod session;
 pub mod ssh;
+pub mod status;
 
 pub use conn::{RemoteConn, RemoteStatus};
 pub use reader::RemoteReader;

@@ -235,6 +235,7 @@ fn start_pane(
 
     send(wire, &BrokerToServerMsg::Spawned { pane_token: token })?;
     start_output_pump(session.clone())?;
+    start_status_pump(session.clone())?;
     Ok(session)
 }
 
@@ -284,7 +285,54 @@ fn resume_pane(
         send(wire, &BrokerToServerMsg::ChildExited { status })?;
     }
     session.attach(wire.clone());
+    // A reconnecting server has no cached status at all — it is a fresh
+    // `RemoteConn`. The ticker only reports changes, so without this a pane
+    // whose cwd and command are steady would look unknown until something about
+    // it happened to change.
+    let probe = super::status::probe(session.master_fd(), session.child_pid);
+    send(wire, &probe.into_report())?;
     Ok(session)
+}
+
+/// How often to look at the pane's process.
+///
+/// Matches the server's own `UPDATE_AND_REPORT_CWDS_INTERVAL_MS`, so a remote
+/// pane's information is no staler than a local one's.
+const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Watch the pane's process and report what changes.
+///
+/// Pushed rather than polled: the alternative is the server asking, from
+/// `update_and_report_cwds` on the pty thread, over a link that may be dead.
+/// Pushing means a disconnected pane reports stale-but-plausible data instead of
+/// stalling the thread that drives every other pane.
+fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
+    thread::Builder::new()
+        .name("remote-pane-status".to_owned())
+        .spawn(move || {
+            let mut last: Option<super::status::Probe> = None;
+            loop {
+                thread::sleep(STATUS_INTERVAL);
+                if session.is_terminated() || session.child_exit().is_some() {
+                    return;
+                }
+                let probe = super::status::probe(session.master_fd(), session.child_pid);
+                // Only on change: this is a keystroke-free pane's only traffic,
+                // and an idle agent should not keep an ssh channel busy.
+                if last.as_ref() == Some(&probe) {
+                    continue;
+                }
+                if let Some(wire) = session.wire() {
+                    if send(&wire, &probe.clone().into_report()).is_err() {
+                        session.detach();
+                        continue;
+                    }
+                }
+                last = Some(probe);
+            }
+        })
+        .context("failed to start a remote pane's status pump")?;
+    Ok(())
 }
 
 /// Read the pty and fan it out: always into the replay buffer, and onto the

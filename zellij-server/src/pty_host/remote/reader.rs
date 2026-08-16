@@ -239,10 +239,12 @@ impl RemoteReader {
             },
             BrokerToServerMsg::StatusReport {
                 cwd,
+                shell_argv,
                 foreground_argv,
             } => {
                 self.conn.set_status(RemoteStatus {
                     cwd,
+                    shell_argv,
                     foreground_argv,
                 });
                 false

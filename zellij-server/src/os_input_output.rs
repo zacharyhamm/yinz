@@ -502,6 +502,13 @@ pub trait ServerOsApi: Send + Sync {
     fn signal_remote_child(&self, _terminal_id: u32, _signal: ChildSignal) -> Result<()> {
         Err(anyhow!("this backend does not support remote panes"))
     }
+    /// Every pane whose process lives on another machine.
+    ///
+    /// The backend's transport table is the one place that knows, so this is the
+    /// single source of truth rather than a second list kept in step by hand.
+    fn remote_pane_ids(&self) -> Vec<u32> {
+        Vec::new()
+    }
     /// Hand a pane's supervisor over without killing it, so another session can
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
@@ -607,6 +614,9 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
         self.pty_backend.signal_remote_child(terminal_id, signal)
+    }
+    fn remote_pane_ids(&self) -> Vec<u32> {
+        self.pty_backend.remote_pane_ids()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())

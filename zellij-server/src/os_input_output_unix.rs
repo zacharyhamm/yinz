@@ -722,6 +722,19 @@ impl UnixPtyBackend {
             .map(|conn| conn.status())
     }
 
+    /// Every pane whose process lives on another machine.
+    pub fn remote_pane_ids(&self) -> Vec<u32> {
+        self.terminal_id_to_transport
+            .lock()
+            .map(|t| {
+                t.iter()
+                    .filter(|(_, transport)| transport.remote().is_some())
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
     pub fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
         let conn = self
