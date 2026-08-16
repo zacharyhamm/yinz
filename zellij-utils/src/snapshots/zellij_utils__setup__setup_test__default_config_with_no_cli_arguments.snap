@@ -200,6 +200,44 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'h',
                 ),
                 key_modifiers: {
@@ -724,6 +762,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -1277,6 +1353,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -2000,6 +2114,44 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'h',
                 ),
                 key_modifiers: {},
@@ -2575,6 +2727,44 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'h',
                 ),
                 key_modifiers: {},
@@ -3039,6 +3229,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -3515,6 +3743,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -4012,6 +4278,44 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'h',
                 ),
                 key_modifiers: {
@@ -4422,6 +4726,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -4929,6 +5271,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -5502,6 +5882,44 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'h',
                 ),
                 key_modifiers: {},
@@ -5973,6 +6391,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {
@@ -6518,6 +6974,44 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'g',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-agents",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: false,
+                    move_to_focused_tab: false,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: Some(
+                        GlobalPanePlacement {
+                            edge: Left,
+                            size: Percent(
+                                25,
+                            ),
+                            length: None,
+                        },
+                    ),
                 },
             ],
             KeyWithModifier {

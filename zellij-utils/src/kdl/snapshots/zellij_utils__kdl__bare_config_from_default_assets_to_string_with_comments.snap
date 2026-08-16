@@ -172,6 +172,13 @@ keybinds clear-defaults=true {
         }
         bind "Alt f" { ToggleFloatingPanes; }
         bind "Ctrl g" { SwitchToMode "locked"; }
+        bind "Alt g" {
+            LaunchOrFocusPlugin "hocus-agents" {
+                global true
+                edge "left"
+                size "25%"
+            }
+        }
         bind "Alt h" { MoveFocusOrTab "left"; }
         bind "Alt i" { MoveTab "left"; }
         bind "Alt j" { MoveFocus "down"; }
