@@ -6,7 +6,7 @@
 //! the wire belongs with the other wire types rather than inside one end of it.
 
 use crate::agents;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 /// The terminal panes of a manifest, as the agent module wants them.
@@ -57,6 +57,25 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
     // agent_list is read by a model on every turn; give it the same order every time.
     panes.sort_by_key(|pane| pane.pane_id);
     panes
+}
+
+/// Every terminal pane the manifest carries, suppressed ones included.
+///
+/// `terminal_panes` drops the suppressed, which is right for a list the user reads
+/// and wrong for deciding a pane has closed. A pane is suppressed while something
+/// stands in front of it — the scrollback editor, most often — and it comes back
+/// with the same id, still running whatever it was running. Pruning what the daemon
+/// knows against the visible list alone threw that away: the folder, the branch
+/// probed from it, and the latch that says the pane runs an agent at all.
+pub fn manifest_pane_ids(manifest: &PaneManifest) -> BTreeSet<u32> {
+    manifest
+        .panes
+        .values()
+        .flatten()
+        .chain(manifest.global_panes.iter())
+        .filter(|pane| !pane.is_plugin)
+        .map(|pane| pane.id)
+        .collect()
 }
 
 /// The terminal pane the user is looking at, if it is one.
@@ -111,6 +130,45 @@ mod tests {
 
         assert_eq!(panes[0].cwd.as_deref(), Some("/work/hocus"));
         assert_eq!(panes[1].cwd, None);
+    }
+
+    /// A suppressed pane is hidden, not gone. It keeps its id and its process,
+    /// so what the daemon knows about it must survive the thing standing in
+    /// front of it — which is exactly what pruning against the visible list did
+    /// not do.
+    #[test]
+    fn manifest_pane_ids_include_a_suppressed_pane() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![
+                PaneInfo {
+                    id: 3,
+                    ..PaneInfo::default()
+                },
+                PaneInfo {
+                    id: 4,
+                    is_suppressed: true,
+                    ..PaneInfo::default()
+                },
+                PaneInfo {
+                    id: 5,
+                    is_plugin: true,
+                    ..PaneInfo::default()
+                },
+            ],
+        );
+
+        let visible: Vec<u32> = terminal_panes(&manifest, &[])
+            .iter()
+            .map(|pane| pane.pane_id)
+            .collect();
+        assert_eq!(visible, [3], "the suppressed pane is not one to show");
+        assert_eq!(
+            manifest_pane_ids(&manifest),
+            BTreeSet::from([3, 4]),
+            "but it is still a live pane, and the plugin still is not one",
+        );
     }
 
     fn tab(position: usize, active: bool, floating_visible: bool) -> TabInfo {

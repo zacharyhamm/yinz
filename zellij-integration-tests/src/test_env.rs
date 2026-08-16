@@ -268,6 +268,31 @@ pub fn write_git_repository(name: &str, branch: &str) -> PathBuf {
     root
 }
 
+/// A linked worktree of `primary`, checked out on a new branch, nested inside
+/// the checkout it came from.
+///
+/// Nested deliberately, at `.claude/worktrees/<name>` — that is where this
+/// repository keeps its own, and it is the layout that used to give an agent the
+/// wrong branch. A worktree beside its primary is told apart by its path alone;
+/// one inside it looks, to anything holding only the list of probed folders,
+/// exactly like a subdirectory of the primary.
+///
+/// `write_git_repository` has already made the commit that `git worktree add`
+/// needs — it cannot branch from an unborn HEAD.
+pub fn write_git_worktree(primary: &std::path::Path, name: &str, branch: &str) -> PathBuf {
+    let path = primary.join(".claude/worktrees").join(name);
+    let status = std::process::Command::new("git")
+        .args(["worktree", "add", "-b", branch])
+        .arg(&path)
+        .current_dir(primary)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap_or_else(|error| panic!("could not run git worktree add: {error}"));
+    assert!(status.success(), "git worktree add failed in {primary:?}");
+    path
+}
+
 fn defaults_overridden_by(extra_config_kdl: &str) -> String {
     let overridden_keys: std::collections::HashSet<&str> = extra_config_kdl
         .lines()
