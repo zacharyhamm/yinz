@@ -137,6 +137,42 @@ Once you do, in the repository root:
 
 To re-run the tests after you've changed something in the code base, be sure to repeat steps 2 and 3.
 
+## Running the remote-pane tests
+
+A pane opened with `--remote-host` runs its process on another machine, over ssh. The
+parts of that which need another machine — bootstrapping a broker there, forwarding a
+unix socket to it, surviving a dropped link — can only be tested against a real one, so
+they live in their own suite rather than with the unit tests.
+
+`docker-compose.remote-panes.yml` provides that machine: an sshd with
+`AllowStreamLocalForwarding` on and the musl build of your working tree on its `PATH`,
+reached through a proxy the tests can switch off mid-pane to simulate an outage. It needs
+`docker` and `docker compose`, and the same musl prerequisites as the e2e suite above.
+
+From the repository root:
+
+1. `cargo x remote-test --build` — builds the musl binary, generates a throwaway ssh
+   keypair and config, and brings the containers up
+2. `cargo x remote-test --test` — runs the tests
+3. `cargo x remote-test --clean` — takes the containers down and removes the generated
+   credentials
+
+Repeat step 1 after changing anything the far machine runs; it is a no-op for the
+container when nothing has changed, but the binary it mounts is rebuilt.
+
+The tests are `#[ignore]`d, so `cargo x test` and `cargo x integration-test` never run
+them and never need docker.
+
+Two things about the setup are worth knowing before you change it:
+
+- **The ssh config reaches the code under test through a `PATH` shim.** Zellij runs a bare
+  `ssh <host>`, and OpenSSH resolves `~/.ssh/config` through `getpwuid()` rather than
+  `$HOME` — so overriding `HOME` does nothing, and a test may not write to your real
+  config. `--build` writes an `ssh` that execs the real one with `-F <test config>` and
+  the suite puts it first on `PATH`. Nothing else about the invocation is touched.
+- **The tests share one far machine and set process-wide environment**, so they must run
+  single-threaded. `cargo x remote-test --test` passes `--test-threads 1`.
+
 ## Debugging / Troubleshooting while developing
 Zellij uses the excellent [`log`](https://crates.io/crates/log) crate to handle its internal logging. The output of these logs will go to `/$temp_dir/zellij-<UID>/zellij-log/zellij.log` which `$temp_dir` refers to [std::env::temp_dir()](https://doc.rust-lang.org/std/env/fn.temp_dir.html). On most of operating systems it points to `/tmp`, but there are exceptions, such as `/var/folders/dr/xxxxxxxxxxxxxx/T/` for Mac.
 

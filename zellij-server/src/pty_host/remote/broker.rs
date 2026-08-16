@@ -44,6 +44,18 @@ pub type Wire = Arc<Mutex<UnixStream>>;
 /// How often to look for panes nobody has come back for.
 const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How often to look, given how long a pane is allowed to sit unclaimed.
+///
+/// Sweeping every 30 seconds is right for a half-hour timeout and useless for a
+/// three-second one, where the sweep interval rather than the timeout would
+/// decide when a pane died. Checking a few times per timeout keeps the two in
+/// proportion whichever it is.
+fn reap_interval(orphan_timeout: std::time::Duration) -> std::time::Duration {
+    REAP_INTERVAL
+        .min(orphan_timeout / 4)
+        .max(std::time::Duration::from_millis(100))
+}
+
 pub fn send(wire: &Wire, msg: &BrokerToServerMsg) -> Result<()> {
     let mut sock = wire
         .lock()
@@ -604,9 +616,15 @@ pub fn serve(listener: UnixListener, host_bin: std::path::PathBuf) -> Result<()>
     let reaper_registry = registry.clone();
     thread::Builder::new()
         .name("remote-pane-reaper".to_owned())
-        .spawn(move || loop {
-            thread::sleep(REAP_INTERVAL);
-            reaper_registry.reap_orphans(orphan_timeout());
+        .spawn(move || {
+            // Read once: the timeout cannot change under a running broker, and
+            // the sweep interval is derived from it.
+            let timeout = orphan_timeout();
+            let interval = reap_interval(timeout);
+            loop {
+                thread::sleep(interval);
+                reaper_registry.reap_orphans(timeout);
+            }
         })
         .context("failed to start the remote pane reaper")?;
 
