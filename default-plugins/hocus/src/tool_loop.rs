@@ -91,7 +91,7 @@ impl State {
         }
         // The todo store lives in another plugin now, so these defer on its
         // reply the way a command defers on the host's.
-        if matches!(call.name.as_str(), "todo_add" | "todo_done") {
+        if matches!(call.name.as_str(), "todo_add" | "todo_done" | "todo_edit") {
             return self.start_todo_write(call);
         }
         // The scheduling tools live here rather than in tools::dispatch, which
@@ -661,6 +661,18 @@ impl State {
                     // The first put of the batch is the new item; anything after
                     // it reopens an ancestor and inserts nothing.
                     "id": report.ids.first().copied().unwrap_or_default(),
+                    "text": text,
+                })
+                .to_string())
+            },
+            "todo_edit" => {
+                let id = args.id.ok_or("id is required")?;
+                let text = args.text.as_deref().ok_or("text is required")?;
+                let (mutations, text) = todos::plan_edit(&list, id, text)?;
+                backend.apply(mutations)?;
+                Ok(serde_json::json!({
+                    "project": name,
+                    "id": id,
                     "text": text,
                 })
                 .to_string())
