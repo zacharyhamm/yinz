@@ -36,6 +36,7 @@ fn serialize_and_deserialize_session_info_with_global_pane() {
 fn serialize_and_deserialize_session_info_with_data() {
     let panes_list = vec![
         PaneInfo {
+            host: None,
             id: 1,
             is_plugin: false,
             is_focused: true,
@@ -66,6 +67,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
+            host: None,
             id: 1,
             is_plugin: true,
             is_focused: true,

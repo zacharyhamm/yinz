@@ -119,6 +119,18 @@ xflags::xflags! {
             repeated args: OsString
         }
 
+        /// Run the remote-pane tests, against a real sshd in a container
+        cmd remote-test {
+            /// Build the musl binary and bring the containers up
+            optional --build
+            /// Run the tests
+            optional --test
+            /// Take the containers down and remove the generated keypair
+            optional --clean
+            /// Additional arguments for `--test`
+            repeated args: OsString
+        }
+
         /// Run the render throughput benchmarks
         cmd bench {
             /// Arguments to pass to criterion (e.g. `--save-baseline main`, `--sample-size 20`,
@@ -164,6 +176,7 @@ pub enum XtaskCmd {
     Format(Format),
     Test(Test),
     IntegrationTest(IntegrationTest),
+    RemoteTest(RemoteTest),
     Bench(Bench),
     Build(Build),
 }
@@ -264,6 +277,15 @@ pub struct IntegrationTest {
 
     pub no_opt: bool,
     pub serial: bool,
+}
+
+#[derive(Debug)]
+pub struct RemoteTest {
+    pub args: Vec<OsString>,
+
+    pub build: bool,
+    pub test: bool,
+    pub clean: bool,
 }
 
 #[derive(Debug)]

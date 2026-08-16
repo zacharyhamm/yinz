@@ -1901,6 +1901,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
                 .transpose()?,
             is_hidden: protobuf_pane_info.is_hidden,
             cwd: protobuf_pane_info.cwd,
+            host: protobuf_pane_info.host,
         })
     }
 }
@@ -1952,6 +1953,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
                 .transpose()?,
             is_hidden: pane_info.is_hidden,
             cwd: pane_info.cwd,
+            host: pane_info.host,
         })
     }
 }
@@ -2915,6 +2917,7 @@ fn serialize_session_update_event_with_non_default_values() {
     index_in_pane_group_2.insert(3, 1);
     let panes_list = vec![
         PaneInfo {
+            host: None,
             id: 1,
             is_plugin: false,
             is_focused: true,
@@ -2945,6 +2948,7 @@ fn serialize_session_update_event_with_non_default_values() {
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
+            host: None,
             id: 1,
             is_plugin: true,
             is_focused: true,

@@ -15,6 +15,7 @@ mod format;
 mod integration_test;
 mod metadata;
 mod pipelines;
+mod remote_test;
 mod test;
 
 use anyhow::Context;
@@ -162,6 +163,7 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Format(flags) => format::format(shell, flags),
         flags::XtaskCmd::Test(flags) => test::test(shell, flags),
         flags::XtaskCmd::IntegrationTest(flags) => integration_test::integration_test(shell, flags),
+        flags::XtaskCmd::RemoteTest(flags) => remote_test::main(shell, flags),
         flags::XtaskCmd::Bench(flags) => bench::bench(shell, flags),
         flags::XtaskCmd::Proto(_flags) => build::proto(shell),
         flags::XtaskCmd::Assets(flags) => assets::assets(shell, flags),

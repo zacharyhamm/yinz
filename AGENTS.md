@@ -12,6 +12,7 @@ cargo x format           # rustfmt; --check in CI
 cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
 cargo x bench            # render throughput benchmarks (criterion); not part of CI
+cargo x remote-test --build && cargo x remote-test --test  # remote panes, real ssh in docker
 ```
 
 `cargo x` is an alias for `cargo xtask`. `cargo x --help` lists everything.
@@ -54,6 +55,8 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
   need `cargo x build -p` (plugins only) first.
 - **Integration tests:** `cargo x integration-test -- -E 'test(resize)'` (nextest
   expression), or a bare name filter, which works on either runner.
+- **Remote-pane tests:** `cargo x remote-test --test -- --exact <name>`. They are
+  `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
 
 Finish with a full `cargo x test` before calling work done — that's what CI runs.
 
@@ -87,6 +90,8 @@ within one machine, and the workloads are seeded so input never drifts between r
 | `default-plugins/*` | builtin plugins, each a wasm crate |
 | `zellij-integration-tests/` | whole-app tests |
 | `src/tests/e2e/` | dockerized black-box e2e (`docker compose up -d`, `cargo x ci e2e`) |
+| `zellij-server/tests/` | remote panes against a real sshd (`cargo x remote-test`) |
+| `docker/` | the containers those two suites run against |
 | `xtask/` | the build system |
 
 Read `docs/ARCHITECTURE.md` before changing server internals, and

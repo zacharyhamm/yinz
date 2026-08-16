@@ -72,6 +72,16 @@ pub struct RunCommand {
     pub originating_plugin: Option<OriginatingPlugin>,
     #[serde(default)]
     pub use_terminal_title: bool,
+    /// The machine this command runs on, if not this one.
+    ///
+    /// Carried alongside the command rather than as a new `Run` variant: a
+    /// variant would ripple into `Run::merge`, the KDL property whitelist and
+    /// three arms of session serialization, all to express something that is
+    /// really an attribute of *where* the command runs rather than of what it
+    /// is. `serde(default)` keeps every existing layout and serialized session
+    /// parsing unchanged.
+    #[serde(default)]
+    pub remote_host: Option<String>,
 }
 
 impl std::fmt::Display for RunCommand {
@@ -109,6 +119,9 @@ pub struct RunCommandAction {
     pub originating_plugin: Option<OriginatingPlugin>,
     #[serde(default)]
     pub use_terminal_title: bool,
+    /// See `RunCommand::remote_host`.
+    #[serde(default)]
+    pub remote_host: Option<String>,
 }
 
 impl From<RunCommandAction> for RunCommand {
@@ -121,6 +134,7 @@ impl From<RunCommandAction> for RunCommand {
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin,
             use_terminal_title: action.use_terminal_title,
+            remote_host: action.remote_host,
         }
     }
 }
@@ -136,6 +150,7 @@ impl From<RunCommand> for RunCommandAction {
             hold_on_start: run_command.hold_on_start,
             originating_plugin: run_command.originating_plugin,
             use_terminal_title: run_command.use_terminal_title,
+            remote_host: run_command.remote_host,
         }
     }
 }

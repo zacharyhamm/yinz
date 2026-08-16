@@ -14,6 +14,7 @@ fn replace_pane_in_place_with_held_command(
     zellij.run_cli_action(CliAction::NewPane {
         direction: None,
         command: vec![command.to_string()],
+        remote_host: None,
         plugin: None,
         cwd: None,
         floating: false,

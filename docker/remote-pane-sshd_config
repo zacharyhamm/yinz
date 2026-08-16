@@ -1,0 +1,32 @@
+Port 2222
+AddressFamily any
+ListenAddress 0.0.0.0
+
+# Key auth only. The code under test passes `BatchMode=yes`, so it will never
+# answer a password prompt — a password-authenticating sshd here would not fail
+# the tests honestly, it would hang them.
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+AuthorizedKeysFile .ssh/authorized_keys
+
+# The whole point. A remote pane's transport is a forwarded *unix socket*
+# (`direct-streamlocal@openssh.com`); with this off, every pane fails with
+# "timed out waiting for the ssh forward to come up".
+AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+StreamLocalBindUnlink yes
+
+# `ssh host zellij --pty-broker ensure` is a non-interactive exec, so the PATH
+# sshd builds is all it gets. /usr/local/bin is where the entrypoint puts the
+# wrapper.
+PermitUserEnvironment no
+
+# ClientAlive off: the tests cut the network on purpose and want the far side to
+# notice on its own terms, not because sshd probed it.
+ClientAliveInterval 0
+TCPKeepAlive no
+
+LogLevel VERBOSE
+Subsystem sftp internal-sftp

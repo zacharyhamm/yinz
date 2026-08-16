@@ -151,6 +151,27 @@ pub struct ReleasedPtyHost {
     pub control_socket: Option<PathBuf>,
 }
 
+#[cfg(test)]
+impl PtyHostHandle {
+    /// A handle with a socketpair where a supervisor would be, so a test can
+    /// build the things that own one — `PaneSession`, mostly — without forking
+    /// anything.
+    ///
+    /// The caller must keep the peer end alive for as long as the handle. A
+    /// failed write in `terminate()` falls back to signalling `host_pid`, and
+    /// this handle's is not a real supervisor's.
+    pub(crate) fn for_test(control: UnixStream) -> Self {
+        Self {
+            host_id: "test".to_owned(),
+            host_pid: std::process::id(),
+            control_socket: None,
+            control,
+            reported: Arc::new(AtomicBool::new(false)),
+            released: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
 impl PtyHostHandle {
     /// Kill the pane's process and shut the supervisor down.
     ///
@@ -300,7 +321,7 @@ impl Drop for HostGuard {
     }
 }
 
-type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
+pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 
 fn handshake_and_spawn(
     control: &UnixStream,

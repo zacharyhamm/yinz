@@ -2392,6 +2392,14 @@ pub struct PaneInfo {
     /// folder.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The machine this pane's process runs on, if it is not this one.
+    ///
+    /// `None` means local, which is every pane unless it was opened with
+    /// `--remote-host`. It is here so a pane's *identity* is complete: two panes
+    /// sitting in `/home/me/work` on different machines are in different folders,
+    /// and anything keying on the path alone would quietly merge them.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
