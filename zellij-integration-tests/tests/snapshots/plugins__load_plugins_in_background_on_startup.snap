@@ -1,5 +1,6 @@
 ---
 source: zellij-integration-tests/tests/plugins.rs
+assertion_line: 32
 expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  Tab #1  + 
@@ -10,7 +11,7 @@ $
                               │rPlugins, WriteToStdin, WebAccess, ReadCliPipes, MessageAn│
                               │dLaunchOtherPlugins, Reconfigure, ReadPaneContents, RunAct│
                               │ionsAsUser, WriteToClipboard, ReadSessionEnvironmentVariab│
-                              │les. Allow? (y/n)                                         │
+                              │les, PluginData. Allow? (y/n)                             │
                               │                                                          │
                               │                                                          │
                               │                                                          │

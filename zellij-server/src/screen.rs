@@ -8255,6 +8255,11 @@ impl Screen {
     /// equivalent here: a session whose only tab is asked for has been asked to
     /// give up everything, and answering "no" would leave the user with no way to
     /// say what they meant.
+    ///
+    /// `tab_index` is a **stable tab id**, not a display position — `self.tabs` is
+    /// keyed by id, and the focused-tab default below reads `active_tab_ids`. The
+    /// name is historical; a caller that hands over a position addresses whichever
+    /// tab owns that number as an id, which diverges the moment a tab closes.
     fn check_tab_can_be_warped(
         &mut self,
         tab_index: Option<usize>,
