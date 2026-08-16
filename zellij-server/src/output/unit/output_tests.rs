@@ -1055,7 +1055,7 @@ fn test_output_buffer_update_line() {
     buffer.update_line(5);
 
     assert!(
-        buffer.changed_lines.contains(&5),
+        buffer.changed_lines.contains(5),
         "Changed lines should contain line 5"
     );
 }
