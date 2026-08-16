@@ -119,6 +119,13 @@ xflags::xflags! {
             repeated args: OsString
         }
 
+        /// Run the render throughput benchmarks
+        cmd bench {
+            /// Arguments to pass to criterion (e.g. `--save-baseline main`, `--sample-size 20`,
+            /// or a bare filter like `frame/plain_text`)
+            repeated args: OsString
+        }
+
         /// Build the application and all plugins
         cmd build {
             /// Build in release mode without debug symbols
@@ -157,6 +164,7 @@ pub enum XtaskCmd {
     Format(Format),
     Test(Test),
     IntegrationTest(IntegrationTest),
+    Bench(Bench),
     Build(Build),
 }
 
@@ -256,6 +264,11 @@ pub struct IntegrationTest {
 
     pub no_opt: bool,
     pub serial: bool,
+}
+
+#[derive(Debug)]
+pub struct Bench {
+    pub args: Vec<OsString>,
 }
 
 #[derive(Debug)]
