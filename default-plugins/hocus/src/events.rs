@@ -338,7 +338,7 @@ impl State {
         // The last round of the budget goes out without tools, so the model has
         // to answer from what it already collected instead of dead-ending on the
         // cap with nothing to show the user.
-        let allow_tools = self.tool_rounds < MAX_TOOL_ROUNDS;
+        let allow_tools = self.tool_rounds < self.max_tool_rounds();
         if !allow_tools {
             self.messages.push(Message::notice(
                 "tool budget spent — answering without tools",

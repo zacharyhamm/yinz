@@ -18,6 +18,10 @@ pub const DEFAULT_API_KEY_ENV: &str = "OPENAI_API_KEY";
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
 /// Bare name, so an installed dobbs is found on PATH without configuration.
 pub const DEFAULT_DOBBS: &str = "dobbs";
+/// How many times in a row the model may call tools before the tools are taken
+/// away and it has to answer from what it has. Without this a model that keeps
+/// re-listing panes bills the user forever.
+pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
@@ -57,6 +61,10 @@ pub struct Config {
     /// at arbitrary endpoints and plenty of local models fail outright when sent
     /// a `tools` array, so it needs an off switch.
     pub tools: bool,
+    /// Consecutive tool-call rounds allowed in one exchange before the tools are
+    /// withheld. Tunable because how far a turn has to reach varies with the
+    /// model and the work.
+    pub max_tool_rounds: usize,
 }
 
 /// A config problem, carrying enough context to render a useful banner.
@@ -102,6 +110,13 @@ impl Config {
         // silently disable them.
         let tools =
             !non_empty(kdl, "tools").is_some_and(|value| value.eq_ignore_ascii_case("false"));
+        // Same stance as `tools`: a typo or a nonsense value falls back to the
+        // default rather than crippling the tool loop. Zero is nonsense too —
+        // it would take the tools away before the first round.
+        let max_tool_rounds = non_empty(kdl, "max_tool_rounds")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|rounds| *rounds > 0)
+            .unwrap_or(DEFAULT_MAX_TOOL_ROUNDS);
 
         match non_empty(env, &api_key_env) {
             Some(api_key) => Ok(Config {
@@ -116,6 +131,7 @@ impl Config {
                 dobbs_token,
                 system_prompt,
                 tools,
+                max_tool_rounds,
             }),
             // The environment we see is the one captured when the *session*
             // started, so "I exported it after launching zellij" is by far the
@@ -729,6 +745,7 @@ mod tests {
             system_prompt: None,
             // Off in most fixtures so the assertions can compare whole bodies.
             tools: false,
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
         }
     }
 
@@ -940,6 +957,32 @@ mod tests {
                 .unwrap()
                 .tools
         );
+    }
+
+    #[test]
+    fn resolve_reads_the_tool_budget_from_kdl_only() {
+        let env = map(&[("OPENAI_API_KEY", "sk-1")]);
+        assert_eq!(
+            Config::resolve(&map(&[("max_tool_rounds", "8")]), &env)
+                .unwrap()
+                .max_tool_rounds,
+            8
+        );
+        // Absent, blank, unparseable, or zero: all fall back rather than leave
+        // the tool loop uncapped or capped at nothing.
+        for kdl in [
+            map(&[]),
+            map(&[("max_tool_rounds", "  ")]),
+            map(&[("max_tool_rounds", "lots")]),
+            map(&[("max_tool_rounds", "-1")]),
+            map(&[("max_tool_rounds", "0")]),
+        ] {
+            assert_eq!(
+                Config::resolve(&kdl, &env).unwrap().max_tool_rounds,
+                DEFAULT_MAX_TOOL_ROUNDS,
+                "{kdl:?}"
+            );
+        }
     }
 
     #[test]
