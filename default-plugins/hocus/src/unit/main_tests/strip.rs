@@ -9,7 +9,7 @@ fn the_strip_groups_agents_under_their_headers() {
 
     assert_eq!(
         agent_entry_texts(&state),
-        ["no project", "  no branch", "  3  codex  running"]
+        ["no project", "  no branch", "    3  codex  running"]
     );
     assert!(matches!(
         state.current_strip().rows[2],
@@ -30,9 +30,9 @@ fn worktree_agents_group_under_their_branch_headers() {
         [
             "no project",
             "  main",
-            "  3  codex  running  tab 1",
+            "    3  codex  running  tab 1",
             "  topic",
-            "  5  codex  running  tab 2",
+            "    5  codex  running  tab 2",
         ]
     );
 }
@@ -54,9 +54,9 @@ fn a_snapshot_rebuilds_the_strip() {
         [
             "no project",
             "  topic",
-            "  5  codex  running  tab 2",
+            "    5  codex  running  tab 2",
             "  zzz",
-            "  3  codex  running  tab 1",
+            "    3  codex  running  tab 1",
         ]
     );
 }
@@ -103,6 +103,57 @@ fn the_strip_carries_the_focused_pane_agent_or_not() {
     poll_focused(&mut state, panes.clone(), Some(4));
     assert_eq!(state.last_strip.focused, Some(4));
     assert_eq!(state.last_focused_agent, Some(7));
+}
+
+/// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 -
+/// with `focused` focused and pane 3 holding a summary made `polls` polls ago.
+fn state_with_summary(focused: Option<u32>, polls: u32) -> State {
+    let mut state = state_with_panes();
+    state.focused_pane = focused;
+    state.activity = agents::Activity::from([(3, (11, polls))]);
+    state.summaries = agents::Summaries::from([(
+        3,
+        agents::Summary {
+            text: "Ran the tests.".to_owned(),
+            title: "running the tests".to_owned(),
+            awaiting: true,
+            hash: 11,
+        },
+    )]);
+    state
+}
+
+/// The inset is a note about the pane the user is standing in, so it is the
+/// raw focus that gates it and not the sticky `last_focused_agent`.
+#[test]
+fn the_focused_agents_summary_is_what_the_inset_draws() {
+    let state = state_with_summary(Some(3), 2);
+    let (pane_id, kind, summary) = state.focused_summary().expect("an idle focused agent");
+    assert_eq!((pane_id, kind), (3, "codex"));
+    assert_eq!(summary.text, "Ran the tests.");
+    assert_eq!(state.inset_key(), Some((3, 11, true)));
+}
+
+/// A summary outlives the moment it describes. The same idleness gate the
+/// strip's `!` marker applies, so the two cannot disagree about an agent that
+/// has gone back to work.
+#[test]
+fn an_agent_back_at_work_is_not_drawn_with_what_it_used_to_be_doing() {
+    let state = state_with_summary(Some(3), 0);
+    assert!(state.focused_summary().is_none());
+    assert_eq!(state.inset_key(), None);
+}
+
+#[test]
+fn nothing_is_drawn_for_a_pane_that_is_no_agent_or_no_pane_at_all() {
+    // A shell, with the agent's summary still in the map beside it.
+    assert!(state_with_summary(Some(4), 2).focused_summary().is_none());
+    // Focus on hocus itself, which the daemon reports as no focused pane.
+    assert!(state_with_summary(None, 2).focused_summary().is_none());
+    // An agent the daemon has never had an answer about.
+    let mut state = state_with_summary(Some(3), 2);
+    state.summaries.clear();
+    assert!(state.focused_summary().is_none());
 }
 
 /// A push is owed for a focus change alone. Walking from one agent to

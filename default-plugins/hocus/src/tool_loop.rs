@@ -1039,6 +1039,7 @@ impl State {
             &self.activity,
             &self.pane_projects(),
             &self.pane_branches(),
+            &self.summaries,
             read_pane_text,
         )
     }
@@ -1187,14 +1188,48 @@ impl State {
         })
     }
 
+    /// The agent the user is looking at and what the daemon last made of it, for the
+    /// inset drawn over the transcript.
+    ///
+    /// `None` for anything that is not an idle agent with something to say. The idleness
+    /// gate is the one `waiting_marker` and `list_json` apply: a summary outlives the
+    /// moment it describes, so an agent that has gone back to work must not be drawn
+    /// with an account of what it was doing before. `focused_pane` is itself `None`
+    /// whenever hocus is the focused pane - the daemon only reports terminal panes - so
+    /// this closes as soon as the user comes here to type.
+    pub(crate) fn focused_summary(&self) -> Option<(u32, &str, &agents::Summary)> {
+        let pane_id = self.focused_pane?;
+        let summary = self.summaries.get(&pane_id)?;
+        let idle = self
+            .activity
+            .get(&pane_id)
+            .is_some_and(|(_, polls)| *polls > 0);
+        if !idle {
+            return None;
+        }
+        let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+        let (kind, _) = agents::classify(pane, &self.manual_kinds)?;
+        Some((pane_id, kind, summary))
+    }
+
+    /// What the inset is showing, small enough to hold across a snapshot and
+    /// compare. The hash names the screen the summary was made from, so a change
+    /// here is a change on screen and nothing else is.
+    pub(crate) fn inset_key(&self) -> Option<(u32, u64, bool)> {
+        self.focused_summary()
+            .map(|(pane_id, _, summary)| (pane_id, summary.hash, summary.awaiting))
+    }
+
     /// Merge an event-fed daemon snapshot.
     pub(crate) fn apply_poll(
         &mut self,
         panes: Vec<agents::AgentPane>,
         activity: agents::Activity,
+        summaries: agents::Summaries,
         focused: Option<u32>,
     ) {
         self.activity = activity;
+        self.summaries = summaries;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
         self.focused_pane = focused;

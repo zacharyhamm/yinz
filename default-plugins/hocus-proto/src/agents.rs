@@ -231,21 +231,54 @@ pub fn classify<'a>(
         .or_else(|| pane.detected.as_deref().map(|kind| (kind, "auto")))
 }
 
-/// Fold one poll's pane content into the activity map.
+/// What one poll did to a pane's activity, for a caller that acts on how long a pane has
+/// been still rather than on the label that stillness draws.
+///
+/// The busy/idle *label* is derived on every render from the poll counter, so nothing
+/// needed this until the daemon grew a reason to act when an agent stops working.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Observed {
+    /// The pane is showing something new — the agent is working.
+    Busy,
+    /// The pane has held still for `polls` consecutive polls.
+    ///
+    /// `1` is the busy→idle edge. It is a weak signal on its own: any pause inside a turn
+    /// crosses it, so a caller that wants an agent to have *stopped* rather than merely
+    /// paused waits for a higher count.
+    Idle { polls: u32 },
+}
+
+/// Fold one poll's pane content into the activity map, and say what that did.
 ///
 /// The hash is `DefaultHasher` over the raw text: not stable across runs, never
 /// persisted, only ever compared with the previous poll's.
-pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) {
+///
+/// The first poll of a pane is [`Observed::Busy`] whatever it is showing — one reading
+/// cannot tell "working" from "sitting still", and claiming an edge here would summarise
+/// every agent the instant the daemon noticed it.
+pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) -> Observed {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     let hash = hasher.finish();
     match activity.get_mut(&pane_id) {
-        Some((last, polls)) if *last == hash => *polls += 1,
+        Some((last, polls)) if *last == hash => {
+            *polls += 1;
+            Observed::Idle { polls: *polls }
+        },
         _ => {
             activity.insert(pane_id, (hash, 0));
+            Observed::Busy
         },
     }
+}
+
+/// The content hash the activity map holds for a pane, if it has one.
+///
+/// What a summary is stamped with, so an agent that goes idle showing exactly what it was
+/// showing when it was last summarised is not summarised again.
+pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
+    activity.get(&pane_id).map(|(hash, _)| *hash)
 }
 
 /// The status column of one agent row: the plain status until activity says more,
@@ -261,6 +294,205 @@ pub fn status_cell(status: AgentStatus, activity: Option<&(u64, u32)>) -> String
         0 => "busy".to_owned(),
         seconds if seconds < 60 => "idle".to_owned(),
         seconds => format!("idle {}m", seconds / 60),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Idle summaries
+// ---------------------------------------------------------------------------
+
+/// How many lines of a pane the model is shown when summarising an idle agent.
+///
+/// Far more than a `preview`: this has to cover the last exchange, not merely say what is
+/// on screen, and it is paid for once per busy→idle edge rather than on every `agent_list`.
+pub const SUMMARY_LINES: usize = 120;
+/// The hard ceiling on one summary request, whatever those lines hold.
+pub const SUMMARY_CHARS: usize = 6000;
+/// The longest summary worth storing. A model told to be brief occasionally is not, and a
+/// row of the agent list has nowhere to put an essay.
+const SUMMARY_TEXT_CHARS: usize = 400;
+/// The longest title worth keeping. A pane name has a frame to fit in, and a model asked
+/// for four words occasionally writes a sentence.
+const SUMMARY_TITLE_CHARS: usize = 40;
+/// Below this there is nothing to summarise — a pane that has only drawn a prompt.
+const SUMMARY_MIN_CHARS: usize = 40;
+
+const SUMMARY_SYSTEM_PROMPT: &str = "You are watching one terminal pane in which a coding \
+agent is running. You will be shown the tail of that pane. Reply with a single JSON object \
+and nothing else - no prose, no markdown, no code fences. The object has exactly three \
+keys: \"summary\", one or two plain sentences describing the current state of the session \
+and what was last done; \"awaiting\", true only if the agent has stopped and is waiting for \
+the user to answer a question or confirm an action it proposed, false if it merely finished \
+its work; and \"title\", at most four words naming the task the agent is working on, with \
+no trailing punctuation, to be used as the name of the pane. A completed task is not \
+awaiting. A permission prompt, a yes/no question, or a menu of choices is awaiting.";
+
+/// What the model said about an idle agent's pane.
+///
+/// Held in memory by `hocus-agentd` and shipped in its snapshot. `awaiting` is the strip's
+/// `!` marker, `text` is the inset hocus draws over its transcript, and `title` is what the
+/// daemon renames the pane to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Summary {
+    pub text: String,
+    /// A few words naming the task, for the pane's name.
+    ///
+    /// Empty when the model did not answer with one — a summary is worth keeping without a
+    /// title, and the rename is simply skipped. See [`rename_title`].
+    #[serde(default)]
+    pub title: String,
+    /// Whether the agent is blocked on the user rather than merely finished.
+    #[serde(default)]
+    pub awaiting: bool,
+    /// The activity hash the pane held when this was made.
+    ///
+    /// An agent that goes idle showing exactly what it showed last time it was summarised
+    /// has nothing new to say, so this is what makes the repeat free rather than another
+    /// request. Not stable across runs, and never persisted — the same contract as the
+    /// hash in [`Activity`], which is where it comes from.
+    #[serde(default)]
+    pub hash: u64,
+}
+
+/// Pane id → what the model last said about it.
+pub type Summaries = BTreeMap<u32, Summary>;
+
+/// The name to give the pane this summary describes, or `None` when there is none worth
+/// giving. One rule, so the daemon and its tests cannot disagree about what an empty title
+/// means.
+pub fn rename_title(summary: &Summary) -> Option<&str> {
+    let title = summary.title.trim();
+    (!title.is_empty()).then_some(title)
+}
+
+/// Whether a pane holds enough to be worth asking about.
+pub fn worth_summarizing(text: &str) -> bool {
+    text.trim().chars().count() >= SUMMARY_MIN_CHARS
+}
+
+/// The body of one non-streaming completion asking what an idle agent is doing.
+///
+/// Deliberately carries no `temperature` and no `max_tokens`: providers disagree about
+/// both — newer OpenAI models reject a `temperature` that is not 1 and want
+/// `max_completion_tokens` instead of `max_tokens` — and a rejected request buys nothing
+/// over a slightly long answer that [`parse_summary`] caps anyway.
+pub fn summary_request_body(
+    model: &str,
+    kind: &str,
+    cwd: Option<&str>,
+    branch: Option<&str>,
+    tail: &str,
+) -> Vec<u8> {
+    let mut header = format!("Agent: {kind}.");
+    if let Some(cwd) = cwd {
+        header.push_str(&format!(" Folder: {cwd}."));
+    }
+    if let Some(branch) = branch {
+        header.push_str(&format!(" Branch: {branch}."));
+    }
+    let body = json!({
+        "model": model,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": SUMMARY_SYSTEM_PROMPT },
+            { "role": "user", "content": format!("{header}\n\n--- pane ---\n{tail}") },
+        ],
+    });
+    serde_json::to_vec(&body).expect("serializing a summary request cannot fail")
+}
+
+/// The `{...}` a model wrapped in fences, prose, or both.
+///
+/// Scanned rather than trimmed because every provider decorates differently, and a model
+/// told "no markdown" still sometimes writes ```json. Brace-counting, skipping over string
+/// literals so a `}` inside the summary text cannot end the object early.
+fn first_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, c) in text[start..].char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {},
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..start + offset + c.len_utf8()]);
+                }
+            },
+            _ => {},
+        }
+    }
+    None
+}
+
+/// What the model answered, or `None` when it answered nothing usable.
+///
+/// `None` is an ordinary outcome for a background caller: no summary is stored, the flag
+/// stays as it was, and the next idle edge asks again.
+pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
+    /// One string key, trimmed, stripped of control characters the way `tail` strips
+    /// them, and capped. Empty for a key the model left out.
+    fn field(object: &Value, key: &str, cap: usize) -> String {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            // Same convention as `tail`: a control character is not content.
+            .filter(|c| !c.is_control())
+            .take(cap)
+            .collect()
+    }
+
+    let response: Value = serde_json::from_slice(body).ok()?;
+    let content = response.pointer("/choices/0/message/content")?.as_str()?;
+    let object: Value = serde_json::from_str(first_json_object(content)?).ok()?;
+    let text = field(&object, "summary", SUMMARY_TEXT_CHARS);
+    if text.is_empty() {
+        return None;
+    }
+    Some(Summary {
+        text,
+        // Not required: a summary without a title is still worth drawing, and only the
+        // rename goes without.
+        title: field(&object, "title", SUMMARY_TITLE_CHARS),
+        // Absent means false: a model that forgot the key has not claimed the agent is
+        // blocked, and a spurious flag is worse than a missing one.
+        awaiting: object
+            .get("awaiting")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        hash,
+    })
+}
+
+/// The marker column at the head of an agent row.
+///
+/// Two characters whether or not anything is waiting, so the list does not shift sideways
+/// as agents start and stop asking. `!` is the only thing drawn today; the summary text
+/// behind it is carried but not yet shown.
+///
+/// Gated on the pane being idle as well as on the answer, because a summary outlives the
+/// moment it describes: it is deliberately kept while the agent works again — that is what
+/// lets an agent returning to the same screen be free rather than another request — and an
+/// agent that is working is not waiting on anybody, whatever it was waiting on before.
+fn waiting_marker(summaries: &Summaries, activity: &Activity, pane_id: u32) -> &'static str {
+    let idle = activity.get(&pane_id).is_some_and(|(_, polls)| *polls > 0);
+    match idle && summaries.get(&pane_id).is_some_and(|s| s.awaiting) {
+        true => "! ",
+        false => "  ",
     }
 }
 
@@ -320,6 +552,7 @@ pub fn strip_rows(
     activity: &Activity,
     owners: &BTreeMap<u32, String>,
     branches: &BTreeMap<u32, String>,
+    summaries: &Summaries,
 ) -> Vec<StripRow> {
     let mut agents: Vec<(Option<&str>, Option<&str>, u32, String)> = panes
         .iter()
@@ -334,7 +567,8 @@ pub fn strip_rows(
                 None => kind.to_owned(),
             };
             let mut row = format!(
-                "{:>3}  {kind_cell}  {}",
+                "{}{:>3}  {kind_cell}  {}",
+                waiting_marker(summaries, activity, pane.pane_id),
                 pane.pane_id,
                 status_cell(pane.status, activity.get(&pane.pane_id))
             );
@@ -521,15 +755,25 @@ pub fn mention_candidates(panes: &[AgentPane], manual: &BTreeMap<u32, String>) -
 /// rather than escaped — they are cursor moves it cannot act on, and every one of them
 /// is paid for on every subsequent turn.
 pub fn preview(text: &str) -> String {
-    let mut lines: Vec<&str> = text.lines().collect();
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
+    tail(text, PREVIEW_LINES, PREVIEW_CHARS)
+}
+
+/// The last `lines` lines of `text`, capped at `chars`.
+///
+/// The body of [`preview`], taken apart when the idle summary wanted a bigger cut of the
+/// same pane under the same rules — one place that knows a viewport read is mostly empty
+/// below the prompt, and that a control character is a cursor move nobody downstream can
+/// act on.
+pub fn tail(text: &str, lines: usize, chars: usize) -> String {
+    let mut kept: Vec<&str> = text.lines().collect();
+    while kept.last().is_some_and(|line| line.trim().is_empty()) {
+        kept.pop();
     }
-    lines[lines.len().saturating_sub(PREVIEW_LINES)..]
+    kept[kept.len().saturating_sub(lines)..]
         .join("\n")
         .chars()
         .filter(|c| *c == '\n' || !c.is_control())
-        .take(PREVIEW_CHARS)
+        .take(chars)
         .collect()
 }
 
@@ -544,6 +788,7 @@ pub fn list_json(
     activity: &Activity,
     owners: &BTreeMap<u32, String>,
     branches: &BTreeMap<u32, String>,
+    summaries: &Summaries,
     mut read: impl FnMut(u32) -> String,
 ) -> String {
     let items: Vec<Value> = panes
@@ -582,6 +827,19 @@ pub fn list_json(
             // detached HEAD.
             if let Some(branch) = branches.get(&pane.pane_id) {
                 item["branch"] = json!(branch);
+            }
+            // What the daemon last made of this agent's pane, so the model sees the same
+            // thing the strip draws. Absent until an agent has gone idle at least once.
+            if let Some(summary) = summaries.get(&pane.pane_id) {
+                item["summary"] = json!(summary.text);
+                // Gated on idleness exactly as the strip's marker is, so the model and the
+                // list cannot disagree about who is blocked. See `waiting_marker`.
+                item["awaiting_confirmation"] = json!(
+                    summary.awaiting
+                        && activity
+                            .get(&pane.pane_id)
+                            .is_some_and(|(_, polls)| *polls > 0)
+                );
             }
             Some(item)
         })
@@ -640,11 +898,38 @@ mod tests {
         StripRow::Branch(format!("  {name}"))
     }
 
+    /// An agent row with nothing waiting on the user - the blank marker column every row
+    /// carries, spelled once here rather than as two leading spaces in every expectation.
     fn agent(pane_id: u32, text: &str) -> StripRow {
         StripRow::Agent {
             pane_id,
-            text: text.to_owned(),
+            text: format!("  {text}"),
         }
+    }
+
+    /// An agent row the model said is blocked on a confirmation.
+    fn waiting(pane_id: u32, text: &str) -> StripRow {
+        StripRow::Agent {
+            pane_id,
+            text: format!("! {text}"),
+        }
+    }
+
+    fn summaries(pairs: &[(u32, bool)]) -> Summaries {
+        pairs
+            .iter()
+            .map(|(pane_id, awaiting)| {
+                (
+                    *pane_id,
+                    Summary {
+                        text: "did a thing".to_owned(),
+                        title: "a thing".to_owned(),
+                        awaiting: *awaiting,
+                        hash: 1,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// The case that made the dash rule earn its place: an installer that puts a
@@ -853,6 +1138,290 @@ mod tests {
         assert_eq!(activity[&3].1, 0);
     }
 
+    /// What the daemon debounces on. Each poll of a stretch of stillness reports its own
+    /// count, so a caller can pick the length of stillness it acts at and hit it exactly
+    /// once — and a new screen restarts the count from one.
+    #[test]
+    fn observe_counts_the_polls_of_each_stretch_of_stillness() {
+        let mut activity = Activity::new();
+        // A first sighting cannot tell "working" from "sitting still", so it is not idle.
+        assert_eq!(observe(&mut activity, 3, "working"), Observed::Busy);
+        for polls in 1..=4 {
+            assert_eq!(
+                observe(&mut activity, 3, "working"),
+                Observed::Idle { polls }
+            );
+        }
+
+        // Back to work, then still again: a second stretch counts from the start.
+        assert_eq!(observe(&mut activity, 3, "more"), Observed::Busy);
+        assert_eq!(
+            observe(&mut activity, 3, "more"),
+            Observed::Idle { polls: 1 }
+        );
+    }
+
+    #[test]
+    fn activity_hash_is_the_hash_the_poll_recorded() {
+        let mut activity = Activity::new();
+        assert_eq!(activity_hash(&activity, 3), None);
+        observe(&mut activity, 3, "working");
+        let first = activity_hash(&activity, 3).expect("recorded");
+        observe(&mut activity, 3, "working");
+        assert_eq!(
+            activity_hash(&activity, 3),
+            Some(first),
+            "same text, same hash"
+        );
+        observe(&mut activity, 3, "done");
+        assert_ne!(activity_hash(&activity, 3), Some(first));
+    }
+
+    /// One trimmer for the preview and the summary, so they cannot disagree about what a
+    /// pane's tail is.
+    #[test]
+    fn tail_is_the_body_preview_is_built_from() {
+        let text = (1..=200).fold(String::new(), |mut all, line| {
+            all.push_str(&format!("line {line}\n"));
+            all
+        });
+        assert_eq!(preview(&text), tail(&text, PREVIEW_LINES, PREVIEW_CHARS));
+
+        let big = tail(&text, SUMMARY_LINES, SUMMARY_CHARS);
+        assert_eq!(big.lines().count(), SUMMARY_LINES);
+        assert!(big.starts_with("line 81\n"), "{big:.20}");
+        assert!(big.ends_with("line 200"));
+    }
+
+    #[test]
+    fn only_a_pane_with_something_on_it_is_worth_asking_about() {
+        assert!(!worth_summarizing(""));
+        assert!(!worth_summarizing("   \n \n "));
+        assert!(!worth_summarizing("$ "));
+        assert!(worth_summarizing(&"x".repeat(SUMMARY_MIN_CHARS)));
+    }
+
+    /// The request the daemon sends. `stream` must be false - the daemon reads a buffered
+    /// body and has no SSE parser - and neither `temperature` nor `max_tokens` may appear,
+    /// since providers reject them inconsistently.
+    #[test]
+    fn a_summary_request_is_buffered_and_carries_no_contested_knobs() {
+        let body = summary_request_body(
+            "gpt-4o-mini",
+            "claude",
+            Some("/work/hocus"),
+            Some("topic"),
+            "waiting for you",
+        );
+        let value: Value = serde_json::from_slice(&body).expect("valid json");
+        assert_eq!(value["model"], "gpt-4o-mini");
+        assert_eq!(value["stream"], false);
+        assert!(value.get("temperature").is_none());
+        assert!(value.get("max_tokens").is_none());
+        assert_eq!(value["messages"][0]["role"], "system");
+        let user = value["messages"][1]["content"]
+            .as_str()
+            .expect("a user turn");
+        assert!(user.contains("Agent: claude."), "{user}");
+        assert!(user.contains("Folder: /work/hocus."), "{user}");
+        assert!(user.contains("Branch: topic."), "{user}");
+        assert!(user.contains("waiting for you"), "{user}");
+
+        // A pane with no folder simply says less, rather than saying "None".
+        let bare = summary_request_body("m", "codex", None, None, "hi");
+        let value: Value = serde_json::from_slice(&bare).expect("valid json");
+        let user = value["messages"][1]["content"].as_str().unwrap();
+        assert!(!user.contains("Folder"), "{user}");
+        assert!(!user.contains("Branch"), "{user}");
+    }
+
+    /// A completion whose content is `content`, as the provider would frame it.
+    fn completion(content: &str) -> Vec<u8> {
+        json!({ "choices": [{ "message": { "content": content } }] })
+            .to_string()
+            .into_bytes()
+    }
+
+    #[test]
+    fn parse_summary_reads_a_clean_object() {
+        let summary = parse_summary(
+            &completion(r#"{"summary":"Ran the tests, all green.","awaiting":false}"#),
+            7,
+        )
+        .expect("parsed");
+        assert_eq!(summary.text, "Ran the tests, all green.");
+        assert!(!summary.awaiting);
+        assert_eq!(summary.hash, 7, "stamped with the pane it was made from");
+    }
+
+    /// Every provider decorates differently, and a model told "no markdown" still
+    /// sometimes writes a fence or a sentence of preamble.
+    #[test]
+    fn parse_summary_digs_the_object_out_of_whatever_wraps_it() {
+        for content in [
+            "```json\n{\"summary\":\"Waiting.\",\"awaiting\":true}\n```",
+            "Sure! {\"summary\":\"Waiting.\",\"awaiting\":true} Hope that helps.",
+            "```\n{\"summary\": \"Waiting.\", \"awaiting\": true}\n```",
+        ] {
+            let summary = parse_summary(&completion(content), 1).expect(content);
+            assert_eq!(summary.text, "Waiting.", "{content}");
+            assert!(summary.awaiting, "{content}");
+        }
+    }
+
+    /// A `}` inside the summary text must not end the object early, or the parse fails on
+    /// exactly the answers that talk about code.
+    #[test]
+    fn parse_summary_survives_braces_inside_the_summary() {
+        let summary = parse_summary(
+            &completion(r#"{"summary":"Closed the `if {` block \" here","awaiting":false}"#),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.text, r#"Closed the `if {` block " here"#);
+    }
+
+    /// Absent means false: a model that forgot the key has not claimed the agent is
+    /// blocked, and a spurious `!` is worse than a missing one.
+    #[test]
+    fn a_missing_awaiting_is_not_a_claim_that_the_agent_is_blocked() {
+        let summary = parse_summary(&completion(r#"{"summary":"Done."}"#), 1).expect("parsed");
+        assert!(!summary.awaiting);
+        // Nor is a non-boolean one.
+        let summary = parse_summary(&completion(r#"{"summary":"Done.","awaiting":"yes"}"#), 1)
+            .expect("parsed");
+        assert!(!summary.awaiting);
+    }
+
+    #[test]
+    fn parse_summary_refuses_what_it_cannot_use() {
+        assert!(parse_summary(b"not json at all", 1).is_none());
+        assert!(parse_summary(&completion("no object here"), 1).is_none());
+        assert!(parse_summary(&completion(r#"{"awaiting":true}"#), 1).is_none());
+        assert!(parse_summary(&completion(r#"{"summary":"   "}"#), 1).is_none());
+        assert!(parse_summary(&completion(r#"{"summary":42}"#), 1).is_none());
+        // An unterminated object is not an object.
+        assert!(parse_summary(&completion(r#"{"summary":"hi""#), 1).is_none());
+        // A well-formed error response has no content to read.
+        assert!(parse_summary(br#"{"error":{"message":"nope"}}"#, 1).is_none());
+    }
+
+    #[test]
+    fn parse_summary_reads_the_title_the_pane_is_named_after() {
+        let summary = parse_summary(
+            &completion(
+                r#"{"summary":"Ran the tests.","awaiting":false,"title":"running the tests"}"#,
+            ),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title, "running the tests");
+        assert_eq!(rename_title(&summary), Some("running the tests"));
+    }
+
+    /// A title is a nicety, a summary is the point. A model that answered only the two keys
+    /// it used to be asked for still gets its summary drawn - it simply does not rename the
+    /// pane.
+    #[test]
+    fn a_summary_without_a_title_is_still_a_summary() {
+        for content in [
+            r#"{"summary":"Done.","awaiting":false}"#,
+            r#"{"summary":"Done.","title":"   "}"#,
+            r#"{"summary":"Done.","title":42}"#,
+        ] {
+            let summary = parse_summary(&completion(content), 1).expect(content);
+            assert_eq!(summary.text, "Done.", "{content}");
+            assert_eq!(rename_title(&summary), None, "{content}");
+        }
+    }
+
+    /// The title travels the same wrapped-in-whatever path the summary does.
+    #[test]
+    fn parse_summary_digs_the_title_out_of_a_fence() {
+        let summary = parse_summary(
+            &completion("```json\n{\"summary\":\"Waiting.\",\"title\":\"fixing resize\"}\n```"),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title, "fixing resize");
+    }
+
+    #[test]
+    fn a_long_title_is_cut_to_something_a_pane_frame_could_hold() {
+        let long = "x".repeat(SUMMARY_TITLE_CHARS * 2);
+        let summary = parse_summary(
+            &completion(&json!({"summary": "Done.", "title": long}).to_string()),
+            1,
+        )
+        .expect("parsed");
+        assert_eq!(summary.title.chars().count(), SUMMARY_TITLE_CHARS);
+    }
+
+    #[test]
+    fn a_long_summary_is_cut_to_something_a_row_could_hold() {
+        let long = "x".repeat(SUMMARY_TEXT_CHARS * 2);
+        let summary = parse_summary(&completion(&json!({"summary": long}).to_string()), 1);
+        assert_eq!(
+            summary.expect("parsed").text.chars().count(),
+            SUMMARY_TEXT_CHARS
+        );
+    }
+
+    /// The marker column is always there, so the list does not shift sideways as agents
+    /// start and stop waiting - only what is *in* it changes.
+    #[test]
+    fn strip_rows_flag_only_the_agents_waiting_on_an_answer() {
+        let panes = vec![
+            pane(3, "codex", Some("codex")),
+            pane(4, "claude", Some("claude")),
+            pane(5, "aider", Some("aider")),
+        ];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            // All three idle, so nothing but the answers decides who is flagged.
+            &Activity::from([(3, (1, 2)), (4, (1, 2)), (5, (1, 2))]),
+            &owners(&[]),
+            &branches(&[]),
+            // Pane 4 is blocked; pane 3 has a summary but is merely finished; pane 5 has
+            // never gone idle and so has no summary at all.
+            &summaries(&[(3, false), (4, true)]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                project("no project"),
+                branch("no branch"),
+                agent(3, "  3  codex  idle"),
+                waiting(4, "  4  claude  idle"),
+                agent(5, "  5  aider  idle"),
+            ],
+        );
+    }
+
+    #[test]
+    fn list_json_tells_the_model_what_the_strip_draws() {
+        let json = list_json(
+            &[
+                pane(3, "codex", Some("codex")),
+                pane(4, "aider", Some("aider")),
+            ],
+            &manual(&[]),
+            &Activity::from([(3, (1, 2)), (4, (1, 2))]),
+            &owners(&[]),
+            &branches(&[]),
+            &summaries(&[(3, true)]),
+            |_| String::new(),
+        );
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value[0]["summary"], "did a thing");
+        assert_eq!(value[0]["awaiting_confirmation"], true);
+        // An agent that has never gone idle says nothing rather than saying "false".
+        assert!(value[1].get("summary").is_none());
+        assert!(value[1].get("awaiting_confirmation").is_none());
+    }
+
     #[test]
     fn status_cell_grades_a_running_agent_by_how_long_its_pane_sat_still() {
         let cell = |polls| status_cell(AgentStatus::Running, Some(&(1, polls)));
@@ -924,6 +1493,7 @@ mod tests {
             &Activity::new(),
             &owners(&[]),
             &branches(&[]),
+            &Summaries::new(),
         );
         // Nothing to group by, and the headers say so rather than going missing:
         // a row with no header above it would read as belonging to the one above
@@ -951,6 +1521,7 @@ mod tests {
             &Activity::new(),
             &owners(&[]),
             &branches(&[]),
+            &Summaries::new(),
             |_| String::new(),
         );
         let value: Value = serde_json::from_str(&json).unwrap();
@@ -977,6 +1548,7 @@ mod tests {
             &activity,
             &owners(&[]),
             &branches(&[]),
+            &Summaries::new(),
             |pane_id| {
                 reads.push(pane_id);
                 "ready".to_owned()
@@ -1007,6 +1579,7 @@ mod tests {
             &Activity::new(),
             &owners(&[(3, "hocus")]),
             &branches(&[(3, "topic")]),
+            &Summaries::new(),
             |_| String::new(),
         );
 
@@ -1029,6 +1602,7 @@ mod tests {
             &Activity::new(),
             &owners(&[(3, "pocus"), (5, "hocus")]),
             &branches(&[(3, "main"), (5, "main")]),
+            &Summaries::new(),
         );
 
         // Projects in name order with the unowned agent last, and no row
@@ -1064,6 +1638,7 @@ mod tests {
             &Activity::new(),
             &owners(&[(3, "hocus"), (4, "hocus"), (5, "hocus")]),
             &branches(&[(3, "main"), (4, "topic"), (5, "main")]),
+            &Summaries::new(),
         );
 
         assert_eq!(
@@ -1094,6 +1669,7 @@ mod tests {
             &Activity::new(),
             &owners(&[]),
             &branches(&[]),
+            &summaries(&[]),
         );
 
         assert_eq!(
@@ -1101,8 +1677,8 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "  3  claude@build-box  running"),
-                agent(4, "  4  claude  running"),
+                agent(3, "    3  claude@build-box  running"),
+                agent(4, "    4  claude  running"),
             ],
         );
     }
@@ -1121,6 +1697,7 @@ mod tests {
             &Activity::new(),
             &owners(&[]),
             &branches(&[(3, "main"), (4, "topic")]),
+            &Summaries::new(),
         );
 
         assert_eq!(
@@ -1154,6 +1731,7 @@ mod tests {
             // Pane 4's folder is in the project, but no probe has answered for
             // it yet.
             &branches(&[(3, "main")]),
+            &Summaries::new(),
         );
 
         assert_eq!(

@@ -66,6 +66,8 @@ pub use super::generated_api::api::{
         GetPaneRunningCommandPayload as ProtobufGetPaneRunningCommandPayload,
         GetPaneRunningCommandResponse as ProtobufGetPaneRunningCommandResponse,
         GetPaneScrollbackPayload,
+        GetPluginAliasConfigurationPayload as ProtobufGetPluginAliasConfigurationPayload,
+        GetPluginAliasConfigurationResponse as ProtobufGetPluginAliasConfigurationResponse,
         GetSessionEnvironmentVariablesPayload as ProtobufGetSessionEnvironmentVariablesPayload,
         GetSessionEnvironmentVariablesResponse as ProtobufGetSessionEnvironmentVariablesResponse,
         GetSessionListPayload as ProtobufGetSessionListPayload,
@@ -2610,6 +2612,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for GetSessionEnvironmentVariables"),
                 }
             },
+            Some(CommandName::GetPluginAliasConfiguration) => {
+                match protobuf_plugin_command.payload {
+                    Some(Payload::GetPluginAliasConfigurationPayload(payload)) => {
+                        Ok(PluginCommand::GetPluginAliasConfiguration(payload.alias))
+                    },
+                    _ => Err("Mismatched payload for GetPluginAliasConfiguration"),
+                }
+            },
             Some(CommandName::OpenCommandPaneInNewTab) => match protobuf_plugin_command.payload {
                 Some(Payload::OpenCommandPaneInNewTabPayload(payload)) => {
                     match payload.command_to_run {
@@ -4596,6 +4606,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 Ok(ProtobufPluginCommand {
                     name: CommandName::GetSessionEnvironmentVariables as i32,
                     payload: Some(Payload::GetSessionEnvironmentVariablesPayload(payload)),
+                })
+            },
+            PluginCommand::GetPluginAliasConfiguration(alias) => {
+                let payload = ProtobufGetPluginAliasConfigurationPayload { alias };
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::GetPluginAliasConfiguration as i32,
+                    payload: Some(Payload::GetPluginAliasConfigurationPayload(payload)),
                 })
             },
             PluginCommand::OpenCommandPaneInNewTab(command_to_run, context) => {
