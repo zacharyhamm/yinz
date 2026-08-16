@@ -22,6 +22,11 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     )
     .context(err_context)?;
 
+    // Every phase runs even if an earlier one fails, so that one broken crate can't hide the
+    // results of every crate after it. Failures are collected here and reported together at the
+    // end, where they still produce a non-zero exit.
+    let mut failed: Vec<String> = Vec::new();
+
     // Test all plugins in a single invocation so Cargo unifies features and compiles
     // shared crates (e.g. zellij-utils) only once, mirroring how plugins are built.
     {
@@ -41,10 +46,9 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
             for name in &plugin_names {
                 cmd = cmd.args(["-p", name]);
             }
-            cmd.arg("--")
-                .args(&flags.args)
-                .run()
-                .context("Failed to run plugin tests")?;
+            if cmd.arg("--").args(&flags.args).run().is_err() {
+                failed.push("plugins".to_string());
+            }
         }
     }
 
@@ -82,9 +86,17 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
             cmd!(sh, "{cargo} test --all-features --")
         };
 
-        cmd.args(&flags.args)
-            .run()
-            .with_context(|| format!("Failed to run tests for '{}'", crate_name))?;
+        if cmd.args(&flags.args).run().is_err() {
+            failed.push(crate_name.to_string());
+        }
+    }
+
+    if !failed.is_empty() {
+        println!();
+        let msg = format!(">> Test failures in: {}", failed.join(", "));
+        crate::status(&msg);
+        println!("{}", msg);
+        return Err(anyhow!("tests failed in: {}", failed.join(", "))).context(err_context);
     }
     Ok(())
 }
