@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
     // Plugin A subscribes to ModeUpdate only (legacy behavior — receives full keybinds)
     // Plugin B subscribes to InitialKeybinds + ModeUpdate (receives stripped keybinds)
@@ -181,7 +181,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());

@@ -3,6 +3,7 @@ use crate::screen::ScreenInstruction;
 use crate::{channels::SenderWithContext, thread_bus::Bus, ServerInstruction};
 use insta::assert_snapshot;
 use lazy_static::lazy_static;
+use serial_test::serial;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -28,6 +29,35 @@ use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::input::plugins::PluginAliases;
 use zellij_utils::pane_size::Size;
 
+/// How long a fake screen thread waits for the next event before declaring the test stuck.
+///
+/// Generous, because these tests compile and instantiate a real wasm plugin — the point is only to
+/// bound the wait, not to police it.
+const FAKE_SCREEN_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Receives the next event for a fake screen thread, panicking rather than blocking forever.
+///
+/// The fake screen threads below loop until they have counted N exit events and are then `join`ed
+/// by the test. If the plugin never loads, that event never arrives and the whole test binary
+/// hangs with no output. Bounding the wait turns such a failure into an ordinary, diagnosable test
+/// failure.
+fn recv_from_fake_screen<T>(
+    receiver: &Receiver<(T, ErrorContext)>,
+    exit_events_seen: impl std::fmt::Display,
+    exit_events_expected: impl std::fmt::Display,
+) -> (T, ErrorContext) {
+    receiver
+        .recv_timeout(FAKE_SCREEN_RECV_TIMEOUT)
+        .unwrap_or_else(|err| {
+            panic!(
+                "fake screen thread waited {:?} for the next event and gave up ({err}). It had \
+                 seen {exit_events_seen} of {exit_events_expected} expected exit events. This \
+                 usually means the plugin never loaded — fixture in use: {}",
+                FAKE_SCREEN_RECV_TIMEOUT, &*PLUGIN_FIXTURE
+            )
+        })
+}
+
 macro_rules! log_actions_in_thread {
     ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr ) => {
         std::thread::Builder::new()
@@ -36,9 +66,8 @@ macro_rules! log_actions_in_thread {
                 let log = $arc_mutex_log.clone();
                 let mut exit_event_count = 0;
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
@@ -65,9 +94,8 @@ macro_rules! log_actions_in_thread_struct {
                 let log = $arc_mutex_log.clone();
                 let mut exit_event_count = 0;
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event { .. } => {
                             exit_event_count += 1;
@@ -96,9 +124,8 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                 let cache_path = $cache_path.clone();
                 let plugin_thread_sender = $plugin_thread_sender.clone();
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
@@ -150,9 +177,8 @@ macro_rules! deny_permissions_and_log_actions_in_thread {
                 let cache_path = $cache_path.clone();
                 let plugin_thread_sender = $plugin_thread_sender.clone();
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
@@ -193,9 +219,8 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                 let cache_path = $cache_path.clone();
                 let plugin_thread_sender = $plugin_thread_sender.clone();
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event => {
                             exit_event_count += 1;
@@ -247,9 +272,8 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                 let cache_path = $cache_path.clone();
                 let plugin_thread_sender = $plugin_thread_sender.clone();
                 move || loop {
-                    let (event, _err_ctx) = $receiver
-                        .recv()
-                        .expect("failed to receive event on channel");
+                    let (event, _err_ctx) =
+                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
                     match event {
                         $exit_event { .. } => {
                             exit_event_count += 1;
@@ -355,13 +379,7 @@ fn create_plugin_thread(
     let mut plugin_aliases = PluginAliases::default();
     plugin_aliases.aliases.insert(
         "fixture_plugin_for_tests".to_owned(),
-        RunPlugin::from_url(&format!(
-            "file:{}/../target/e2e-data/plugins/fixture-plugin-for-tests.wasm",
-            std::env::var_os("CARGO_MANIFEST_DIR")
-                .unwrap()
-                .to_string_lossy()
-        ))
-        .unwrap(),
+        RunPlugin::from_url(&format!("file:{}", &*PLUGIN_FIXTURE)).unwrap(),
     );
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
@@ -670,15 +688,42 @@ fn create_plugin_thread_with_background_jobs_receiver(
     )
 }
 
+/// Locates the fixture plugin's wasm blob.
+///
+/// Prefers the debug artifact, which `cargo x test` guarantees is present and fresh because it
+/// builds the plugins before running any tests. Falls back to the checked-in asset so that a bare
+/// `cargo test -p zellij-server` works too, at the cost of the blob being as old as the last
+/// `cargo x assets`.
+fn plugin_fixture_path() -> PathBuf {
+    let repo_root = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
+    )
+    .join("..");
+
+    let candidates = [
+        repo_root.join("target/wasm32-wasip1/debug/fixture-plugin-for-tests.wasm"),
+        repo_root.join("zellij-utils/assets/plugins/fixture-plugin-for-tests.wasm"),
+    ];
+
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "could not find the fixture plugin. Run `cargo x build -p` to build the plugins. \
+                 Looked in:\n  {}",
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            )
+        })
+}
+
 lazy_static! {
-    static ref PLUGIN_FIXTURE: String = format!(
-        // to populate this file, make sure to run the build-e2e CI job
-        // (or compile the fixture plugin and copy the resulting .wasm blob to the below location)
-        "{}/../target/e2e-data/plugins/fixture-plugin-for-tests.wasm",
-        std::env::var_os("CARGO_MANIFEST_DIR")
-            .unwrap()
-            .to_string_lossy()
-    );
+    static ref PLUGIN_FIXTURE: String = plugin_fixture_path().display().to_string();
 }
 
 // =====================================================================

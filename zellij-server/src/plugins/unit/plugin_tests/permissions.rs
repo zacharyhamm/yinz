@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn send_configuration_to_plugins() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
@@ -90,7 +90,7 @@ pub fn send_configuration_to_plugins() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn request_plugin_permissions() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -161,7 +161,7 @@ pub fn request_plugin_permissions() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn granted_permission_request_result() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -258,7 +258,7 @@ pub fn granted_permission_request_result() {
 }
 
 #[test]
-#[ignore]
+#[serial(plugin_tests)]
 pub fn denied_permission_request_result() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
