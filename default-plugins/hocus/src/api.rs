@@ -11,9 +11,13 @@ use std::collections::BTreeMap;
 use crate::tools::{self, ToolCall};
 use crate::{Message, Role};
 
-pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
-pub const DEFAULT_API_KEY_ENV: &str = "OPENAI_API_KEY";
+// Endpoint shaping lives in hocus-proto so hocus-agentd, which calls the same endpoint to
+// summarise an idle agent, cannot disagree with us about where it is. Re-exported rather
+// than re-implemented: every call site here already spells them unqualified.
+pub use hocus_proto::llm::{
+    api_error_message, completions_url, models_url, non_empty, DEFAULT_API_KEY_ENV,
+    DEFAULT_BASE_URL, DEFAULT_MODEL,
+};
 /// SearxNG's own docker-compose default port.
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
 /// Bare name, so an installed dobbs is found on PATH without configuration.
@@ -176,55 +180,6 @@ fn expand_home(path: &str, env: &BTreeMap<String, String>) -> String {
     }
 }
 
-/// Look up a key, treating whitespace-only values as absent. An exported-but-
-/// empty `OPENAI_API_KEY` should produce the config banner, not an
-/// `Authorization: Bearer ` header that fails confusingly at the API.
-fn non_empty(map: &BTreeMap<String, String>, key: &str) -> Option<String> {
-    map.get(key)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
-/// Accept whatever shape of base URL the user has lying around.
-///
-/// ```text
-/// https://api.openai.com/v1         -> https://api.openai.com/v1/chat/completions
-/// https://api.openai.com/v1/        -> https://api.openai.com/v1/chat/completions
-/// https://host/v1/chat/completions  -> unchanged
-/// http://localhost:11434            -> http://localhost:11434/v1/chat/completions
-/// ```
-pub fn completions_url(base: &str) -> String {
-    let base = base.trim().trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        base.to_owned()
-    } else if base.ends_with("/v1") {
-        format!("{base}/chat/completions")
-    } else {
-        format!("{base}/v1/chat/completions")
-    }
-}
-
-/// The model list that sits beside the completions endpoint. Same four shapes of
-/// base URL as `completions_url`, since it is the same `base_url` setting.
-///
-/// ```text
-/// https://api.openai.com/v1         -> https://api.openai.com/v1/models
-/// https://api.openai.com/v1/        -> https://api.openai.com/v1/models
-/// https://host/v1/chat/completions  -> https://host/v1/models
-/// http://localhost:11434            -> http://localhost:11434/v1/models
-/// ```
-pub fn models_url(base: &str) -> String {
-    let base = base.trim().trim_end_matches('/');
-    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
-    let base = base.trim_end_matches('/');
-    if base.ends_with("/v1") {
-        format!("{base}/models")
-    } else {
-        format!("{base}/v1/models")
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Request construction
 // ---------------------------------------------------------------------------
@@ -353,25 +308,6 @@ fn tool_call_json(call: &ToolCall) -> serde_json::Value {
             "arguments": if valid { call.arguments.as_str() } else { "{}" },
         },
     })
-}
-
-/// Best-effort human-readable message from a non-2xx response body.
-pub fn api_error_message(status: u16, body: &[u8]) -> String {
-    let text = String::from_utf8_lossy(body);
-    let detail = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| {
-            v.pointer("/error/message")
-                .and_then(|m| m.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| text.trim().chars().take(500).collect());
-
-    if detail.trim().is_empty() {
-        format!("HTTP {status}")
-    } else {
-        format!("HTTP {status}: {detail}")
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -294,6 +294,20 @@ plugins {
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="zellij:file-finder"
+    // Keys here configure the OpenAI-compatible endpoint for the whole of hocus:
+    // `base_url`, `model`, and `api_key_env` (the *name* of the variable holding the
+    // key - never the key itself, which belongs in the environment the session is
+    // started from). See the plugin's own docs for `system_prompt`, `tools`,
+    // `max_tool_rounds`, `search_url` and the `dobbs_*` keys.
+    //
+    // hocus-agentd reads this same block - not its own - for the idle summaries it
+    // makes, so the endpoint is configured once:
+    //
+    //   summaries      "false" switches off the summary hocus-agentd asks for each
+    //                  time an agent stops working. On otherwise; each summary is one
+    //                  small request per agent per busy-to-idle transition.
+    //   summary_model  the model those summaries are asked of. Defaults to `model`;
+    //                  set it to point the cheap work somewhere cheaper.
     hocus location="zellij:hocus" {
         shared true
     }

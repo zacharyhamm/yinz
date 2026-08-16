@@ -350,6 +350,7 @@ pub(crate) fn plugin_thread_main(
         available_layout_errors,
         default_mode,
         default_keybinds,
+        plugin_aliases.clone(),
     );
 
     for run_plugin_or_alias in background_plugins {

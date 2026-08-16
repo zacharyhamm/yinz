@@ -1039,6 +1039,7 @@ impl State {
             &self.activity,
             &self.pane_projects(),
             &self.pane_branches(),
+            &self.summaries,
             read_pane_text,
         )
     }
@@ -1192,9 +1193,11 @@ impl State {
         &mut self,
         panes: Vec<agents::AgentPane>,
         activity: agents::Activity,
+        summaries: agents::Summaries,
         focused: Option<u32>,
     ) {
         self.activity = activity;
+        self.summaries = summaries;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
         self.focused_pane = focused;

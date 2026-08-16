@@ -27,10 +27,11 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
     ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
     ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-    ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-    ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
-    ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
+    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
+    ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
+    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
+    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
     ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
     ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
     ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
@@ -206,6 +207,30 @@ pub fn get_session_environment_variables() -> BTreeMap<String, String> {
         .into_iter()
         .map(|env_var| (env_var.name, env_var.value))
         .collect()
+}
+
+/// The KDL configuration block declared for `alias` in the `plugins { }` section of the
+/// user's config.
+///
+/// This is how a plugin reads settings that a *different* plugin was configured with. Its
+/// own configuration already arrives through [`ZellijPlugin::load`], and
+/// `SessionInfo.plugins` covers plugins that are currently loaded - but only those, so it
+/// cannot answer for an alias whose plugin has never been launched in this session.
+///
+/// An alias nobody declared answers with an empty map: "nothing is configured under that
+/// name", which is the same thing a declared-but-empty block means.
+pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
+    let plugin_command = PluginCommand::GetPluginAliasConfiguration(alias.to_owned());
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let response =
+        ProtobufGetPluginAliasConfigurationResponse::decode(bytes_from_stdin().unwrap().as_slice())
+            .unwrap();
+
+    response.configuration.into_iter().collect()
 }
 
 /// Returns the focused pane ID and tab index for the client associated with this plugin.

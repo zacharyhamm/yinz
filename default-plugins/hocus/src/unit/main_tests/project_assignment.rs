@@ -204,9 +204,9 @@ fn nested_worktree_agents_group_under_their_own_branches() {
         [
             "hocus",
             "  main",
-            "  3  codex  running  tab 1",
+            "    3  codex  running  tab 1",
             "  topic",
-            "  5  codex  running  tab 2",
+            "    5  codex  running  tab 2",
         ]
     );
 }

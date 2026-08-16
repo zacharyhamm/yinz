@@ -107,11 +107,12 @@ use zellij_utils::{
             ProtobufFocusOrCreateTabResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
             ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-            ProtobufGetPaneRunningCommandResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-            ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse,
-            ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-            ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse,
-            ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+            ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+            ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
+            ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
+            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse,
@@ -776,6 +777,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::GetSessionEnvironmentVariables => {
                         get_session_environment_variables(env);
                     },
+                    PluginCommand::GetPluginAliasConfiguration(alias) => {
+                        get_plugin_alias_configuration(env, alias);
+                    },
                     PluginCommand::OpenCommandPaneInNewTab(command_to_run, context) => {
                         open_command_pane_in_new_tab(env, command_to_run, context);
                     },
@@ -1139,6 +1143,35 @@ fn get_session_environment_variables(env: &PluginEnv) {
         .with_context(|| {
             format!(
                 "failed to send session environment variables to plugin {}",
+                env.name()
+            )
+        })
+        .non_fatal();
+}
+
+/// Answer with the KDL configuration declared for one plugin alias.
+///
+/// An alias nobody declared answers with an empty map rather than an error: a plugin has
+/// nothing different to do with "no such alias" than with "that alias configures nothing",
+/// and this command must always write *something* back — the caller is blocked on a read.
+fn get_plugin_alias_configuration(env: &PluginEnv, alias: String) {
+    let configuration = env
+        .plugin_aliases
+        .lock()
+        .unwrap()
+        .aliases
+        .get(&alias)
+        .map(|run_plugin| run_plugin.configuration.inner().clone())
+        .unwrap_or_default();
+
+    let response = ProtobufGetPluginAliasConfigurationResponse {
+        configuration: configuration.into_iter().collect(),
+    };
+
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| {
+            format!(
+                "failed to send the configuration of plugin alias {alias} to plugin {}",
                 env.name()
             )
         })
@@ -6153,6 +6186,9 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         PluginCommand::GetSessionEnvironmentVariables => {
             PermissionType::ReadSessionEnvironmentVariables
         },
+        // Another plugin's configuration is session state, and is read the same way the
+        // session list and the pane manifest are.
+        PluginCommand::GetPluginAliasConfiguration(..) => PermissionType::ReadApplicationState,
         PluginCommand::OpenCommandPaneInNewTab(..) => PermissionType::RunCommands,
         PluginCommand::OpenEditorPaneInNewTab(..) => PermissionType::OpenFiles,
         _ => return None,

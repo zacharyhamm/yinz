@@ -7,6 +7,7 @@
 
 mod poll;
 
+use hocus_proto::llm::Endpoint;
 use hocus_proto::panes::{focused_pane, manifest_pane_ids, terminal_panes};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
@@ -38,6 +39,25 @@ const COMMAND_REPAIRS_PER_TICK: usize = 4;
 /// gits in one breath. The leftovers are taken by the next event or the
 /// heartbeat; every filter in `repository_cwds` makes a repeated pass idempotent.
 const GIT_PROBES_PER_PASS: usize = 8;
+/// The alias whose KDL block configures the endpoint summaries are asked of.
+///
+/// hocus's block, not this daemon's: the endpoint, the model and the key are one setting
+/// for the whole of hocus, and making the user write them twice to get summaries would be
+/// a configuration trap. Read through `get_plugin_alias_configuration`, which answers for
+/// an alias whether or not its plugin has ever been launched — hocus usually has not, at
+/// the moment the daemon starts.
+const HOCUS_ALIAS: &str = "hocus";
+
+/// How many heartbeats a summary request may be outstanding before the pane is allowed to
+/// ask again. Twelve ticks is a minute — far longer than any answer worth waiting for, and
+/// short enough that a dropped result does not cost the pane its summaries for the session.
+const SUMMARY_TICKS: u32 = 12;
+
+/// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
+/// The same scheme the git probes use, for the same reason: results arrive on one event
+/// for the whole plugin.
+const SUMMARY_PANE: &str = "summary_pane";
+const SUMMARY_ID: &str = "summary_id";
 
 #[derive(Default)]
 struct State {
@@ -78,6 +98,30 @@ struct State {
     /// session the title and working folder of every pane.
     subscribers: Vec<u32>,
     seq: u64,
+    /// The session environment, for resolving the summary endpoint's API key.
+    ///
+    /// Read once and kept: the environment a plugin sees is the one captured when the
+    /// *session* started, so it cannot change under us. The KDL half is deliberately *not*
+    /// cached — see `summary_endpoint`.
+    env: BTreeMap<String, String>,
+    /// What the model last said about each agent's pane.
+    summaries: agents::Summaries,
+    /// Panes with a summary request in flight. One at a time per pane, so a flurry of
+    /// idle edges cannot fan out into a flurry of requests.
+    summary_requests: BTreeMap<u32, InFlight>,
+    summary_seq: u64,
+}
+
+/// A summary request that has gone out and not yet come back.
+struct InFlight {
+    id: u64,
+    /// The pane hash the request was made from, so the answer is stamped with the screen
+    /// it actually describes rather than with whatever the pane shows when it lands.
+    hash: u64,
+    /// Heartbeats this has been outstanding. A `WebRequestResult` that never arrives -
+    /// a dropped event, a host that gave up - would otherwise leave the pane looking
+    /// permanently mid-request and never summarised again for the life of the session.
+    ticks: u32,
 }
 
 #[derive(Default)]
@@ -100,6 +144,7 @@ impl ZellijPlugin for State {
             EventType::CommandChanged,
             EventType::CwdChanged,
             EventType::RunCommandResult,
+            EventType::WebRequestResult,
             EventType::Timer,
         ]);
         // No `request_permission` here, deliberately. A builtin plugin — one
@@ -111,6 +156,11 @@ impl ZellijPlugin for State {
         // plugin: the permission dialog is drawn *in the requesting plugin's
         // pane*, and a background plugin has none, so the request is cached
         // against a pane that never arrives and the answer never comes.
+
+        // Safe to call here, unlike in hocus: a builtin is granted every gated call
+        // unconditionally, so this value-returning call is actually answered rather than
+        // dropped — and a dropped one would block on a read that never completes.
+        self.env = get_session_environment_variables();
 
         self.bootstrap();
         set_timeout(ACTIVITY_SECONDS);
@@ -143,6 +193,9 @@ impl ZellijPlugin for State {
             },
             Event::RunCommandResult(exit_code, stdout, _, context) => {
                 self.finish_git_probe(exit_code, stdout, context);
+            },
+            Event::WebRequestResult(status, _, body, context) => {
+                self.finish_summary(status, &body, &context);
             },
             Event::Timer(elapsed) => {
                 // A load that ran before the session was there left us with no
@@ -678,10 +731,18 @@ impl State {
     }
 
     fn observe_activity(&mut self) {
-        self.observe_activity_with(poll::read_pane_text);
+        self.observe_activity_with(poll::read_pane_text, Self::start_summary);
     }
 
-    fn observe_activity_with(&mut self, mut read: impl FnMut(u32) -> String) {
+    /// Sample every agent pane, and act on the ones that just stopped working.
+    ///
+    /// `read` and `ask` are injected for the same reason: both reach the host, and this
+    /// has to stay testable on the host triple.
+    fn observe_activity_with(
+        &mut self,
+        mut read: impl FnMut(u32) -> String,
+        mut ask: impl FnMut(&mut Self, u32, &str),
+    ) {
         let running: BTreeSet<u32> = self
             .panes
             .iter()
@@ -693,9 +754,176 @@ impl State {
             .map(|pane| pane.pane_id)
             .collect();
         self.activity.retain(|id, _| running.contains(id));
+        // Kept in step with `activity`, so a pane that stops being a running agent takes
+        // its summary and its in-flight request with it — the same rule, one line apart,
+        // rather than a second lifetime to reason about.
+        self.summaries.retain(|id, _| running.contains(id));
+        self.summary_requests.retain(|id, request| {
+            request.ticks += 1;
+            running.contains(id) && request.ticks <= SUMMARY_TICKS
+        });
         for pane_id in running {
-            agents::observe(&mut self.activity, pane_id, &read(pane_id));
+            let text = read(pane_id);
+            match agents::observe(&mut self.activity, pane_id, &text) {
+                // Deliberately kept rather than dropped. The marker is gated on the pane
+                // being idle (`agents::waiting_marker`), so a working agent already shows
+                // nothing - and keeping the answer, stamped with the screen it was made
+                // from, is what lets an agent that comes back to that same screen be free
+                // rather than another request.
+                agents::Observed::Busy => {},
+                agents::Observed::WentIdle => ask(self, pane_id, &text),
+                agents::Observed::StillIdle => {},
+            }
         }
+    }
+
+    /// Where to send a summary request, resolved fresh each time.
+    ///
+    /// Deliberately not cached. The endpoint is configured in *hocus's* KDL block, and the
+    /// host's `PluginConfigurationChanged` only notifies a plugin about its own block — so
+    /// a cached copy would go stale the moment the user edited the setting and never
+    /// recover. One host read, paid only on the edge that is about to make an HTTP
+    /// request, is not worth a staleness bug.
+    fn summary_endpoint(&self) -> Option<Endpoint> {
+        Endpoint::resolve(&get_plugin_alias_configuration(HOCUS_ALIAS), &self.env)
+    }
+
+    /// Ask the model what an agent that just went idle is doing.
+    ///
+    /// The cheap local guards run *before* the endpoint is resolved, so an edge that was
+    /// never going to produce a request does not pay for a host round-trip either.
+    fn start_summary(&mut self, pane_id: u32, text: &str) {
+        if !self.summary_due(pane_id, text) {
+            return;
+        }
+        let Some(endpoint) = self.summary_endpoint() else {
+            return;
+        };
+        // Wrapped rather than passed by name: `web_request` is generic over its url type,
+        // and inference pins that to one lifetime, which will not satisfy the for-any-
+        // lifetime bound `send_summary` needs.
+        self.send_summary(
+            pane_id,
+            text,
+            &endpoint,
+            |url, verb, headers, body, context| web_request(url, verb, headers, body, context),
+        );
+    }
+
+    /// Whether this idle edge is worth an HTTP request.
+    ///
+    /// No when one is already in flight for this pane, when the pane holds too little to
+    /// say anything about, or when it is showing exactly what it was showing the last time
+    /// it was summarised. That last one is what makes an agent that goes idle, is nudged,
+    /// and settles back on the same screen free rather than another request.
+    fn summary_due(&self, pane_id: u32, text: &str) -> bool {
+        if self.summary_requests.contains_key(&pane_id) || !agents::worth_summarizing(text) {
+            return false;
+        }
+        match agents::activity_hash(&self.activity, pane_id) {
+            Some(hash) => !self.summaries.get(&pane_id).is_some_and(|s| s.hash == hash),
+            // No hash means the poll that would have recorded one has not run, so there is
+            // nothing to stamp an answer with.
+            None => false,
+        }
+    }
+
+    /// Build and send one summary request. `send` is injected because it reaches the host.
+    fn send_summary(
+        &mut self,
+        pane_id: u32,
+        text: &str,
+        endpoint: &Endpoint,
+        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
+    ) {
+        let Some(pane) = self
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)
+        else {
+            return;
+        };
+        let Some((kind, _)) = agents::classify(pane, &self.manual_kinds) else {
+            return;
+        };
+        // The branch the daemon already probed for this pane's folder. Context the model
+        // cannot get from the pane text, and free here.
+        let branch = pane
+            .cwd
+            .as_ref()
+            .and_then(|cwd| self.repositories.get(cwd))
+            .and_then(|repository| repository.branch.clone());
+        let body = agents::summary_request_body(
+            &endpoint.model,
+            kind,
+            pane.cwd.as_deref(),
+            branch.as_deref(),
+            &agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
+        );
+
+        // Unwrap-free: `summary_due` is what gates every caller, and it has already
+        // established that this pane has a hash to stamp an answer with.
+        let hash = agents::activity_hash(&self.activity, pane_id).unwrap_or_default();
+        self.summary_seq += 1;
+        let id = self.summary_seq;
+        self.summary_requests
+            .insert(pane_id, InFlight { id, hash, ticks: 0 });
+        send(
+            &endpoint.url,
+            HttpVerb::Post,
+            endpoint.headers(),
+            body,
+            BTreeMap::from([
+                (SUMMARY_PANE.to_owned(), pane_id.to_string()),
+                (SUMMARY_ID.to_owned(), id.to_string()),
+            ]),
+        );
+    }
+
+    /// Take a summary reply, if it is one and still wanted.
+    ///
+    /// Every `WebRequestResult` in the session reaches this, so the context is what says
+    /// the reply is ours at all — the same correlation `finish_git_probe` does.
+    fn finish_summary(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
+        let (Some(pane_id), Some(id)) = (
+            context
+                .get(SUMMARY_PANE)
+                .and_then(|v| v.parse::<u32>().ok()),
+            context.get(SUMMARY_ID).and_then(|v| v.parse::<u64>().ok()),
+        ) else {
+            return;
+        };
+        // A reply from a request we have since replaced or aged out, or for a pane that
+        // has closed, answers a question nobody is asking any more.
+        if self.summary_requests.get(&pane_id).map(|r| r.id) != Some(id) {
+            return;
+        }
+        // Removed whatever happens next: the request is over either way, and leaving it
+        // here would block this pane from ever asking again.
+        let hash = self
+            .summary_requests
+            .remove(&pane_id)
+            .map(|request| request.hash)
+            .unwrap_or_default();
+        // The pane has moved on since we asked, so this answer describes a screen that is
+        // gone. Compared against the hash the *request* was made from rather than
+        // whatever the pane shows now: stamping a stale answer with the current screen
+        // would make `summary_due` skip the request that screen is actually owed.
+        if agents::activity_hash(&self.activity, pane_id) != Some(hash) {
+            return;
+        }
+        // A failed summary is simply no summary — the same stance `ProbeOutcome::Failed`
+        // takes, and for the same reason: a guess here would outlive the reason for it.
+        // The next idle edge asks again.
+        if !(200..300).contains(&status) {
+            return;
+        }
+        let Some(summary) = agents::parse_summary(body, hash) else {
+            return;
+        };
+        self.summaries.insert(pane_id, summary);
+        self.publish();
     }
 
     fn finish_git_probe(
@@ -771,6 +999,7 @@ impl State {
             manual_kinds: self.manual_kinds.clone(),
             repositories: self.repositories.clone(),
             focused: self.focused,
+            summaries: self.summaries.clone(),
         };
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
@@ -807,6 +1036,11 @@ mod tests {
         }
     }
 
+    /// The summariser, for tests about everything else. `start_summary` reaches the host
+    /// twice - the alias configuration and the request itself - so no test that is not
+    /// about summaries may run it.
+    fn no_ask(_: &mut State, _: u32, _: &str) {}
+
     #[test]
     fn command_and_cwd_events_survive_the_next_pane_snapshot() {
         let mut state = State::default();
@@ -841,13 +1075,13 @@ mod tests {
             ..State::default()
         };
 
-        state.observe_activity_with(|_| "working".to_owned());
-        state.observe_activity_with(|_| "working".to_owned());
+        state.observe_activity_with(|_| "working".to_owned(), no_ask);
+        state.observe_activity_with(|_| "working".to_owned(), no_ask);
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
         assert_eq!(state.activity.len(), 1);
 
         state.panes.as_mut().unwrap()[0].status = agents::AgentStatus::Held;
-        state.observe_activity_with(|_| "ignored".to_owned());
+        state.observe_activity_with(|_| "ignored".to_owned(), no_ask);
         assert!(state.activity.is_empty());
     }
 
@@ -1152,12 +1386,12 @@ mod tests {
     #[test]
     fn a_shell_out_does_not_reset_the_idle_count() {
         let mut state = ran_codex(7);
-        state.observe_activity_with(|_| "same".to_owned());
-        state.observe_activity_with(|_| "same".to_owned());
+        state.observe_activity_with(|_| "same".to_owned(), no_ask);
+        state.observe_activity_with(|_| "same".to_owned(), no_ask);
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
 
         state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
-        state.observe_activity_with(|_| "same".to_owned());
+        state.observe_activity_with(|_| "same".to_owned(), no_ask);
 
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(2));
     }
@@ -1539,6 +1773,351 @@ mod tests {
         state.expire_probe_backoff(GIT_RETRY_SECONDS);
         assert!(state.probe_backoff.is_empty());
         assert_eq!(state.repository_cwds(false), vec!["/work"]);
+    }
+
+    // -- idle summaries -----------------------------------------------------
+
+    fn endpoint() -> Endpoint {
+        Endpoint {
+            url: "http://localhost:11434/v1/chat/completions".to_owned(),
+            api_key: "sk-test".to_owned(),
+            model: "test-model".to_owned(),
+        }
+    }
+
+    /// One agent, polled until it is idle, with the summariser wired to a recorder.
+    ///
+    /// Returns the state and the requests that went out. `observe_activity_with` is driven
+    /// rather than `start_summary` called directly, so what is under test is the whole
+    /// path from "the pane held still" to "a request left".
+    fn idle_agent(text: &'static str) -> (State, Vec<(u32, Vec<u8>)>) {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        // The first poll is `Busy` - a single reading cannot tell working from finished -
+        // so it takes two to reach the edge.
+        for _ in 0..2 {
+            state.observe_activity_with(
+                |_| text.to_owned(),
+                |state, pane_id, text| {
+                    if state.summary_due(pane_id, text) {
+                        state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, context| {
+                            sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
+                        });
+                    }
+                },
+            );
+        }
+        (state, sent)
+    }
+
+    /// The pane text a test agent shows - long enough to clear `worth_summarizing`.
+    const BUSY_PANE: &str = "Running the test suite and waiting for it to finish now...";
+    const OTHER_PANE: &str = "Something else entirely happened on this pane instead...";
+
+    fn reply(summary: &str, awaiting: bool) -> Vec<u8> {
+        format!(
+            r#"{{"choices":[{{"message":{{"content":"{{\"summary\":\"{summary}\",\"awaiting\":{awaiting}}}"}}}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    fn context(pane_id: u32, id: u64) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (SUMMARY_PANE.to_owned(), pane_id.to_string()),
+            (SUMMARY_ID.to_owned(), id.to_string()),
+        ])
+    }
+
+    #[test]
+    fn an_agent_going_idle_is_asked_about_once() {
+        let (mut state, sent) = idle_agent(BUSY_PANE);
+        assert_eq!(sent.len(), 1, "one edge, one request");
+        assert_eq!(sent[0].0, 7);
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].1).unwrap();
+        assert_eq!(body["model"], "test-model");
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains(BUSY_PANE));
+
+        state.finish_summary(200, &reply("Ran the tests.", true), &context(7, 1));
+        let summary = state.summaries.get(&7).expect("stored");
+        assert_eq!(summary.text, "Ran the tests.");
+        assert!(summary.awaiting);
+        assert!(
+            state.summary_requests.is_empty(),
+            "and the request is no longer in flight",
+        );
+    }
+
+    /// Staying idle is not an edge. Without this every idle agent would be re-summarised
+    /// every five seconds for as long as it sat there.
+    #[test]
+    fn sitting_idle_does_not_ask_again() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        state.finish_summary(200, &reply("Done.", false), &context(7, 1));
+
+        for _ in 0..3 {
+            state.observe_activity_with(
+                |_| BUSY_PANE.to_owned(),
+                |state, pane_id, text| {
+                    if state.summary_due(pane_id, text) {
+                        state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, ctx| {
+                            sent.push((ctx[SUMMARY_PANE].parse().unwrap(), body));
+                        });
+                    }
+                },
+            );
+        }
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// An agent that starts working again is not waiting on anyone, whatever it was
+    /// waiting on before — but the answer itself is kept, stamped with the screen it was
+    /// made from, so a return to that same screen costs nothing. The marker is what goes,
+    /// and it goes because it is drawn only for an idle pane.
+    #[test]
+    fn going_busy_again_clears_the_flag_without_throwing_the_answer_away() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.finish_summary(200, &reply("Waiting on you.", true), &context(7, 1));
+        let waiting = |state: &State| {
+            agents::strip_rows(
+                state.panes.as_deref().unwrap_or_default(),
+                &state.manual_kinds,
+                &state.activity,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &state.summaries,
+            )
+            .iter()
+            .any(|row| matches!(row, agents::StripRow::Agent { text, .. } if text.starts_with('!')))
+        };
+        assert!(waiting(&state), "idle and blocked: the marker is up");
+
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+
+        assert!(
+            !waiting(&state),
+            "working again, so nothing is waiting on the user"
+        );
+        assert!(
+            state.summaries.contains_key(&7),
+            "but the answer is still held"
+        );
+    }
+
+    /// An agent that goes idle showing exactly what it was showing when it was last
+    /// summarised has nothing new to say, and must not be paid for twice.
+    #[test]
+    fn an_unchanged_pane_is_not_summarized_again() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.finish_summary(200, &reply("Done.", false), &context(7, 1));
+
+        // Away and back to the same screen: busy, then idle again on identical text.
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+        assert!(
+            !state.summary_due(7, BUSY_PANE),
+            "the stored summary was made from exactly this screen",
+        );
+
+        // A screen it has not been asked about is due again.
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        assert!(state.summary_due(7, OTHER_PANE));
+    }
+
+    #[test]
+    fn a_pane_with_nothing_on_it_is_not_worth_asking_about() {
+        let (_, sent) = idle_agent("$");
+        assert!(sent.is_empty());
+    }
+
+    /// One request per pane at a time: a second edge while one is in flight would double
+    /// the bill for one answer.
+    #[test]
+    fn a_second_edge_does_not_race_the_request_already_in_flight() {
+        let (state, _) = idle_agent(BUSY_PANE);
+        assert_eq!(state.summary_requests.get(&7).map(|r| r.id), Some(1));
+        assert!(
+            !state.summary_due(7, OTHER_PANE),
+            "even for a different screen"
+        );
+    }
+
+    /// A reply whose request has been replaced, or whose pane has closed, answers a
+    /// question nobody is asking any more.
+    #[test]
+    fn a_reply_from_a_superseded_request_is_ignored() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        state.finish_summary(200, &reply("Stale.", true), &context(7, 99));
+        assert!(state.summaries.is_empty());
+        assert_eq!(
+            state.summary_requests.get(&7).map(|r| r.id),
+            Some(1),
+            "and the real request is still expected",
+        );
+
+        // Nor does a reply for a pane nothing asked about land.
+        state.finish_summary(200, &reply("Nobody asked.", true), &context(8, 1));
+        assert!(state.summaries.is_empty());
+    }
+
+    /// The pane went back to work while we were asking. Storing the answer would raise a
+    /// marker on an agent that is busy.
+    #[test]
+    fn a_reply_for_a_pane_that_went_busy_again_is_dropped() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+
+        state.finish_summary(200, &reply("Waiting on you.", true), &context(7, 1));
+
+        assert!(state.summaries.is_empty());
+    }
+
+    /// A failed summary is simply no summary - the same stance a failed Git probe takes.
+    /// The next idle edge asks again.
+    #[test]
+    fn a_failed_request_stores_nothing_and_frees_the_pane_to_ask_again() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        state.finish_summary(500, b"upstream is down", &context(7, 1));
+
+        assert!(state.summaries.is_empty());
+        assert!(state.summary_requests.is_empty());
+        assert!(
+            state.summary_due(7, BUSY_PANE),
+            "so the next edge tries again"
+        );
+    }
+
+    /// An answer the parser cannot use is the same as no answer, and must not leave the
+    /// pane looking like it still has a request out.
+    #[test]
+    fn an_unusable_answer_is_no_answer() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        state.finish_summary(200, b"{\"choices\":[]}", &context(7, 1));
+
+        assert!(state.summaries.is_empty());
+        assert!(state.summary_requests.is_empty());
+    }
+
+    /// A reply is stamped with the screen the *request* was made from, not with whatever
+    /// the pane happens to show when it lands.
+    ///
+    /// The bug this guards: a pane that moves on while the request is out is still idle
+    /// when the answer arrives, so a naive "is it busy?" check lets the stale answer
+    /// through - and stamping it with the *current* hash then makes `summary_due` treat
+    /// the new screen as already summarised, so the screen that is actually owed a
+    /// request never gets one.
+    #[test]
+    fn an_answer_about_a_screen_the_pane_has_left_is_dropped() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        // The pane moves on and settles somewhere else, all while the request is out.
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        assert!(
+            state.activity[&7].1 > 0,
+            "idle again, so idleness alone cannot tell this answer is stale",
+        );
+
+        state.finish_summary(200, &reply("About the old screen.", true), &context(7, 1));
+
+        assert!(state.summaries.is_empty());
+        assert!(
+            state.summary_due(7, OTHER_PANE),
+            "and the screen it really is on is still owed a request",
+        );
+    }
+
+    /// A `WebRequestResult` that never arrives must not leave the pane looking permanently
+    /// mid-request, or it would never be summarised again for the life of the session.
+    #[test]
+    fn a_request_that_never_comes_back_stops_blocking_the_pane() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        assert!(!state.summary_due(7, OTHER_PANE), "blocked while in flight");
+
+        // It survives exactly `SUMMARY_TICKS` heartbeats and goes on the next.
+        for _ in 0..SUMMARY_TICKS {
+            state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+        }
+        assert!(!state.summary_requests.is_empty(), "still within its grace");
+        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+
+        assert!(state.summary_requests.is_empty(), "aged out");
+        assert!(state.summary_due(7, BUSY_PANE));
+    }
+
+    /// A summary belongs to a pane, and dies with it - the same rule `activity` follows,
+    /// so a new agent in a recycled pane id cannot inherit the old one's state.
+    #[test]
+    fn a_closed_pane_takes_its_summary_and_its_request_with_it() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.finish_summary(200, &reply("Done.", true), &context(7, 1));
+        assert!(!state.summaries.is_empty());
+
+        state.panes = Some(vec![]);
+        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+
+        assert!(state.summaries.is_empty());
+        assert!(state.summary_requests.is_empty());
+        assert!(
+            state.activity.is_empty(),
+            "the same rule that prunes activity"
+        );
+    }
+
+    /// The context is what makes a reply ours. Every `WebRequestResult` in the session
+    /// reaches this handler, including hocus's own streaming chat.
+    #[test]
+    fn a_web_response_that_is_not_a_summary_is_left_alone() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        state.finish_summary(200, &reply("Not mine.", true), &BTreeMap::new());
+        state.finish_summary(
+            200,
+            &reply("Not mine.", true),
+            &BTreeMap::from([("stream_id".to_owned(), "hocus-1".to_owned())]),
+        );
+
+        assert!(state.summaries.is_empty());
+        assert_eq!(
+            state.summary_requests.get(&7).map(|r| r.id),
+            Some(1),
+            "still in flight",
+        );
+    }
+
+    /// The branch the daemon already probed rides along: context the model cannot get
+    /// from the pane text.
+    #[test]
+    fn a_request_carries_the_folder_and_the_branch_the_daemon_knows() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            repositories: BTreeMap::from([(
+                "/work".to_owned(),
+                projects::Repository {
+                    branch: Some("topic".to_owned()),
+                    ..projects::Repository::folder("/work")
+                },
+            )]),
+            activity: agents::Activity::from([(7, (1, 1))]),
+            ..State::default()
+        };
+
+        let mut body = Vec::new();
+        state.send_summary(7, BUSY_PANE, &endpoint(), |_, _, _, sent, _| body = sent);
+
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let user = value["messages"][1]["content"].as_str().unwrap();
+        assert!(user.contains("Agent: claude."), "{user}");
+        assert!(user.contains("Folder: /work."), "{user}");
+        assert!(user.contains("Branch: topic."), "{user}");
     }
 
     #[test]
