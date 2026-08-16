@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -352,6 +352,8 @@ pub mod plugin_command {
         WarpTabFromSessionPayload(super::WarpTabFromSessionPayload),
         #[prost(message, tag="187")]
         LaunchOrFocusGlobalPaneSplitPayload(super::LaunchOrFocusGlobalPaneSplitPayload),
+        #[prost(message, tag="188")]
+        GetPluginAliasConfigurationPayload(super::GetPluginAliasConfigurationPayload),
     }
 }
 // ---------------------------------------------------------------- data store
@@ -2116,6 +2118,23 @@ pub struct GetSessionEnvironmentVariablesResponse {
     #[prost(message, repeated, tag="1")]
     pub env_vars: ::prost::alloc::vec::Vec<EnvVariable>,
 }
+/// The KDL configuration block declared for one plugin alias, so a plugin can
+/// read settings a *different* plugin was configured with. An unknown alias is
+/// answered with an empty configuration rather than an error - "nothing is
+/// configured under that name" is the same answer either way, and a plugin has
+/// nothing useful to do with the difference.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetPluginAliasConfigurationPayload {
+    #[prost(string, tag="1")]
+    pub alias: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetPluginAliasConfigurationResponse {
+    #[prost(map="string, string", tag="1")]
+    pub configuration: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OpenPluginPaneInNewTabPayload {
@@ -2634,6 +2653,7 @@ pub enum CommandName {
     WarpTabToSession = 244,
     WarpTabFromSession = 245,
     LaunchOrFocusGlobalPaneSplit = 246,
+    GetPluginAliasConfiguration = 247,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2862,6 +2882,7 @@ impl CommandName {
             CommandName::WarpTabToSession => "WarpTabToSession",
             CommandName::WarpTabFromSession => "WarpTabFromSession",
             CommandName::LaunchOrFocusGlobalPaneSplit => "LaunchOrFocusGlobalPaneSplit",
+            CommandName::GetPluginAliasConfiguration => "GetPluginAliasConfiguration",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3087,6 +3108,7 @@ impl CommandName {
             "WarpTabToSession" => Some(Self::WarpTabToSession),
             "WarpTabFromSession" => Some(Self::WarpTabFromSession),
             "LaunchOrFocusGlobalPaneSplit" => Some(Self::LaunchOrFocusGlobalPaneSplit),
+            "GetPluginAliasConfiguration" => Some(Self::GetPluginAliasConfiguration),
             _ => None,
         }
     }

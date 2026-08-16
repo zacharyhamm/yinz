@@ -304,6 +304,7 @@ mod tests {
             // Discovery does not read it; which pane has focus says nothing
             // about which folders are projects.
             focused: None,
+            summaries: agents::Summaries::new(),
         })
         .expect("serialize")
     }

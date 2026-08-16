@@ -236,6 +236,7 @@ enum CommandName {
   WarpTabToSession = 244;
   WarpTabFromSession = 245;
   LaunchOrFocusGlobalPaneSplit = 246;
+  GetPluginAliasConfiguration = 247;
 }
 
 message PluginCommand {
@@ -412,6 +413,7 @@ message PluginCommand {
     WarpTabToSessionPayload warp_tab_to_session_payload = 185;
     WarpTabFromSessionPayload warp_tab_from_session_payload = 186;
     LaunchOrFocusGlobalPaneSplitPayload launch_or_focus_global_pane_split_payload = 187;
+    GetPluginAliasConfigurationPayload get_plugin_alias_configuration_payload = 188;
   }
 }
 
@@ -1446,6 +1448,19 @@ message GetSessionEnvironmentVariablesPayload {}
 
 message GetSessionEnvironmentVariablesResponse {
   repeated EnvVariable env_vars = 1;
+}
+
+// The KDL configuration block declared for one plugin alias, so a plugin can
+// read settings a *different* plugin was configured with. An unknown alias is
+// answered with an empty configuration rather than an error - "nothing is
+// configured under that name" is the same answer either way, and a plugin has
+// nothing useful to do with the difference.
+message GetPluginAliasConfigurationPayload {
+  string alias = 1;
+}
+
+message GetPluginAliasConfigurationResponse {
+  map<string, string> configuration = 1;
 }
 
 message OpenPluginPaneInNewTabPayload {

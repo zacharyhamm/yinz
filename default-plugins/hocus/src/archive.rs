@@ -232,6 +232,7 @@ impl State {
                 &self.activity,
                 &self.pane_projects(),
                 &self.pane_branches(),
+                &self.summaries,
             ),
             // the raw focus, not `last_focused_agent`: the pane puts its cursor on
             // the agent you moved to and dims it when you move off, and a sticky

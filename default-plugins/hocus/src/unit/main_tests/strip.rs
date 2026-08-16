@@ -9,7 +9,7 @@ fn the_strip_groups_agents_under_their_headers() {
 
     assert_eq!(
         agent_entry_texts(&state),
-        ["no project", "  no branch", "  3  codex  running"]
+        ["no project", "  no branch", "    3  codex  running"]
     );
     assert!(matches!(
         state.current_strip().rows[2],
@@ -30,9 +30,9 @@ fn worktree_agents_group_under_their_branch_headers() {
         [
             "no project",
             "  main",
-            "  3  codex  running  tab 1",
+            "    3  codex  running  tab 1",
             "  topic",
-            "  5  codex  running  tab 2",
+            "    5  codex  running  tab 2",
         ]
     );
 }
@@ -54,9 +54,9 @@ fn a_snapshot_rebuilds_the_strip() {
         [
             "no project",
             "  topic",
-            "  5  codex  running  tab 2",
+            "    5  codex  running  tab 2",
             "  zzz",
-            "  3  codex  running  tab 1",
+            "    3  codex  running  tab 1",
         ]
     );
 }

@@ -281,8 +281,18 @@ fn agent_changes_do_not_post_to_chat() {
     let mut panes = panes_with_agent();
     panes[0].status = agents::AgentStatus::Exited;
 
-    state.apply_poll(panes, agents::Activity::new(), None);
-    state.apply_poll(Vec::new(), agents::Activity::new(), None);
+    state.apply_poll(
+        panes,
+        agents::Activity::new(),
+        agents::Summaries::new(),
+        None,
+    );
+    state.apply_poll(
+        Vec::new(),
+        agents::Activity::new(),
+        agents::Summaries::new(),
+        None,
+    );
 
     assert!(state.messages.is_empty());
 }

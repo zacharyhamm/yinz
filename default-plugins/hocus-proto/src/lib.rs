@@ -11,6 +11,7 @@
 //! the same trait backed by the real store engine over a temporary file.
 
 pub mod agents;
+pub mod llm;
 pub mod panes;
 pub mod paths;
 pub mod projects;

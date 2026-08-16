@@ -239,6 +239,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                     ),
                 ]),
                 focused: None,
+                summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
         ),
@@ -389,7 +390,12 @@ fn poll_focus(
         .into_iter()
         .map(|(_, repository)| repository)
         .collect();
-    state.apply_poll(panes, agents::Activity::new(), focused);
+    state.apply_poll(
+        panes,
+        agents::Activity::new(),
+        agents::Summaries::new(),
+        focused,
+    );
     // The snapshot handler pushes the strip on every snapshot, not only the
     // ones that move a project; without this the helper would only ever push
     // through `give_projects` below.
@@ -537,6 +543,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 manual_kinds: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
+                summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
         ),
@@ -569,6 +576,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                     ),
                 ]),
                 focused,
+                summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
         ),

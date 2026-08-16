@@ -26,8 +26,13 @@ use crate::{
 use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
 use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
-    consts::ZELLIJ_TMP_DIR, data::InputMode, errors::prelude::*, input::command::TerminalAction,
-    input::keybinds::Keybinds, input::plugins::PluginConfig, pane_size::Size,
+    consts::ZELLIJ_TMP_DIR,
+    data::InputMode,
+    errors::prelude::*,
+    input::command::TerminalAction,
+    input::keybinds::Keybinds,
+    input::plugins::{PluginAliases, PluginConfig},
+    pane_size::Size,
 };
 
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -71,6 +76,7 @@ pub struct PluginLoader<'a> {
     tab_index: Option<usize>,
     path_to_default_shell: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
+    plugin_aliases: Arc<Mutex<PluginAliases>>,
     default_shell: Option<TerminalAction>,
     layout_dir: Option<PathBuf>,
     builtin_plugins_dir: Option<PathBuf>,
@@ -115,6 +121,7 @@ impl<'a> PluginLoader<'a> {
             tab_index: loading_context.tab_index,
             path_to_default_shell: loading_context.path_to_default_shell,
             session_env_vars: loading_context.session_env_vars,
+            plugin_aliases: loading_context.plugin_aliases,
             default_shell: loading_context.default_shell,
             layout_dir: loading_context.layout_dir,
             builtin_plugins_dir: loading_context.builtin_plugins_dir,
@@ -291,6 +298,7 @@ impl<'a> PluginLoader<'a> {
             default_shell: self.default_shell.clone(),
             plugin_cwd: self.plugin_cwd.clone(),
             session_env_vars: self.session_env_vars.clone(),
+            plugin_aliases: self.plugin_aliases.clone(),
             input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
@@ -414,6 +422,7 @@ impl<'a> PluginLoader<'a> {
             default_shell: self.default_shell.clone(),
             plugin_cwd: self.plugin_cwd.clone(),
             session_env_vars: self.session_env_vars.clone(),
+            plugin_aliases: self.plugin_aliases.clone(),
             input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
