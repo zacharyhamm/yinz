@@ -8460,13 +8460,13 @@ pub fn pane_info_for_pane(
 }
 
 #[cfg(test)]
-#[path = "./unit/tab_tests.rs"]
+#[path = "./unit/tab_tests/mod.rs"]
 mod tab_tests;
 
 #[cfg(test)]
-#[path = "./unit/tab_integration_tests.rs"]
+#[path = "./unit/tab_integration_tests/mod.rs"]
 mod tab_integration_tests;
 
 #[cfg(test)]
-#[path = "./unit/layout_applier_tests.rs"]
+#[path = "./unit/layout_applier_tests/mod.rs"]
 mod layout_applier_tests;

@@ -1520,6 +1520,6 @@ fn load_background_plugin(
 
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 
-#[path = "./unit/plugin_tests.rs"]
+#[path = "./unit/plugin_tests/mod.rs"]
 #[cfg(test)]
 mod plugin_tests;

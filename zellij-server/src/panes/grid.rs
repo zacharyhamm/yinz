@@ -5772,7 +5772,7 @@ fn is_selection_boundary_character(character: char, word_separators: &str) -> bo
 }
 
 #[cfg(test)]
-#[path = "./unit/grid_tests.rs"]
+#[path = "./unit/grid_tests/mod.rs"]
 mod grid_tests;
 
 #[cfg(test)]
