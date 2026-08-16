@@ -1,6 +1,7 @@
 use super::*;
 use crate::os_input_output::ServerOsApi;
 use crate::plugins::PluginInstruction;
+use crate::pty_host::remote::RemoteStatus;
 use crate::thread_bus::Bus;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
@@ -18,6 +19,14 @@ struct MockOsApi {
     cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
     cmds: Arc<Mutex<HashMap<u32, Vec<String>>>>,
     cmds_by_ppid: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Every pid-addressed signal, recorded so a test can assert one was never
+    /// sent. This is the whole point for remote panes: the failure being guarded
+    /// against is a signal that *is* delivered, to the wrong process.
+    local_signals: Arc<Mutex<Vec<(u32, &'static str)>>>,
+    remote_panes: Arc<Mutex<std::collections::HashSet<u32>>>,
+    remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
+    remote_status: Arc<Mutex<HashMap<u32, RemoteStatus>>>,
+    remote_hosts: Arc<Mutex<HashMap<u32, String>>>,
 }
 
 impl MockOsApi {
@@ -26,7 +35,35 @@ impl MockOsApi {
             cwds: Arc::new(Mutex::new(HashMap::new())),
             cmds: Arc::new(Mutex::new(HashMap::new())),
             cmds_by_ppid: Arc::new(Mutex::new(HashMap::new())),
+            local_signals: Arc::new(Mutex::new(Vec::new())),
+            remote_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            remote_signals: Arc::new(Mutex::new(Vec::new())),
+            remote_status: Arc::new(Mutex::new(HashMap::new())),
+            remote_hosts: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+    fn set_remote_host(&self, terminal_id: u32, host: &str) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+        self.remote_hosts
+            .lock()
+            .unwrap()
+            .insert(terminal_id, host.to_owned());
+    }
+    fn set_remote_status(&self, terminal_id: u32, status: RemoteStatus) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+        self.remote_status
+            .lock()
+            .unwrap()
+            .insert(terminal_id, status);
+    }
+    fn mark_remote(&self, terminal_id: u32) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+    }
+    fn local_signals(&self) -> Vec<(u32, &'static str)> {
+        self.local_signals.lock().unwrap().clone()
+    }
+    fn remote_signals(&self) -> Vec<(u32, ChildSignal)> {
+        self.remote_signals.lock().unwrap().clone()
     }
     fn set_cwd(&self, pid: u32, path: PathBuf) {
         self.cwds.lock().unwrap().insert(pid, path);
@@ -70,14 +107,40 @@ impl ServerOsApi for MockOsApi {
     fn tcdrain(&self, _: u32) -> anyhow::Result<()> {
         Ok(())
     }
-    fn kill(&self, _: u32) -> anyhow::Result<()> {
+    fn kill(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGHUP"));
         Ok(())
     }
-    fn force_kill(&self, _: u32) -> anyhow::Result<()> {
+    fn force_kill(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGKILL"));
         Ok(())
     }
-    fn send_sigint(&self, _: u32) -> anyhow::Result<()> {
+    fn send_sigint(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGINT"));
         Ok(())
+    }
+    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+        self.remote_panes.lock().unwrap().contains(&terminal_id)
+    }
+    fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> anyhow::Result<()> {
+        self.remote_signals
+            .lock()
+            .unwrap()
+            .push((terminal_id, signal));
+        Ok(())
+    }
+    fn remote_pane_ids(&self) -> Vec<u32> {
+        self.remote_panes.lock().unwrap().iter().copied().collect()
+    }
+    fn remote_pane_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+        self.remote_status
+            .lock()
+            .unwrap()
+            .get(&terminal_id)
+            .cloned()
+    }
+    fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
+        self.remote_hosts.lock().unwrap().get(&terminal_id).cloned()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -175,6 +238,18 @@ fn make_pty_with_screen_receiver(
     bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
     let pty = Pty::new(bus, false, None, None);
     (pty, plugin_rx, screen_rx)
+}
+
+fn collect_pane_host_instructions(
+    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) -> Vec<(u32, Option<String>)> {
+    let mut updates = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let ScreenInstruction::UpdatePaneHost(terminal_id, host) = instruction {
+            updates.push((terminal_id, host));
+        }
+    }
+    updates
 }
 
 fn collect_pane_cwd_instructions(
@@ -610,5 +685,322 @@ fn osc7_then_poll_skips_terminal() {
     assert!(
         cwd_events.is_empty() && cmd_events.is_empty(),
         "poll after osc7 should skip terminal since flag was cleared"
+    );
+}
+
+// ---- remote panes must never signal a local process ----
+//
+// pid spaces are per-machine. A remote pane's child pid, used locally, does not
+// fail — it names whatever local process happens to hold that number, so a
+// `SIGKILL` aimed at a pane lands on something unrelated. These pin that the
+// remote check happens before the pid lookup, at every site that signals.
+
+/// Build a pty holding a pane whose recorded pid is one that must never be
+/// signalled, and mark that pane remote.
+fn pty_with_remote_pane(terminal_id: u32, bystander_pid: u32) -> (Pty, MockOsApi) {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    // A stale pid in the map is exactly the hazard: something has to be there
+    // for the wrong branch to find.
+    pty.id_to_child_pid.insert(terminal_id, bystander_pid);
+    os_api.mark_remote(terminal_id);
+    (pty, os_api)
+}
+
+#[test]
+fn closing_a_remote_pane_does_not_signal_a_local_process() {
+    let (mut pty, os_api) = pty_with_remote_pane(7, 4242);
+    let _ = pty.close_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's close signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
+}
+
+#[test]
+fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
+    let (pty, os_api) = pty_with_remote_pane(7, 4242);
+    pty.send_sigint_to_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's SIGINT signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Int)]);
+}
+
+#[test]
+fn sigkill_to_a_remote_pane_does_not_signal_a_local_process() {
+    let (pty, os_api) = pty_with_remote_pane(7, 4242);
+    pty.send_sigkill_to_pane(PaneId::Terminal(7));
+
+    assert!(
+        os_api.local_signals().is_empty(),
+        "a remote pane's SIGKILL signalled local pids {:?}",
+        os_api.local_signals()
+    );
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Kill)]);
+}
+
+/// The same refactor must leave local panes exactly as they were.
+#[test]
+fn a_local_pane_is_still_signalled_by_pid() {
+    let os_api = MockOsApi::new();
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let mut pty = pty;
+    pty.id_to_child_pid.insert(3, 909);
+
+    pty.send_sigint_to_pane(PaneId::Terminal(3));
+    pty.send_sigkill_to_pane(PaneId::Terminal(3));
+    let _ = pty.close_pane(PaneId::Terminal(3));
+
+    assert_eq!(
+        os_api.local_signals(),
+        vec![(909, "SIGINT"), (909, "SIGKILL"), (909, "SIGHUP")]
+    );
+    assert!(os_api.remote_signals().is_empty());
+}
+
+/// Handing a remote pid to a plugin invites the same mistake one layer out.
+#[test]
+fn a_remote_panes_pid_is_not_handed_to_plugins() {
+    let (pty, _os_api) = pty_with_remote_pane(7, 4242);
+    match pty.get_pane_pid(PaneId::Terminal(7)) {
+        GetPanePidResponse::Err(msg) => {
+            assert!(
+                msg.contains("another machine"),
+                "the refusal should say why, got: {msg}"
+            );
+        },
+        GetPanePidResponse::Ok(pid) => {
+            panic!("a remote pane handed out local pid {pid}");
+        },
+    }
+}
+
+// ---- remote panes report from the broker, not from this machine ----
+
+/// A pane whose process is on another machine, holding the status its broker
+/// last reported.
+fn remote_pane(
+    terminal_id: u32,
+    status: RemoteStatus,
+) -> (
+    Pty,
+    MockOsApi,
+    channels::Receiver<(PluginInstruction, ErrorContext)>,
+    channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) {
+    let mock = MockOsApi::new();
+    mock.set_remote_status(terminal_id, status);
+    let (pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    (pty, mock, plugin_rx, screen_rx)
+}
+
+/// The whole point of Phase 3: argv the broker read on its own machine reaches
+/// the same event a local pane's argv would. Agent classification is pure string
+/// matching over that argv, so this is what makes a remote agent detectable at
+/// all — with nothing in the detection layer aware of the difference.
+#[test]
+fn a_remote_panes_foreground_command_is_reported_like_any_other() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let events = collect_command_changed_events(&plugin_rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, PaneId::Terminal(7));
+    assert_eq!(events[0].1, vec!["claude", "--resume"]);
+    assert!(
+        events[0].2,
+        "a foreground command must be flagged as one, or it reads as the shell"
+    );
+}
+
+/// With nothing in the foreground, the pane's own command is reported and
+/// flagged as not-foreground — exactly as for a local pane.
+#[test]
+fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: None,
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let events = collect_command_changed_events(&plugin_rx);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].1, vec!["/bin/zsh"]);
+    assert!(!events[0].2);
+}
+
+/// A remote pane's cwd is a path on its own machine, and travels unchanged.
+#[test]
+fn a_remote_panes_cwd_is_reported_unchanged() {
+    let (mut pty, _mock, _plugin_rx, screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/srv/build/project".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+
+    pty.update_and_report_cwds();
+
+    let cwds = collect_pane_cwd_instructions(&screen_rx);
+    assert_eq!(
+        cwds,
+        vec![(7, Some(PathBuf::from("/srv/build/project")))],
+        "a remote cwd must be reported as-is"
+    );
+}
+
+/// The activity flag exists because inspecting a *local* pane costs a `sysinfo`
+/// refresh. A remote pane's status is already cached locally, so it is read
+/// every tick — otherwise an agent sitting silently at its prompt, which is
+/// precisely the state worth seeing, would never be re-polled.
+#[test]
+fn a_silent_remote_pane_is_still_polled() {
+    let (mut pty, mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    // No activity flag is ever set: this pane has produced no output at all.
+    pty.update_and_report_cwds();
+    let first = collect_command_changed_events(&plugin_rx);
+    assert_eq!(first.len(), 1, "a silent remote pane was skipped entirely");
+
+    mock.set_remote_status(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["vim".to_owned()]),
+        },
+    );
+    pty.update_and_report_cwds();
+    let second = collect_command_changed_events(&plugin_rx);
+    assert_eq!(second.len(), 1, "a change on a silent pane went unreported");
+    assert_eq!(second[0].1, vec!["vim"]);
+}
+
+/// Unchanged status must not re-emit, or every tick would wake every plugin.
+#[test]
+fn an_unchanged_remote_pane_emits_nothing_further() {
+    let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    pty.update_and_report_cwds();
+    assert_eq!(collect_command_changed_events(&plugin_rx).len(), 1);
+    pty.update_and_report_cwds();
+    assert!(
+        collect_command_changed_events(&plugin_rx).is_empty(),
+        "an unchanged pane should stay quiet"
+    );
+}
+
+/// Plugins ask directly when the poll missed something (`hocus-agentd` repairs
+/// panes this way). A remote pane has to answer from its cache rather than
+/// reporting itself as not running.
+#[test]
+fn a_remote_pane_answers_the_plugin_facing_accessors() {
+    let (pty, _mock, _plugin_rx, _screen_rx) = remote_pane(
+        7,
+        RemoteStatus {
+            cwd: Some("/srv/build/project".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+
+    match pty.get_pane_running_command(PaneId::Terminal(7)) {
+        GetPaneRunningCommandResponse::Ok(argv) => assert_eq!(argv, vec!["claude".to_owned()]),
+        other => panic!("expected the running command, got {other:?}"),
+    }
+    match pty.get_pane_cwd(PaneId::Terminal(7)) {
+        GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
+        other => panic!("expected the cwd, got {other:?}"),
+    }
+}
+
+/// A pane's host reaches Screen, which is what puts it on `PaneInfo` for the
+/// plugins that decide which project a pane belongs to.
+#[test]
+fn a_remote_panes_host_is_announced_to_screen() {
+    let mock = MockOsApi::new();
+    mock.set_remote_status(
+        7,
+        RemoteStatus {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: None,
+        },
+    );
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.report_terminal_host(7);
+
+    let hosts = collect_pane_host_instructions(&screen_rx);
+    assert_eq!(hosts, vec![(7, Some("build-box".to_owned()))]);
+}
+
+/// Local panes are the overwhelming majority, and must stay silent — an
+/// announcement per pane would be noise, and a `Some` on a local pane would make
+/// every consumer treat it as elsewhere.
+#[test]
+fn a_local_pane_announces_no_host() {
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.report_terminal_host(3);
+
+    assert!(
+        collect_pane_host_instructions(&screen_rx).is_empty(),
+        "a local pane should say nothing about a host"
+    );
+}
+
+/// Closing a pane retracts it, or Screen would keep attributing a recycled
+/// terminal id to a machine it has nothing to do with.
+#[test]
+fn closing_a_pane_retracts_its_host() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    let _ = pty.close_pane(PaneId::Terminal(7));
+
+    let hosts = collect_pane_host_instructions(&screen_rx);
+    assert!(
+        hosts.contains(&(7, None)),
+        "closing a pane should retract its host, got {hosts:?}"
     );
 }

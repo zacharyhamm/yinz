@@ -1052,6 +1052,7 @@ message RunCommandAction {
   bool hold_on_start = 6;                              // Renumbered
   optional OriginatingPlugin originating_plugin = 7;   // Added missing originating_plugin field
   bool use_terminal_title = 8;                         // Added missing use_terminal_title field
+  optional string remote_host = 9;                     // The machine this command runs on, if not this one
 }
 
 message TiledPaneLayout {

@@ -163,6 +163,7 @@ fn notification_paints_over_a_floating_pane() {
     let exit_code = zellij.run_cli_action(CliAction::NewPane {
         direction: None,
         command: vec![],
+        remote_host: None,
         plugin: None,
         cwd: None,
         floating: true,

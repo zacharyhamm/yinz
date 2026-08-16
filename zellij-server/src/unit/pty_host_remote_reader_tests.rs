@@ -1,0 +1,539 @@
+use super::*;
+
+use std::io::{Read as _, Write};
+use std::os::unix::net::UnixStream;
+
+use crate::pty_host::protocol::WireWinsize;
+use crate::pty_host::remote::protocol::{write_control, write_output, ServerToBrokerMsg};
+
+fn reader_pair() -> (RemoteReader, Arc<RemoteConn>, UnixStream) {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let for_conn = ours.try_clone().expect("clone failed");
+    let conn = Arc::new(
+        RemoteConn::new(for_conn, "build-box".to_owned(), "tok".to_owned(), None)
+            .expect("conn failed"),
+    );
+    let reader = RemoteReader::new(conn.clone(), ours).expect("reader failed");
+    (reader, conn, theirs)
+}
+
+fn send(peer: &mut UnixStream, bytes: &[u8]) {
+    peer.write_all(bytes).expect("peer write failed");
+    peer.flush().expect("peer flush failed");
+}
+
+async fn read_to_string(reader: &mut RemoteReader, want: usize) -> String {
+    let mut got = Vec::new();
+    while got.len() < want {
+        let mut buf = [0u8; 1024];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8_lossy(&got).into_owned()
+}
+
+#[tokio::test]
+async fn output_frames_arrive_as_plain_pty_bytes() {
+    let (mut reader, _conn, mut peer) = reader_pair();
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"hello ").expect("frame failed");
+    write_output(&mut framed, b"world").expect("frame failed");
+    send(&mut peer, &framed);
+
+    assert_eq!(read_to_string(&mut reader, 11).await, "hello world");
+}
+
+/// Frames are split across reads routinely over a network, so the decoder must
+/// hold a partial frame rather than mistaking it for a corrupt one.
+#[tokio::test]
+async fn a_frame_split_across_reads_is_reassembled() {
+    let (mut reader, _conn, mut peer) = reader_pair();
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"split payload").expect("frame failed");
+
+    let (head, tail) = framed.split_at(5);
+    send(&mut peer, head);
+    let head = head.to_vec();
+    let tail = tail.to_vec();
+    let handle = tokio::task::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = head;
+        send(&mut peer, &tail);
+        peer
+    });
+
+    assert_eq!(read_to_string(&mut reader, 13).await, "split payload");
+    handle.await.expect("peer task failed");
+}
+
+/// The rule this whole type exists to enforce. `TerminalBytes` reads `Ok(0)` as
+/// EOF and tears the pane down, killing the child — so a transport failure must
+/// surface as an error instead, leaving the still-running remote process alone.
+#[tokio::test]
+async fn a_transport_loss_is_not_reported_as_a_child_exit() {
+    let (mut reader, conn, peer) = reader_pair();
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    let err = reader
+        .read(&mut buf)
+        .await
+        .expect_err("a transport loss must not look like EOF");
+    assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+    assert!(conn.transport_lost());
+    assert_eq!(
+        conn.child_exit(),
+        None,
+        "no exit status should be invented for a dropped connection"
+    );
+}
+
+/// The other half of the same rule: a real exit *is* EOF, so the pane closes
+/// normally and `quit_cb` fires with the true status.
+#[tokio::test]
+async fn a_reported_child_exit_ends_the_stream_cleanly() {
+    let (mut reader, conn, mut peer) = reader_pair();
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"bye").expect("frame failed");
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: Some(130) },
+    )
+    .expect("frame failed");
+    send(&mut peer, &framed);
+    drop(peer);
+
+    // The child's last output is delivered before the EOF, not discarded with it.
+    assert_eq!(read_to_string(&mut reader, 3).await, "bye");
+    let mut buf = [0u8; 64];
+    assert_eq!(reader.read(&mut buf).await.expect("read failed"), 0);
+    assert_eq!(conn.child_exit(), Some(Some(130)));
+}
+
+/// A recorder for what the pane's end was reported as, and how often.
+fn exit_recorder() -> (Arc<Mutex<Vec<Option<i32>>>>, QuitCb) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let cb: QuitCb = Box::new(move |_pane_id, status, _cmd| {
+        sink.lock().expect("poisoned").push(status);
+    });
+    (seen, cb)
+}
+
+/// `TerminalBytes::listen` only breaks its loop at `Ok(0)`; the instruction that
+/// actually retires the pane comes from this callback and nowhere else. A remote
+/// pane that never fires it sits on screen, dead, until the user closes it.
+#[tokio::test]
+async fn a_child_exit_is_reported_to_the_pty_thread() {
+    let (reader, _conn, mut peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: Some(3) },
+    )
+    .expect("frame failed");
+    send(&mut peer, &framed);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    assert_eq!(reader.read(&mut buf).await.expect("read failed"), 0);
+    assert_eq!(
+        *seen.lock().expect("poisoned"),
+        vec![Some(3)],
+        "the child's exit never reached the pty thread, so nothing will close the pane"
+    );
+}
+
+/// Giving up on a reconnect ends the pane just as surely as the child exiting,
+/// and has to be reported the same way — with no status, exactly as a dead
+/// supervisor is reported on the local path.
+#[tokio::test]
+async fn giving_up_on_a_reconnect_is_reported_as_the_end_of_the_pane() {
+    let (reader, _conn, peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    // No reconnector, so the first transport loss is terminal.
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    reader
+        .read(&mut buf)
+        .await
+        .expect_err("an unreconnectable transport loss must surface as an error");
+    assert_eq!(
+        *seen.lock().expect("poisoned"),
+        vec![None],
+        "a pane that can never come back was left on screen with nothing to close it"
+    );
+}
+
+/// Two exits would close a pane twice, and the second may land on whatever pane
+/// has since taken the id.
+#[tokio::test]
+async fn the_end_of_a_pane_is_reported_only_once() {
+    let (reader, _conn, mut peer) = reader_pair();
+    let (seen, cb) = exit_recorder();
+    let mut reader = reader.on_exit(7, RunCommand::default(), cb);
+
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: None },
+    )
+    .expect("frame failed");
+    send(&mut peer, &framed);
+    drop(peer);
+
+    let mut buf = [0u8; 64];
+    for _ in 0..3 {
+        assert_eq!(reader.read(&mut buf).await.expect("read failed"), 0);
+    }
+    assert_eq!(
+        seen.lock().expect("poisoned").len(),
+        1,
+        "the pane's end was reported more than once"
+    );
+}
+
+/// Status is cached from the broker's own machine, because the local server
+/// cannot inspect a process it does not have.
+#[tokio::test]
+async fn a_status_report_updates_the_cache_without_disturbing_the_stream() {
+    let (mut reader, conn, mut peer) = reader_pair();
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::StatusReport {
+            cwd: Some("/home/me/work".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    )
+    .expect("frame failed");
+    write_output(&mut framed, b"prompt$ ").expect("frame failed");
+    send(&mut peer, &framed);
+
+    assert_eq!(read_to_string(&mut reader, 8).await, "prompt$ ");
+    let status = conn.status();
+    assert_eq!(status.cwd.as_deref(), Some("/home/me/work"));
+    assert_eq!(status.foreground_argv, Some(vec!["claude".to_owned()]));
+}
+
+/// A caller's buffer is whatever size it is; a frame larger than it must be
+/// handed over across several reads rather than truncated.
+#[tokio::test]
+async fn output_larger_than_the_callers_buffer_is_not_truncated() {
+    let (mut reader, _conn, mut peer) = reader_pair();
+    let payload = vec![b'z'; 4096];
+    let mut framed = Vec::new();
+    write_output(&mut framed, &payload).expect("frame failed");
+    send(&mut peer, &framed);
+
+    let mut got = Vec::new();
+    while got.len() < payload.len() {
+        let mut buf = [0u8; 100];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        assert!(n > 0, "unexpected EOF part way through a payload");
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, payload);
+}
+
+// ---- reconnect ----
+//
+// The point of all of this: a dropped link must not end a pane whose process is
+// still running on the other machine.
+
+use crate::pty_host::remote::conn::{Reconnected, Reconnector};
+use std::sync::mpsc;
+use std::sync::Mutex;
+
+/// Hands back a fresh socketpair each time, and tells the test about it so it
+/// can play the broker on the other end.
+struct TestReconnector {
+    peers: mpsc::Sender<UnixStream>,
+    dropped: u64,
+    /// The `received` value each reconnect was asked to resume from — the number
+    /// a real broker would replay from.
+    seen: Mutex<Vec<u64>>,
+    fail_first: Mutex<u32>,
+}
+
+impl Reconnector for TestReconnector {
+    fn reconnect(
+        &self,
+        _host: &str,
+        _pane_token: &str,
+        received: u64,
+    ) -> zellij_utils::errors::prelude::Result<Reconnected> {
+        {
+            let mut fails = self.fail_first.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err(zellij_utils::errors::prelude::anyhow!("still down"));
+            }
+        }
+        self.seen.lock().unwrap().push(received);
+        let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+        let read_socket = ours.try_clone().expect("clone failed");
+        self.peers.send(theirs).expect("peer send failed");
+        Ok(Reconnected {
+            write_socket: ours,
+            read_socket,
+            dropped: self.dropped,
+        })
+    }
+}
+
+type ReconnectingPair = (
+    RemoteReader,
+    Arc<RemoteConn>,
+    UnixStream,
+    mpsc::Receiver<UnixStream>,
+    Arc<TestReconnector>,
+);
+
+fn reconnecting_pair(dropped: u64, fail_first: u32) -> ReconnectingPair {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let for_conn = ours.try_clone().expect("clone failed");
+    let (peer_tx, peer_rx) = mpsc::channel();
+    let reconnector = Arc::new(TestReconnector {
+        peers: peer_tx,
+        dropped,
+        seen: Mutex::new(Vec::new()),
+        fail_first: Mutex::new(fail_first),
+    });
+    let conn = Arc::new(
+        RemoteConn::new(
+            for_conn,
+            "build-box".to_owned(),
+            "tok".to_owned(),
+            Some(reconnector.clone() as Arc<dyn Reconnector>),
+        )
+        .expect("conn failed"),
+    );
+    let reader = RemoteReader::new(conn.clone(), ours).expect("reader failed");
+    (reader, conn, theirs, peer_rx, reconnector)
+}
+
+/// Serve replayed bytes on whichever socket the next reconnect produces.
+fn answer_next_reconnect(peer_rx: mpsc::Receiver<UnixStream>, replay: &'static [u8]) {
+    std::thread::spawn(move || {
+        if let Ok(mut peer) = peer_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            let mut framed = Vec::new();
+            write_output(&mut framed, replay).expect("frame failed");
+            let _ = peer.write_all(&framed);
+            let _ = peer.flush();
+            // Hold the socket open, or the reader would see another EOF.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+}
+
+#[tokio::test]
+async fn a_dropped_link_reconnects_instead_of_ending_the_pane() {
+    let (mut reader, conn, mut peer, peer_rx, _rc) = reconnecting_pair(0, 0);
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"before").expect("frame failed");
+    send(&mut peer, &framed);
+    assert_eq!(read_to_string(&mut reader, 6).await, "before");
+
+    answer_next_reconnect(peer_rx, b"after");
+    drop(peer);
+
+    // Everything from here is the reconnect: a notice, then the pane's output
+    // again. Crucially, not `Ok(0)` and not an error.
+    let mut got = String::new();
+    while !got.contains("after") {
+        let mut buf = [0u8; 256];
+        let n = reader
+            .read(&mut buf)
+            .await
+            .expect("a dropped link must not end the pane");
+        assert!(n > 0, "a dropped link must not look like EOF");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(
+        got.contains("disconnected"),
+        "the user should be told: {got}"
+    );
+    assert!(
+        got.contains("reconnected"),
+        "and told when it came back: {got}"
+    );
+    assert_eq!(
+        conn.child_exit(),
+        None,
+        "no exit status may be invented for a transport failure"
+    );
+}
+
+/// A resize made while the link was down never reached the broker: the send
+/// failed on a broken connection and the outbound queues were cleared behind it.
+/// Nothing else will ever mention it either — the size is only sent when it
+/// changes — so the reconnect has to, or the remote application keeps drawing at
+/// the old shape inside a grid that has since changed.
+#[tokio::test]
+async fn a_resize_made_during_an_outage_is_sent_again_on_reconnect() {
+    let (mut reader, conn, peer, peer_rx, _rc) = reconnecting_pair(0, 0);
+    conn.resize(WireWinsize {
+        cols: 80,
+        rows: 24,
+        width_in_pixels: 0,
+        height_in_pixels: 0,
+    })
+    .expect("the first resize goes over a healthy link");
+
+    // The link dies, and the user reshapes the window while it is down.
+    drop(peer);
+    let taken = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = taken.clone();
+    std::thread::spawn(move || {
+        if let Ok(peer) = peer_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            *sink.lock().expect("poisoned") = Some(peer);
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+
+    let mut buf = [0u8; 256];
+    let read = reader.read(&mut buf);
+    tokio::pin!(read);
+    // Resize into the outage: `last_size` records it, the send cannot land.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = conn.resize(WireWinsize {
+        cols: 120,
+        rows: 40,
+        width_in_pixels: 0,
+        height_in_pixels: 0,
+    });
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut read).await;
+
+    // Whatever the broker is told after the reconnect must include the new size.
+    let mut peer = taken
+        .lock()
+        .expect("poisoned")
+        .take()
+        .expect("the reconnect never produced a socket");
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .expect("failed to set a read timeout");
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = peer.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        seen.extend_from_slice(&chunk[..n]);
+        if seen.len() > 2048 {
+            break;
+        }
+    }
+    let resized_to_the_new_size = std::iter::successors(Some(seen.as_slice()), |rest| {
+        protocol::try_decode_frame(rest)
+            .ok()
+            .flatten()
+            .map(|(_, consumed)| &rest[consumed..])
+    })
+    .filter_map(|rest| protocol::try_decode_frame(rest).ok().flatten())
+    .any(|(frame, _)| {
+        matches!(
+            frame.decode_control::<ServerToBrokerMsg>(),
+            Ok(ServerToBrokerMsg::Resize(size)) if size.cols == 120 && size.rows == 40
+        )
+    });
+    assert!(
+        resized_to_the_new_size,
+        "the size the pane was given during the outage never reached the broker, so the \
+         remote application is still drawing at the old one"
+    );
+}
+
+/// The accounting the replay depends on. Notices this side made up must not
+/// count as delivered output, or the broker resumes from the wrong offset and
+/// silently skips real bytes.
+#[tokio::test]
+async fn injected_notices_do_not_count_as_delivered_output() {
+    let (mut reader, conn, mut peer, peer_rx, rc) = reconnecting_pair(0, 0);
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"0123456789").expect("frame failed");
+    send(&mut peer, &framed);
+    assert_eq!(read_to_string(&mut reader, 10).await, "0123456789");
+    assert_eq!(conn.received(), 10);
+
+    answer_next_reconnect(peer_rx, b"more");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("more") {
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+
+    // The reconnect must have asked to resume from 10 — the real bytes taken —
+    // not from 10 plus the length of the banners.
+    let seen = rc.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![10],
+        "resumed from the wrong offset; synthetic bytes leaked into the count"
+    );
+    assert_eq!(
+        conn.received(),
+        14,
+        "only real output counts: 10 before, 4 after"
+    );
+}
+
+/// A replay with a hole cannot be spliced into the grid — it would look like
+/// real output. Clear the screen and say so instead.
+#[tokio::test]
+async fn a_lossy_replay_clears_the_screen_and_says_so() {
+    let (mut reader, _conn, peer, peer_rx, _rc) = reconnecting_pair(4096, 0);
+    answer_next_reconnect(peer_rx, b"fresh");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("fresh") {
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).await.expect("read failed");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(
+        got.contains("\x1b[2J"),
+        "a lossy replay must clear the grid rather than splice a torn stream: {got:?}"
+    );
+    assert!(
+        got.contains("4096 bytes of output were lost"),
+        "and must say how much was lost: {got}"
+    );
+}
+
+/// A link that is down for a moment is the ordinary case, so one failure must
+/// not end the pane.
+#[tokio::test]
+async fn a_reconnect_retries_before_giving_up() {
+    let (mut reader, _conn, peer, peer_rx, rc) = reconnecting_pair(0, 2);
+    answer_next_reconnect(peer_rx, b"eventually");
+    drop(peer);
+
+    let mut got = String::new();
+    while !got.contains("eventually") {
+        let mut buf = [0u8; 256];
+        let n = reader
+            .read(&mut buf)
+            .await
+            .expect("two failures must not end the pane");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert_eq!(
+        *rc.fail_first.lock().unwrap(),
+        0,
+        "both scheduled failures should have been consumed"
+    );
+}

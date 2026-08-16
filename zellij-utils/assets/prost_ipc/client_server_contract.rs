@@ -1746,6 +1746,9 @@ pub struct RunCommandAction {
     /// Added missing use_terminal_title field
     #[prost(bool, tag="8")]
     pub use_terminal_title: bool,
+    /// The machine this command runs on, if not this one
+    #[prost(string, optional, tag="9")]
+    pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

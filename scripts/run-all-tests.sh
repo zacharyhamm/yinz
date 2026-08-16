@@ -9,6 +9,7 @@
 #   scripts/run-all-tests.sh              # everything
 #   scripts/run-all-tests.sh --skip-build # straight to the tests
 #   scripts/run-all-tests.sh --with-e2e   # add the dockerized e2e suite
+#   scripts/run-all-tests.sh --with-remote # add the remote-pane suite (real ssh)
 #   scripts/run-all-tests.sh --with-ignored # include ignored tests
 #
 # Logs land in target/test-logs/<timestamp>/ — one file per gate, plus
@@ -20,11 +21,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 skip_build=0
 with_e2e=0
+with_remote=0
 with_ignored=0
 for arg in "$@"; do
   case "$arg" in
     --skip-build) skip_build=1 ;;
     --with-e2e) with_e2e=1 ;;
+    --with-remote) with_remote=1 ;;
     --with-ignored) with_ignored=1 ;;
     -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' \
       "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -52,6 +55,12 @@ gates+=(
   "xtask	cargo test -p xtask"
 )
 [[ $with_e2e -eq 1 ]] && gates+=("e2e	cargo x ci e2e --test")
+# Two gates, because the containers have to be up before the tests can run and
+# the build gate is where that happens.
+[[ $with_remote -eq 1 ]] && gates+=(
+  "remote-test-build	cargo x remote-test --build"
+  "remote-test	cargo x remote-test --test"
+)
 
 failed=()
 printf 'Test run: %s\n\n' "$(date)" | tee "$summary"

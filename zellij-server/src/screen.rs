@@ -558,6 +558,9 @@ pub enum ScreenInstruction {
     /// loaded yet, or that missed the event, had no second way to find out and
     /// stayed wrong about the pane for as long as it lived.
     UpdatePaneCwd(u32, Option<PathBuf>),
+    /// The machine a pane's process runs on, for panes that are not local.
+    /// Sent once when the pane is created and once when it closes.
+    UpdatePaneHost(u32, Option<String>),
     UndoRenamePane(ClientId, Option<NotificationEnd>),
     NewTab(
         Option<PathBuf>,
@@ -1200,6 +1203,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::HoldPane(..) => ScreenContext::HoldPane,
             ScreenInstruction::UpdatePaneName(..) => ScreenContext::UpdatePaneName,
             ScreenInstruction::UpdatePaneCwd(..) => ScreenContext::UpdatePaneCwd,
+            ScreenInstruction::UpdatePaneHost(..) => ScreenContext::UpdatePaneHost,
             ScreenInstruction::UndoRenamePane(..) => ScreenContext::UndoRenamePane,
             ScreenInstruction::NewTab(..) => ScreenContext::NewTab,
             ScreenInstruction::ApplyLayout(..) => ScreenContext::ApplyLayout,
@@ -1724,6 +1728,9 @@ pub(crate) struct Screen {
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
     terminal_cwds: HashMap<u32, PathBuf>,
+    /// The machine each remote pane runs on. Absent for local panes, which is
+    /// nearly all of them.
+    terminal_hosts: HashMap<u32, String>,
     pub(crate) global_panes: GlobalPaneManager,
     last_single_pane_tab_names: HashMap<usize, Option<String>>,
     pixel_dimensions: PixelDimensions,
@@ -1991,6 +1998,7 @@ impl Screen {
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
+            terminal_hosts: HashMap::new(),
             global_panes,
             last_single_pane_tab_names: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
@@ -6515,6 +6523,7 @@ impl Screen {
                 .terminal_cwds
                 .get(&pane_info.id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
+            pane_info.host = self.terminal_hosts.get(&pane_info.id).cloned();
         }
         let mut plugin_updates = vec![];
         let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
@@ -12822,6 +12831,15 @@ pub(crate) fn screen_thread_main(
                     |tab: &mut Tab, client_id: ClientId| tab.update_active_pane_name(c, client_id), ?
                 );
                 screen.render(None)?;
+                screen.log_and_report_session_state()?;
+            },
+            ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
+                // A pane's host never changes while it lives, so this arrives
+                // once when it is created and once more when it is closed.
+                match host {
+                    Some(host) => screen.terminal_hosts.insert(terminal_id, host),
+                    None => screen.terminal_hosts.remove(&terminal_id),
+                };
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {

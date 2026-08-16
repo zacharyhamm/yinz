@@ -165,6 +165,10 @@ fn new_pane_cli_action(
         name: None,
         close_on_exit,
         start_suspended,
+        // Local. A pane on another machine needs a real ssh and a real machine
+        // to be on, neither of which this in-process harness has — that is what
+        // `zellij-server/tests/remote_pane_ssh.rs` is for.
+        remote_host: None,
         configuration: None,
         skip_plugin_cache: false,
         x: None,

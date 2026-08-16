@@ -1192,6 +1192,7 @@ impl Action {
             CliAction::NewPane {
                 direction,
                 command,
+                remote_host,
                 plugin,
                 cwd,
                 floating,
@@ -1287,6 +1288,7 @@ impl Action {
                             direction,
                             hold_on_close,
                             hold_on_start,
+                            remote_host,
                             ..Default::default()
                         })
                     } else {
@@ -1397,6 +1399,7 @@ impl Action {
                         direction,
                         hold_on_close,
                         hold_on_start,
+                        remote_host,
                         ..Default::default()
                     };
                     if floating {
@@ -3349,6 +3352,7 @@ mod tests {
     #[test]
     fn test_new_pane_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: Some(Direction::Right),
             command: vec![],
             plugin: None,
@@ -3396,6 +3400,7 @@ mod tests {
     #[test]
     fn test_new_pane_tiled_without_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3443,6 +3448,7 @@ mod tests {
     #[test]
     fn test_new_in_place_pane_with_pane_id_to_replace() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3492,6 +3498,7 @@ mod tests {
     #[test]
     fn test_new_in_place_pane_with_malformed_pane_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3532,6 +3539,7 @@ mod tests {
     #[test]
     fn test_new_pane_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3579,6 +3587,7 @@ mod tests {
     #[test]
     fn test_new_pane_stacked_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -3626,6 +3635,7 @@ mod tests {
     #[test]
     fn test_new_pane_blocking_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -3737,6 +3747,7 @@ mod tests {
     #[test]
     fn test_new_pane_plugin_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),
@@ -3784,6 +3795,7 @@ mod tests {
     #[test]
     fn test_new_pane_plugin_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
+            remote_host: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),

@@ -27,6 +27,7 @@ use std::{
 };
 
 use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
@@ -1479,6 +1480,7 @@ impl Pty {
 
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.report_terminal_host(terminal_id);
         if let Some(child_pid) = child_pid {
             self.id_to_child_pid.insert(terminal_id, child_pid);
             self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
@@ -1737,6 +1739,7 @@ impl Pty {
                     });
                     self.task_handles.insert(terminal_id, terminal_bytes);
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
+                    self.report_terminal_host(terminal_id);
                 },
                 _ => match run_command {
                     Some(run_command) => {
@@ -1915,6 +1918,7 @@ impl Pty {
                     });
                     self.task_handles.insert(terminal_id, terminal_bytes);
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
+                    self.report_terminal_host(terminal_id);
                 },
                 _ => match run_command {
                     Some(run_command) => {
@@ -2187,6 +2191,42 @@ impl Pty {
             Some(Run::Plugin(_)) => Ok(None),
         }
     }
+    /// Deliver a signal to a pane's child, wherever that child lives.
+    ///
+    /// The remote check comes first, and deliberately so. For a remote pane
+    /// `id_to_child_pid` holds nothing usable, and a pid from another machine is
+    /// worse than no pid at all: pid spaces are per-machine, so it names some
+    /// unrelated *local* process, and a `SIGKILL` meant for a pane lands on it.
+    /// Asking "is this pane remote" before "what is its pid" is what keeps that
+    /// from being possible.
+    fn signal_pane_child(&self, terminal_id: u32, signal: ChildSignal) {
+        let err_context = || format!("failed to send {signal:?} to pane {terminal_id}");
+        let os_input = match self.bus.os_input.as_ref() {
+            Some(os_input) => os_input,
+            None => return,
+        };
+        if os_input.is_remote_pane(terminal_id) {
+            os_input
+                .signal_remote_child(terminal_id, signal)
+                .with_context(err_context)
+                .non_fatal();
+            return;
+        }
+        match self.id_to_child_pid.get(&terminal_id) {
+            Some(&child_pid) => {
+                let result = match signal {
+                    ChildSignal::Hup => os_input.kill(child_pid),
+                    ChildSignal::Int => os_input.send_sigint(child_pid),
+                    ChildSignal::Kill => os_input.force_kill(child_pid),
+                };
+                result.with_context(err_context).non_fatal();
+            },
+            None => {
+                log::warn!("Terminal pane {terminal_id} not found or not running");
+            },
+        }
+    }
+
     pub fn close_pane(&mut self, id: PaneId) -> Result<()> {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
@@ -2194,19 +2234,13 @@ impl Pty {
                 if let Some(handle) = self.task_handles.remove(&id) {
                     handle.abort();
                 }
-                if let Some(child_pid) = self.id_to_child_pid.remove(&id) {
-                    let err_context = || format!("failed to kill child processes for pane {id}");
-                    self.bus
-                        .os_input
-                        .as_mut()
-                        .with_context(err_context)
-                        .fatal()
-                        .kill(child_pid)
-                        .with_context(err_context)
-                        .non_fatal();
-                }
+                // Signal before forgetting the pid: the helper needs it, and for
+                // a remote pane there is no pid to forget in the first place.
+                self.signal_pane_child(id, ChildSignal::Hup);
+                self.id_to_child_pid.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
+                self.forget_terminal_host(id);
                 self.terminal_cmds.remove(&id);
                 self.terminal_foreground_cmds.remove(&id);
                 self.bus
@@ -2334,6 +2368,7 @@ impl Pty {
 
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.report_terminal_host(terminal_id);
         self.id_to_child_pid.insert(terminal_id, child_pid);
         // No requested cwd: an adopted pane asked for nothing, and its process
         // has been running long enough that the OS answers reliably.
@@ -2689,6 +2724,31 @@ impl Pty {
     /// Terminal ids are handed out again after a pane closes, so a folder left
     /// behind here is not merely wasted space — it is the wrong answer for
     /// whichever pane inherits the id.
+    /// Tell Screen which machine a pane runs on, so it can reach the plugins
+    /// that decide what a pane *is* — two panes in the same folder on different
+    /// machines are in different folders, and anything keying on the path alone
+    /// would merge them.
+    fn report_terminal_host(&mut self, terminal_id: u32) {
+        let host = self
+            .bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.remote_pane_host(terminal_id));
+        if host.is_some() {
+            let _ = self
+                .bus
+                .senders
+                .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
+        }
+    }
+
+    fn forget_terminal_host(&mut self, terminal_id: u32) {
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None));
+    }
+
     fn forget_terminal_cwd(&mut self, terminal_id: u32) {
         if self.terminal_cwds.remove(&terminal_id).is_some() {
             let _ = self
@@ -2727,7 +2787,13 @@ impl Pty {
     pub fn update_and_report_cwds(&mut self) {
         use std::sync::atomic::Ordering;
 
-        let active_terminal_ids: Vec<u32> = self
+        // Local panes are gated on having produced output, because inspecting
+        // them costs a `sysinfo` refresh per pane. Remote panes are not: their
+        // information is pushed up by the broker on its own ticker and is
+        // already sitting in a local cache, so re-reading it costs nothing —
+        // which also means a silent remote agent, one sitting at its prompt
+        // producing nothing, stays visible where a local one would go stale.
+        let active_local: Vec<u32> = self
             .id_to_child_pid
             .keys()
             .copied()
@@ -2738,12 +2804,18 @@ impl Pty {
                     .unwrap_or(false)
             })
             .collect();
+        let remote_ids: Vec<u32> = self
+            .bus
+            .os_input
+            .as_ref()
+            .map(|os_input| os_input.remote_pane_ids())
+            .unwrap_or_default();
 
-        if active_terminal_ids.is_empty() {
+        if active_local.is_empty() && remote_ids.is_empty() {
             return;
         }
 
-        let pids: Vec<_> = active_terminal_ids
+        let pids: Vec<_> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id))
             .copied()
@@ -2756,7 +2828,7 @@ impl Pty {
             .map(|os_input| os_input.get_cwds(pids))
             .unwrap_or_default();
 
-        for terminal_id in &active_terminal_ids {
+        for terminal_id in &active_local {
             let process_id = self.id_to_child_pid.get(terminal_id).copied();
             let cwd = process_id.and_then(|pid| pids_to_cwds.get(&pid).cloned());
             let cmd = process_id.and_then(|pid| pids_to_cmds.get(&pid).cloned());
@@ -2769,16 +2841,47 @@ impl Pty {
             }
         }
 
-        let panes: Vec<(u32, u32)> = active_terminal_ids
+        let panes: Vec<(u32, u32)> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
-        let foreground_cmds = self
+        let mut foreground_cmds = self
             .bus
             .os_input
             .as_ref()
             .map(|os_input| os_input.get_foreground_cmds(&panes, &self.post_command_discovery_hook))
             .unwrap_or_default();
+
+        // The same three facts for a remote pane, from the broker's report
+        // rather than from this machine's process table. Everything downstream
+        // is identical, which is what lets agent detection — pure string
+        // matching over argv — work on a remote pane with no changes at all.
+        for terminal_id in &remote_ids {
+            let status = match self
+                .bus
+                .os_input
+                .as_ref()
+                .and_then(|os_input| os_input.remote_pane_status(*terminal_id))
+            {
+                Some(status) => status,
+                None => continue,
+            };
+            if let Some(cwd) = status.cwd {
+                self.set_terminal_cwd(*terminal_id, PathBuf::from(cwd));
+            }
+            if let Some(shell_argv) = status.shell_argv {
+                self.terminal_cmds.insert(*terminal_id, shell_argv);
+            }
+            if let Some(foreground) = status.foreground_argv {
+                foreground_cmds.insert(*terminal_id, foreground);
+            }
+        }
+
+        let active_terminal_ids: Vec<u32> = active_local
+            .iter()
+            .copied()
+            .chain(remote_ids.iter().copied())
+            .collect();
 
         for terminal_id in &active_terminal_ids {
             let foreground_cmd: Vec<String> = foreground_cmds
@@ -2842,21 +2945,9 @@ impl Pty {
     }
 
     pub fn send_sigint_to_pane(&self, pane_id: PaneId) {
-        let err_context = || format!("failed to send SIGINT to pane {:?}", pane_id);
-
         match pane_id {
             PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    self.bus
-                        .os_input
-                        .as_ref()
-                        .context("no OS I/O interface found")
-                        .and_then(|os_input| os_input.send_sigint(child_pid))
-                        .with_context(err_context)
-                        .non_fatal();
-                } else {
-                    log::warn!("Terminal pane {} not found or not running", terminal_id);
-                }
+                self.signal_pane_child(terminal_id, ChildSignal::Int);
             },
             PaneId::Plugin(plugin_id) => {
                 log::warn!("Cannot send SIGINT to plugin pane {}", plugin_id);
@@ -2865,21 +2956,9 @@ impl Pty {
     }
 
     pub fn send_sigkill_to_pane(&self, pane_id: PaneId) {
-        let err_context = || format!("failed to send SIGKILL to pane {:?}", pane_id);
-
         match pane_id {
             PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    self.bus
-                        .os_input
-                        .as_ref()
-                        .context("no OS I/O interface found")
-                        .and_then(|os_input| os_input.force_kill(child_pid))
-                        .with_context(err_context)
-                        .non_fatal();
-                } else {
-                    log::warn!("Terminal pane {} not found or not running", terminal_id);
-                }
+                self.signal_pane_child(terminal_id, ChildSignal::Kill);
             },
             PaneId::Plugin(plugin_id) => {
                 log::warn!("Cannot send SIGKILL to plugin pane {}", plugin_id);
@@ -2890,6 +2969,21 @@ impl Pty {
     pub fn get_pane_pid(&self, pane_id: PaneId) -> GetPanePidResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // A remote pane's pid is meaningful only on its own machine.
+                // Handing it to a plugin invites exactly the mistake this whole
+                // boundary exists to prevent — the plugin would `kill` or `stat`
+                // whatever local process happens to hold that number.
+                if self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .is_some_and(|os_input| os_input.is_remote_pane(terminal_id))
+                {
+                    return GetPanePidResponse::Err(format!(
+                        "Terminal pane {terminal_id} runs on another machine, so it has no pid \
+                         meaningful on this one"
+                    ));
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     GetPanePidResponse::Ok(child_pid as i32)
                 } else {
@@ -2907,6 +3001,24 @@ impl Pty {
     pub fn get_pane_running_command(&self, pane_id: PaneId) -> GetPaneRunningCommandResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // `hocus-agentd` calls this directly to repair panes the
+                // activity-flag poll missed, so a remote pane has to answer it
+                // too — otherwise a remote agent would only ever be classified
+                // from its title.
+                if let Some(status) = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.remote_pane_status(terminal_id))
+                {
+                    return match status.foreground_argv.or(status.shell_argv) {
+                        Some(argv) => GetPaneRunningCommandResponse::Ok(argv),
+                        None => GetPaneRunningCommandResponse::Err(format!(
+                            "the machine hosting terminal pane {terminal_id} has not reported \
+                             its running command yet"
+                        )),
+                    };
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     // Query OS for current running command
                     if let Some(os_input) = self.bus.os_input.as_ref() {
@@ -2950,6 +3062,24 @@ impl Pty {
     pub fn get_pane_cwd(&self, pane_id: PaneId) -> GetPaneCwdResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
+                // A remote pane's cwd is a path on *its* machine. Reported as-is:
+                // rewriting it would be a lie, and the plugins that consume it
+                // pair it with the host when deciding which project it belongs
+                // to.
+                if let Some(status) = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.remote_pane_status(terminal_id))
+                {
+                    return match status.cwd {
+                        Some(cwd) => GetPaneCwdResponse::Ok(PathBuf::from(cwd)),
+                        None => GetPaneCwdResponse::Err(format!(
+                            "the machine hosting terminal pane {terminal_id} has not reported \
+                             its working directory yet"
+                        )),
+                    };
+                }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
                     // Query OS for current working directory
                     if let Some(os_input) = self.bus.os_input.as_ref() {

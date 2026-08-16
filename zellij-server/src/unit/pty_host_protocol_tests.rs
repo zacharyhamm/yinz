@@ -15,6 +15,7 @@ fn sample_run_command() -> RunCommand {
         hold_on_start: false,
         originating_plugin: None,
         use_terminal_title: true,
+        remote_host: None,
     }
 }
 
@@ -196,6 +197,7 @@ fn run_commands(tc: &hegel::TestCase) -> RunCommand {
         hold_on_start: tc.draw(generators::booleans()),
         originating_plugin: None,
         use_terminal_title: tc.draw(generators::booleans()),
+        remote_host: None,
     }
 }
 
@@ -637,6 +639,7 @@ fn a_full_ring_fits_in_one_frame() {
             hold_on_start: false,
             originating_plugin: None,
             use_terminal_title: false,
+            remote_host: None,
         },
         status: HostStatus {
             host_id: "a3f1c2d4e5b6".to_owned(),

@@ -57,6 +57,13 @@ pub struct AgentPane {
     pub command: Option<String>,
     /// The current folder reported by Zellij.
     pub cwd: Option<String>,
+    /// The machine the pane runs on, when it is not this one.
+    ///
+    /// Part of the pane's identity rather than decoration: `/home/me/work` on
+    /// two machines are two different folders, and an agent you are about to
+    /// send input to is on one of them specifically.
+    #[serde(default)]
+    pub host: Option<String>,
     pub status: AgentStatus,
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
@@ -318,8 +325,16 @@ pub fn strip_rows(
         .iter()
         .filter_map(|pane| {
             let (kind, _) = classify(pane, manual)?;
+            // The host rides on the kind rather than in a column of its own:
+            // it is absent for nearly every agent, and a column that is usually
+            // blank costs width in a sidebar that has none to spare. `@host`
+            // also reads the way a host is written everywhere else.
+            let kind_cell = match &pane.host {
+                Some(host) => format!("{kind}@{host}"),
+                None => kind.to_owned(),
+            };
             let mut row = format!(
-                "{:>3}  {kind}  {}",
+                "{:>3}  {kind_cell}  {}",
                 pane.pane_id,
                 status_cell(pane.status, activity.get(&pane.pane_id))
             );
@@ -586,6 +601,7 @@ mod tests {
             title: title.to_owned(),
             command: command.map(str::to_owned),
             cwd: None,
+            host: None,
             status: AgentStatus::Running,
             tab: None,
             detected: None,
@@ -1059,6 +1075,34 @@ mod tests {
                 agent(5, "  5  aider  running  tab 1"),
                 branch("topic"),
                 agent(4, "  4  claude  running  tab 2"),
+            ],
+        );
+    }
+
+    /// An agent on another machine has to say so on its own line. Which machine
+    /// you are about to send input to is not decoration — two agents in the same
+    /// folder on different hosts are doing different work.
+    #[test]
+    fn strip_rows_name_the_host_of_a_remote_agent() {
+        let mut remote = pane(3, "", Some("claude"));
+        remote.host = Some("build-box".to_owned());
+        let local = pane(4, "", Some("claude"));
+
+        let rows = strip_rows(
+            &[remote, local],
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[]),
+            &branches(&[]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                project("no project"),
+                branch("no branch"),
+                agent(3, "  3  claude@build-box  running"),
+                agent(4, "  4  claude  running"),
             ],
         );
     }
