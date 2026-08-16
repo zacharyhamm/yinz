@@ -7,7 +7,7 @@
 
 mod poll;
 
-use hocus_proto::panes::{focused_pane, terminal_panes};
+use hocus_proto::panes::{focused_pane, manifest_pane_ids, terminal_panes};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +31,13 @@ const CWD_REPAIRS_PER_TICK: usize = 4;
 /// so this budget is spent on a rotation rather than only on the panes we know
 /// nothing about — see `repair_commands_with`.
 const COMMAND_REPAIRS_PER_TICK: usize = 4;
+/// How many folders one pass will ask Git about.
+///
+/// Two processes per folder, and `resolve_repositories` runs on nearly every
+/// host event, so a session that opens twenty panes at once must not spawn forty
+/// gits in one breath. The leftovers are taken by the next event or the
+/// heartbeat; every filter in `repository_cwds` makes a repeated pass idempotent.
+const GIT_PROBES_PER_PASS: usize = 8;
 
 #[derive(Default)]
 struct State {
@@ -352,28 +359,49 @@ impl State {
             .filter(|pane| pane.status == agents::AgentStatus::Running)
             .map(|pane| pane.pane_id)
             .collect();
+        // The panes we were showing a moment ago, whatever their status. A pane
+        // missing from this was not one whose process we were watching, so
+        // nothing about it can have been re-run — see the drop below.
+        let was_shown: BTreeSet<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .map(|pane| pane.pane_id)
+            .collect();
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
         for pane in &mut panes {
             if let Some(command) = self.commands.get(&pane.pane_id) {
                 pane.command = Some(command.clone());
             }
         }
-        self.commands
-            .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-        self.cwds
-            .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
+        // Pruned against every pane the manifest carries, not against the ones
+        // worth showing. A suppressed pane is hidden behind something — the
+        // scrollback editor, most often — and comes back with the same id still
+        // running what it was running, so reading its absence from the visible
+        // list as "closed" cost it its folder, the branch probed from that
+        // folder, and the latch that made it an agent at all.
+        let live = manifest_pane_ids(&self.manifest);
+        self.commands.retain(|id, _| live.contains(id));
+        self.cwds.retain(|id, _| live.contains(id));
         // A pane that closes stops being an agent because it stops being in the
-        // snapshot — the same rule as the two maps above, which is what keeps
+        // manifest — the same rule as the two maps above, which is what keeps
         // the latch from being one more thing that can go stale.
-        self.latched
-            .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-        self.pending_release
-            .retain(|id| panes.iter().any(|pane| pane.pane_id == *id));
+        self.latched.retain(|id, _| live.contains(id));
+        self.pending_release.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
         // below re-earns it in the same breath if it really is running an agent.
+        //
+        // Only for a pane we were already showing: a re-run happens in place, so
+        // the pane never left the list. One arriving from somewhere else — a pane
+        // coming back from being suppressed — has been running all along, and
+        // reading it as a re-run would take the latch that survived the
+        // suppression in the first place.
         for pane in &panes {
-            if pane.status == agents::AgentStatus::Running && !was_running.contains(&pane.pane_id) {
+            if pane.status == agents::AgentStatus::Running
+                && was_shown.contains(&pane.pane_id)
+                && !was_running.contains(&pane.pane_id)
+            {
                 self.latched.remove(&pane.pane_id);
                 self.pending_release.remove(&pane.pane_id);
             }
@@ -556,16 +584,39 @@ impl State {
         self.start_git_probes(self.repository_cwds(true));
     }
 
+    /// The folders worth asking Git about on this pass.
+    ///
+    /// Every live pane's folder, not only the folders agents are in — the same
+    /// set `resolve_repositories` keys eviction on, so the two stop disagreeing
+    /// about what is worth keeping. The asymmetry was a real gap: a pane that
+    /// has not latched yet is in `cwds` but not in `agent_cwds`, so its folder
+    /// went unprobed, and hocus answered for it with the nearest folder *above*
+    /// it that had been probed. For a worktree nested inside its own checkout
+    /// that neighbour is the primary, and its branch is not this pane's.
+    ///
+    /// Agents first all the same: theirs are the folders a header is drawn from,
+    /// and the cap below is spent on them before anything else.
     fn repository_cwds(&self, refresh: bool) -> Vec<String> {
-        self.agent_cwds()
-            .into_iter()
-            .filter(|cwd| refresh || !self.repositories.contains_key(cwd))
+        let agents = self.agent_cwds();
+        let mut seen: BTreeSet<&String> = BTreeSet::new();
+        agents
+            .iter()
+            .chain(self.cwds.values())
+            // One folder can hold several panes, and an agent folder is in both
+            // halves of the chain.
+            .filter(|cwd| seen.insert(cwd))
+            .filter(|cwd| refresh || !self.repositories.contains_key(*cwd))
             // A probe already in flight answers for this folder either way, so
             // even a forced refresh must not start a second one.
-            .filter(|cwd| !self.git_probes.contains_key(cwd))
+            .filter(|cwd| !self.git_probes.contains_key(*cwd))
             // Nothing is cached for a probe that answered nothing, so without
             // this the next event would run it again immediately.
-            .filter(|cwd| !self.probe_backoff.contains_key(cwd))
+            .filter(|cwd| !self.probe_backoff.contains_key(*cwd))
+            // Two processes per folder, and this runs on nearly every host
+            // event. What is left over is picked up by the next event or the
+            // heartbeat, and every filter above makes the pass idempotent.
+            .take(GIT_PROBES_PER_PASS)
+            .cloned()
             .collect()
     }
 
@@ -824,6 +875,92 @@ mod tests {
         assert!(state.repository_cwds(true).is_empty());
     }
 
+    /// The window that made a nested worktree show the branch above it: a pane
+    /// that has not latched yet was in `cwds` but not in `agent_cwds`, so its
+    /// folder was never asked about, and hocus answered for it with the nearest
+    /// probed folder above — the primary checkout, on the primary's branch.
+    #[test]
+    fn a_folder_is_probed_before_its_pane_looks_like_an_agent() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "zsh", "/work")]),
+            cwds: BTreeMap::from([(7, "/work".to_owned())]),
+            ..State::default()
+        };
+        assert!(
+            agents::classify(&state.panes.as_ref().unwrap()[0], &state.manual_kinds).is_none(),
+            "nothing says this pane runs an agent yet",
+        );
+
+        assert_eq!(state.repository_cwds(false), vec!["/work"]);
+
+        // And it is still asked only once.
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+        assert!(state.repository_cwds(false).is_empty());
+    }
+
+    /// A worktree nested inside its own checkout is a different folder, and gets
+    /// its own question. Answering for it with the primary's entry is the whole
+    /// bug.
+    #[test]
+    fn a_nested_worktree_is_probed_apart_from_the_checkout_it_sits_in() {
+        let worktree = "/work/hocus/.claude/worktrees/topic";
+        let state = State {
+            panes: Some(vec![
+                pane(7, "codex", "/work/hocus"),
+                pane(8, "codex", worktree),
+            ]),
+            cwds: BTreeMap::from([(7, "/work/hocus".to_owned()), (8, worktree.to_owned())]),
+            ..State::default()
+        };
+
+        assert_eq!(state.repository_cwds(false), vec!["/work/hocus", worktree]);
+    }
+
+    /// Two processes per folder, on a pass that runs on nearly every host event.
+    #[test]
+    fn only_so_many_folders_are_probed_on_one_pass() {
+        let count = GIT_PROBES_PER_PASS as u32 + 3;
+        let state = State {
+            panes: Some(
+                (0..count)
+                    .map(|id| pane(id, "zsh", &format!("/work/{id}")))
+                    .collect(),
+            ),
+            cwds: (0..count).map(|id| (id, format!("/work/{id}"))).collect(),
+            ..State::default()
+        };
+
+        assert_eq!(state.repository_cwds(false).len(), GIT_PROBES_PER_PASS);
+    }
+
+    /// The cap is spent on the folders a header is drawn from first.
+    #[test]
+    fn an_agents_folder_is_asked_about_before_a_shells() {
+        let mut panes: Vec<agents::AgentPane> = (0..GIT_PROBES_PER_PASS as u32)
+            .map(|id| pane(id, "zsh", &format!("/shell/{id}")))
+            .collect();
+        panes.push(pane(99, "codex", "/work/hocus"));
+        let mut cwds: BTreeMap<u32, String> = (0..GIT_PROBES_PER_PASS as u32)
+            .map(|id| (id, format!("/shell/{id}")))
+            .collect();
+        cwds.insert(99, "/work/hocus".to_owned());
+        let state = State {
+            panes: Some(panes),
+            cwds,
+            ..State::default()
+        };
+
+        let asked = state.repository_cwds(false);
+        assert_eq!(asked.len(), GIT_PROBES_PER_PASS);
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("/work/hocus"),
+            "the agent's folder is not crowded out by the shells: {asked:?}",
+        );
+    }
+
     /// `classify` reads the foreground command, which flickers. It used to take
     /// the probed checkout with it and cancel the probe in flight, so the agent
     /// lost its project until two more round trips landed.
@@ -848,6 +985,56 @@ mod tests {
 
         assert!(state.repositories.contains_key("/work"));
         assert!(state.git_probes.contains_key("/work"));
+    }
+
+    /// The same guarantee, entered through the event handler rather than
+    /// through `resolve_repositories` directly. Focusing a pane makes it draw,
+    /// which sets the pty's activity flag, which makes the ticker report what
+    /// the pane is running — so a focus change really does run this path, and it
+    /// must not cost the pane the branch already probed for its folder.
+    #[test]
+    fn a_command_change_on_the_focused_pane_keeps_its_repository() {
+        let mut state = ran_codex(7);
+        state.record_cwd(7, "/work");
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+        state
+            .git_probes
+            .insert("/work".to_owned(), GitProbe::default());
+
+        state.on_command(7, vec!["zsh".to_owned()], false);
+
+        assert!(
+            state.pending_release.contains(&7),
+            "the release is still proposed",
+        );
+        assert!(state.repositories.contains_key("/work"));
+        assert!(
+            state.git_probes.contains_key("/work"),
+            "and the probe in flight was not cancelled either",
+        );
+    }
+
+    /// The eviction that is meant to happen: a pane really did move, so what was
+    /// learned about where it used to be is no longer about this pane.
+    #[test]
+    fn a_pane_that_changes_folder_gives_up_the_old_one_and_probes_the_new() {
+        let mut state = agent_in(7, "/work/a");
+        state.repositories.insert(
+            "/work/a".to_owned(),
+            projects::Repository::folder("/work/a"),
+        );
+
+        state.record_cwd(7, "/work/b");
+        state.rejoin_cwds();
+        state.resolve_repositories();
+
+        assert!(!state.repositories.contains_key("/work/a"));
+        assert!(
+            state.git_probes.contains_key("/work/b"),
+            "the new folder was asked about in the same breath",
+        );
     }
 
     /// The folder is still forgotten — just on the pane going away rather than
@@ -1058,6 +1245,57 @@ mod tests {
         state.rebuild_panes();
 
         assert!(state.latched.is_empty(), "no manifest, so no pane");
+    }
+
+    /// A pane standing behind the scrollback editor is hidden, not closed. It
+    /// keeps its id and its process, and used to lose its folder, the branch
+    /// probed from that folder, and its latch — so an agent vanished from the
+    /// list and came back under the wrong branch header when it returned.
+    #[test]
+    fn a_suppressed_pane_keeps_its_folder_and_its_latch() {
+        let mut state = ran_codex(7);
+        state.record_cwd(7, "/work");
+        state
+            .repositories
+            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "codex".to_owned(),
+                is_suppressed: true,
+                ..PaneInfo::default()
+            }],
+        );
+
+        state.rebuild_panes();
+
+        assert_eq!(state.cwds.get(&7).map(String::as_str), Some("/work"));
+        assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
+        assert!(
+            state.repositories.contains_key("/work"),
+            "and the branch probed from it was not thrown away",
+        );
+
+        // Back in front, and still the same process: it has not re-run, so it
+        // does not have to earn its latch again.
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "codex".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+        assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
+
+        // A pane that really closes still takes all of it with it.
+        state.manifest = PaneManifest::default();
+        state.rebuild_panes();
+        assert!(state.cwds.is_empty());
+        assert!(state.latched.is_empty());
+        assert!(!state.repositories.contains_key("/work"));
     }
 
     /// A re-run pane is a new process and has to earn its latch again, or a

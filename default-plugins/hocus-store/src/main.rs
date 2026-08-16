@@ -332,6 +332,41 @@ mod tests {
         assert_eq!(project_names(&backend), vec!["coded"]);
     }
 
+    /// A worktree nested inside the checkout it came from makes no second
+    /// project: the containing root already owns the folder. Worth pinning here
+    /// as well as in `projects`, because this end looks its folders up exactly —
+    /// `reply.repositories.get(pane.cwd)` — while hocus falls back to the
+    /// nearest folder above. The two must still name the same project for a pane
+    /// in a worktree, or the picker's header and the agent's project disagree.
+    #[test]
+    fn a_nested_worktree_makes_no_project_of_its_own() {
+        let backend = backend();
+        let worktree = "/tmp/nested/.claude/worktrees/topic";
+
+        discover_from(
+            &backend,
+            &snapshot(
+                pane_in(3, "codex", Some("codex"), "/tmp/nested"),
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(project_names(&backend), vec!["nested"]);
+
+        discover_from(
+            &backend,
+            &snapshot(
+                pane_in(4, "codex", Some("codex"), worktree),
+                BTreeMap::new(),
+            ),
+        );
+
+        assert_eq!(
+            project_names(&backend),
+            vec!["nested"],
+            "the worktree joins the project above it rather than starting one",
+        );
+    }
+
     /// A pane the user named by hand is an agent for this purpose too — the
     /// snapshot carries the overrides for exactly that reason.
     #[test]
