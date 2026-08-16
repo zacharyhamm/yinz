@@ -10,6 +10,7 @@ fn no_focus_new_pane_action(command: &[&str]) -> CliAction {
     CliAction::NewPane {
         direction: None,
         command: command.iter().map(|part| part.to_string()).collect(),
+        remote_host: None,
         plugin: None,
         cwd: None,
         floating: false,

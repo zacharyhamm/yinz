@@ -35,6 +35,14 @@ const REPLAY_CAPACITY: usize = 4 * 1024 * 1024;
 /// here forever, with nothing on this machine aware they were abandoned.
 const ORPHAN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Overrides `ORPHAN_TIMEOUT`, so a test can watch a pane be reclaimed without
+/// waiting half an hour for it.
+///
+/// A test seam rather than configuration: it is read here, on the machine
+/// running the broker, so it has to be set in that machine's environment —
+/// which is exactly the awkwardness that keeps it from being a real knob.
+pub const ORPHAN_TIMEOUT_ENV: &str = "ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS";
+
 /// The last `capacity` bytes the pane has produced, and how many it produced in
 /// total.
 ///
@@ -285,7 +293,21 @@ impl PaneRegistry {
 }
 
 pub fn orphan_timeout() -> Duration {
-    ORPHAN_TIMEOUT
+    match std::env::var(ORPHAN_TIMEOUT_ENV) {
+        Ok(secs) => {
+            match secs.trim().parse::<u64>() {
+                // Zero would reclaim a pane the instant its connection dropped,
+                // which is the one thing this timeout exists to prevent, so it is
+                // treated as "unset" rather than obeyed.
+                Ok(secs) if secs > 0 => Duration::from_secs(secs),
+                _ => {
+                    log::warn!("ignoring {ORPHAN_TIMEOUT_ENV}={secs:?}: expected a positive number of seconds");
+                    ORPHAN_TIMEOUT
+                },
+            }
+        },
+        Err(_) => ORPHAN_TIMEOUT,
+    }
 }
 
 #[cfg(test)]

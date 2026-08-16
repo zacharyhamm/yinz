@@ -1,0 +1,62 @@
+# The two machines the remote-pane tests need.
+#
+# Separate from `docker-compose.yml` (the e2e suite's container) on purpose:
+# the two suites are unrelated, take different images, and should be able to
+# run at the same time without one's teardown killing the other's sshd.
+#
+# Brought up by `cargo x remote-test --build`, which also generates the keypair
+# these mounts expect.
+---
+services:
+  # The far machine. A pane opened with `--remote-host` runs its process here.
+  remote:
+    build:
+      context: ./docker
+      dockerfile: remote-pane-sshd.Dockerfile
+    container_name: zellij-remote-pane
+    hostname: zellij-remote-pane
+    environment:
+      PUBLIC_KEY_FILE: /keys/id_ed25519.pub
+      # Test seam. A pane whose server never comes back is reclaimed after this
+      # long; the shipped default is half an hour, which no test can wait for.
+      #
+      # Not shorter than this. The reconnect tests deliberately drop the link for
+      # a few seconds and then expect the pane to still be there — a timeout on
+      # that same order would have the reaper quietly winning the race, and the
+      # failure would look like a broken reconnect rather than an impatient
+      # fixture.
+      ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS: "20"
+    volumes:
+      # The same bind-mount trick the e2e container uses: the musl binary the
+      # build drops into ./target simply appears here, with nothing copied.
+      - type: bind
+        source: ./target
+        target: /usr/src/zellij
+      - type: bind
+        source: ./target/remote-test/keys
+        target: /keys
+        read_only: true
+    restart: unless-stopped
+
+  # The network between the two machines, as something a test can cut.
+  #
+  # Tests reach `remote` *through* here, so disabling the proxy drops every
+  # open connection at once — a pulled cable, at a moment of the test's
+  # choosing, with none of the guesswork of killing sshd processes by pattern.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    container_name: zellij-remote-pane-proxy
+    command: ["-host", "0.0.0.0", "-config", "/config/toxiproxy.json"]
+    volumes:
+      - type: bind
+        source: ./docker/remote-pane-toxiproxy.json
+        target: /config/toxiproxy.json
+        read_only: true
+    ports:
+      # sshd, as the tests see it.
+      - "127.0.0.1:2223:2223/tcp"
+      # The control API, which is how a test cuts and restores the link.
+      - "127.0.0.1:8474:8474/tcp"
+    depends_on:
+      - remote
+    restart: unless-stopped

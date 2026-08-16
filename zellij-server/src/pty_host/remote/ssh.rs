@@ -54,6 +54,27 @@ fn local_socket_dir() -> PathBuf {
     ZELLIJ_SOCK_DIR.join("remote")
 }
 
+/// Make sure the directory both the control socket and the forwarded socket live
+/// in exists.
+///
+/// Called before *any* ssh, not just the one that binds the forward. The
+/// `ControlMaster` in `ssh_common_args` binds its socket here too, and the first
+/// ssh of a session is the bootstrap — which would otherwise die with
+/// "unix_listener: cannot bind to path ...: No such file or directory" on any
+/// machine that has not opened a remote pane before.
+fn ensure_local_socket_dir() -> Result<PathBuf> {
+    let dir = local_socket_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Owner only: a control socket is an authenticated connection to
+        // another machine, and anything that can reach it can use it.
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
+}
+
 /// One local socket per host; every pane on that host multiplexes through it as
 /// a separate connection, and therefore a separate ssh channel.
 fn local_socket_path(host: &str) -> PathBuf {
@@ -190,6 +211,7 @@ impl Reconnector for RemoteHosts {
 
 /// Ask the remote where its broker listens, starting one if needed.
 pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
+    ensure_local_socket_dir()?;
     let mut child = Command::new("ssh")
         .args(ssh_common_args(host))
         .arg(host)
@@ -258,6 +280,11 @@ pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
     Ok(endpoint)
 }
 
+/// Options for the short-lived invocations: bootstrap, and nothing else.
+///
+/// Multiplexed, because bootstrapping happens once per host per session and
+/// again on every reconnect, and a persistent master turns each repeat into a
+/// channel on an existing connection rather than a fresh handshake.
 fn ssh_common_args(host: &str) -> Vec<String> {
     vec![
         "-o".to_owned(),
@@ -271,16 +298,33 @@ fn ssh_common_args(host: &str) -> Vec<String> {
     ]
 }
 
+/// Options for the ssh that owns the forward.
+///
+/// Deliberately *not* multiplexed, which is the whole reason this exists
+/// separately. Given a control master to use — and the bootstrap always leaves
+/// one behind — `ssh -N -T -L` hands the forward to that master and exits
+/// immediately with status 0. Two things break at once: the forward now belongs
+/// to a master that outlives this `HostForward` and ignores its `Drop`, and the
+/// wait below sees a process that has already exited and calls a working forward
+/// a failure.
+///
+/// Its own connection means the forward really does belong to the process that
+/// owns it, which is what the rest of this file assumes.
+fn ssh_forward_args() -> Vec<String> {
+    vec![
+        "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
+        "-o".to_owned(),
+        "ControlMaster=no".to_owned(),
+        "-o".to_owned(),
+        "ControlPath=none".to_owned(),
+    ]
+}
+
 fn start_forward(host: &str) -> Result<HostForward> {
     let endpoint = bootstrap(host)?;
 
-    let dir = local_socket_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
+    ensure_local_socket_dir()?;
     let local_socket = local_socket_path(host);
     check_socket_path_length(&local_socket)?;
     // ssh refuses to bind over an existing file, and a stale one from a crashed
@@ -289,7 +333,7 @@ fn start_forward(host: &str) -> Result<HostForward> {
     let _ = std::fs::remove_file(&local_socket);
 
     let ssh = Command::new("ssh")
-        .args(ssh_common_args(host))
+        .args(ssh_forward_args())
         .arg("-N")
         .arg("-T")
         .arg("-L")

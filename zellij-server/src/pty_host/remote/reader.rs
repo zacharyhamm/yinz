@@ -31,6 +31,28 @@ const RECONNECT_ATTEMPTS: u32 = 8;
 const RECONNECT_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 const RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Overrides `RECONNECT_ATTEMPTS`.
+///
+/// A test seam. Walking the full ladder to exhaustion takes upwards of a minute,
+/// nearly all of it spent asleep, which is too long to pay for a test that only
+/// wants to see the giving-up.
+pub const RECONNECT_ATTEMPTS_ENV: &str = "ZELLIJ_REMOTE_RECONNECT_ATTEMPTS";
+
+fn reconnect_attempts() -> u32 {
+    match std::env::var(RECONNECT_ATTEMPTS_ENV) {
+        Ok(attempts) => match attempts.trim().parse::<u32>() {
+            Ok(attempts) if attempts > 0 => attempts,
+            _ => {
+                log::warn!(
+                    "ignoring {RECONNECT_ATTEMPTS_ENV}={attempts:?}: expected a positive count"
+                );
+                RECONNECT_ATTEMPTS
+            },
+        },
+        Err(_) => RECONNECT_ATTEMPTS,
+    }
+}
+
 pub struct RemoteReader {
     conn: Arc<RemoteConn>,
     /// Holds the socket before reactor registration; `None` after promotion.
@@ -131,8 +153,9 @@ impl RemoteReader {
         self.pending = None;
         self.announce_disconnected();
 
+        let attempts = reconnect_attempts();
         let mut delay = RECONNECT_INITIAL_DELAY;
-        for attempt in 1..=RECONNECT_ATTEMPTS {
+        for attempt in 1..=attempts {
             tokio::time::sleep(delay).await;
             // `reconnect` runs ssh, so it must not run on the async runtime.
             let conn = self.conn.clone();
@@ -149,7 +172,7 @@ impl RemoteReader {
                 },
                 Err(e) => {
                     log::warn!(
-                        "reconnect to {} failed (attempt {attempt}/{RECONNECT_ATTEMPTS}): {e:#}",
+                        "reconnect to {} failed (attempt {attempt}/{attempts}): {e:#}",
                         self.conn.host()
                     );
                     delay = (delay * 2).min(RECONNECT_MAX_DELAY);
@@ -162,7 +185,7 @@ impl RemoteReader {
         Err(io::Error::new(
             io::ErrorKind::ConnectionReset,
             format!(
-                "gave up reconnecting to {} after {RECONNECT_ATTEMPTS} attempts",
+                "gave up reconnecting to {} after {attempts} attempts",
                 self.conn.host()
             ),
         ))

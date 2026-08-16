@@ -90,45 +90,54 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     }
 
     let _pd = sh.push_dir(project_root);
+    build_musl_release(sh).context(err_context)
+}
+
+/// The musl triple a container on this host runs natively.
+///
+/// Matching the host arch is what keeps the container off emulation — arm64 on
+/// Apple Silicon, amd64 on Intel and on Linux CI.
+pub fn musl_target() -> &'static str {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-musl"
+    } else {
+        "x86_64-unknown-linux-musl"
+    }
+}
+
+/// A statically linked release binary for the container to run.
+///
+/// Shared by the e2e suite and the remote-pane suite: both need a Linux binary
+/// built from this tree, and both get it into their container through a bind
+/// mount of `target/` rather than a copy.
+pub fn build_musl_release(sh: &Shell) -> anyhow::Result<()> {
+    let target = musl_target();
     // On macOS: use cargo-zigbuild which handles musl cross-compilation for any arch without
-    //   needing a separate linker toolchain. The target arch matches the host so the Docker
-    //   container runs natively without emulation (arm64 on Apple Silicon, amd64 on Intel).
+    //   needing a separate linker toolchain.
     //   Install with: cargo install cargo-zigbuild && brew install zig
     // On Linux: cross-compile for musl.
     if cfg!(target_os = "macos") {
-        let target = if cfg!(target_arch = "aarch64") {
-            "aarch64-unknown-linux-musl"
-        } else {
-            "x86_64-unknown-linux-musl"
-        };
-        crate::cargo()
-            .and_then(|cargo| {
-                if which::which("cargo-zigbuild").is_err() {
-                    eprintln!("!! 'cargo-zigbuild' wasn't found but is needed on macOS.");
-                    eprintln!("!! Please install it with:");
-                    eprintln!("!!   cargo install cargo-zigbuild");
-                    eprintln!("!!   brew install zig");
-                    return Err(anyhow::anyhow!("couldn't find 'cargo-zigbuild'"));
-                }
-                cmd!(sh, "rustup target add {target}")
-                    .run()
-                    .map_err(anyhow::Error::new)?;
-                cmd!(sh, "{cargo} zigbuild --release --target {target}")
-                    .run()
-                    .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
-    } else {
-        crate::cargo()
-            .and_then(|cargo| {
-                cmd!(
-                    sh,
-                    "{cargo} build --release --target x86_64-unknown-linux-musl"
-                )
+        crate::cargo().and_then(|cargo| {
+            if which::which("cargo-zigbuild").is_err() {
+                eprintln!("!! 'cargo-zigbuild' wasn't found but is needed on macOS.");
+                eprintln!("!! Please install it with:");
+                eprintln!("!!   cargo install cargo-zigbuild");
+                eprintln!("!!   brew install zig");
+                return Err(anyhow::anyhow!("couldn't find 'cargo-zigbuild'"));
+            }
+            cmd!(sh, "rustup target add {target}")
+                .run()
+                .map_err(anyhow::Error::new)?;
+            cmd!(sh, "{cargo} zigbuild --release --target {target}")
                 .run()
                 .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
+        })
+    } else {
+        crate::cargo().and_then(|cargo| {
+            cmd!(sh, "{cargo} build --release --target {target}")
+                .run()
+                .map_err(anyhow::Error::new)
+        })
     }
 }
 
