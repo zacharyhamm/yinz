@@ -8233,12 +8233,13 @@ impl Screen {
     /// failed before anything is released.
     ///
     /// The arrangement is built *here*, not after the release, and that ordering
-    /// is the point. Rebuilding a tab's layout from its geometry is fallible —
-    /// not every tiling can be expressed — and a tab whose supervisors had
-    /// already been let go by the time that failed would be left on screen with
-    /// nothing attached to it. Only the two things that genuinely cannot be known
-    /// yet are left for later: which socket each supervisor ended up on, and what
-    /// was on each pane's screen once its reader had stopped.
+    /// is the point: a tab whose supervisors had already been let go by the time
+    /// something failed would be left on screen with nothing attached to it. Not
+    /// every tiling is a layout — see `tiled_layout_from_panegeoms_lossy` — but
+    /// that is approximated rather than refused, so what is left to fail here is
+    /// the checks above. Only the two things that genuinely cannot be known yet
+    /// are left for later: which socket each supervisor ended up on, and what was
+    /// on each pane's screen once its reader had stopped.
     ///
     /// The pane version of this also refuses the session's last pane, on the
     /// grounds that moving it would end the session. There is deliberately no
