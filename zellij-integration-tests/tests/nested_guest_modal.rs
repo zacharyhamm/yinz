@@ -204,7 +204,7 @@ fn focus_guest_session_redescends_after_ascending() {
     nested.host.send_stdin(&keys::ctrl('o'));
     nested.guest.wait_until(
         "guest entered session mode before the ascend key",
-        |guest_grid| last_line_contains(guest_grid, "SESSION"),
+        |guest_grid| last_line_contains(guest_grid, "SESS"),
     );
     nested.host.send_stdin(b"]");
     nested.wait_for_host_to_ascend_from_guest_after(ascended);

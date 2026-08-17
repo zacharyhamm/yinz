@@ -375,6 +375,14 @@ impl KeybindProcessor {
                             }
                         )
                     },
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::SwitchToMode {
+                                input_mode: InputMode::Agent
+                            }
+                        )
+                    },
                     |action: &Action| matches!(action, Action::Quit),
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
@@ -729,6 +737,14 @@ impl KeybindProcessor {
                     |action: &Action| action.launches_plugin("plugin-manager"),
                     |action: &Action| action.launches_plugin("configuration"),
                     |action: &Action| action.launches_plugin("zellij:about"),
+                ];
+                Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
+            },
+            InputMode::Agent => {
+                let ordered_predicates = vec![
+                    |action: &Action| action.launches_plugin("hocus-agents"),
+                    |action: &Action| action.launches_plugin("hocus"),
+                    |action: &Action| action.launches_plugin("hocus-ask"),
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },

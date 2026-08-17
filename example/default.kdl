@@ -159,6 +159,42 @@ keybinds {
             SwitchToMode "Normal"
         }
     }
+    agent {
+        bind "Ctrl e" { SwitchToMode "Normal"; }
+        // Land on the agent list, the top pane of the hocus sidebar, without
+        // going through the conversation first. Reveals the strip if it was
+        // hidden, and starts one from scratch — chat pane included — if hocus
+        // is not running at all.
+        bind "a" {
+            LaunchOrFocusPlugin "hocus-agents" {
+                global true
+                edge "left"
+                size "25%"
+            };
+            SwitchToMode "Normal"
+        }
+        // The conversation itself, the bottom pane of the same sidebar.
+        bind "c" {
+            LaunchOrFocusPlugin "hocus" {
+                global true
+                edge "left"
+                size "25%"
+            };
+            SwitchToMode "Normal"
+        }
+        // Ask the running hocus a question without leaving the pane you are in.
+        // A small popup takes one line; on Enter it closes and focus returns to
+        // where it came from. hocus itself is not revealed — open it when you
+        // want to read the answer. Does nothing useful if hocus is not running,
+        // and says so.
+        bind "k" {
+            LaunchOrFocusPlugin "hocus-ask" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+    }
     tmux {
         bind "[" { SwitchToMode "Scroll"; }
         bind "Ctrl b" { Write 2; SwitchToMode "Normal"; }
@@ -193,17 +229,6 @@ keybinds {
         // which closes when the editor or viewer quits.
         bind "Alt e" {
             LaunchOrFocusPlugin "file-finder" {
-                floating true
-                move_to_focused_tab true
-            }
-        }
-        // Ask the running hocus a question without leaving the pane you are in.
-        // A small popup takes one line; on Enter it closes and focus returns to
-        // where it came from. hocus itself is not revealed — open it when you
-        // want to read the answer. Does nothing useful if hocus is not running,
-        // and says so.
-        bind "Alt a" {
-            LaunchOrFocusPlugin "hocus-ask" {
                 floating true
                 move_to_focused_tab true
             }
@@ -246,6 +271,9 @@ keybinds {
     shared_except "tmux" "locked" {
         bind "Ctrl b" { SwitchToMode "Tmux"; }
     }
+    shared_except "agent" "locked" {
+        bind "Ctrl e" { SwitchToMode "Agent"; }
+    }
 }
 
 // Plugin aliases - can be used to change the implementation of Zellij
@@ -282,7 +310,16 @@ plugins {
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="zellij:file-finder"
-    // The one-line "ask hocus" popup, bound to Alt a above. Deliberately not
+    // The agent conversation, bound to Ctrl e c above.
+    hocus location="zellij:hocus" {
+        shared true
+    }
+    // The agent list, bound to Ctrl e a above — the top pane of the sidebar
+    // hocus spawns as a split of its own global pane.
+    hocus-agents location="zellij:hocus-agents" {
+        shared true
+    }
+    // The one-line "ask hocus" popup, bound to Ctrl e k above. Deliberately not
     // shared: each attached client gets its own prompt buffer. `x`/`y`/`width`/
     // `height` size it.
     hocus-ask location="zellij:hocus-ask"
