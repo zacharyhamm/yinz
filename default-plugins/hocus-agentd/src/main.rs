@@ -63,6 +63,20 @@ const SUMMARY_TICKS: u32 = 12;
 /// so a burst of short pauses costs nothing and only the last one is paid for.
 const SUMMARY_SETTLE_POLLS: u32 = 3;
 
+/// How many heartbeats a pane waits after a summary request before it may make another —
+/// twelve ticks, a minute.
+///
+/// The settle window says a screen has stopped moving; it cannot say the agent has stopped
+/// working, because a compile or a long tool call holds a screen still just as well as a
+/// finished turn does, and each of those settles on a *different* screen, so the hash guard
+/// does not catch them either. This is the ceiling that does not depend on telling those
+/// apart: one request per pane per minute, however the screen churns.
+///
+/// Equal to `SUMMARY_TICKS` on purpose: the two windows expire within a tick of each
+/// other, so a dropped reply costs the pane about a minute and then lets it ask again,
+/// rather than either guard outliving the other and holding the pane silent for longer.
+const SUMMARY_COOLDOWN_TICKS: u32 = 12;
+
 /// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
 /// The same scheme the git probes use, for the same reason: results arrive on one event
 /// for the whole plugin.
@@ -119,6 +133,9 @@ struct State {
     /// Panes with a summary request in flight. One at a time per pane, so a flurry of
     /// idle edges cannot fan out into a flurry of requests.
     summary_requests: BTreeMap<u32, InFlight>,
+    /// Heartbeats left before each pane may ask again, counted down by every poll.
+    /// An absent pane is free to ask — see `SUMMARY_COOLDOWN_TICKS`.
+    summary_cooldown: BTreeMap<u32, u32>,
     summary_seq: u64,
 }
 
@@ -772,20 +789,28 @@ impl State {
             request.ticks += 1;
             running.contains(id) && request.ticks <= SUMMARY_TICKS
         });
+        // The same shape one line up, and pruned by the same rule: a pane that stops being
+        // a running agent starts clean if it comes back.
+        self.summary_cooldown.retain(|id, ticks| {
+            *ticks = ticks.saturating_sub(1);
+            running.contains(id) && *ticks > 0
+        });
         for pane_id in running {
             let text = read(pane_id);
             match agents::observe(&mut self.activity, pane_id, &text) {
-                // Equality, not `>=`: a pane that goes on holding still asks once for that
-                // stretch, not once every five seconds for as long as it sits there.
-                agents::Observed::Idle { polls } if polls == SUMMARY_SETTLE_POLLS => {
+                // `>=`, not equality: what stops a settled pane asking every five seconds is
+                // the cooldown and the hash guard in `summary_due`, not this arm. Equality
+                // would drop a settling the cooldown happened to swallow and never come back
+                // to it, losing that pane its summary for the whole stretch.
+                agents::Observed::Idle { polls } if polls >= SUMMARY_SETTLE_POLLS => {
                     ask(self, pane_id, &text)
                 },
-                // Busy, still settling, or long since settled. Note that a pane going busy
-                // keeps the summary it already has rather than dropping it: the marker is
-                // gated on the pane being idle (`agents::waiting_marker`), so a working
-                // agent already shows nothing - and keeping the answer, stamped with the
-                // screen it was made from, is what lets an agent that comes back to that
-                // same screen be free rather than another request.
+                // Busy, or still settling. Note that a pane going busy keeps the summary it
+                // already has rather than dropping it: the marker is gated on the pane
+                // being idle (`agents::waiting_marker`), so a working agent already shows
+                // nothing - and keeping the answer, stamped with the screen it was made
+                // from, is what lets an agent that comes back to that same screen be free
+                // rather than another request.
                 _ => {},
             }
         }
@@ -824,13 +849,19 @@ impl State {
         );
     }
 
-    /// Whether this idle edge is worth an HTTP request.
+    /// Whether this settling is worth an HTTP request.
     ///
-    /// No when one is already in flight for this pane, when the pane holds too little to
-    /// say anything about, or when it is showing exactly what it was showing the last time
-    /// it was summarised. That last one is what makes an agent that goes idle, is nudged,
-    /// and settles back on the same screen free rather than another request.
+    /// No when the pane asked less than a minute ago, when one is already in flight for it,
+    /// when it holds too little to say anything about, or when it is showing exactly what
+    /// it was showing the last time it was summarised. That last one is what makes an agent
+    /// that goes idle, is nudged, and settles back on the same screen free rather than
+    /// another request.
     fn summary_due(&self, pane_id: u32, text: &str) -> bool {
+        // First, because it is the cheapest and the one that fires most: a busy agent
+        // settles for fifteen seconds several times a turn, and only the first is paid for.
+        if self.summary_cooldown.contains_key(&pane_id) {
+            return false;
+        }
         if self.summary_requests.contains_key(&pane_id) || !agents::worth_summarizing(text) {
             return false;
         }
@@ -883,6 +914,10 @@ impl State {
         let id = self.summary_seq;
         self.summary_requests
             .insert(pane_id, InFlight { id, hash, ticks: 0 });
+        // Stamped when the request goes out rather than when its answer lands, so a slow or
+        // dropped reply cannot buy the pane a longer window than a fast one.
+        self.summary_cooldown
+            .insert(pane_id, SUMMARY_COOLDOWN_TICKS);
         send(
             &endpoint.url,
             HttpVerb::Post,
@@ -1861,6 +1896,16 @@ mod tests {
         );
     }
 
+    /// Poll `text` for a whole cooldown, so a pane that is holding still goes on holding
+    /// still while its window runs out. Enough polls to clear the window whichever tick of
+    /// it the caller is on, and showing one screen throughout, so the hash guard sees no
+    /// change either — what expires is the cooldown and nothing else.
+    fn poll_out_the_cooldown(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
+        for _ in 0..=SUMMARY_COOLDOWN_TICKS {
+            poll_showing(state, text, sent);
+        }
+    }
+
     /// One agent, polled until it has settled, and the requests that went out.
     fn idle_agent(text: &'static str) -> (State, Vec<(u32, Vec<u8>)>) {
         let mut state = State {
@@ -2013,13 +2058,17 @@ mod tests {
 
     /// Going on holding still is not a new settling. Without this every idle agent would
     /// be re-summarised every five seconds for as long as it sat there.
+    ///
+    /// Polled well past the cooldown on purpose: the cooldown is what covers the first
+    /// minute, and after it lapses the hash guard is what has to carry this, because the
+    /// settle arm goes on matching for as long as the pane sits there.
     #[test]
     fn sitting_idle_does_not_ask_again() {
         let (mut state, mut sent) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
 
         for _ in 0..3 {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
+            poll_out_the_cooldown(&mut state, BUSY_PANE, &mut sent);
         }
         assert_eq!(sent.len(), 1);
     }
@@ -2072,6 +2121,90 @@ mod tests {
         assert!(!prompt.contains("step 2"), "not the one before it");
     }
 
+    /// A pause long enough to settle is not the same as a turn ending. A compile or a slow
+    /// tool holds a screen still for fifteen seconds just as well as a finished agent does,
+    /// and each such pause leaves the pane on a *different* screen, so the hash guard does
+    /// not catch it. The cooldown is what does.
+    #[test]
+    fn a_second_settling_inside_the_cooldown_asks_nothing() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        // Three long pauses, each on a screen of its own, well inside one minute.
+        for round in 0..3 {
+            let text = format!("{BUSY_PANE} step {round}");
+            for _ in 0..=SUMMARY_SETTLE_POLLS {
+                poll_showing(&mut state, &text, &mut sent);
+            }
+        }
+        assert_eq!(sent.len(), 1, "one minute, one request");
+    }
+
+    /// And the request the cooldown swallowed is not lost. The pane is still sitting on
+    /// that screen when the window lapses, so it is asked about then — which is what the
+    /// settle arm matching on `>=` rather than `==` buys.
+    #[test]
+    fn a_pane_still_settled_when_the_cooldown_ends_is_asked_about() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        assert_eq!(sent.len(), 1, "the first screen");
+
+        // A new screen, settled on while the window is still running.
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, OTHER_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1, "swallowed for now");
+
+        poll_out_the_cooldown(&mut state, OTHER_PANE, &mut sent);
+        assert_eq!(sent.len(), 2, "asked once the window lapsed");
+        let body: serde_json::Value = serde_json::from_slice(&sent[1].1).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        assert!(prompt.contains(OTHER_PANE), "about the screen it is on");
+    }
+
+    /// A reply that never lands must not cost the pane its summaries. Both windows are a
+    /// minute, so the in-flight guard and the cooldown lapse together and the pane retries.
+    #[test]
+    fn a_dropped_reply_is_retried_after_a_minute() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        assert_eq!(sent.len(), 1);
+
+        // No `finish` - the answer is simply never delivered.
+        poll_out_the_cooldown(&mut state, BUSY_PANE, &mut sent);
+
+        assert_eq!(sent.len(), 2, "asked again rather than silently giving up");
+        assert!(
+            state.summaries.is_empty(),
+            "and still with nothing to show for the first ask"
+        );
+    }
+
+    /// The ceiling, stated plainly: whatever the screen does, one pane cannot buy more than
+    /// a request a minute.
+    #[test]
+    fn a_settled_pane_asks_at_most_once_a_minute() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        // Twenty screens, each held long enough to settle: eighty polls, near seven minutes.
+        for round in 0..20 {
+            let text = format!("{BUSY_PANE} step {round}");
+            for _ in 0..=SUMMARY_SETTLE_POLLS {
+                poll_showing(&mut state, &text, &mut sent);
+            }
+        }
+        let minutes = 20 * (SUMMARY_SETTLE_POLLS as usize + 1) / SUMMARY_COOLDOWN_TICKS as usize;
+        assert!(
+            sent.len() <= minutes + 1,
+            "{} requests over {minutes} minutes of polls",
+            sent.len()
+        );
+    }
+
     /// An agent that starts working again is not waiting on anyone, whatever it was
     /// waiting on before — but the answer itself is kept, stamped with the screen it was
     /// made from, so a return to that same screen costs nothing. The marker is what goes,
@@ -2117,6 +2250,9 @@ mod tests {
     fn an_unchanged_pane_is_not_summarized_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        // Dropped rather than polled out, so what the assertions below answer for is the
+        // hash guard alone and not the cooldown standing in front of it.
+        state.summary_cooldown.clear();
 
         // Away and back to the same screen: busy, then idle again on identical text.
         state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
@@ -2142,8 +2278,10 @@ mod tests {
     /// the bill for one answer.
     #[test]
     fn a_second_edge_does_not_race_the_request_already_in_flight() {
-        let (state, _) = idle_agent(BUSY_PANE);
+        let (mut state, _) = idle_agent(BUSY_PANE);
         assert_eq!(state.summary_requests.get(&7).map(|r| r.id), Some(1));
+        // Dropped so the in-flight guard is the only thing left to refuse.
+        state.summary_cooldown.clear();
         assert!(
             !state.summary_due(7, OTHER_PANE),
             "even for a different screen"
@@ -2192,7 +2330,7 @@ mod tests {
     }
 
     /// A failed summary is simply no summary - the same stance a failed Git probe takes.
-    /// The next idle edge asks again.
+    /// The pane asks again once its cooldown is up, rather than being written off.
     #[test]
     fn a_failed_request_stores_nothing_and_frees_the_pane_to_ask_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
@@ -2201,6 +2339,9 @@ mod tests {
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_requests.is_empty());
+        // Dropped rather than polled out: a failure is not meant to shorten the window, so
+        // what is asserted below is that nothing *else* is holding the pane back.
+        state.summary_cooldown.clear();
         assert!(
             state.summary_due(7, BUSY_PANE),
             "so the next edge tries again"
@@ -2247,6 +2388,8 @@ mod tests {
 
         assert!(state.summaries.is_empty());
         assert!(renames.is_empty(), "and the pane keeps the name it had");
+        // Dropped so the hash guard is what answers below - the cooldown is its own test.
+        state.summary_cooldown.clear();
         assert!(
             state.summary_due(7, OTHER_PANE),
             "and the screen it really is on is still owed a request",
