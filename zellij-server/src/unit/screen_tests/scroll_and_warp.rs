@@ -252,9 +252,9 @@ fn an_adopted_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
 
 #[test]
 fn an_adopted_floating_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
-    // Floating panes escape the global split today only because
-    // `split_focused_global_pane` has no arm for them. Pinned here so that
-    // staying out of a global pane does not depend on that.
+    // No `NewPane` reaches the global area any more, whatever its placement.
+    // Pinned here from the warp side as well, because an adopted pane picks its
+    // target before the pane-creation path ever sees it.
     use zellij_utils::data::GlobalPaneEdge;
 
     let client_id = 1;

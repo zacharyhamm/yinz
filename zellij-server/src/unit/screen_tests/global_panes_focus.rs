@@ -407,8 +407,80 @@ fn closing_a_strip_pane_refocuses_its_neighbor() {
     );
 }
 
+/// An ordinary `NewPane` belongs to a tab even when the client's focus is sitting
+/// in a global pane. The global strips are session chrome; focus happening to be
+/// there is not a request to grow them, and only an explicit `global_placement`
+/// (or a layout's `global_panes` block) may put a pane in the global area.
+///
+/// This pins the two steps `ScreenInstruction::NewPane`'s client arm performs, in
+/// order: release the global focus, then open into the client's active tab. The
+/// order is what matters - `Screen::active_pane_id` consults the global focus
+/// first, so opening before releasing would create the pane and leave the client
+/// looking somewhere else.
 #[test]
-fn a_new_pane_on_a_focused_global_pane_splits_it() {
+fn a_new_pane_on_a_focused_global_pane_lands_in_the_tab() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 12 });
+    new_tab(&mut screen, 1, 0);
+    gp_insert_global_pane(
+        &mut screen,
+        98,
+        GlobalPaneEdge::Left,
+        PercentOrFixed::Fixed(8),
+        false,
+    );
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(98), client_id)
+        .unwrap();
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(98)),
+        "precondition: the client is focused on the global pane"
+    );
+
+    screen.defocus_global_pane(client_id);
+    screen
+        .get_active_tab_mut(client_id)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(50),
+            None,
+            None,
+            false, // start_suppressed
+            true,  // should_focus_pane
+            NewPanePlacement::default(),
+            Some(client_id),
+            None,
+        )
+        .expect("TEST");
+
+    let manifest = screen.generate_and_report_pane_state().expect("TEST");
+    assert!(
+        manifest.global_panes.iter().all(|pane| pane.id != 50),
+        "a new pane must not join the global area"
+    );
+    assert!(
+        manifest
+            .panes
+            .values()
+            .flatten()
+            .any(|pane| pane.id == 50 && !pane.is_plugin),
+        "the new pane should be in a tab"
+    );
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(50)),
+        "the client should follow the pane it just opened into the tab"
+    );
+}
+
+/// A directional split is meaningless across a strip, but it is also no longer a
+/// way *into* one: the direction is simply applied inside the tab.
+#[test]
+fn a_directional_new_pane_on_a_focused_global_pane_still_lands_in_the_tab() {
     use zellij_utils::data::GlobalPaneEdge;
 
     let client_id = 1;
@@ -426,132 +498,34 @@ fn a_new_pane_on_a_focused_global_pane_splits_it() {
         .focus_global_pane(PaneId::Terminal(98), client_id)
         .unwrap();
 
-    let handled = screen
-        .split_focused_global_pane(
-            PaneId::Terminal(98),
-            PaneId::Terminal(50),
-            None,
-            None,
-            None,
-            &NewPanePlacement::default(),
-            true,
-            client_id,
-            &mut None,
-        )
-        .expect("TEST");
-    assert!(handled);
-    let anchor = screen
-        .global_panes
-        .pane(PaneId::Terminal(98))
-        .unwrap()
-        .position_and_size();
-    let split = screen
-        .global_panes
-        .pane(PaneId::Terminal(50))
-        .unwrap()
-        .position_and_size();
-    assert_eq!(split.cols.as_usize(), anchor.cols.as_usize());
-    assert_eq!(
-        split.y,
-        anchor.y + anchor.rows.as_usize(),
-        "NoPreference splits after the anchor"
-    );
-    assert_eq!(
-        screen.get_active_pane_id(&client_id),
-        Some(PaneId::Terminal(50))
-    );
-
-    // a direction across the strip is rejected: the pane never lands anywhere
-    let handled = screen
-        .split_focused_global_pane(
-            PaneId::Terminal(50),
+    screen.defocus_global_pane(client_id);
+    screen
+        .get_active_tab_mut(client_id)
+        .expect("TEST")
+        .new_pane(
             PaneId::Terminal(51),
             None,
             None,
-            None,
-            &NewPanePlacement::Tiled {
+            false,
+            true,
+            NewPanePlacement::Tiled {
                 direction: Some(Direction::Right),
                 borderless: None,
             },
-            true,
-            client_id,
-            &mut None,
+            Some(client_id),
+            None,
         )
         .expect("TEST");
-    assert!(handled, "consumed, not passed through to the tab");
-    assert!(screen.global_panes.pane(PaneId::Terminal(51)).is_none());
 
-    // an up-split lands before the anchor
-    let handled = screen
-        .split_focused_global_pane(
-            PaneId::Terminal(50),
-            PaneId::Terminal(52),
-            None,
-            None,
-            None,
-            &NewPanePlacement::Tiled {
-                direction: Some(Direction::Up),
-                borderless: None,
-            },
-            true,
-            client_id,
-            &mut None,
-        )
-        .expect("TEST");
-    assert!(handled);
-    let above = screen
-        .global_panes
-        .pane(PaneId::Terminal(52))
-        .unwrap()
-        .position_and_size();
-    let below = screen
-        .global_panes
-        .pane(PaneId::Terminal(50))
-        .unwrap()
-        .position_and_size();
-    assert!(above.y < below.y, "an up-split sits before its anchor");
-}
-
-#[test]
-fn a_blocking_global_pane_split_reports_an_insertion_failure() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let client_id = 1;
-    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 1 });
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        98,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
+    let manifest = screen.generate_and_report_pane_state().expect("TEST");
+    assert!(
+        manifest.global_panes.iter().all(|pane| pane.id != 51),
+        "a directional split must not reach the global strip either"
     );
-    screen.render_to_clients().expect("TEST");
-    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-    let mut blocking_notification = Some(NotificationEnd::new(completion_tx));
-
-    let handled = screen
-        .split_focused_global_pane(
-            PaneId::Terminal(98),
-            PaneId::Terminal(50),
-            None,
-            None,
-            None,
-            &NewPanePlacement::default(),
-            true,
-            client_id,
-            &mut blocking_notification,
-        )
-        .expect("TEST");
-    let completion = completion_rx.blocking_recv().expect("completion");
-
-    assert!(handled);
-    assert_eq!(completion.exit_status, Some(1));
-    assert_eq!(
-        completion.error_message.as_deref(),
-        Some("global panes do not fit their strip")
+    assert!(
+        manifest.panes.values().flatten().any(|pane| pane.id == 51),
+        "the new pane should be in a tab"
     );
-    assert!(screen.global_panes.pane(PaneId::Terminal(50)).is_none());
 }
 
 #[test]
@@ -660,4 +634,93 @@ fn screen_resizes_tabs_directly_to_the_global_center_without_accumulating_origin
     assert_eq!(tab.get_display_area_origin(), (10, 0));
     assert_eq!(tab.get_display_area(), Size { cols: 50, rows: 14 });
     assert_eq!(tab.get_pane_with_id(PaneId::Terminal(1)).unwrap().x(), 10);
+}
+
+/// The two `ScreenInstruction::NewPane` arms that could once put a pane in the
+/// global area, driven through the real screen thread rather than through the
+/// pieces they call.
+///
+/// The client arm used to split the focused global pane; the pane-id arm used to
+/// scan for a tab owning the anchor, find none (a global pane is in no tab) and
+/// drop the pane on the floor with nothing but a log line. Both now open into a
+/// tab, which the snapshot shows: three tab panes beside one narrow left strip.
+#[test]
+fn no_new_pane_reaches_the_global_area_through_the_screen_thread() {
+    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
+
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = 10;
+    let mut mock_screen = MockScreen::new(size);
+    let screen_thread = mock_screen.run(None, vec![]);
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+
+    let global_pane_id = PaneId::Terminal(90);
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewGlobalPane {
+            pane_id: global_pane_id,
+            initial_pane_title: None,
+            hold_for_command: None,
+            invoked_with: None,
+            placement: GlobalPanePlacement {
+                edge: GlobalPaneEdge::Left,
+                size: PercentOrFixed::Fixed(10),
+                length: None,
+            },
+            borderless: false,
+            initially_hidden: false,
+            should_focus: true, // the client is left sitting in the global pane
+            client_id: Some(client_id),
+            completion_tx: None,
+            set_blocking: false,
+            declaration_order: None,
+            split: None,
+        });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // the client arm: a new pane while the global pane holds the focus
+    let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
+        PaneId::Terminal(91),
+        Some("from client".to_owned()),
+        None,
+        None,
+        NewPanePlacement::default(),
+        false, // start_suppressed
+        ClientTabIndexOrPaneId::ClientId(client_id),
+        None,
+        false, // set_blocking
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // the pane-id arm: a new pane anchored *on* the global pane
+    let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
+        PaneId::Terminal(92),
+        Some("from anchor".to_owned()),
+        None,
+        None,
+        NewPanePlacement::default(),
+        false,
+        ClientTabIndexOrPaneId::PaneId(global_pane_id),
+        None,
+        false,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+
+    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+        received_server_instructions.lock().unwrap().iter(),
+        size,
+    );
+    let (_, last_snapshot) = snapshots
+        .last()
+        .expect("the screen should have rendered")
+        .clone();
+    assert_snapshot!(last_snapshot);
 }

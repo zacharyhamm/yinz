@@ -40,6 +40,8 @@ fn framed_messages_round_trip() {
                 height_in_pixels: 384,
             }),
             arg0: None,
+            env: vec![],
+            login_session: false,
         },
         ServerToHostMsg::Terminate,
     ];
@@ -272,6 +274,8 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
             termios: tc.draw(generators::optional(wire_termioses())),
             initial_size: tc.draw(generators::optional(wire_winsizes())),
             arg0: tc.draw(generators::optional(generators::text())),
+            env: vec![],
+            login_session: false,
         },
         2 => ServerToHostMsg::Terminate,
         3 => ServerToHostMsg::Release,
@@ -513,6 +517,8 @@ fn write_msg_refuses_a_body_over_the_frame_limit() {
         termios: None,
         initial_size: None,
         arg0: None,
+        env: vec![],
+        login_session: false,
     };
 
     let mut buf: Vec<u8> = Vec::new();

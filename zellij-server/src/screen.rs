@@ -7754,101 +7754,7 @@ impl Screen {
         Ok(true)
     }
 
-    /// A `NewPane` issued while the client is focused on a global pane splits that pane's strip
-    /// span instead of opening a pane in the tab behind it. A direction along the strip's long
-    /// axis picks the side (up/left insert before the anchor); one across the strip is rejected -
-    /// the strip has no room on that axis. Floating, in-place and stacked placements fall through
-    /// to the tab as before. Returns whether the request was consumed here.
-    #[allow(clippy::too_many_arguments)]
-    fn split_focused_global_pane(
-        &mut self,
-        anchor: PaneId,
-        pane_id: PaneId,
-        initial_pane_title: Option<String>,
-        invoked_with: Option<Run>,
-        hold_for_command: HoldForCommand,
-        placement: &NewPanePlacement,
-        should_focus: bool,
-        client_id: ClientId,
-        blocking_notification: &mut Option<NotificationEnd>,
-    ) -> Result<bool> {
-        let Some(anchor_placement) = self.global_panes.placement(anchor) else {
-            return Ok(false);
-        };
-        let fail = |screen: &mut Self,
-                    blocking_notification: &mut Option<NotificationEnd>,
-                    message: String| {
-            if let Some(completion) = blocking_notification.as_mut() {
-                completion.set_exit_status(1);
-                completion.set_error_message(message.clone());
-            }
-            blocking_notification.take();
-            screen
-                .bus
-                .senders
-                .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
-                .non_fatal();
-            log::error!("failed to split global pane {anchor:?}: {message}");
-        };
-        let before = match placement {
-            NewPanePlacement::NoPreference { .. }
-            | NewPanePlacement::Tiled {
-                direction: None, ..
-            } => false,
-            NewPanePlacement::Tiled {
-                direction: Some(direction),
-                ..
-            } => {
-                let along_strip = match anchor_placement.edge {
-                    GlobalPaneEdge::Left | GlobalPaneEdge::Right => {
-                        matches!(direction, Direction::Up | Direction::Down)
-                    },
-                    GlobalPaneEdge::Top | GlobalPaneEdge::Bottom => {
-                        matches!(direction, Direction::Left | Direction::Right)
-                    },
-                };
-                if !along_strip {
-                    let (edge_name, allowed) = match anchor_placement.edge {
-                        GlobalPaneEdge::Left => ("left", "up or down"),
-                        GlobalPaneEdge::Right => ("right", "up or down"),
-                        GlobalPaneEdge::Top => ("top", "left or right"),
-                        GlobalPaneEdge::Bottom => ("bottom", "left or right"),
-                    };
-                    fail(
-                        self,
-                        blocking_notification,
-                        format!("a {edge_name} global pane can only be split {allowed}"),
-                    );
-                    return Ok(true);
-                }
-                matches!(direction, Direction::Up | Direction::Left)
-            },
-            _ => return Ok(false),
-        };
-        let mut pane =
-            self.build_global_pane_box(pane_id, initial_pane_title, invoked_with, None)?;
-        if let Some(run_command) = hold_for_command {
-            pane.hold(None, true, run_command);
-        }
-        if let Err(error) = self.global_panes.insert_split(pane, anchor, before, None) {
-            fail(self, blocking_notification, error);
-            return Ok(true);
-        }
-        if let Some(completion) = blocking_notification.as_mut() {
-            completion.set_affected_pane_id(pane_id);
-        }
-        if let Some(pane) = self.global_panes.pane_mut(pane_id) {
-            pane.set_notification_end(blocking_notification.take());
-        }
-        if should_focus {
-            self.focus_global_pane(pane_id, client_id)?;
-        }
-        self.reflow_global_panes()?;
-        Ok(true)
-    }
-
-    /// Build the `Box<dyn Pane>` for a global pane - shared between the NewGlobalPane arm and
-    /// the split-on-NewPane path.
+    /// Build the `Box<dyn Pane>` for a global pane.
     fn build_global_pane_box(
         &mut self,
         pane_id: PaneId,
@@ -11478,30 +11384,17 @@ pub(crate) fn screen_thread_main(
                     | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
                         let should_focus_pane =
                             matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
-                        let mut blocking_notification = blocking_notification;
-                        // a client focused on a global pane splits it instead of opening a pane
-                        // in the tab behind it
-                        let split_anchor = if start_suppressed {
-                            None
-                        } else {
-                            screen.global_panes.focused_pane_id(client_id)
-                        };
-                        let handled_as_global_split = match split_anchor {
-                            Some(anchor) => screen.split_focused_global_pane(
-                                anchor,
-                                pid,
-                                initial_pane_title.clone(),
-                                invoked_with.clone(),
-                                hold_for_command.clone(),
-                                &new_pane_placement,
-                                should_focus_pane,
-                                client_id,
-                                &mut blocking_notification,
-                            )?,
-                            None => false,
-                        };
-                        if !handled_as_global_split {
-                            active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
+                        // An ordinary new pane belongs to a tab, never to the global
+                        // area: the global strips are session chrome, and a client
+                        // happening to have focus in one is not a request to grow it.
+                        // The pane is about to land in a tab and take the focus with
+                        // it, and a client left on a global pane would be looking
+                        // elsewhere when it did - so release that focus first. A no-op
+                        // unless a global pane is focused.
+                        if should_focus_pane {
+                            screen.defocus_global_pane(client_id);
+                        }
+                        active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
                             tab.new_pane(pid,
                                initial_pane_title,
                                invoked_with,
@@ -11512,22 +11405,21 @@ pub(crate) fn screen_thread_main(
                                blocking_notification
                            )
                         }, ?);
-                            if let Some(hold_for_command) = hold_for_command {
-                                let is_first_run = true;
-                                active_tab_and_connected_client_id_with_first_tab_fallback!(
-                                    screen,
-                                    client_id,
-                                    |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
-                                        pid,
-                                        None,
-                                        is_first_run,
-                                        hold_for_command
-                                    )
+                        if let Some(hold_for_command) = hold_for_command {
+                            let is_first_run = true;
+                            active_tab_and_connected_client_id_with_first_tab_fallback!(
+                                screen,
+                                client_id,
+                                |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
+                                    pid,
+                                    None,
+                                    is_first_run,
+                                    hold_for_command
                                 )
-                            }
-                            if should_focus_pane {
-                                screen.sync_scroll_mode_on_focus(client_id)?;
-                            }
+                            )
+                        }
+                        if should_focus_pane {
+                            screen.sync_scroll_mode_on_focus(client_id)?;
                         }
                     },
                     ClientTabIndexOrPaneId::TabIndex(tab_index)
@@ -11577,11 +11469,36 @@ pub(crate) fn screen_thread_main(
                         }
                     },
                     ClientTabIndexOrPaneId::PaneId(pane_id) => {
+                        // A global pane is in no tab, so it can anchor nothing: the scan
+                        // below would find no owning tab and drop the pane on the floor.
+                        // The anchor is the only part of the request that cannot be
+                        // honoured, so give up the anchor rather than the pane - it lands
+                        // in a tab, unanchored, instead of nowhere.
+                        let anchor_is_global = screen.global_panes.pane(pane_id).is_some();
+                        let new_pane_placement = if anchor_is_global {
+                            NewPanePlacement::NoPreference { borderless: None }
+                        } else {
+                            new_pane_placement
+                        };
+                        let tab_without_anchor = if anchor_is_global {
+                            screen
+                                .active_tab_ids
+                                .values()
+                                .next()
+                                .copied()
+                                .or_else(|| screen.tabs.keys().next().copied())
+                        } else {
+                            None
+                        };
                         let mut found = false;
                         let all_tabs = screen.get_tabs_mut();
                         let should_focus_pane = false;
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
+                        for (tab_index, tab) in all_tabs.iter_mut() {
+                            let is_target = match tab_without_anchor {
+                                Some(target) => *tab_index == target,
+                                None => tab.has_pane_with_pid(&pane_id),
+                            };
+                            if is_target {
                                 match new_pane_placement {
                                     NewPanePlacement::Tiled {
                                         direction: Some(direction),
@@ -11631,10 +11548,14 @@ pub(crate) fn screen_thread_main(
                             }
                         }
                         if !found {
-                            log::error!(
-                                "Failed to find tab containing pane with id: {:?}",
-                                pane_id
-                            );
+                            if anchor_is_global {
+                                log::error!("no tab found to open a pane in");
+                            } else {
+                                log::error!(
+                                    "Failed to find tab containing pane with id: {:?}",
+                                    pane_id
+                                );
+                            }
                         }
                     },
                 };

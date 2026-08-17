@@ -56,6 +56,19 @@ pub enum ServerToHostMsg {
         /// supervisor simply spawning without it is the pre-existing behaviour.
         #[serde(default)]
         arg0: Option<String>,
+        /// The child's environment, applied over the inherited one in order -
+        /// later entries win, which is what makes this a `Vec` rather than a map.
+        ///
+        /// Empty for every local pane: a local pane inherits the server's
+        /// environment and always has. Only the remote broker fills it, because
+        /// only a remote pane has an environment it cannot inherit — see
+        /// `remote::env`.
+        env: Vec<(String, String)>,
+        /// This child is a remote *login*: scrub the frozen `SSH_*`/`ZELLIJ_*`
+        /// leftovers of whichever ssh session started this supervisor's broker,
+        /// and set `SSH_TTY` to the pty this pane is about to get - a path only
+        /// this process, after `openpty`, is in a position to name.
+        login_session: bool,
     },
     // Note: there is deliberately no `Respawn`. `re_run_command_in_terminal`
     // terminates the supervisor and spawns a fresh one, which matches today's
