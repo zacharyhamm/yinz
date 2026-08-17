@@ -46,6 +46,12 @@ fn pairs_are_typed_and_land_on_the_right_args_fields() {
     assert_eq!(args.name.as_deref(), Some("logs"));
     assert!(args.floating);
 
+    let (name, arguments) = parse_command("/new_remote_pane remote_host=box command=htop").unwrap();
+    assert_eq!(name, "new_remote_pane");
+    let args = Args::parse(&arguments).unwrap();
+    assert_eq!(args.remote_host.as_deref(), Some("box"));
+    assert_eq!(args.command, Some(Value::String("htop".to_owned())));
+
     let json = r#"/stack_panes panes=[{"pane_id":1,"is_plugin":false}]"#;
     let (_, arguments) = parse_command(json).unwrap();
     assert_eq!(Args::parse(&arguments).unwrap().panes.len(), 1);

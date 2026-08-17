@@ -17,6 +17,8 @@ fn confirmation_policy_lists_tools_correctly() {
         "warp_pane",
         "warp_pane_here",
         "adopt_orphaned_pane",
+        // Runs a command on a foreign machine over ssh.
+        "new_remote_pane",
     ] {
         assert!(needs_confirmation(name), "{name} should be confirmed");
     }
@@ -78,9 +80,9 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 52);
+    assert_eq!(names.len(), 53);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 13);
+    assert_eq!(confirmed, 14);
 }
 
 /// The same guard as the confirmation table above, one layer along: a tool
@@ -125,6 +127,17 @@ fn a_consequence_names_the_pane_it_will_act_on() {
     assert_eq!(
         consequence(&call("send_input", r#"{"pane_id":3,"text":"hi"}"#)),
         Some("types into pane 3, as if you had typed it yourself".into())
+    );
+}
+
+#[test]
+fn a_remote_pane_consequence_names_the_host() {
+    assert_eq!(
+        consequence(&call(
+            "new_remote_pane",
+            r#"{"remote_host":"box","command":"htop"}"#
+        )),
+        Some("runs a command on box over ssh, opening a new pane connected to it".into())
     );
 }
 
