@@ -5,6 +5,8 @@
 //! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
 use crate::{flags, metadata, WorkspaceMember};
 use anyhow::Context;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use xshell::{cmd, Shell};
 
@@ -117,26 +119,45 @@ fn plugin_asset_path(plugin_name: &str) -> PathBuf {
         .with_extension("wasm")
 }
 
-fn newest_plugin_source_time() -> Option<std::time::SystemTime> {
+/// Hashes the content of every plugin source file, so staleness reflects actual content
+/// rather than filesystem mtimes (which git does not preserve across checkout/rebase/worktree
+/// operations, causing spurious "changed" detections with an mtime-based comparison).
+fn hash_plugin_sources() -> Option<u64> {
     let root = crate::project_root();
     // zellij-utils/src is in here because plugins depend on it through zellij-tile: changing eg.
     // an `Action` variant in it invalidates the built wasm just as much as touching a plugin
     // source. It is scoped to src/ on purpose - zellij-utils/assets/plugins holds the built wasm
     // we are comparing against, and including it would make the assets permanently stale
-    [
+    let mut files = vec![];
+    for dir in [
         "default-plugins",
         "zellij-tile",
         "zellij-tile-utils",
         "zellij-utils/src",
-    ]
-    .iter()
-    .filter_map(|dir| newest_file_time(&root.join(dir)))
-    .max()
+    ] {
+        collect_files(&root.join(dir), &mut files);
+    }
+    if files.is_empty() {
+        return None;
+    }
+    // Sort for a deterministic hash independent of directory iteration order.
+    files.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for path in &files {
+        path.strip_prefix(&root).unwrap_or(path).hash(&mut hasher);
+        if let Ok(contents) = std::fs::read(path) {
+            contents.hash(&mut hasher);
+        }
+    }
+    Some(hasher.finish())
 }
 
-fn newest_file_time(dir: &Path) -> Option<std::time::SystemTime> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut newest: Option<std::time::SystemTime> = None;
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let file_type = match entry.file_type() {
@@ -151,14 +172,11 @@ fn newest_file_time(dir: &Path) -> Option<std::time::SystemTime> {
             {
                 continue;
             }
-            if let Some(child) = newest_file_time(&path) {
-                newest = Some(newest.map_or(child, |current| current.max(child)));
-            }
-        } else if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-            newest = Some(newest.map_or(modified, |current| current.max(modified)));
+            collect_files(&path, out);
+        } else {
+            out.push(path);
         }
     }
-    newest
 }
 
 pub fn ensure_plugin_assets(sh: &Shell) -> anyhow::Result<()> {
@@ -170,21 +188,14 @@ pub fn ensure_plugin_assets(sh: &Shell) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let newest_source = newest_plugin_source_time();
-    let stale = plugins_force()
-        || plugin_members.iter().any(|member| {
-            let plugin_name = match member.crate_name.rsplit_once('/') {
-                Some((_, name)) => name,
-                None => return true,
-            };
-            let asset_time = std::fs::metadata(plugin_asset_path(plugin_name))
-                .and_then(|m| m.modified())
-                .ok();
-            match (asset_time, newest_source) {
-                (Some(asset_time), Some(newest_source)) => asset_time < newest_source,
-                _ => true,
-            }
-        });
+    let missing_asset = plugin_members.iter().any(|member| {
+        let plugin_name = match member.crate_name.rsplit_once('/') {
+            Some((_, name)) => name,
+            None => return true,
+        };
+        !plugin_asset_path(plugin_name).is_file()
+    });
+    let stale = plugins_force() || missing_asset || release_plugin_sources_changed();
 
     if !stale {
         let msg = ">> Plugin assets up to date, skipping plugin build";
@@ -215,6 +226,7 @@ fn build_plugins_release_into_assets(
     for member in plugin_members {
         move_plugin_to_assets(sh, plugin_name_of(member)?)?;
     }
+    write_release_plugin_stamp(sh);
     Ok(())
 }
 
@@ -230,17 +242,37 @@ fn plugin_stamp_path() -> PathBuf {
     crate::target_dir().join(".xtask-plugins-stamp")
 }
 
+fn release_plugin_stamp_path() -> PathBuf {
+    crate::target_dir().join(".xtask-plugins-release-stamp")
+}
+
 fn write_plugin_stamp(sh: &Shell) {
-    let _ = sh.write_file(plugin_stamp_path(), b"");
+    if let Some(hash) = hash_plugin_sources() {
+        let _ = sh.write_file(plugin_stamp_path(), hash.to_string());
+    }
+}
+
+fn write_release_plugin_stamp(sh: &Shell) {
+    if let Some(hash) = hash_plugin_sources() {
+        let _ = sh.write_file(release_plugin_stamp_path(), hash.to_string());
+    }
 }
 
 fn plugin_sources_changed() -> bool {
-    let stamp_time = match std::fs::metadata(plugin_stamp_path()).and_then(|m| m.modified()) {
-        Ok(stamp_time) => stamp_time,
+    sources_changed_since(&plugin_stamp_path())
+}
+
+fn release_plugin_sources_changed() -> bool {
+    sources_changed_since(&release_plugin_stamp_path())
+}
+
+fn sources_changed_since(stamp_path: &Path) -> bool {
+    let stamp_hash = match std::fs::read_to_string(stamp_path) {
+        Ok(contents) => contents,
         Err(_) => return true,
     };
-    match newest_plugin_source_time() {
-        Some(newest_source) => newest_source > stamp_time,
+    match hash_plugin_sources() {
+        Some(current_hash) => stamp_hash != current_hash.to_string(),
         None => true,
     }
 }
