@@ -60,6 +60,30 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
 
 Finish with a full `cargo x test` before calling work done — that's what CI runs.
 
+## Kitty graphics conformance: `cargo x test` is expected to be red
+
+The kitty graphics suite is written against the protocol specification
+(`docs/`-external: kitty's `graphics-protocol.rst`), not against the implementation. Where the
+two disagree, the test stays failing on purpose — the red set **is** the to-do list for the
+protocol work. 65 tests in `zellij-server` and 2 in `zellij-integration-tests` fail today; on
+macOS it is 57, because the eight `red_shm_*` tests are `#[cfg(target_os = "linux")]`.
+
+Every expected-red test lives in a module ending `_red` and is named `red_*`. Filter on the
+**module path**, not the name prefix: `red_` also appears inside unrelated names such as
+`test_has_rendered_assets`.
+
+```sh
+cargo x test -- --skip _red::                            # the green gate — must pass
+cargo x integration-test -- -E 'not test(/^red_/)'       # ditto, whole-app
+cargo test -p zellij-server --all-features -- _red::     # exactly the red set
+cargo x integration-test -- -E 'test(/^red_/)'           # the whole-app red set
+```
+
+A red test that starts passing means the deviation is fixed: drop its `red_` prefix and move it
+into the sibling `*_spec_tests.rs`. The master index — every red test, the spec section it comes
+from, what the code does today, and where the fix goes — is the module doc comment of
+`zellij-server/src/panes/kitty_graphics/unit/parser_spec_red.rs`.
+
 ## Benchmarks
 
 `cargo x bench` runs `zellij-server/benches/multi_pane_render.rs`: N terminal panes tiled over

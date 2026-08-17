@@ -1134,3 +1134,11 @@ pub fn scale_rgba(src: &[u8], src_w: usize, src_h: usize, dst_w: usize, dst_h: u
 #[cfg(test)]
 #[path = "./unit/grid_state_tests.rs"]
 mod grid_state_tests;
+
+#[cfg(test)]
+#[path = "./unit/grid_state_spec_tests.rs"]
+mod grid_state_spec_tests;
+
+#[cfg(test)]
+#[path = "./unit/grid_state_spec_red.rs"]
+mod grid_state_spec_red;

@@ -699,3 +699,11 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
 #[cfg(test)]
 #[path = "./unit/parser_tests.rs"]
 mod parser_tests;
+
+#[cfg(test)]
+#[path = "./unit/parser_spec_tests.rs"]
+mod parser_spec_tests;
+
+#[cfg(test)]
+#[path = "./unit/parser_spec_red.rs"]
+mod parser_spec_red;

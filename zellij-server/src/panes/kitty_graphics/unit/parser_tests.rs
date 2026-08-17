@@ -277,21 +277,11 @@ fn file_medium_nonexistent_path_is_ebadf() {
     assert_eq!(err.code, KittyErrorCode::Ebadf);
 }
 
-#[test]
-fn temp_file_medium_inside_temp_dir_is_deleted_after_read() {
-    let raster = raster_12_bytes();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("img.bin");
-    std::fs::write(&path, &raster).unwrap();
-    let mut parser = KittyCommandParser::new();
-    let command = parse_one(
-        &mut parser,
-        &raw_cmd("a=T,f=24,s=2,v=2,t=t", path.to_str().unwrap().as_bytes()),
-    )
-    .unwrap();
-    assert_eq!(command.image.unwrap().bytes, raster);
-    assert!(!path.exists());
-}
+// A temp-directory file with no `tty-graphics-protocol` marker used to be asserted here as
+// "deleted". The spec requires it to survive — see
+// `parser_spec_red::red_temp_file_without_the_marker_survives_even_inside_a_temp_directory`.
+// The conforming case (marker *and* temp directory) is covered by
+// `parser_spec_tests::a_temp_file_carrying_the_marker_inside_a_temp_directory_is_deleted`.
 
 #[test]
 fn temp_file_medium_outside_temp_dir_is_not_deleted() {
@@ -368,24 +358,9 @@ fn file_medium_offset_beyond_eof_is_ebadf() {
     assert_eq!(err.code, KittyErrorCode::Ebadf);
 }
 
-#[test]
-fn temp_file_outside_temp_dir_with_magic_name_is_deleted() {
-    let raster = raster_12_bytes();
-    let dir = tempfile::Builder::new()
-        .prefix("kitty-parser-test")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
-        .unwrap();
-    let path = dir.path().join("tty-graphics-protocol-img.bin");
-    std::fs::write(&path, &raster).unwrap();
-    let mut parser = KittyCommandParser::new();
-    let command = parse_one(
-        &mut parser,
-        &raw_cmd("a=T,f=24,s=2,v=2,t=t", path.to_str().unwrap().as_bytes()),
-    )
-    .unwrap();
-    assert_eq!(command.image.unwrap().bytes, raster);
-    assert!(!path.exists());
-}
+// A marked file outside any temp directory used to be asserted here as "deleted". The spec
+// requires it to survive — see
+// `parser_spec_red::red_temp_file_with_the_marker_outside_a_temp_directory_survives`.
 
 // ---- property-based tests (hegel) ----
 

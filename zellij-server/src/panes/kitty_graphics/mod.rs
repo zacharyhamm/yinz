@@ -9,6 +9,11 @@ pub use parser::*;
 pub use replies::*;
 pub use store::*;
 
+/// Shared fixtures for the conformance suite. Deliberately outside the glob re-exports above so
+/// its `KittyReply` cannot collide with the protocol types.
+#[cfg(test)]
+pub mod test_support;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KittyHostSupport {
     Supported,
