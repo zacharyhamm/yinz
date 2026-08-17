@@ -6,6 +6,7 @@ pub mod fake_pty;
 pub mod fake_server_os_api;
 pub mod harness;
 pub mod keys;
+pub mod kitty_protocol;
 pub mod nested;
 pub mod runner;
 pub mod test_env;

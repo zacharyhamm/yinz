@@ -1457,13 +1457,13 @@ fn test_pane_defaults_preserved_when_right_covered() {
     );
 }
 
-type KittyTestParts = (
+pub(super) type KittyTestParts = (
     Rc<RefCell<KittyImageStore>>,
     Rc<RefCell<HashMap<ClientId, bool>>>,
     Rc<RefCell<HashMap<ClientId, HostKittyState>>>,
 );
 
-fn create_test_kitty_parts() -> KittyTestParts {
+pub(super) fn create_test_kitty_parts() -> KittyTestParts {
     let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
     let capabilities = Rc::new(RefCell::new(HashMap::new()));
     capabilities.borrow_mut().insert(1, true);
@@ -1489,7 +1489,7 @@ fn create_test_kitty_output(parts: &KittyTestParts) -> Output {
     )
 }
 
-fn store_test_kitty_image(
+pub(super) fn store_test_kitty_image(
     kitty_image_store: &Rc<RefCell<KittyImageStore>>,
     width: u32,
     height: u32,
@@ -1505,7 +1505,7 @@ fn store_test_kitty_image(
         .unwrap()
 }
 
-fn kitty_chunk(
+pub(super) fn kitty_chunk(
     internal_image_id: InternalImageId,
     placement_uid: u64,
     cell_x: usize,
@@ -1528,7 +1528,7 @@ fn kitty_chunk(
     }
 }
 
-fn run_kitty_frame(
+pub(super) fn run_kitty_frame(
     parts: &KittyTestParts,
     chunks: Vec<KittyImageChunk>,
     floating_panes_stack: Option<FloatingPanesStack>,
@@ -1806,7 +1806,7 @@ fn is_dirty_with_kitty_chunks_and_pending_deletes() {
     assert!(pending_output.is_dirty());
 }
 
-fn extract_kitty_commands(output: &str) -> Vec<Vec<u8>> {
+pub(super) fn extract_kitty_commands(output: &str) -> Vec<Vec<u8>> {
     let bytes = output.as_bytes();
     let mut commands = Vec::new();
     let mut index = 0;

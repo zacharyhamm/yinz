@@ -49,3 +49,7 @@ pub fn format_kitty_error(error: &KittyError) -> Option<Vec<u8>> {
         format!("{}:{}", error.code.as_str(), error.message).as_bytes(),
     ))
 }
+
+#[cfg(test)]
+#[path = "./unit/replies_tests.rs"]
+mod replies_tests;
