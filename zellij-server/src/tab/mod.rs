@@ -4914,12 +4914,19 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.floating_panes.is_overlay(pane_id)
     }
-    /// Whether this tab is currently painting an overlay - a floating pane placed against the
-    /// whole surface, so its cells can land outside the tab's own viewport and onto the global
-    /// panes. The one thing a tab draws that the tab cannot clean up after by repainting itself.
-    pub fn has_visible_overlays(&self) -> bool {
-        self.floating_panes.has_overlays()
-            && (self.floating_panes.panes_are_visible() || self.floating_panes.has_pinned_panes())
+    /// Whether this tab is painting a floating pane outside its own viewport - onto the global
+    /// panes or the chrome beside them. The one thing a tab draws that the tab cannot clean up
+    /// after by repainting itself.
+    pub fn has_floating_panes_outside_viewport(&self) -> bool {
+        self.floating_panes.has_panes_outside_viewport()
+    }
+    /// Whether a floating pane is being painted at `position` - and so owns the mouse there, ahead
+    /// of anything drawn behind it.
+    pub fn visible_floating_pane_at(&self, position: &Position) -> Option<PaneId> {
+        self.floating_panes.visible_pane_id_at(position)
+    }
+    pub fn floating_pane_is_being_moved_with_mouse(&self) -> bool {
+        self.floating_panes.pane_is_being_moved_with_mouse()
     }
     /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
     /// for callers outside the tab's own render (eg. the global panes, which paint after every
@@ -5001,7 +5008,9 @@ impl Tab {
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        // the same order `Screen::render` uses: tab, (global panes), floating panes, cursor
         self.render_with_inactive_clients(output, client_id_override, &HashSet::new())?;
+        self.render_floating_panes_after_global_panes(output, client_id_override, &HashSet::new())?;
         self.render_cursor_after_global_panes(output, &HashSet::new());
         Ok(())
     }
@@ -5048,7 +5057,7 @@ impl Tab {
                     output,
                     self.floating_panes.panes_are_visible(),
                     &self.mouse_hover_pane_id,
-                    current_pane_group.clone(),
+                    current_pane_group,
                     client_id_override,
                     inactive_clients,
                     &self.mouse_help_text_visible,
@@ -5058,24 +5067,8 @@ impl Tab {
             self.render_stack_list_headers(output, client_id_override, inactive_clients)
                 .with_context(err_context)?;
         }
-        let no_ui_fullscreen_active = self.tiled_panes.fullscreen_covers_ui();
-        if !no_ui_fullscreen_active
-            && ((self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
-                || self.floating_panes.has_pinned_panes())
-        {
-            self.floating_panes
-                .render(
-                    output,
-                    &self.mouse_hover_pane_id,
-                    current_pane_group,
-                    client_id_override,
-                    inactive_clients,
-                    &self.mouse_help_text_visible,
-                    self.mouse_scroll_resize,
-                    false,
-                )
-                .with_context(err_context)?;
-        }
+        // the floating panes are *not* rendered here - they draw after the global panes, see
+        // `render_floating_panes_after_global_panes`
 
         if output.has_rendered_assets() {
             self.hide_cursor_and_clear_display_as_needed(output);
@@ -5088,13 +5081,18 @@ impl Tab {
         Ok(())
     }
 
-    pub fn render_overlays_after_global_panes(
+    /// Draw this tab's floating panes. They render here rather than inside `render` because the
+    /// global panes paint after every tab has had its turn: a floating pane drawn with the rest of
+    /// the tab would be painted over by any global pane it overlaps. Floating panes float above
+    /// the global panes for the same reason they float above the tiled ones - being floating is
+    /// enough, no `overlay` bookkeeping required.
+    pub fn render_floating_panes_after_global_panes(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
         inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
-        if !self.has_visible_overlays() {
+        if !self.has_floating_panes_to_render() {
             return Ok(());
         }
         self.floating_panes.render(
@@ -5105,8 +5103,14 @@ impl Tab {
             inactive_clients,
             &self.mouse_help_text_visible,
             self.mouse_scroll_resize,
-            true,
         )
+    }
+
+    /// The condition `render` used to apply before drawing the floating panes inline.
+    pub fn has_floating_panes_to_render(&self) -> bool {
+        !self.tiled_panes.fullscreen_covers_ui()
+            && ((self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
+                || self.floating_panes.has_pinned_panes())
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
@@ -5311,6 +5315,9 @@ impl Tab {
     }
     pub fn resize_whole_tab_to(&mut self, display_area: Viewport) -> Result<()> {
         let old_origin = *self.display_area_origin.borrow();
+        // a floating pane outside the tab (over a global pane, say) survives none of the
+        // normalization below - it is put back at the end, once the tab is at its final origin
+        let floating_panes_outside_viewport = self.floating_panes.geoms_outside_viewport();
         // everything below happens at origin 0 (the panes are translated back at the end), so the
         // layout solver must not re-apply the old origin in the meantime
         *self.display_area_origin.borrow_mut() = (0, 0);
@@ -5349,6 +5356,8 @@ impl Tab {
         if !self.global_pane_strips.borrow().is_empty() {
             self.tiled_panes.reapply_pane_frames();
         }
+        self.floating_panes
+            .restore_geoms_outside_viewport(floating_panes_outside_viewport);
         Ok(())
     }
     fn resize_whole_tab_locally(&mut self, new_screen_size: Size) -> Result<()> {
