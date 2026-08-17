@@ -14,6 +14,13 @@ use std::path::Path;
 pub const MAX_DECODED_BYTES: usize = 104_857_600;
 pub const MAX_DIMENSION: u32 = 10_000;
 
+/// How deep a chain of relative placements may go before the terminal refuses with `ETOODEEP`.
+///
+/// Spec, "Relative placements": "the terminal is free to impose a limit on the depth of the chain,
+/// but it must support a depth of at least 8". Resolving a chain is a walk per placement per
+/// refresh, so the limit is what keeps that bounded.
+pub const MAX_RELATIVE_DEPTH: usize = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KittyAction {
     Transmit,
@@ -21,6 +28,12 @@ pub enum KittyAction {
     Display,
     Delete,
     Query,
+    /// `a=f`: transmit one animation frame of an existing image.
+    Frame,
+    /// `a=a`: control playback of an image's animation.
+    Animate,
+    /// `a=c`: compose a rectangle of one frame onto another.
+    Compose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +60,13 @@ pub enum KittyErrorCode {
     Enodata,
     Enospc,
     Enotsupported,
+    /// Spec, "Relative placements": the parent image or placement a `P`/`Q` pair names does not
+    /// exist.
+    Enoparent,
+    /// The parent chain a relative placement would join loops back to itself.
+    Ecycle,
+    /// The parent chain is longer than [`MAX_RELATIVE_DEPTH`].
+    Etoodeep,
 }
 
 impl KittyErrorCode {
@@ -59,6 +79,9 @@ impl KittyErrorCode {
             KittyErrorCode::Enodata => "ENODATA",
             KittyErrorCode::Enospc => "ENOSPC",
             KittyErrorCode::Enotsupported => "ENOTSUPPORTED",
+            KittyErrorCode::Enoparent => "ENOPARENT",
+            KittyErrorCode::Ecycle => "ECYCLE",
+            KittyErrorCode::Etoodeep => "ETOODEEP",
         }
     }
 }
@@ -107,7 +130,81 @@ pub struct KittyCommand {
     pub quiet: u8,
     pub suppress_cursor_movement: bool,
     pub delete_specifier: Option<char>,
+    /// The `U` key: this is a *virtual* placement, a prototype that unicode placeholder cells
+    /// instantiate rather than something drawn at the cursor.
+    pub virtual_placement: bool,
+    /// The `P` key: the image id of the placement this one is positioned relative to. `P=0` is
+    /// read as "absent" rather than as image zero, matching how `i=0` is read elsewhere.
+    pub parent_image_id: Option<u32>,
+    /// The `Q` key: which placement *of* [`Self::parent_image_id`] to hang off. Absent means any
+    /// of them, which is what lets a client name a virtual parent it never gave a placement id.
+    pub parent_placement_id: Option<u32>,
+    /// The `H` and `V` keys: the offset from the parent's top-left corner in cells, right and down
+    /// positive.
+    pub relative_offset_cells: (i32, i32),
     pub image: Option<DecodedImage>,
+}
+
+impl KittyCommand {
+    /// Whether this command asks for a placement positioned from another placement rather than
+    /// from the cursor.
+    pub fn is_relative(&self) -> bool {
+        self.parent_image_id.is_some()
+    }
+}
+
+/// The animation actions read the same key letters as the placement actions, with entirely
+/// different meanings. Because `a=` may arrive *after* the keys it reinterprets, the keys are
+/// parsed into the fields above regardless of action and given their animation meaning here, at
+/// the point of use.
+///
+/// | key | field | `a=f` frame loading | `a=a` control | `a=c` composition |
+/// |-----|-------|---------------------|---------------|-------------------|
+/// | `c` | `columns` | base frame to copy | frame to make current | destination frame |
+/// | `r` | `rows` | frame to edit | frame whose gap changes | source frame |
+/// | `x` | `source_x` | left edge of the data | — | destination left edge |
+/// | `y` | `source_y` | top edge of the data | — | destination top edge |
+/// | `w` | `source_w` | — | — | rectangle width |
+/// | `h` | `source_h` | — | — | rectangle height |
+/// | `s` | `pixel_width` | data width (unchanged) | playback state | — |
+/// | `v` | `pixel_height` | data height (unchanged) | loop count | — |
+/// | `X` | `cell_offset_x` | composition mode | — | source left edge |
+/// | `Y` | `cell_offset_y` | background colour | — | source top edge |
+/// | `z` | `z_index` | gap in milliseconds | gap in milliseconds | — |
+impl KittyCommand {
+    /// `c`: the frame whose data is the base canvas for a new frame (`a=f`), or the frame to make
+    /// current (`a=a`), or the destination of a composition (`a=c`). Zero means absent.
+    pub fn base_frame(&self) -> Option<u32> {
+        Some(self.columns).filter(|frame| *frame != 0)
+    }
+    /// `r`: the frame being edited (`a=f`, `a=a`) or read from (`a=c`). Zero means absent, which
+    /// for `a=f` is the request to make a new frame.
+    pub fn frame_target(&self) -> Option<u32> {
+        Some(self.rows).filter(|frame| *frame != 0)
+    }
+    /// `z`: the gap in milliseconds before the next frame. Negative marks a gapless frame, one
+    /// that is never displayed and exists only as base data for later frames.
+    pub fn frame_gap_ms(&self) -> i32 {
+        self.z_index
+    }
+    /// `s` under `a=a`: 1 stops the animation, 2 runs it while waiting for more frames, 3 runs it
+    /// normally.
+    pub fn animation_state(&self) -> Option<u32> {
+        self.pixel_width.filter(|state| *state != 0)
+    }
+    /// `v` under `a=a`: how many times to loop. 0 is ignored, 1 is infinite.
+    pub fn animation_loop_count(&self) -> Option<u32> {
+        self.pixel_height.filter(|count| *count != 0)
+    }
+    /// `X` under `a=f`: 1 overwrites the destination pixels, anything else alpha-blends onto them.
+    pub fn frame_overwrites(&self) -> bool {
+        self.cell_offset_x == 1
+    }
+    /// `Y` under `a=f`: the 32-bit RGBA colour the parts of a new frame the data does not cover are
+    /// filled with. The default, 0, is a transparent black pixel.
+    pub fn frame_background(&self) -> u32 {
+        self.cell_offset_y
+    }
 }
 
 impl Default for KittyCommand {
@@ -137,6 +234,10 @@ impl Default for KittyCommand {
             quiet: 0,
             suppress_cursor_movement: false,
             delete_specifier: None,
+            virtual_placement: false,
+            parent_image_id: None,
+            parent_placement_id: None,
+            relative_offset_cells: (0, 0),
             image: None,
         }
     }
@@ -244,8 +345,17 @@ impl KittyCommandParser {
             Err(err) => return Some(Err(err)),
         };
         match command.action {
-            KittyAction::Delete | KittyAction::Display => Some(Ok(command)),
-            KittyAction::Transmit | KittyAction::TransmitAndDisplay | KittyAction::Query => {
+            KittyAction::Delete
+            | KittyAction::Display
+            | KittyAction::Animate
+            | KittyAction::Compose => Some(Ok(command)),
+            // Spec: frame data "is transmitted in exactly the same way as image data", so `a=f`
+            // goes through chunking and the payload pipeline unchanged - `f`, `s`, `v`, `o`, `t`,
+            // `S` and `O` all mean for a frame what they mean for an image.
+            KittyAction::Frame
+            | KittyAction::Transmit
+            | KittyAction::TransmitAndDisplay
+            | KittyAction::Query => {
                 if command.more_chunks {
                     self.pending = Some(PendingUpload {
                         command,
@@ -338,11 +448,9 @@ pub fn parse_control_data(control: &[u8]) -> Result<KittyCommand, KittyError> {
                     b'p' => KittyAction::Display,
                     b'd' => KittyAction::Delete,
                     b'q' => KittyAction::Query,
-                    b'f' | b'a' | b'c' => {
-                        return Err(
-                            echo.error(KittyErrorCode::Enotsupported, "animation is not supported")
-                        );
-                    },
+                    b'f' => KittyAction::Frame,
+                    b'a' => KittyAction::Animate,
+                    b'c' => KittyAction::Compose,
                     _ => return Err(echo.error(KittyErrorCode::Einval, "invalid action")),
                 };
             },
@@ -483,24 +591,49 @@ pub fn parse_control_data(control: &[u8]) -> Result<KittyCommand, KittyError> {
                 };
             },
             b"d" => {
-                if value.len() != 1 || !b"aAiInNcCpPqQxXyYzZrR".contains(&value[0]) {
+                if value.len() != 1 || !b"aAiInNcCpPqQxXyYzZrRfF".contains(&value[0]) {
                     return Err(echo.error(KittyErrorCode::Einval, "invalid delete specifier"));
                 }
                 command.delete_specifier = Some(value[0] as char);
             },
             b"U" => match parse_u32(value) {
-                Some(0) => {},
-                Some(_) => {
-                    return Err(echo.error(
-                        KittyErrorCode::Enotsupported,
-                        "unicode placeholders are not supported",
-                    ));
-                },
+                Some(virtual_placement) => command.virtual_placement = virtual_placement != 0,
                 None => {
                     return Err(echo.error(KittyErrorCode::Einval, "invalid value for key 'U'"));
                 },
             },
-            b"N" | b"P" | b"Q" | b"H" | b"V" => {},
+            // Spec, "Relative placements". `P=0` means "no parent" the way `i=0` means "no image
+            // id": zero is the key's documented default, so spelling it out cannot be a request to
+            // hang off image zero.
+            b"P" => {
+                command.parent_image_id = match parse_u32(value) {
+                    Some(0) => None,
+                    Some(parent_image_id) => Some(parent_image_id),
+                    None => {
+                        return Err(echo.error(KittyErrorCode::Einval, "invalid value for key 'P'"));
+                    },
+                };
+            },
+            b"Q" => {
+                command.parent_placement_id = match parse_u32(value) {
+                    Some(0) => None,
+                    Some(parent_placement_id) => Some(parent_placement_id),
+                    None => {
+                        return Err(echo.error(KittyErrorCode::Einval, "invalid value for key 'Q'"));
+                    },
+                };
+            },
+            b"H" => {
+                command.relative_offset_cells.0 = parse_i32(value).ok_or_else(|| {
+                    echo.error(KittyErrorCode::Einval, "invalid value for key 'H'")
+                })?;
+            },
+            b"V" => {
+                command.relative_offset_cells.1 = parse_i32(value).ok_or_else(|| {
+                    echo.error(KittyErrorCode::Einval, "invalid value for key 'V'")
+                })?;
+            },
+            b"N" => {},
             _ => {},
         }
     }

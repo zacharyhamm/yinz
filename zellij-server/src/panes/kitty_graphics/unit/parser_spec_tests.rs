@@ -235,12 +235,8 @@ fn identifiers_are_echoed_even_when_a_later_key_is_the_malformed_one() {
 
 #[test]
 fn every_documented_delete_specifier_is_accepted() {
-    // Spec table: a i n c p q x y z r, each in both cases, with the extra keys that specifier
+    // Spec table: a i n c p q x y z r f, each in both cases, with the extra keys that specifier
     // takes. Lowercase deletes placements only; uppercase also frees the image data.
-    //
-    // The table's eleventh entry, `f`/`F` — delete animation frames — is deliberately missing
-    // here: `d=f` is EINVAL today because there are no frames to delete. It belongs to RED-5, and
-    // is asserted by `kitty_animation_red::red_anim_deleting_a_frame_leaves_the_image_displayable`.
     for (letter, extra) in [
         ('a', ""),
         ('i', ",i=1,p=2"),
@@ -252,6 +248,7 @@ fn every_documented_delete_specifier_is_accepted() {
         ('y', ",y=5"),
         ('z', ",z=6"),
         ('r', ",x=1,y=9"),
+        ('f', ",i=1,r=2"),
     ] {
         for specifier in [letter, letter.to_ascii_uppercase()] {
             let control = format!("a=d,d={}{}", specifier, extra);

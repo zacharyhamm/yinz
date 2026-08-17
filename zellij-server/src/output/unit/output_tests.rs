@@ -1523,6 +1523,7 @@ pub(super) fn kitty_chunk(
         cell_offset_y: 0,
         z_index: 0,
         dest_cells: (3, 2),
+        variant_key: (3, 2),
         scaled_px: None,
         placement_uid,
     }

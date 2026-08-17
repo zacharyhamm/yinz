@@ -49,12 +49,15 @@ fn test_placement(y: isize, height: usize) -> KittyPlacement {
         emit_y: 0,
         scaled_px: None,
         dest_cells: (2, 2),
+        variant_key: (2, 2),
         cell_offset: (0, 0),
         z_index: 0,
         vertical_anchor: KittyVerticalAnchor {
             canonical_line: 0,
             offset_px_from_line_start: 0,
         },
+        is_placeholder: false,
+        relative_to: None,
     }
 }
 

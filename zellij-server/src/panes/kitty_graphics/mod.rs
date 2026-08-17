@@ -1,41 +1,48 @@
 //! The kitty graphics protocol: parsing commands, storing images, placing them on the grid.
 //!
-//! # Master index of the red set
+//! # The conformance suite
 //!
-//! The conformance suite is written against `graphics-protocol.rst`, not against this code. Where
-//! the two disagree the test stays failing on purpose, and the red set **is** the to-do list for
-//! the protocol work. Every expected-red test lives in a module ending `_red` and is named
-//! `red_*` — filter on the **module path**, not the name prefix, because `red_` also appears
-//! inside unrelated names such as `test_has_rendered_assets`.
+//! The suite is written against `graphics-protocol.rst`, not against this code, so a failing test
+//! means the protocol work is not done rather than that the test is wrong. For a long time part of
+//! it was failing on purpose, in modules ending `_red`; **that set is now empty** and the whole
+//! suite is green:
 //!
 //! ```sh
-//! cargo x test -- --skip _red::                          # the green gate
-//! cargo test -p zellij-server --all-features -- _red::   # exactly the red set
+//! cargo x test              # the gate, nothing skipped
+//! cargo x integration-test  # ditto, whole-app
 //! ```
 //!
-//! | id | tests | spec | today | fix site |
-//! |----|-------|------|-------|----------|
-//! | RED-4 | `red_relative_*` (grid) | `P`/`Q` position a placement relative to a parent, with `ENOPARENT`, `EINVAL`, `ECYCLE` and `ETOODEEP` responses | `P`/`Q`/`H`/`V` fall into the ignore arm, so the placement is accepted and positioned absolutely | `parser.rs` key match, `grid_state.rs::place` |
-//! | RED-5 | `red_anim_*` (grid) | animation: `a=f` frame transmission, `a=a` control, `a=c` compose, `d=f`/`d=F` frame deletion | `a=f/a/c` answer ENOTSUPPORTED; `d=f` is not even a recognised delete specifier | `parser.rs`, `store.rs`, `grid_state.rs` |
-//! | RED-6 | `red_uph_*` (grid) | unicode placeholders: `U=1` virtual placements materialised by `U+10EEEE` cells, ids from the foreground colour, rows/columns from combining marks | `U!=0` answers ENOTSUPPORTED; the grid has no placeholder handling | `parser.rs`, `grid.rs::print`, `grid_state.rs` |
-//!
-//! 46 red tests, all in `zellij-server`; the whole-app suite is green. RED-6 matters most for
-//! zellij specifically: unicode placeholders are how a program displays an image without
-//! controlling the cursor, which is the position every program inside a multiplexer is in. Two of
-//! the RED-4 tests — `red_relative_a_virtual_placement_cannot_also_be_relative` and
-//! `red_relative_a_child_of_a_virtual_parent_sits_at_the_placeholder_minimum` — need RED-6 as
-//! well, and cannot go green before it does.
-//!
-//! Six further entries have been closed and their tests moved into the sibling `*_spec_tests.rs`
-//! files: the `t=t` deletion policy, the effect of `ESC[3J` on graphics, the derived axis when
+//! All nine deviations have been closed. The last two were relative placements
+//! (`grid_tests::kitty_relative_placement`) and animation (`grid_tests::kitty_animation`); before
+//! them, the `t=t` deletion policy, the effect of `ESC[3J` on graphics, the derived axis when
 //! scaling by `c` or `r` alone, `t=s` shared memory transfers, `ENOSPC` for an image larger than
-//! the whole store, and `EBADPNG` for malformed PNG data.
+//! the whole store, `EBADPNG` for malformed PNG data, and — the one that mattered most for zellij
+//! specifically — unicode placeholders, now `grid_tests::kitty_unicode_placeholders`. Those are how
+//! a program displays an image without controlling the cursor, which is the position every program
+//! inside a multiplexer is in.
 //!
 //! # Judgement calls, deliberately left green
 //!
-//! Eight places where the specification does not say enough to call the current behaviour wrong,
+//! Eleven places where the specification does not say enough to call the current behaviour wrong,
 //! or where two of its rules pull in opposite directions. They are pinned as-is so a future
 //! change to any of them is a visible decision:
+//!
+//! * **Animation has no playback clock.** Frames are real rasters — transmitted, composed and
+//!   selected for real, so `a=a,c=<n>` changes what is on screen and a client driving its own
+//!   animation works. But `a=a,s=2`/`s=3` and the `z` gaps are recorded and never act: nothing
+//!   advances a frame on its own. A clock would need a wakeup source per animating image and a
+//!   retransmission to the host on every tick, and is deliberately left for later. A client that
+//!   asks the terminal to play an animation is told OK and sees a still image, which is the one
+//!   place in this module where a success reply overstates what happened.
+//! * An absent `Q` on a relative placement selects **any** placement of the parent image rather
+//!   than placement 0. The spec gives `Q` a default of 0, but a virtual placement created without
+//!   a `p` key also has placement id 0, and reading `Q` as "unspecified" is what lets a client
+//!   name such a parent at all. See
+//!   `kitty_relative_placement::relative_a_child_of_a_virtual_parent_sits_at_the_placeholder_minimum`.
+//! * A cascade that deletes a relative placement frees its image only when the delete that started
+//!   it was an uppercase one. The spec says an image whose last placement goes is deleted, but says
+//!   it in the context of a delete that frees data; matching the case of the originating specifier
+//!   keeps the lowercase/uppercase distinction meaning the same thing everywhere.
 //!
 //! * `ESC[2J` scrolls the screen into the scrollback rather than discarding it, so a short image
 //!   at the top follows its text out of the viewport instead of being freed, while one too tall to
@@ -64,6 +71,12 @@
 //!   says that when the advance would take the cursor off the screen "the exact positioning of
 //!   the cursor is undefined, and up to implementations". See
 //!   `kitty_spec::an_image_reaching_the_right_edge_wraps_the_cursor_to_the_next_line`.
+//! * The placements a unicode placeholder run stands for are resolved from the **viewport** only,
+//!   so a run that has scrolled into the scrollback stops being a placement until the user scrolls
+//!   it back into view. An explicit placement, by contrast, stays in the list wherever it is. The
+//!   spec says nothing either way, and this falls out of deriving the placements from the cells
+//!   rather than tracking them: the cells are the placement, and only the ones on screen are ever
+//!   drawn. See `Grid::kitty_refresh_placeholder_placements`.
 //! * Control keys this terminal does not implement are ignored rather than rejected. The spec is
 //!   silent and kitty is stricter (EINVAL on an unknown key character); a multiplexer sits
 //!   between clients and a possibly-newer host terminal, so lenience is the safer default. See
@@ -72,11 +85,13 @@
 pub mod grid_state;
 pub mod interceptor;
 pub mod parser;
+pub mod placeholders;
 pub mod replies;
 pub mod store;
 pub use grid_state::*;
 pub use interceptor::*;
 pub use parser::*;
+pub use placeholders::*;
 pub use replies::*;
 pub use store::*;
 

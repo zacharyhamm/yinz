@@ -24,6 +24,7 @@ fn reply_data(
         image_id,
         image_number,
         placement_id,
+        frame_number: None,
         quiet: 0,
     }
 }
@@ -175,19 +176,9 @@ fn every_way_the_parser_can_refuse() -> Vec<(&'static str, &'static str, Vec<u8>
             b"/nonexistent/zellij/kitty".to_vec(),
         ),
         (
-            "animation is unsupported",
-            "a=f,f=24,s=1,v=1,i=1",
-            vec![0; 3],
-        ),
-        (
             "could not read shared memory object",
             "a=T,f=24,s=1,v=1,i=1,t=s",
             b"/zellij-kitty-no-such-object".to_vec(),
-        ),
-        (
-            "unicode placeholders are unsupported",
-            "a=p,i=1,U=1",
-            vec![],
         ),
     ]
 }

@@ -1,7 +1,6 @@
-//! Unicode placeholders. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/mod.rs`.
+//! Unicode placeholders.
 //!
-//! RED-6. Spec, "Unicode placeholders": instead of positioning an image itself, a client creates
+//! Spec, "Unicode placeholders": instead of positioning an image itself, a client creates
 //! a *virtual placement* with `U=1` and then draws the placeholder character `U+10EEEE` in the
 //! cells where the image should appear. The terminal fills those cells from the image. This is
 //! how a program that does not control the cursor — anything inside a multiplexer, or a TUI
@@ -23,19 +22,15 @@
 //! A virtual placement is invisible until placeholder cells exist, and the image is fitted into
 //! the `c` x `r` box preserving its aspect ratio.
 //!
-//! Today `parse_control_data` refuses any non-zero `U` with ENOTSUPPORTED, and `Grid::print` has
-//! no notion of a placeholder cell.
-//!
 //! These tests assert only externally observable state — reply codes, placement counts and
-//! placement geometry — so they compile today and simply fail. kitty's assertions on renderer
-//! `src_rect` fractions map onto `KittyPlacement::source_rect` in pixels: a source rect of
-//! `left=0, top=0, right=0.5, bottom=0.5` on a 20x20 image is `x=0, y=0, width=10, height=10`.
+//! placement geometry. kitty's assertions on renderer `src_rect` fractions map onto
+//! `KittyPlacement::source_rect` in pixels: a source rect of `left=0, top=0, right=0.5,
+//! bottom=0.5` on a 20x20 image is `x=0, y=0, width=10, height=10`.
 //!
-//! Fix sites: `parser.rs` (accept `U=1`, add a `virtual_placement` flag), `grid_state.rs` (a
-//! virtual placement that produces no chunks and is exempt from the geometric delete
-//! specifiers), `grid.rs::print` (recognise `U+10EEEE` and its combining marks, resolve the id
-//! from the foreground colour, the placement from the underline colour, and materialise a
-//! placement per run of cells), `terminal_character.rs` (per-cell placeholder state).
+//! The implementation is spread over `placeholders.rs` (the diacritic table), `parser.rs` (the
+//! `U` key), `grid_state.rs` (`VirtualPlacement` and the placements derived from it) and
+//! `grid.rs` (`Row::placeholder_marks`, and the resolution pass that rebuilds the derived
+//! placements from the viewport).
 
 use super::*;
 use crate::panes::kitty_graphics::test_support::{
@@ -70,14 +65,14 @@ fn virtual_placement(session: &mut KittySession, id: u32, columns: u32, rows: u3
 }
 
 #[test]
-fn red_uph_a_virtual_placement_is_accepted() {
+fn a_virtual_placement_is_accepted() {
     let mut session = KittySession::new(10, 20);
     let reply = session.reply("a=T,f=24,s=20,v=20,i=1,U=1,c=2,r=2", &rgb(20, 20));
     assert!(reply.is_ok(), "got {}:{}", reply.code, reply.message);
 }
 
 #[test]
-fn red_uph_a_virtual_placement_shows_nothing_until_placeholder_cells_exist() {
+fn a_virtual_placement_shows_nothing_until_placeholder_cells_exist() {
     // Spec: "Virtual placements are invisible and only play the role of prototypes for real
     // images"; the placeholder cells are what instantiate them.
     let mut session = KittySession::new(10, 20);
@@ -98,7 +93,7 @@ fn red_uph_a_virtual_placement_shows_nothing_until_placeholder_cells_exist() {
 }
 
 #[test]
-fn red_uph_placeholder_cells_materialise_the_image() {
+fn placeholder_cells_materialise_the_image() {
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 1, 2, 2);
 
@@ -115,7 +110,7 @@ fn red_uph_placeholder_cells_materialise_the_image() {
 }
 
 #[test]
-fn red_uph_contiguous_cells_in_a_row_become_one_placement() {
+fn contiguous_cells_in_a_row_become_one_placement() {
     // Spec: the terminal is free to coalesce, and a run of adjacent cells of the same image is
     // one rectangle. Two cells of a 2x2 image cover its left and right halves.
     let mut session = KittySession::new(10, 20);
@@ -141,7 +136,7 @@ fn red_uph_contiguous_cells_in_a_row_become_one_placement() {
 }
 
 #[test]
-fn red_uph_cells_that_are_not_adjacent_stay_separate() {
+fn cells_that_are_not_adjacent_stay_separate() {
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 1, 2, 2);
 
@@ -162,7 +157,7 @@ fn red_uph_cells_that_are_not_adjacent_stay_separate() {
 }
 
 #[test]
-fn red_uph_each_cell_shows_its_own_part_of_the_image() {
+fn each_cell_shows_its_own_part_of_the_image() {
     // The second row of a 2x2 placement is the bottom half of the image.
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 1, 2, 2);
@@ -185,7 +180,7 @@ fn red_uph_each_cell_shows_its_own_part_of_the_image() {
 }
 
 #[test]
-fn red_uph_the_image_id_can_be_carried_in_a_24_bit_foreground_colour() {
+fn the_image_id_can_be_carried_in_a_24_bit_foreground_colour() {
     // Spec: with a 24-bit colour the low three bytes of the id are the red, green and blue
     // components. Here: id 0x010203.
     let mut session = KittySession::new(10, 20);
@@ -204,7 +199,7 @@ fn red_uph_the_image_id_can_be_carried_in_a_24_bit_foreground_colour() {
 }
 
 #[test]
-fn red_uph_the_image_id_can_be_carried_in_a_256_colour_index() {
+fn the_image_id_can_be_carried_in_a_256_colour_index() {
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 42, 1, 1);
 
@@ -221,7 +216,7 @@ fn red_uph_the_image_id_can_be_carried_in_a_256_colour_index() {
 }
 
 #[test]
-fn red_uph_a_third_combining_mark_supplies_the_high_byte_of_the_id() {
+fn a_third_combining_mark_supplies_the_high_byte_of_the_id() {
     // Spec: the id's most significant byte cannot fit in a colour, so it gets its own mark.
     // Mark index 42 with a foreground of 42 gives id 42 | (42 << 24).
     let image_id = 42 | (42u32 << 24);
@@ -241,7 +236,7 @@ fn red_uph_a_third_combining_mark_supplies_the_high_byte_of_the_id() {
 }
 
 #[test]
-fn red_uph_a_placeholder_for_an_unknown_id_shows_nothing() {
+fn a_placeholder_for_an_unknown_id_shows_nothing() {
     // A stale placeholder in the scrollback must not conjure up whatever image now holds that id
     // — it simply has nothing to show.
     let mut session = KittySession::new(10, 20);
@@ -273,7 +268,7 @@ fn red_uph_a_placeholder_for_an_unknown_id_shows_nothing() {
 }
 
 #[test]
-fn red_uph_a_cell_with_no_marks_continues_the_cell_to_its_left() {
+fn a_cell_with_no_marks_continues_the_cell_to_its_left() {
     // Spec: "If no diacritics are present, and the previous placeholder cell has the same
     // foreground and underline colors, then the row of the current cell will be the row of the
     // cell to the left, the column will be the column of the cell to the left plus one, and the
@@ -296,7 +291,7 @@ fn red_uph_a_cell_with_no_marks_continues_the_cell_to_its_left() {
 }
 
 #[test]
-fn red_uph_a_cell_with_only_a_row_mark_takes_the_next_column() {
+fn a_cell_with_only_a_row_mark_takes_the_next_column() {
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 1, 2, 2);
 
@@ -313,7 +308,7 @@ fn red_uph_a_cell_with_only_a_row_mark_takes_the_next_column() {
 }
 
 #[test]
-fn red_uph_the_underline_colour_chooses_between_placements_of_one_image() {
+fn the_underline_colour_chooses_between_placements_of_one_image() {
     // Spec: "You can also specify a placement ID using the underline color (if it's omitted or
     // zero, the terminal may choose any virtual placement of the given image)." One image can have
     // several virtual placements at different sizes; the cell says which one it belongs to.
@@ -345,7 +340,7 @@ fn red_uph_the_underline_colour_chooses_between_placements_of_one_image() {
 }
 
 #[test]
-fn red_uph_the_image_is_fitted_to_the_box_preserving_its_aspect_ratio() {
+fn the_image_is_fitted_to_the_box_preserving_its_aspect_ratio() {
     // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio
     // preserved". The box has to be a different shape from the image for that to mean anything:
     // a 4x1 cell box is 40x20 pixels, and the 20x20 image fitted into it stays 20x20 rather than
@@ -381,7 +376,7 @@ fn red_uph_the_image_is_fitted_to_the_box_preserving_its_aspect_ratio() {
 }
 
 #[test]
-fn red_uph_erasing_the_line_removes_the_images_it_held() {
+fn erasing_the_line_removes_the_images_it_held() {
     // The placeholder cells *are* the placement; erasing them erases it. This is the one case
     // where an erase command is supposed to affect graphics.
     let mut session = KittySession::new(10, 20);
@@ -401,7 +396,7 @@ fn red_uph_erasing_the_line_removes_the_images_it_held() {
 }
 
 #[test]
-fn red_uph_geometric_deletes_do_not_touch_virtual_placements() {
+fn geometric_deletes_do_not_touch_virtual_placements() {
     // Spec: a virtual placement can only be deleted by `d` in `i, I, n, N, r, R`. The others are
     // positional, and a virtual placement has no position.
     let mut session = KittySession::new(10, 20);
@@ -425,7 +420,7 @@ fn red_uph_geometric_deletes_do_not_touch_virtual_placements() {
 }
 
 #[test]
-fn red_uph_deleting_by_image_id_does_remove_a_virtual_placement() {
+fn deleting_by_image_id_does_remove_a_virtual_placement() {
     // Spec: "Virtual placements can be deleted by a deletion command only when the `d` key is
     // equal to `i`, `I`, `r`, `R`, `n` or `N`."
     let mut session = KittySession::new(10, 20);

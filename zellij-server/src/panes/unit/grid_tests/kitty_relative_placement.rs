@@ -1,7 +1,6 @@
-//! Relative placements. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/mod.rs`.
+//! Relative placements.
 //!
-//! RED-4. Spec, "Relative placements": a placement can be positioned relative to another one
+//! Spec, "Relative placements": a placement can be positioned relative to another one
 //! rather than to the cursor, with
 //!
 //! * `P` — the parent image id, `Q` — the parent placement id,
@@ -14,15 +13,10 @@
 //!
 //! Deleting a parent deletes its descendants, and an image left with no placements is deleted.
 //!
-//! Today `parser.rs` matches `P`, `Q`, `H` and `V` in the same arm as the keys it deliberately
-//! ignores, so `a=p,P=<anything>` is accepted as an ordinary placement: it is positioned at the
-//! cursor, it moves the cursor, and a missing parent is never reported. That is worse than not
-//! implementing the feature — a client is told its relative placement worked and gets an image
-//! in the wrong place.
-//!
-//! Fix sites: `parser.rs` (parse `P`/`Q`/`H`/`V` into the command), `grid_state.rs::place`
-//! (resolve the parent, position from it, refuse cycles and over-deep chains, cascade deletes),
-//! `parser.rs::KittyErrorCode` (add `Enoparent`, `Ecycle`, `Etoodeep`).
+//! The parent link a placement carries is `KittyPlacement::relative_to`; positions are re-derived
+//! from it by `KittyGrid::resolve_relative_placements` whenever anything moves, which is what lets
+//! a child track a parent through scrolling, reflow, and the per-frame rebuild of the placeholder
+//! cells a virtual parent is made of.
 
 use super::*;
 use crate::panes::kitty_graphics::test_support::{
@@ -42,7 +36,7 @@ fn session_with_a_parent() -> KittySession {
 }
 
 #[test]
-fn red_relative_placement_is_positioned_from_its_parent() {
+fn relative_placement_is_positioned_from_its_parent() {
     // Spec: the child's top-left corner is the parent's, offset by H columns and V rows.
     let mut session = session_with_a_parent();
     session.ok("a=t,f=24,s=10,v=20,i=2", &rgb(10, 20));
@@ -66,7 +60,7 @@ fn red_relative_placement_is_positioned_from_its_parent() {
 }
 
 #[test]
-fn red_relative_placement_does_not_move_the_cursor() {
+fn relative_placement_does_not_move_the_cursor() {
     // Spec: "Since a relative placement gets its position specified based on another placement,
     // instead of the cursor, the cursor must not move after a relative position, regardless of the
     // value of the `C` key to control cursor movement."
@@ -81,7 +75,7 @@ fn red_relative_placement_does_not_move_the_cursor() {
 }
 
 #[test]
-fn red_relative_placement_with_a_missing_parent_image_is_refused() {
+fn relative_placement_with_a_missing_parent_image_is_refused() {
     let mut session = session_with_a_parent();
     session.ok("a=t,f=24,s=10,v=20,i=2", &rgb(10, 20));
 
@@ -90,7 +84,7 @@ fn red_relative_placement_with_a_missing_parent_image_is_refused() {
 }
 
 #[test]
-fn red_relative_placement_with_a_missing_parent_placement_is_refused() {
+fn relative_placement_with_a_missing_parent_placement_is_refused() {
     let mut session = session_with_a_parent();
     session.ok("a=t,f=24,s=10,v=20,i=2", &rgb(10, 20));
 
@@ -99,14 +93,14 @@ fn red_relative_placement_with_a_missing_parent_placement_is_refused() {
 }
 
 #[test]
-fn red_a_placement_cannot_be_its_own_parent() {
+fn a_placement_cannot_be_its_own_parent() {
     let mut session = session_with_a_parent();
     let reply = session.err("a=p,i=1,p=1,P=1,Q=1", &[]);
     assert_eq!(reply.code, "EINVAL");
 }
 
 #[test]
-fn red_a_cycle_of_relative_placements_is_refused() {
+fn a_cycle_of_relative_placements_is_refused() {
     // Spec: ECYCLE. Without this check the terminal would loop forever resolving positions.
     let mut session = session_with_a_parent();
     session.ok("a=t,f=24,s=10,v=20,i=2", &rgb(10, 20));
@@ -118,7 +112,7 @@ fn red_a_cycle_of_relative_placements_is_refused() {
 }
 
 #[test]
-fn red_a_chain_of_eight_relative_placements_is_supported() {
+fn a_chain_of_eight_relative_placements_is_supported() {
     // Spec: the terminal may cap the chain depth but "must support a depth of at least 8".
     let mut session = session_with_a_parent();
     for id in 2..=9u32 {
@@ -142,12 +136,13 @@ fn red_a_chain_of_eight_relative_placements_is_supported() {
     assert_eq!(last.display_rect.x, 8 * 10);
 }
 
-// ---- where RED-4 meets RED-6: virtual placements as parents ----
+// ---- virtual placements as parents ----
 //
-// These two need unicode placeholder support as well, so they stay red until both land.
+// These two lean on unicode placeholders as well: a virtual placement has no position of its own,
+// so its parenthood is defined entirely in terms of the placeholder cells standing for it.
 
 #[test]
-fn red_relative_a_virtual_placement_cannot_also_be_relative() {
+fn relative_a_virtual_placement_cannot_also_be_relative() {
     // Spec, "Relative placements": "Virtual placements created for Unicode placeholder based
     // images cannot also be relative placements. [...] If a client attempts to make a virtual
     // placement relative the terminal must respond with the EINVAL error code."
@@ -159,7 +154,7 @@ fn red_relative_a_virtual_placement_cannot_also_be_relative() {
 }
 
 #[test]
-fn red_relative_a_child_of_a_virtual_parent_sits_at_the_placeholder_minimum() {
+fn relative_a_child_of_a_virtual_parent_sits_at_the_placeholder_minimum() {
     // Spec: "When a virtual placement is the parent, its position is derived from all the actual
     // Unicode placeholder images that refer to it. The x position is the minimum of all the
     // placeholder x positions and the y position is the minimum of all the placeholder y
@@ -194,7 +189,7 @@ fn red_relative_a_child_of_a_virtual_parent_sits_at_the_placeholder_minimum() {
 }
 
 #[test]
-fn red_deleting_a_parent_placement_deletes_its_children() {
+fn deleting_a_parent_placement_deletes_its_children() {
     // Spec: "The lifetime of a relative placement is tied to the lifetime of its parent. If its
     // parent is deleted, it is deleted as well." A child has no position of its own to fall back
     // on.
@@ -208,7 +203,7 @@ fn red_deleting_a_parent_placement_deletes_its_children() {
 }
 
 #[test]
-fn red_deleting_a_parent_image_deletes_descendants_and_orphaned_images() {
+fn deleting_a_parent_image_deletes_descendants_and_orphaned_images() {
     // Spec: an image whose last placement is deleted this way is deleted too.
     let mut session = session_with_a_parent();
     session.ok("a=t,f=24,s=10,v=20,i=2", &rgb(10, 20));

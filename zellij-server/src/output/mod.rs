@@ -548,7 +548,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
         }
         for (key, chunk) in current {
             let variant = if chunk.scaled_px.is_some() {
-                Some(chunk.dest_cells)
+                Some(chunk.variant_key)
             } else {
                 None
             };

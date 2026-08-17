@@ -1,7 +1,6 @@
-//! Animation. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/mod.rs`.
+//! Animation.
 //!
-//! RED-5. Spec, "Animation": an image can carry additional frames, composed and played by the
+//! Spec, "Animation": an image can carry additional frames, composed and played by the
 //! terminal, using three actions and one delete specifier:
 //!
 //! * `a=f` transmits frame data. `c` names the frame to use as the base canvas, `r` the frame
@@ -15,23 +14,15 @@
 //!   opposite of frame loading.
 //! * `d=f` deletes frames of an image; `d=F` deletes the image outright.
 //!
-//! Today `parse_control_data` refuses `a=f`, `a=a` and `a=c` with ENOTSUPPORTED, and `f`/`F` are
-//! not in the accepted set of delete specifiers at all, so `a=d,d=f` is EINVAL.
-//!
 //! These tests are written against externally observable behaviour only — reply codes, the
-//! reported frame number, and whether an image can still be displayed afterwards — so they
-//! compile against today's API and simply fail. The half of kitty's `test_animation_frame_loading`
-//! that inspects frame pixel data and the current frame index cannot be ported until the model
-//! exists; a future implementation should expose roughly:
+//! reported frame number, and whether an image can still be displayed afterwards. Frames are real
+//! rasters, held as [`KittyFrame`](crate::panes::kitty_graphics::KittyFrame) alongside the root
+//! image, so `a=a,c=<n>` changes what is drawn.
 //!
-//! ```ignore
-//! struct KittyFrame { gap_ms: i32, id: u32, rgba: Vec<u8> }
-//! struct StoredImage { frames: Vec<KittyFrame>, root_frame_gap: u32, current_frame: usize, .. }
-//! ```
-//!
-//! Fix sites: `parser.rs` (the three actions, the frame keys, `d=f`/`d=F`), `store.rs` (frame
-//! storage and its quota), `grid_state.rs` (frame-aware delete), `grid.rs::execute_kitty_command`
-//! and `replies.rs` (the `r=` key in responses).
+//! What this terminal deliberately does not have is a playback *clock*: `s=2`/`s=3` and the `z`
+//! gaps are validated and recorded, but nothing advances a frame on its own. Client-driven
+//! animation works; terminal-driven animation is inert. See the judgement calls in
+//! `kitty_graphics/mod.rs`.
 
 use super::*;
 
@@ -48,7 +39,7 @@ fn session_with_a_root_image() -> KittySession {
 }
 
 #[test]
-fn red_anim_transmitting_a_frame_for_an_unknown_image_reports_enoent() {
+fn anim_transmitting_a_frame_for_an_unknown_image_reports_enoent() {
     // A frame has nowhere to live without its image, and the client needs to know that rather
     // than being told the whole feature is missing.
     let mut session = KittySession::new(10, 20);
@@ -58,7 +49,7 @@ fn red_anim_transmitting_a_frame_for_an_unknown_image_reports_enoent() {
 }
 
 #[test]
-fn red_anim_the_first_added_frame_is_reported_as_frame_two() {
+fn anim_the_first_added_frame_is_reported_as_frame_two() {
     // Spec: frame numbers are 1-based and frame 1 is the root image, so the first frame a client
     // adds is frame 2. The reply carries it in the `r` key.
     let mut session = session_with_a_root_image();
@@ -68,7 +59,7 @@ fn red_anim_the_first_added_frame_is_reported_as_frame_two() {
 }
 
 #[test]
-fn red_anim_each_new_frame_gets_the_next_number() {
+fn anim_each_new_frame_gets_the_next_number() {
     let mut session = session_with_a_root_image();
     assert_eq!(
         session.reply("a=f,f=24,s=4,v=3,i=1", &frame()).frame_number,
@@ -81,7 +72,7 @@ fn red_anim_each_new_frame_gets_the_next_number() {
 }
 
 #[test]
-fn red_anim_a_frame_can_be_transmitted_in_chunks() {
+fn anim_a_frame_can_be_transmitted_in_chunks() {
     // Spec: frame data chunks like image data, except that "when sending animation frame data,
     // subsequent chunks must also specify the a=f key". What gets split is the base64 stream, on a
     // four-character boundary — "all chunks, except the last, must have a size that is a multiple
@@ -106,7 +97,7 @@ fn red_anim_a_frame_can_be_transmitted_in_chunks() {
 }
 
 #[test]
-fn red_anim_a_frame_may_cover_only_part_of_the_image() {
+fn anim_a_frame_may_cover_only_part_of_the_image() {
     // Spec: x, y, s and v give "the rectangle of the frame that this data covers", which is how
     // an animation sends only the pixels that changed.
     let mut session = session_with_a_root_image();
@@ -115,7 +106,7 @@ fn red_anim_a_frame_may_cover_only_part_of_the_image() {
 }
 
 #[test]
-fn red_anim_an_existing_frame_can_be_edited_in_place() {
+fn anim_an_existing_frame_can_be_edited_in_place() {
     // Spec: `r` names the frame being edited rather than creating a new one.
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
@@ -130,7 +121,7 @@ fn red_anim_an_existing_frame_can_be_edited_in_place() {
 }
 
 #[test]
-fn red_anim_a_new_frame_can_be_based_on_an_existing_one() {
+fn anim_a_new_frame_can_be_based_on_an_existing_one() {
     // Spec: `c` is "the 1-based frame number of the frame whose data should be used as the base
     // canvas", so a client can send a delta against any earlier frame.
     let mut session = session_with_a_root_image();
@@ -142,14 +133,14 @@ fn red_anim_a_new_frame_can_be_based_on_an_existing_one() {
 }
 
 #[test]
-fn red_anim_editing_a_frame_that_does_not_exist_reports_enoent() {
+fn anim_editing_a_frame_that_does_not_exist_reports_enoent() {
     let mut session = session_with_a_root_image();
     let reply = session.err("a=f,f=24,s=4,v=3,i=1,r=9", &frame());
     assert_eq!(reply.code, "ENOENT");
 }
 
 #[test]
-fn red_anim_playback_can_be_stopped_and_started() {
+fn anim_playback_can_be_stopped_and_started() {
     // Spec, `a=a` with `s`: 1 stops, 2 runs while waiting for more frames, 3 runs and loops.
     // These are control commands with no data, so success is the whole observable contract.
     let mut session = session_with_a_root_image();
@@ -168,7 +159,7 @@ fn red_anim_playback_can_be_stopped_and_started() {
 }
 
 #[test]
-fn red_anim_a_loop_count_can_be_set() {
+fn anim_a_loop_count_can_be_set() {
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
     let reply = session.reply("a=a,i=1,s=3,v=3", &[]);
@@ -176,7 +167,7 @@ fn red_anim_a_loop_count_can_be_set() {
 }
 
 #[test]
-fn red_anim_a_frames_gap_can_be_changed_after_the_fact() {
+fn anim_a_frames_gap_can_be_changed_after_the_fact() {
     // Spec, `a=a` with `r` and `z`: set the gap of frame `r` to `z` milliseconds.
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
@@ -186,7 +177,7 @@ fn red_anim_a_frames_gap_can_be_changed_after_the_fact() {
 }
 
 #[test]
-fn red_anim_a_frame_can_be_made_current() {
+fn anim_a_frame_can_be_made_current() {
     // Spec, `a=a` with `c`: "the 1-based frame number of the frame that should be made current".
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
@@ -196,7 +187,7 @@ fn red_anim_a_frame_can_be_made_current() {
 }
 
 #[test]
-fn red_anim_composing_one_frame_onto_another_is_accepted() {
+fn anim_composing_one_frame_onto_another_is_accepted() {
     // Spec, `a=c`: blit a rectangle from frame `r` onto frame `c`.
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
@@ -206,7 +197,7 @@ fn red_anim_composing_one_frame_onto_another_is_accepted() {
 }
 
 #[test]
-fn red_anim_composing_a_sub_rectangle_is_accepted() {
+fn anim_composing_a_sub_rectangle_is_accepted() {
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
 
@@ -215,14 +206,14 @@ fn red_anim_composing_a_sub_rectangle_is_accepted() {
 }
 
 #[test]
-fn red_anim_composing_from_a_frame_that_does_not_exist_reports_enoent() {
+fn anim_composing_from_a_frame_that_does_not_exist_reports_enoent() {
     let mut session = session_with_a_root_image();
     let reply = session.err("a=c,i=1,r=9,c=1", &[]);
     assert_eq!(reply.code, "ENOENT");
 }
 
 #[test]
-fn red_anim_composing_out_of_bounds_is_rejected_rather_than_overflowing() {
+fn anim_composing_out_of_bounds_is_rejected_rather_than_overflowing() {
     // kitty regression: offsets near u32::MAX must be reported as EINVAL, not wrapped around
     // into a rectangle that reads outside the frame buffer.
     let mut session = session_with_a_root_image();
@@ -235,7 +226,7 @@ fn red_anim_composing_out_of_bounds_is_rejected_rather_than_overflowing() {
 }
 
 #[test]
-fn red_anim_deleting_a_frame_leaves_the_image_displayable() {
+fn anim_deleting_a_frame_leaves_the_image_displayable() {
     // Spec, `d=f`: delete the frames of an image, optionally just the one named by `r`. The
     // image itself survives — it still has its root frame.
     let mut session = session_with_a_root_image();
@@ -247,7 +238,7 @@ fn red_anim_deleting_a_frame_leaves_the_image_displayable() {
 }
 
 #[test]
-fn red_anim_deleting_with_the_uppercase_specifier_removes_the_image() {
+fn anim_deleting_with_the_uppercase_specifier_removes_the_image() {
     // Spec: uppercase frees the image data, as everywhere else in the delete matrix.
     let mut session = session_with_a_root_image();
     session.reply("a=f,f=24,s=4,v=3,i=1", &frame());
