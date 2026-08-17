@@ -640,6 +640,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::RenameTabWithId(tab_id, new_name) => {
                         rename_tab_with_id(env, tab_id, &new_name)
                     },
+                    PluginCommand::SetTabProjects(tab_projects) => {
+                        set_tab_projects(env, tab_projects)
+                    },
                     PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
                         break_panes_to_tab_with_id(
                             env,
@@ -5438,6 +5441,17 @@ fn close_tab_with_id(env: &PluginEnv, tab_id: u64) {
         .send_to_screen(ScreenInstruction::CloseTabWithId(tab_id, None));
 }
 
+fn set_tab_projects(env: &PluginEnv, tab_projects: BTreeMap<u64, String>) {
+    let tab_projects = tab_projects
+        .into_iter()
+        .map(|(tab_id, project)| (tab_id as usize, project))
+        .collect();
+    env.senders
+        .send_to_screen(ScreenInstruction::SetTabProjects(tab_projects))
+        .context("Failed to set tab projects")
+        .non_fatal();
+}
+
 fn rename_tab_with_id(env: &PluginEnv, tab_id: u64, new_name: &str) {
     let tab_id = tab_id as usize;
     let rename_tab_action =
@@ -6096,6 +6110,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::GoToTabWithId(..)
         | PluginCommand::CloseTabWithId(..)
         | PluginCommand::RenameTabWithId(..)
+        | PluginCommand::SetTabProjects(..)
         | PluginCommand::BreakPanesToTabWithId(..)
         | PluginCommand::ReloadPlugin(..)
         | PluginCommand::LoadNewPlugin { .. }

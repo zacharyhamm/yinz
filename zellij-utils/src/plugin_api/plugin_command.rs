@@ -145,11 +145,12 @@ pub use super::generated_api::api::{
         SetGlobalPanePlacementPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetSelfMouseSelectionSupportPayload,
-        SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTimeoutPayload,
-        ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
+        SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTabProjectsPayload,
+        SetTimeoutPayload, ShowCursorPayload,
+        ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         StackPanesPayload, SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload,
-        SwitchTabToPayload, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
+        SwitchTabToPayload, TabProject, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
         TogglePaneEmbedOrEjectForPaneIdPayload, TogglePaneIdFullscreenPayload, UnsubscribePayload,
         WarpPaneFromSessionPayload, WarpPaneResponse as ProtobufWarpPaneResponse,
         WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement,
@@ -2013,6 +2014,16 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     PluginCommand::RenameTabWithId(payload.tab_id, payload.new_name),
                 ),
                 _ => Err("Mismatched payload for RenameTabWithId"),
+            },
+            Some(CommandName::SetTabProjects) => match protobuf_plugin_command.payload {
+                Some(Payload::SetTabProjectsPayload(payload)) => Ok(PluginCommand::SetTabProjects(
+                    payload
+                        .tab_projects
+                        .into_iter()
+                        .map(|tab_project| (tab_project.tab_id, tab_project.project))
+                        .collect(),
+                )),
+                _ => Err("Mismatched payload for SetTabProjects"),
             },
             Some(CommandName::BreakPanesToTabWithId) => match protobuf_plugin_command.payload {
                 Some(Payload::BreakPanesToTabWithIdPayload(payload)) => {
@@ -4068,6 +4079,15 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::RenameTabWithIdPayload(RenameTabWithIdPayload {
                     tab_id,
                     new_name,
+                })),
+            }),
+            PluginCommand::SetTabProjects(tab_projects) => Ok(ProtobufPluginCommand {
+                name: CommandName::SetTabProjects as i32,
+                payload: Some(Payload::SetTabProjectsPayload(SetTabProjectsPayload {
+                    tab_projects: tab_projects
+                        .into_iter()
+                        .map(|(tab_id, project)| TabProject { tab_id, project })
+                        .collect(),
                 })),
             }),
             PluginCommand::BreakPanesToTabWithId(

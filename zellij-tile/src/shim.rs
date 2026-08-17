@@ -1612,6 +1612,19 @@ where
     unsafe { host_run_plugin_command() };
 }
 
+/// Tells the host which project each tab is working on, keyed by tab id.
+///
+/// Not a rename: the name is shown in place of the tab's default "Tab #N", and a
+/// tab the user named keeps that name. Two tabs on the same project are told
+/// apart with a `#1`/`#2` suffix. The map is the whole truth each time it is
+/// sent, so a tab left out of it goes back to its own name.
+pub fn set_tab_projects(tab_projects: BTreeMap<u64, String>) {
+    let plugin_command = PluginCommand::SetTabProjects(tab_projects);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Switch to a session with the given name, create one if no name is given
 pub fn switch_session(name: Option<&str>) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
