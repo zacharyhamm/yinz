@@ -29,6 +29,10 @@ impl State {
                 // toast is drawn over whatever pane you are actually in, so the
                 // ask cannot stall unseen with every other job queued behind it.
                 notify(&tools::confirmation_toast(&call));
+                // And for the calls that name a pane, the pane itself: the toast
+                // says "types into pane 7", this is what puts pane 7 in front of
+                // you, wearing a label, before you agree to it.
+                self.raise_spotlight(&call);
                 return;
             }
             if tools::needs_confirmation(&call.name) {
@@ -1372,10 +1376,35 @@ impl State {
         true
     }
 
+    /// Point at the pane `call` is about, if it names one, and remember that we
+    /// did so the mark can come down again.
+    ///
+    /// Nothing here is fallible from this side: the host works out how much of
+    /// the pane it can actually reveal without moving the keyboard, and a pane
+    /// that closed between the model asking and this running is simply not found.
+    pub(crate) fn raise_spotlight(&mut self, call: &ToolCall) {
+        self.drop_spotlight();
+        let Some(pane) = tools::confirmation_target(call) else {
+            return;
+        };
+        tools::raise_spotlight(pane, tools::indicator_label(call));
+        self.spotlight = Some(pane);
+    }
+
+    /// Take the mark back off whatever is wearing it. Every way out of a
+    /// confirmation goes through here, so a new one has an obvious place to call
+    /// and a pane cannot be left labelled for an answer that has been given.
+    pub(crate) fn drop_spotlight(&mut self) {
+        if let Some(pane) = self.spotlight.take() {
+            tools::drop_spotlight(pane);
+        }
+    }
+
     pub(crate) fn confirm_tool(&mut self) -> bool {
         let Some(call) = self.pending.front().cloned() else {
             return false;
         };
+        self.drop_spotlight();
         self.log(
             "tool_confirm",
             serde_json::json!({
@@ -1395,6 +1424,7 @@ impl State {
         if self.pending.is_empty() {
             return false;
         }
+        self.drop_spotlight();
         if let Some(head) = self.pending.front() {
             self.log(
                 "tool_confirm",
@@ -1419,6 +1449,7 @@ impl State {
     /// This is also the escape hatch for a dobbs call that never returns,
     /// which is why there is no timer.
     pub(crate) fn abort_tools(&mut self) -> bool {
+        self.drop_spotlight();
         self.status = Status::Idle;
         // The model asked, but it is not getting an answer — the results are
         // recorded for the transcript's sake, not to be sent back.

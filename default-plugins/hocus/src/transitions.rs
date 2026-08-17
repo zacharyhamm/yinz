@@ -75,6 +75,7 @@ impl State {
             sse: std::mem::take(&mut self.sse),
             tool_calls: std::mem::take(&mut self.tool_calls),
             pending: std::mem::take(&mut self.pending),
+            spotlight: self.spotlight.take(),
             tool_rounds: std::mem::take(&mut self.tool_rounds),
             owes_reply: std::mem::take(&mut self.owes_reply),
             manual_head: std::mem::take(&mut self.manual_head),
@@ -96,6 +97,7 @@ impl State {
         self.sse = chat.sse;
         self.tool_calls = chat.tool_calls;
         self.pending = chat.pending;
+        self.spotlight = chat.spotlight;
         self.tool_rounds = chat.tool_rounds;
         self.owes_reply = chat.owes_reply;
         self.manual_head = chat.manual_head;
@@ -710,6 +712,9 @@ impl State {
         self.input.clear();
         self.sse = SseParser::default();
         self.tool_calls = ToolCallAccumulator::default();
+        // Throwing the conversation away answers its confirmation as surely as
+        // an `n` does, so the pane it had singled out stops being singled out.
+        self.drop_spotlight();
         self.pending.clear();
         self.tool_rounds = 0;
         self.owes_reply = false;

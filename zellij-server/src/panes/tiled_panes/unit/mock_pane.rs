@@ -354,7 +354,7 @@ impl Pane for MockPane {
     fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {
         unimplemented!()
     }
-    fn frame_color_override(&self) -> Option<PaletteColor> {
+    fn frame_color_override(&self, _client_id: ClientId) -> Option<PaletteColor> {
         unimplemented!()
     }
     fn invoked_with(&self) -> &Option<LayoutRun> {

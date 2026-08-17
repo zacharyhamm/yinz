@@ -105,6 +105,10 @@ struct Chat {
     pub(crate) sse: SseParser,
     pub(crate) tool_calls: ToolCallAccumulator,
     pub(crate) pending: VecDeque<ToolCall>,
+    /// Travels with the chat: a chat parked mid-confirmation is still waiting on
+    /// that pane, and it is the one that will have to clear the mark when it
+    /// comes back and is finally answered.
+    pub(crate) spotlight: Option<PaneId>,
     pub(crate) tool_rounds: usize,
     pub(crate) owes_reply: bool,
     pub(crate) manual_head: bool,
@@ -197,6 +201,13 @@ pub struct State {
     /// Calls the model asked for that have not been answered yet. The head is
     /// the one being confirmed or executed.
     pending: VecDeque<ToolCall>,
+    /// The pane currently wearing the confirmation mark, if any.
+    ///
+    /// Recorded rather than re-derived from `pending` on the way out, because the
+    /// head has usually already moved on by the time the mark comes down: a `y`
+    /// runs the call and pumps the queue, and the pane that has to be cleared is
+    /// the one that was marked, not whatever is being asked about now.
+    spotlight: Option<PaneId>,
     /// Consecutive tool rounds in this exchange, reset by any new user message.
     tool_rounds: usize,
     /// Whether the model is waiting on tool results. A call the user typed is
@@ -404,6 +415,7 @@ impl Default for State {
             timer_armed: false,
             tool_calls: ToolCallAccumulator::default(),
             pending: VecDeque::new(),
+            spotlight: None,
             tool_rounds: 0,
             owes_reply: false,
             manual_head: false,
@@ -689,6 +701,10 @@ impl State {
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::BeforeClose => {
                 self.cancel_in_flight();
+                // Nobody is left to press `y`, and the mark outlives the plugin:
+                // a pane would otherwise sit there titled for a question that
+                // can no longer be answered.
+                self.drop_spotlight();
                 // A question the popup was told had been queued must not simply
                 // vanish. As a notice it survives into the archive and shows up
                 // in /history, and — being a notice — it never reaches the

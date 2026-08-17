@@ -238,6 +238,7 @@ enum CommandName {
   LaunchOrFocusGlobalPaneSplit = 246;
   GetPluginAliasConfiguration = 247;
   SetTabProjects = 248;
+  RevealPaneWithId = 249;
 }
 
 message PluginCommand {
@@ -416,7 +417,13 @@ message PluginCommand {
     LaunchOrFocusGlobalPaneSplitPayload launch_or_focus_global_pane_split_payload = 187;
     GetPluginAliasConfigurationPayload get_plugin_alias_configuration_payload = 188;
     SetTabProjectsPayload set_tab_projects_payload = 189;
+    RevealPaneWithIdPayload reveal_pane_with_id_payload = 190;
   }
+}
+
+message RevealPaneWithIdPayload {
+  PaneId pane_id = 1;
+  optional string label = 2;
 }
 
 message SetTabProjectsPayload {

@@ -10,6 +10,7 @@ pub mod terminal_character;
 
 mod active_panes;
 pub mod floating_panes;
+mod frame_color_override;
 mod pane_factory;
 mod plugin_pane;
 mod search;
@@ -19,6 +20,7 @@ mod tiled_panes;
 pub use active_panes::*;
 pub use alacritty_functions::*;
 pub use floating_panes::*;
+pub use frame_color_override::*;
 pub use grid::*;
 pub use kitty_graphics::*;
 pub use link_handler::*;

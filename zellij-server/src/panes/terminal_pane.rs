@@ -5,6 +5,7 @@ use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
 };
 use crate::panes::sixel::SixelImageStore;
+use crate::panes::FrameColorOverride;
 use crate::panes::LinkHandler;
 use crate::panes::{
     grid::Grid,
@@ -155,7 +156,7 @@ pub struct TerminalPane {
     // possible user instruction to be re-run, or that the command has not yet been run
     banner: Option<String>, // a banner to be rendered inside this TerminalPane, used for panes
     // held on startup and can possibly be used to display some errors
-    pane_frame_color_override: Option<(PaletteColor, Option<String>)>,
+    pane_frame_color_override: Option<FrameColorOverride>,
     has_bell_notification: bool,
     invoked_with: Option<Run>,
     #[allow(dead_code)]
@@ -579,12 +580,14 @@ impl Pane for TerminalPane {
         } else {
             self.current_title()
         };
-        let pane_title = if frame_params.blank_title {
-            String::new()
-        } else if let Some(text_color_override) = self
+        let frame_color_override = self
             .pane_frame_color_override
             .as_ref()
-            .and_then(|(_color, text)| text.as_ref())
+            .filter(|override_| override_.applies_to(client_id));
+        let pane_title = if frame_params.blank_title {
+            String::new()
+        } else if let Some(text_color_override) =
+            frame_color_override.and_then(|override_| override_.text.as_ref())
         {
             text_color_override.into()
         } else {
@@ -609,8 +612,8 @@ impl Pane for TerminalPane {
                 frame.add_exit_status(exit_status.as_ref().copied());
             }
         }
-        if let Some((frame_color_override, _text)) = self.pane_frame_color_override.as_ref() {
-            frame.override_color(*frame_color_override);
+        if let Some(override_) = frame_color_override {
+            frame.override_color(override_.color);
         }
 
         let res = match self.frame.get(&client_id) {
@@ -1117,24 +1120,38 @@ impl Pane for TerminalPane {
         self.has_bell_notification
     }
     fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
-        self.pane_frame_color_override = Some((self.style.colors.exit_code_error.base, error_text));
+        // A command that failed is a fact about the pane, so every client sees it.
+        self.pane_frame_color_override = Some(FrameColorOverride::new(
+            self.style.colors.exit_code_error.base,
+            error_text,
+            None,
+        ));
     }
     fn add_highlight_pane_frame_color_override(
         &mut self,
         text: Option<String>,
-        _client_id: Option<ClientId>,
+        client_id: Option<ClientId>,
     ) {
-        // TODO: if we have a client_id, we should only highlight the frame for this client
-        self.pane_frame_color_override = Some((self.style.colors.frame_highlight.emphasis_0, text));
+        self.pane_frame_color_override = Some(FrameColorOverride::new(
+            self.style.colors.frame_highlight.emphasis_0,
+            text,
+            client_id,
+        ));
     }
-    fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {
-        // TODO: if we have a client_id, we should only clear the highlight for this client
-        self.pane_frame_color_override = None;
+    fn clear_pane_frame_color_override(&mut self, client_id: Option<ClientId>) {
+        if self
+            .pane_frame_color_override
+            .as_ref()
+            .is_none_or(|override_| override_.is_cleared_by(client_id))
+        {
+            self.pane_frame_color_override = None;
+        }
     }
-    fn frame_color_override(&self) -> Option<PaletteColor> {
+    fn frame_color_override(&self, client_id: ClientId) -> Option<PaletteColor> {
         self.pane_frame_color_override
             .as_ref()
-            .map(|(color, _text)| *color)
+            .filter(|override_| override_.applies_to(client_id))
+            .map(|override_| override_.color)
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with

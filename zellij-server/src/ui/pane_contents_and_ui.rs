@@ -473,7 +473,7 @@ impl<'a> PaneContentsAndUi<'a> {
         frame_color(
             &self.style,
             FrameColorState {
-                frame_color_override: self.pane.frame_color_override(),
+                frame_color_override: self.pane.frame_color_override(client_id),
                 pane_is_focused: self.focused_clients.contains(&client_id),
                 pane_is_in_group: self
                     .current_pane_group

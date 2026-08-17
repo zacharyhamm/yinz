@@ -732,6 +732,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         panes_to_highlight.into_iter().map(|p| p.into()).collect(),
                         panes_to_unhighlight.into_iter().map(|p| p.into()).collect(),
                     ),
+                    PluginCommand::RevealPaneWithId(pane_id, label) => {
+                        reveal_pane_with_id(env, pane_id.into(), label)
+                    },
                     PluginCommand::CloseMultiplePanes(pane_ids) => {
                         close_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
                     },
@@ -5663,6 +5666,16 @@ fn highlight_and_unhighlight_panes(
         ));
 }
 
+fn reveal_pane_with_id(env: &PluginEnv, pane_id: PaneId, label: Option<String>) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::RevealPaneWithId(
+            pane_id,
+            label,
+            env.client_id,
+        ));
+}
+
 fn close_multiple_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
     for pane_id in pane_ids {
         match pane_id {
@@ -6121,6 +6134,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::SetPaneColor(..)
         | PluginCommand::GroupAndUngroupPanes(..)
         | PluginCommand::HighlightAndUnhighlightPanes(..)
+        | PluginCommand::RevealPaneWithId(..)
         | PluginCommand::CloseMultiplePanes(..)
         | PluginCommand::FloatMultiplePanes(..)
         | PluginCommand::EmbedMultiplePanes(..)

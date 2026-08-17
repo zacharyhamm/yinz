@@ -1287,7 +1287,9 @@ impl GlobalPaneManager {
                         let color = frame_color(
                             &style,
                             FrameColorState {
-                                frame_color_override: global_pane.pane.frame_color_override(),
+                                frame_color_override: global_pane
+                                    .pane
+                                    .frame_color_override(*client_id),
                                 pane_is_focused: self.focused_panes.get(client_id)
                                     == Some(&pane_id),
                                 pane_is_in_group: false,
