@@ -38,6 +38,28 @@ impl State {
         self.store.joined("plugin:hocus", "hocus")
     }
 
+    /// Hand the host the tab names worked out in `refresh_tab_project_labels`.
+    ///
+    /// Gated on the permission having come back granted: the call is refused
+    /// before that, and the next poll makes it again anyway.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn publish_tab_projects(&self) {
+        if !self.granted {
+            return;
+        }
+        set_tab_projects(
+            self.tab_project_labels
+                .iter()
+                .map(|(tab_id, project)| (*tab_id as u64, project.clone()))
+                .collect(),
+        );
+    }
+
+    /// Outside a plugin there is no host to tell, and `tab_project_labels` is
+    /// what the tests read instead.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn publish_tab_projects(&self) {}
+
     pub(crate) fn active_stream_id(&self) -> Option<String> {
         self.stream.as_ref().map(|stream| stream.id.clone())
     }

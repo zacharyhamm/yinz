@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// How many lines of a pane the model sees for each agent in one `agent_list`.
@@ -653,6 +653,38 @@ pub fn tab_projects(
     found
         .into_iter()
         .filter_map(|(tab_id, agreed)| Some((tab_id, agreed?)))
+        .collect()
+}
+
+/// Every project a tab's agents are working on, sorted and without repeats.
+///
+/// The other half of [`tab_projects`]: that one asks which project *owns* a tab
+/// and refuses to answer for a tab two projects share, because an assignment has
+/// to name one project. Naming the tab does not — a tab with an agent in each of
+/// two checkouts is honestly described by both, and saying so is more use than
+/// falling back to "Tab #4".
+///
+/// Sorted so the label does not shuffle when the panes come back in another
+/// order. Agents only, and a tab whose agents have no known project gets no
+/// entry, exactly as in `tab_projects`.
+pub fn tab_project_labels(
+    panes: &[AgentPane],
+    manual: &BTreeMap<u32, String>,
+    owners: &BTreeMap<u32, String>,
+) -> BTreeMap<usize, Vec<String>> {
+    let mut found: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for pane in panes {
+        if classify(pane, manual).is_none() {
+            continue;
+        }
+        let (Some((tab_id, _)), Some(owner)) = (&pane.tab, owners.get(&pane.pane_id)) else {
+            continue;
+        };
+        found.entry(*tab_id).or_default().insert(owner.clone());
+    }
+    found
+        .into_iter()
+        .map(|(tab_id, projects)| (tab_id, projects.into_iter().collect()))
         .collect()
 }
 
@@ -1775,6 +1807,48 @@ mod tests {
             tab_projects(&panes, &manual(&[]), &owners),
             BTreeMap::from([(1, "hocus".to_owned())]),
         );
+    }
+
+    #[test]
+    fn tab_project_labels_name_a_tab_after_every_project_in_it() {
+        let global = AgentPane {
+            cwd: Some("/work/hocus".to_owned()),
+            ..pane(9, "codex", Some("codex"))
+        };
+        let panes = vec![
+            // One project, named once however many agents are on it.
+            in_folder(3, "codex", "/work/hocus", 1),
+            in_folder(4, "aider", "/work/hocus", 1),
+            // Two projects, sorted rather than left in pane order.
+            in_folder(5, "codex", "/work/pocus", 2),
+            in_folder(6, "aider", "/work/hocus", 2),
+            // A shell is not an agent, and the global pane is in no tab.
+            in_folder(7, "zsh", "/work/hocus", 3),
+            global,
+        ];
+        let owners = owners(&[
+            (3, "hocus"),
+            (4, "hocus"),
+            (5, "pocus"),
+            (6, "hocus"),
+            (7, "hocus"),
+            (9, "hocus"),
+        ]);
+
+        assert_eq!(
+            tab_project_labels(&panes, &manual(&[]), &owners),
+            BTreeMap::from([
+                (1, vec!["hocus".to_owned()]),
+                (2, vec!["hocus".to_owned(), "pocus".to_owned()]),
+            ]),
+        );
+    }
+
+    #[test]
+    fn a_tab_whose_agents_have_no_project_is_left_out() {
+        let panes = vec![in_folder(3, "codex", "/elsewhere", 1)];
+
+        assert!(tab_project_labels(&panes, &manual(&[]), &owners(&[])).is_empty());
     }
 
     #[test]
