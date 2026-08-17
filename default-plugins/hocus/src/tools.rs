@@ -832,7 +832,7 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "Up to 500 characters." },
+                    "text": { "type": "string" },
                     "project": { "type": "string", "description": "Defaults to the active project." },
                     "parent_id": { "type": "integer" },
                 },
@@ -883,7 +883,7 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer" },
-                    "text": { "type": "string", "description": "Up to 500 characters." },
+                    "text": { "type": "string" },
                     "project": { "type": "string", "description": "Defaults to the active project." },
                 },
                 "required": ["id", "text"],
