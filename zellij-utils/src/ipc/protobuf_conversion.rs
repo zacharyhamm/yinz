@@ -3682,6 +3682,7 @@ fn input_mode_to_proto_i32(mode: InputMode) -> i32 {
         InputMode::Move => ProtoInputMode::Move as i32,
         InputMode::Prompt => ProtoInputMode::Prompt as i32,
         InputMode::Tmux => ProtoInputMode::Tmux as i32,
+        InputMode::Agent => ProtoInputMode::Agent as i32,
     }
 }
 
@@ -3701,6 +3702,7 @@ fn proto_i32_to_input_mode(i: i32) -> Result<InputMode> {
         Ok(ProtoInputMode::Move) => Ok(InputMode::Move),
         Ok(ProtoInputMode::Prompt) => Ok(InputMode::Prompt),
         Ok(ProtoInputMode::Tmux) => Ok(InputMode::Tmux),
+        Ok(ProtoInputMode::Agent) => Ok(InputMode::Agent),
         _ => Err(anyhow!("Invalid InputMode value: {}", i)),
     }
 }

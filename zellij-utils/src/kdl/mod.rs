@@ -5655,6 +5655,7 @@ impl Keybinds {
         encode_single_input_mode!(Scroll);
         encode_single_input_mode!(Search);
         encode_single_input_mode!(Session);
+        encode_single_input_mode!(Agent);
 
         for (input_modes, keybinds) in minimized {
             if input_modes.is_empty() {
