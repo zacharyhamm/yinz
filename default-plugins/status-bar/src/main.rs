@@ -499,14 +499,26 @@ pub fn action_key(
 /// [`action_key`] cannot do this: it compares actions with `shallow_eq`, which only looks at the
 /// variant, so every `LaunchOrFocusPlugin` binding in a mode looks identical to it. Matching on the
 /// alias is what keeps each hint pointing at its own key.
+///
+/// A plugin can be reachable by more than one key — the mode's own leader-then-letter binding plus,
+/// say, a global `Ctrl <something>` the user keeps for the same plugin. Both work, but the hint is
+/// shown *inside* the mode, so the mode's own letter is the one that belongs there: prefer the
+/// fewest modifiers, and break a tie on the key itself so the choice does not ride on keymap order.
 pub fn plugin_launch_key(
     keymap: &[(KeyWithModifier, Vec<Action>)],
     alias: &str,
 ) -> Vec<KeyWithModifier> {
     keymap
         .iter()
-        .find(|(_, acvec)| acvec.iter().any(|a| a.launches_plugin(alias)))
-        .map(|(key, _)| vec![key.clone()])
+        .filter(|(_, acvec)| acvec.iter().any(|a| a.launches_plugin(alias)))
+        .map(|(key, _)| key)
+        .min_by(|left, right| {
+            left.key_modifiers
+                .len()
+                .cmp(&right.key_modifiers.len())
+                .then_with(|| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|key| vec![key.clone()])
         .unwrap_or_default()
 }
 
@@ -710,6 +722,89 @@ pub mod tests {
                 ],
             ),
         ]
+    }
+
+    fn launches(alias: &str) -> Action {
+        use zellij_utils::input::layout::{PluginAlias, RunPluginOrAlias};
+        Action::LaunchOrFocusPlugin {
+            plugin: RunPluginOrAlias::Alias(PluginAlias {
+                name: alias.to_string(),
+                ..Default::default()
+            }),
+            should_float: true,
+            move_to_focused_tab: true,
+            should_open_in_place: false,
+            close_replaced_pane: false,
+            skip_cache: false,
+            tab_id: None,
+            global_placement: None,
+        }
+    }
+
+    // A mode hint has to name the key that belongs to the mode. When the same plugin also hangs off
+    // a global shortcut - here a user's own `Ctrl \`` for the chat - the leader-then-letter binding
+    // is the one to show, not whichever of the two the keymap happens to list first.
+    #[test]
+    fn plugin_launch_key_prefers_the_modes_own_letter_over_a_global_shortcut() {
+        let keymap = vec![
+            (
+                KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier(),
+                vec![launches("hocus")],
+            ),
+            (
+                KeyWithModifier::new(BareKey::Char('c')),
+                vec![launches("hocus"), TO_NORMAL],
+            ),
+        ];
+
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus"),
+            vec![KeyWithModifier::new(BareKey::Char('c'))]
+        );
+    }
+
+    #[test]
+    fn plugin_launch_key_falls_back_to_a_modified_key_when_that_is_all_there_is() {
+        let keymap = vec![(
+            KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier(),
+            vec![launches("hocus")],
+        )];
+
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus"),
+            vec![KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier()]
+        );
+    }
+
+    #[test]
+    fn plugin_launch_key_keeps_different_plugins_on_different_keys() {
+        let keymap = vec![
+            (
+                KeyWithModifier::new(BareKey::Char('a')),
+                vec![launches("hocus-agents"), TO_NORMAL],
+            ),
+            (
+                KeyWithModifier::new(BareKey::Char('c')),
+                vec![launches("hocus"), TO_NORMAL],
+            ),
+            (
+                KeyWithModifier::new(BareKey::Char('k')),
+                vec![launches("hocus-ask"), TO_NORMAL],
+            ),
+        ];
+
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus-agents"),
+            vec![KeyWithModifier::new(BareKey::Char('a'))]
+        );
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus"),
+            vec![KeyWithModifier::new(BareKey::Char('c'))]
+        );
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus-ask"),
+            vec![KeyWithModifier::new(BareKey::Char('k'))]
+        );
     }
 
     #[test]
