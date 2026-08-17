@@ -53,7 +53,7 @@ pub struct BrokerEndpoint {
 }
 
 fn local_socket_dir() -> PathBuf {
-    ZELLIJ_SOCK_DIR.join("remote")
+    ZELLIJ_SOCK_DIR.join("r")
 }
 
 /// Make sure the directory both the control socket and the forwarded socket live
@@ -89,10 +89,9 @@ fn ensure_local_socket_dir() -> Result<PathBuf> {
 /// well; and whichever session closes first deletes the other's socket on its
 /// way out.
 ///
-/// Folded into the digest rather than appended to it. The path ends up in a
-/// `sockaddr_un` with 108 bytes to spare — 104 on macOS, where the temp dir
-/// alone is nearly 50 — and it is already close enough that adding anything
-/// would push it over.
+/// Folded into the digest rather than appended to it, to keep the path well
+/// inside `sockaddr_un` — 104 bytes on macOS, where the temp dir alone can be
+/// nearly 50.
 fn local_socket_path(instance: &str, host: &str) -> PathBuf {
     // A host may be an alias, a user@host, or contain characters a path cannot
     // hold, so key by a digest rather than the name itself.
@@ -102,12 +101,13 @@ fn local_socket_path(instance: &str, host: &str) -> PathBuf {
 
 fn blake3_short(input: &str) -> String {
     // A short, stable, filesystem-safe key. Collisions only cost a shared
-    // forward between two hosts, so 8 bytes is ample.
+    // forward between two hosts, so 4 bytes (truncated from the 8-byte hash)
+    // is ample — and every byte here is one the socket path can't spare.
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    format!("{:08x}", hasher.finish() as u32)
 }
 
 /// The ControlMaster socket, which stays keyed by host alone.
