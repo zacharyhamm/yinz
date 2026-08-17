@@ -1774,6 +1774,11 @@ pub(crate) struct Screen {
     /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
     /// on every render tick (and force every watcher into a full repaint) - this is the diff.
     unowned_strip_fill: HashMap<ClientId, Vec<(usize, usize, usize)>>,
+    /// The floating pane geometries each tab was last rendered with. The global panes paint
+    /// clipped against these, so the cells a floating pane covers are dropped from their chunks
+    /// and have no grid diff of their own - once the pane moves off them, only a full repaint
+    /// replaces the floating pane's contents with the global pane's.
+    last_rendered_floating_stacks: BTreeMap<usize, Vec<PaneGeom>>,
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
@@ -2011,6 +2016,7 @@ impl Screen {
             client_sizes: HashMap::new(),
             initial_size: client_attributes.size,
             unowned_strip_fill: HashMap::new(),
+            last_rendered_floating_stacks: BTreeMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
@@ -2530,6 +2536,7 @@ impl Screen {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
+        self.last_rendered_floating_stacks.remove(&tab_id);
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 
         // here we extract the suppressed panes (these are background panes that don't care which
@@ -5409,14 +5416,33 @@ impl Screen {
                 if repaint_per_group {
                     self.global_panes.set_force_render();
                 }
+                let floating_stack = tab_id
+                    .and_then(|tab_id| self.tabs.get(&tab_id))
+                    .and_then(|tab| tab.floating_panes_stack());
+                // the global panes render clipped against these geometries, so the cells behind a
+                // floating pane get no chunks and keep whatever that pane last drew on them. When
+                // the stack moves, those cells have nothing to diff against - repaint in full or
+                // the floating pane leaves a ghost of itself over the global pane
+                let floating_stack_changed = match tab_id {
+                    Some(tab_id) => {
+                        let layers = floating_stack
+                            .as_ref()
+                            .map(|stack| stack.layers.clone())
+                            .unwrap_or_default();
+                        let previous = self
+                            .last_rendered_floating_stacks
+                            .insert(tab_id, layers.clone());
+                        previous.as_ref() != Some(&layers)
+                    },
+                    None => false,
+                };
+                if floating_stack_changed {
+                    self.global_panes.set_force_render();
+                }
                 // the tab loop above left the output pointing at whichever tab rendered last -
                 // point it at this group's tab, or the global panes are clipped against another
                 // tab's floating panes and paint over the ones in front of these clients
-                let previous_stack = output.set_floating_panes_stack(
-                    tab_id
-                        .and_then(|tab_id| self.tabs.get(&tab_id))
-                        .and_then(|tab| tab.floating_panes_stack()),
-                );
+                let previous_stack = output.set_floating_panes_stack(floating_stack);
                 let group_result = (|| -> Result<()> {
                     self.global_panes.render(
                         &mut output,
@@ -5428,8 +5454,9 @@ impl Screen {
                         multiple_users_exist_in_session,
                     )?;
                     if let Some(tab_id) = tab_id {
-                        // a host display clear wiped these cells along with everything else
-                        let force = output.any_host_display_cleared();
+                        // a host display clear wiped these cells along with everything else, and a
+                        // floating pane that moved off them left its own contents behind
+                        let force = output.any_host_display_cleared() || floating_stack_changed;
                         self.fill_unowned_strip_rows(
                             &mut output,
                             tab_id,
