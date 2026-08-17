@@ -45,6 +45,12 @@ pub struct SpawnParams<'a> {
     /// See `ServerToHostMsg::Spawn::arg0`. `None` everywhere but the remote
     /// broker, which uses it to start a login shell.
     pub arg0: Option<String>,
+    /// See `ServerToHostMsg::Spawn::env`. Empty everywhere but the remote broker:
+    /// a local pane inherits the server's environment, as it always has.
+    pub env: Vec<(String, String)>,
+    /// See `ServerToHostMsg::Spawn::login_session`. Only the remote broker sets
+    /// it - a local pane is not a login and must not grow an `SSH_TTY`.
+    pub login_session: bool,
 }
 
 /// A supervisor that is up and has handed over its pty, but whose lifecycle
@@ -379,6 +385,8 @@ fn handshake_and_spawn(
             termios: params.termios.clone(),
             initial_size: params.initial_size,
             arg0: params.arg0.clone(),
+            env: params.env.clone(),
+            login_session: params.login_session,
         },
     )
     .context("failed to send Spawn")?;

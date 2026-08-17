@@ -94,6 +94,21 @@ impl TestHost {
         initial_size: Option<WireWinsize>,
         arg0: Option<String>,
     ) -> (u32, std::fs::File) {
+        self.spawn_with_env(cmd, termios, initial_size, arg0, vec![], false)
+    }
+
+    /// As `spawn_with_arg0`, but lets a test say what environment the child is
+    /// given and whether it is a remote login - the two things only the remote
+    /// broker sets in production.
+    fn spawn_with_env(
+        &mut self,
+        cmd: RunCommand,
+        termios: Option<WireTermios>,
+        initial_size: Option<WireWinsize>,
+        arg0: Option<String>,
+        env: Vec<(String, String)>,
+        login_session: bool,
+    ) -> (u32, std::fs::File) {
         self.send(&ServerToHostMsg::Spawn {
             terminal_id: 0,
             session_name: Some("pty-host-tests".to_owned()),
@@ -102,6 +117,8 @@ impl TestHost {
             termios,
             initial_size,
             arg0,
+            env,
+            login_session,
         });
         let child_pid = match self.recv() {
             HostToServerMsg::Spawned { child_pid } => child_pid,
@@ -575,6 +592,8 @@ fn a_missing_command_is_reported_rather_than_panicking() {
         termios: None,
         initial_size: None,
         arg0: None,
+        env: vec![],
+        login_session: false,
     });
     match host.recv() {
         HostToServerMsg::SpawnFailed { kind, .. } => {
@@ -1341,4 +1360,133 @@ fn a_release_racing_an_attach_is_ordered_by_the_poll_loop() {
     drop(master);
     let _ = crate::pty_host::client::terminate_via_socket(&control_socket);
     host.join();
+}
+
+/// The environment composed on the far machine has to survive all the way to the
+/// exec, which is the half of the remote-pane environment work that lives here.
+#[test]
+fn a_supervisor_applies_the_environment_it_is_given() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn_with_env(
+        sh("echo term=$TERM home=$HOME"),
+        None,
+        None,
+        None,
+        vec![
+            ("TERM".to_owned(), "xterm-zellij-test".to_owned()),
+            ("HOME".to_owned(), "/home/far".to_owned()),
+        ],
+        true,
+    );
+
+    let output = read_until(&mut master, "term=");
+    assert!(
+        output.contains("term=xterm-zellij-test") && output.contains("home=/home/far"),
+        "the child should have been given the composed environment: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// `SSH_TTY` is the one variable nothing upstream of the supervisor can answer:
+/// the path only exists once this process has called `openpty`. It is also the
+/// conventional "am I on a terminal over ssh" probe, which is what makes it worth
+/// setting when `SSH_CONNECTION` deliberately is not.
+#[test]
+fn a_login_session_is_told_its_own_pty() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn_with_env(
+        sh("echo ssh_tty=$SSH_TTY tty=$(tty)"),
+        None,
+        None,
+        None,
+        vec![],
+        true,
+    );
+
+    let output = read_until(&mut master, "ssh_tty=");
+    let field = |name: &str| {
+        output
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .map(|value| value.trim().to_owned())
+    };
+    let ssh_tty = field("ssh_tty=").expect("an SSH_TTY");
+    assert!(
+        ssh_tty.starts_with("/dev/"),
+        "SSH_TTY should name the pane's pty, got {ssh_tty:?} in {output:?}"
+    );
+    assert_eq!(
+        Some(ssh_tty),
+        field("tty="),
+        "SSH_TTY must be the pty the child is actually on: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// A local pane is not a login and must not be touched by any of this: it
+/// inherits the server's environment, `SSH_*` and all, exactly as it always has.
+/// The scrub is gated on `login_session` precisely so that this stays true.
+#[test]
+fn a_local_pane_is_spawned_exactly_as_before() {
+    // This supervisor is forked from the test process, so what is set here is
+    // what a local pane would inherit in production.
+    std::env::set_var("SSH_CONNECTION", "10.0.0.1 4242 10.0.0.2 22");
+    std::env::set_var("SSH_TTY", "/dev/pts/inherited");
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn(sh("echo conn=[$SSH_CONNECTION] tty=[$SSH_TTY]"));
+
+    let output = read_until(&mut master, "conn=");
+    assert!(
+        output.contains("conn=[10.0.0.1 4242 10.0.0.2 22]"),
+        "a local pane must keep inheriting the server's environment: {output:?}"
+    );
+    // Passed straight through, *not* replaced with this pane's pty: the pty is
+    // named only for a remote login, and a local pane's SSH_TTY - if it has one -
+    // is a true fact about the terminal zellij itself was started from.
+    assert!(
+        output.contains("tty=[/dev/pts/inherited]"),
+        "a local pane's SSH_TTY must be inherited untouched: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    std::env::remove_var("SSH_CONNECTION");
+    std::env::remove_var("SSH_TTY");
+}
+
+/// The frozen `SSH_*` of whichever ssh session started the broker are inherited
+/// by every pane on that machine. They describe a connection this pane has no
+/// part in, so a remote login drops them rather than passing them on.
+#[test]
+fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
+    std::env::set_var("SSH_CLIENT", "10.0.0.1 4242 22");
+    std::env::set_var("SSH_AUTH_SOCK", "/tmp/agent-from-the-bootstrap");
+    std::env::set_var("ZELLIJ_SESSION_NAME", "a-session-on-the-asking-machine");
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn_with_env(
+        sh("echo client=[$SSH_CLIENT] agent=[$SSH_AUTH_SOCK] sess=[$ZELLIJ_SESSION_NAME]"),
+        None,
+        None,
+        None,
+        vec![],
+        true,
+    );
+
+    let output = read_until(&mut master, "client=");
+    for absent in ["client=[]", "agent=[]", "sess=[]"] {
+        assert!(
+            output.contains(absent),
+            "expected {absent} in a remote login's environment: {output:?}"
+        );
+    }
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    std::env::remove_var("SSH_CLIENT");
+    std::env::remove_var("SSH_AUTH_SOCK");
+    std::env::remove_var("ZELLIJ_SESSION_NAME");
 }

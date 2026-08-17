@@ -468,6 +468,11 @@ impl UnixPtyBackend {
             // A local pane execs its command under its own name, as it always
             // has. Only the remote broker asks for a login shell's argv[0].
             arg0: None,
+            // A local pane inherits this server's environment, which is where its
+            // TERM and locale have always come from. Only a remote pane needs one
+            // composed for it, because only a remote pane cannot inherit ours.
+            env: vec![],
+            login_session: false,
         })
     }
 

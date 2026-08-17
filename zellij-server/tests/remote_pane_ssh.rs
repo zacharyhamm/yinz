@@ -446,6 +446,19 @@ fn open_pane(hosts: &Arc<RemoteHosts>, script: &str) -> Pane {
 }
 
 fn open_pane_in(hosts: &Arc<RemoteHosts>, script: &str, cwd: Option<&str>) -> Pane {
+    open_pane_with(hosts, script, cwd, vec![], 0)
+}
+
+/// `open_pane_in`, but *saying* what this side's environment is rather than
+/// reading it. These tests share one process, so setting `TERM` for real would
+/// set it for every other test in the binary at the same time.
+fn open_pane_with(
+    hosts: &Arc<RemoteHosts>,
+    script: &str,
+    cwd: Option<&str>,
+    env: Vec<(String, String)>,
+    terminal_id: u32,
+) -> Pane {
     let cmd = RunCommand {
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
@@ -454,7 +467,7 @@ fn open_pane_in(hosts: &Arc<RemoteHosts>, script: &str, cwd: Option<&str>) -> Pa
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane(HOST, &cmd, None)
+        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
         .unwrap_or_else(|e| panic!("failed to open a pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");
@@ -467,6 +480,15 @@ fn open_pane_in(hosts: &Arc<RemoteHosts>, script: &str, cwd: Option<&str>) -> Pa
 /// that this side can say "/bin/bash", which is exactly the thing that must not
 /// happen. The empty command is the request.
 fn open_default_shell_pane(hosts: &Arc<RemoteHosts>, cwd: Option<&str>) -> Pane {
+    open_default_shell_pane_with(hosts, cwd, vec![], 0)
+}
+
+fn open_default_shell_pane_with(
+    hosts: &Arc<RemoteHosts>,
+    cwd: Option<&str>,
+    env: Vec<(String, String)>,
+    terminal_id: u32,
+) -> Pane {
     let cmd = RunCommand {
         command: PathBuf::new(),
         remote_default_shell: true,
@@ -475,7 +497,7 @@ fn open_default_shell_pane(hosts: &Arc<RemoteHosts>, cwd: Option<&str>) -> Pane 
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane(HOST, &cmd, None)
+        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
         .unwrap_or_else(|e| panic!("failed to open a shell pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");
@@ -1073,9 +1095,9 @@ fn a_pane_with_no_command_runs_the_remote_users_login_shell() {
     pane.close();
 }
 
-/// The point of a *login* shell: nothing about this machine's environment is
-/// transmitted with a remote pane, so the pane's own profile is the only thing
-/// that can give it a PATH, a prompt and a locale.
+/// The point of a *login* shell: the far machine gets to have its own say about
+/// the pane on top of the environment composed for it, which is where a prompt
+/// and any site-specific PATH come from.
 #[test]
 #[ignore]
 fn a_default_shell_pane_sources_the_remote_profile() {
@@ -1587,4 +1609,283 @@ fn reported_dropped(output: &str) -> u64 {
         .expect("the notice had no byte count")
         .parse()
         .expect("the notice's byte count was not a number")
+}
+
+/// The last `name=value` in some pane output, as a whitespace-delimited field.
+///
+/// The *last*, because a pty echoes what was typed: `echo tty=$SSH_TTY` puts the
+/// unexpanded name in the output ahead of the shell's answer to it.
+fn last_field(output: &str, name: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .filter_map(|word| word.strip_prefix(name))
+        .last()
+        .map(|value| value.trim().to_owned())
+}
+
+// --- the pane's environment ---
+//
+// A remote pane is not an ssh session: a detached broker owns its pty, and that
+// broker's environment is frozen from whichever `ssh ... --pty-broker ensure`
+// happened to start it. These pin that nothing is taken from there - the pane's
+// terminal comes from the asking side, its identity from this machine's passwd
+// entry, and its tty from its own pty.
+
+/// The reported bug: a remote pane had no `TERM` at all, because sshd sends none
+/// without a pty request and the bootstrap asks for none.
+#[test]
+#[ignore]
+fn a_remote_pane_uses_the_terminal_type_this_side_is_using() {
+    let hosts = start();
+    let pane = open_default_shell_pane_with(
+        &hosts,
+        None,
+        vec![("TERM".to_owned(), "xterm-zellij-remote-test".to_owned())],
+        0,
+    );
+    pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+
+    pane.send_line("echo term=$TERM");
+    pane.wait_for_output("term=xterm-zellij-remote-test");
+
+    pane.close();
+}
+
+/// The point of carrying `TERM` rather than merely setting one: terminfo has to
+/// resolve on the far machine, or every curses program in the pane is broken.
+#[test]
+#[ignore]
+fn a_remote_pane_has_a_working_terminfo() {
+    let hosts = start();
+    let pane = open_default_shell_pane_with(
+        &hosts,
+        None,
+        vec![("TERM".to_owned(), "xterm".to_owned())],
+        0,
+    );
+    pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+
+    pane.send_line("tput cols >/dev/null 2>&1 && echo tput=ok || echo tput=broken");
+    pane.wait_for_output("tput=ok");
+
+    pane.close();
+}
+
+/// The locale describes the person typing, so it crosses. A `PATH` or a `HOME`
+/// from the asking machine names directories that are not there, so it does not.
+#[test]
+#[ignore]
+fn the_locale_crosses_but_the_asking_machines_filesystem_does_not() {
+    let hosts = start();
+    let pane = open_default_shell_pane_with(
+        &hosts,
+        None,
+        vec![
+            ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
+            ("LC_TIME".to_owned(), "C".to_owned()),
+            // Neither of these is on the allowlist, so neither should arrive
+            // even though they are handed to the pane-opening call.
+            (
+                "PATH".to_owned(),
+                "/nonsense-from-the-asking-machine".to_owned(),
+            ),
+            ("HOME".to_owned(), "/nonsense-home".to_owned()),
+        ],
+        0,
+    );
+    pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+
+    pane.send_line("echo lang=$LANG lc_time=$LC_TIME");
+    pane.wait_for_output("lang=en_US.UTF-8 lc_time=C");
+
+    pane.send_line("case \"$PATH:$HOME\" in *nonsense*) echo leak=yes;; *) echo leak=no;; esac");
+    pane.wait_for_output("leak=no");
+
+    pane.close();
+}
+
+/// `SSH_TTY` is the one `SSH_*` a pane can answer honestly, and the supervisor is
+/// the only thing that can: the path exists only after its `openpty`.
+#[test]
+#[ignore]
+fn a_remote_pane_knows_its_own_tty() {
+    let hosts = start();
+    let pane = open_default_shell_pane(&hosts, None);
+    pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+
+    pane.send_line("echo ssh_tty=$SSH_TTY tty=$(tty)");
+    // The pty echoes the command back, so the literal `$SSH_TTY` appears in the
+    // output before its expansion does. Waiting on the expansion is what
+    // distinguishes them - and `/dev/` cannot appear in the echo.
+    let output = pane.wait_for_output("ssh_tty=/dev/");
+
+    let ssh_tty = last_field(&output, "ssh_tty=").expect("an SSH_TTY");
+    assert!(
+        ssh_tty.starts_with("/dev/"),
+        "SSH_TTY should name the pane's own pty, got {ssh_tty:?}"
+    );
+    assert_eq!(
+        last_field(&output, "tty="),
+        Some(ssh_tty),
+        "SSH_TTY must be the pty the pane is actually on: {output:?}"
+    );
+
+    pane.close();
+}
+
+/// The frozen-broker regression, stated at the pane level: two panes on one
+/// machine share a broker, so anything inherited from it would be identical.
+#[test]
+#[ignore]
+fn two_panes_on_one_host_get_two_different_ttys() {
+    let hosts = start();
+    let read_tty = |pane: &Pane| {
+        pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+        pane.send_line("echo ssh_tty=$SSH_TTY");
+        let output = pane.wait_for_output("ssh_tty=/dev/");
+        last_field(&output, "ssh_tty=").expect("an SSH_TTY")
+    };
+
+    let first = open_default_shell_pane(&hosts, None);
+    let second = open_default_shell_pane(&hosts, None);
+    let first_tty = read_tty(&first);
+    let second_tty = read_tty(&second);
+
+    assert_ne!(
+        first_tty, second_tty,
+        "each pane must be told its own pty, not one inherited from the broker"
+    );
+
+    first.close();
+    second.close();
+}
+
+/// Two servers reach the *same* broker on this host, and a broker that handed out
+/// its own environment would give both panes whichever `TERM` arrived first.
+#[test]
+#[ignore]
+fn each_pane_gets_its_own_terminal_type_from_the_same_broker() {
+    let hosts = start();
+    let first = open_default_shell_pane_with(
+        &hosts,
+        None,
+        vec![("TERM".to_owned(), "xterm-first".to_owned())],
+        0,
+    );
+    let second = open_default_shell_pane_with(
+        &hosts,
+        None,
+        vec![("TERM".to_owned(), "xterm-second".to_owned())],
+        0,
+    );
+
+    first.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+    second.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+    first.send_line("echo term=$TERM");
+    first.wait_for_output("term=xterm-first");
+    second.send_line("echo term=$TERM");
+    second.wait_for_output("term=xterm-second");
+
+    first.close();
+    second.close();
+}
+
+/// Who the pane is, straight from this machine's passwd entry. Asserted on an
+/// explicit-command pane so no profile can have set any of it.
+#[test]
+#[ignore]
+fn a_pane_is_told_who_it_is_on_the_far_machine() {
+    let hosts = start();
+    let pane = open_pane(
+        &hosts,
+        &format!(
+            "echo who=$USER/$LOGNAME/$HOME/$SHELL mail=$MAIL; {}",
+            idle_marked("who")
+        ),
+    );
+
+    pane.wait_for_output("who=test/test//home/test//bin/bash");
+    pane.wait_for_output("mail=/var/mail/test");
+
+    pane.close();
+}
+
+/// An explicit-command pane gets no login shell and so no profile, which is
+/// exactly why it needs the sshd default `PATH` rather than the broker's frozen
+/// one. `ssh host 'echo $PATH'` prints the same thing.
+#[test]
+#[ignore]
+fn an_explicit_command_pane_gets_the_sshd_default_path() {
+    let hosts = start();
+    let pane = open_pane(&hosts, &format!("echo path=$PATH; {}", idle_marked("path")));
+
+    pane.wait_for_output("path=/usr/local/bin:/usr/bin:/bin");
+
+    pane.close();
+}
+
+/// The profile still owns `PATH`: this composes the *starting* environment ssh
+/// would have given, and a login shell runs after it and may override anything.
+/// The pair is the whole precedence rule, seen from outside.
+#[test]
+#[ignore]
+fn the_profile_still_owns_the_path_for_a_login_shell() {
+    let hosts = start();
+
+    let login = open_default_shell_pane(&hosts, None);
+    login.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+    login.send_line(
+        "case \"$PATH\" in */opt/profile-bin*) echo profile=yes;; *) echo profile=no;; esac",
+    );
+    login.wait_for_output("profile=yes");
+    login.close();
+
+    let explicit = open_pane(
+        &hosts,
+        &format!(
+            "case \"$PATH\" in */opt/profile-bin*) echo profile=yes;; *) echo profile=no;; esac; {}",
+            idle_marked("path")
+        ),
+    );
+    explicit.wait_for_output("profile=no");
+    explicit.close();
+}
+
+/// Nothing about the asking machine's session, and nothing about the bootstrap's
+/// connection, reaches a pane. See `remote::env::SCRUBBED_VARS` for why
+/// `SSH_CLIENT`/`SSH_CONNECTION` are absent rather than approximated.
+#[test]
+#[ignore]
+fn no_pane_inherits_a_stale_ssh_connection_or_the_asking_sessions_identity() {
+    let hosts = start();
+    let pane = open_pane(
+        &hosts,
+        &format!(
+            "echo c=[$SSH_CLIENT] n=[$SSH_CONNECTION] a=[$SSH_AUTH_SOCK] z=[$ZELLIJ] s=[$ZELLIJ_SESSION_NAME]; {}",
+            idle_marked("scrub")
+        ),
+    );
+
+    pane.wait_for_output("c=[] n=[] a=[] z=[] s=[]");
+
+    pane.close();
+}
+
+/// `ZELLIJ_PANE_ID` used to be `0` for every remote pane, because the broker sent
+/// a placeholder id it never replaced.
+#[test]
+#[ignore]
+fn a_remote_pane_is_told_its_real_pane_id() {
+    let hosts = start();
+    let pane = open_pane_with(
+        &hosts,
+        &format!("echo pane=$ZELLIJ_PANE_ID; {}", idle_marked("pane-id")),
+        None,
+        vec![],
+        73,
+    );
+
+    pane.wait_for_output("pane=73");
+
+    pane.close();
 }

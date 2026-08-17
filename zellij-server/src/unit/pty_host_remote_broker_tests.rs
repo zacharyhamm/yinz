@@ -339,3 +339,60 @@ fn anything_that_is_not_a_remote_default_shell_is_left_alone() {
     assert_eq!(ordinary.command, PathBuf::from("/usr/bin/htop"));
     assert_eq!(ordinary.args, vec!["-d".to_owned(), "5".to_owned()]);
 }
+
+/// The shell and the login environment are two questions about the same passwd
+/// entry, and `start_pane` asks the system once and answers both from it. Pinned
+/// because the two structs have deliberately different fallback rules and it
+/// would be easy to let them drift onto different lookups.
+#[test]
+fn one_passwd_lookup_answers_both_the_shell_and_the_login_environment() {
+    use crate::pty_host::remote::env::LoginSource;
+
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::effective())
+        .ok()
+        .flatten();
+    let shell_source = ShellSource::from_user(&user);
+    let login_source = LoginSource::from_user(&user);
+
+    assert_eq!(
+        shell_source.passwd_shell, login_source.shell,
+        "both views must come from the same passwd entry"
+    );
+    assert_eq!(shell_source.passwd_home, login_source.home);
+}
+
+/// An explicit-command pane gets no login shell - and therefore no profile - which
+/// is exactly why it needs a composed environment rather than the broker's frozen
+/// one. `ssh host cmd` is handed HOME/USER/PATH too.
+#[test]
+fn an_explicit_command_pane_gets_an_environment_but_no_login_shell() {
+    use crate::pty_host::remote::env::{compose, LoginSource};
+
+    let mut cmd = RunCommand {
+        command: PathBuf::from("/usr/bin/env"),
+        remote_host: Some("build-box".to_owned()),
+        remote_default_shell: false,
+        ..Default::default()
+    };
+    let arg0 = resolve_default_shell(&mut cmd, &ShellSource::default());
+    assert_eq!(
+        arg0, None,
+        "an explicit command must not be turned into a login shell"
+    );
+
+    let env = compose(
+        &LoginSource {
+            name: Some("test".to_owned()),
+            uid: Some(1000),
+            home: Some(PathBuf::from("/home/test")),
+            shell: Some(PathBuf::from("/bin/bash")),
+        },
+        vec![("TERM".to_owned(), "xterm".to_owned())],
+    );
+    for expected in ["HOME", "USER", "PATH", "TERM"] {
+        assert!(
+            env.iter().any(|(name, _)| name == expected),
+            "an explicit-command pane still needs {expected}: {env:?}"
+        );
+    }
+}
