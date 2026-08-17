@@ -153,8 +153,7 @@ fn cancelling_a_stream_revokes_job_authority_immediately() {
 
 #[test]
 fn an_empty_placeholder_is_replaced_by_the_error() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     state.on_chunk("hocus-1", b"", true, Some("connection reset".into()));
 
     assert_eq!(state.messages.len(), 2);
@@ -163,8 +162,7 @@ fn an_empty_placeholder_is_replaced_by_the_error() {
 
 #[test]
 fn a_silent_stream_reports_that_nothing_came_back() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     state.on_chunk("hocus-1", b"", true, None);
 
     assert_eq!(state.messages[1].role, Role::Error);
@@ -187,8 +185,7 @@ fn finishing_swallows_the_terminator_without_a_second_outcome() {
 
 #[test]
 fn chunks_from_a_superseded_stream_are_ignored() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-2");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-2");
     let rendered = state.on_chunk(
         "hocus-1",
         b"data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n",
@@ -206,8 +203,7 @@ fn chunks_from_a_superseded_stream_are_ignored() {
 /// asks for a render now; the frame timer repaints what arrives in between.
 #[test]
 fn a_mid_stream_chunk_accumulates_text_without_asking_for_a_render() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     let rendered = state.on_chunk(
         "hocus-1",
         b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n",
@@ -248,8 +244,7 @@ fn the_frame_timer_stops_once_the_stream_ends() {
 
 #[test]
 fn streamed_deltas_accumulate_into_the_placeholder() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     state.on_chunk(
         "hocus-1",
         b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n",
@@ -268,8 +263,7 @@ fn streamed_deltas_accumulate_into_the_placeholder() {
 
 #[test]
 fn a_non_2xx_response_reports_the_api_error_and_expects_a_terminator() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     state.on_response(
         401,
         br#"{"error":{"message":"bad key"}}"#,
@@ -284,8 +278,7 @@ fn a_non_2xx_response_reports_the_api_error_and_expects_a_terminator() {
 
 #[test]
 fn a_2xx_response_changes_nothing_because_the_body_arrives_as_chunks() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     let rendered = state.on_response(200, b"", &BTreeMap::new());
 
     assert!(!rendered);

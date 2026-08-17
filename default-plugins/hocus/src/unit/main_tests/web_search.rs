@@ -76,8 +76,7 @@ fn a_search_with_no_query_is_answered_rather_than_sent() {
 /// in flight.
 #[test]
 fn a_stream_response_is_not_mistaken_for_a_search_result() {
-    let mut state =
-        state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
     state.job_auto_confirm = true;
     state.on_response(
         401,
