@@ -104,6 +104,46 @@ fn a_version_mismatch_is_refused_with_both_versions_named() {
     drop(peer);
 }
 
+/// The refusal above is worth nothing if the far side never hears it. Closing on
+/// a mismatch without acknowledging leaves the connecting server reading EOF,
+/// which it can only report as "the broker closed the connection" — and the one
+/// fact worth having, which version this broker speaks, is exactly what is lost.
+#[test]
+fn a_version_mismatch_is_acknowledged_before_it_is_refused() {
+    let (mut peer, handle) = broker_on_a_pair();
+    say_hello(&mut peer, REMOTE_PROTOCOL_VERSION + 41);
+
+    match read_reply(&mut peer) {
+        Some(BrokerToServerMsg::HelloAck {
+            protocol_version, ..
+        }) => assert_eq!(
+            protocol_version, REMOTE_PROTOCOL_VERSION,
+            "the ack must name the version this broker actually speaks"
+        ),
+        other => panic!("a mismatched hello must still be acked, got {other:?}"),
+    }
+    let _ = handle.join();
+    drop(peer);
+}
+
+/// `ensure` cannot ask a running broker what it speaks — it prints its own
+/// constant — so a daemon from a build before a version bump would be adopted by
+/// a newer binary and handed a handshake it cannot answer. The version in the
+/// path is what keeps the two apart.
+#[test]
+fn the_broker_socket_is_named_for_the_protocol_it_speaks() {
+    let path = broker_socket_path();
+    let name = path
+        .file_name()
+        .expect("no file name")
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        name.contains(&format!("v{REMOTE_PROTOCOL_VERSION}")),
+        "a bump must move the socket, but the name is {name}"
+    );
+}
+
 #[test]
 fn a_connection_that_does_not_open_with_a_hello_is_refused() {
     let (mut peer, handle) = broker_on_a_pair();
