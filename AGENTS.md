@@ -65,8 +65,8 @@ Finish with a full `cargo x test` before calling work done — that's what CI ru
 The kitty graphics suite is written against the protocol specification
 (`docs/`-external: kitty's `graphics-protocol.rst`), not against the implementation. Where the
 two disagree, the test stays failing on purpose — the red set **is** the to-do list for the
-protocol work. 65 tests in `zellij-server` and 2 in `zellij-integration-tests` fail today; on
-macOS it is 57, because the eight `red_shm_*` tests are `#[cfg(target_os = "linux")]`.
+protocol work. 46 tests fail today, all in `zellij-server` and all in three feature groups:
+relative placements, animation, and unicode placeholders. The whole-app suite is green.
 
 Every expected-red test lives in a module ending `_red` and is named `red_*`. Filter on the
 **module path**, not the name prefix: `red_` also appears inside unrelated names such as
@@ -74,15 +74,15 @@ Every expected-red test lives in a module ending `_red` and is named `red_*`. Fi
 
 ```sh
 cargo x test -- --skip _red::                            # the green gate — must pass
-cargo x integration-test -- -E 'not test(/^red_/)'       # ditto, whole-app
+cargo x integration-test                                 # ditto, whole-app: fully green
 cargo test -p zellij-server --all-features -- _red::     # exactly the red set
-cargo x integration-test -- -E 'test(/^red_/)'           # the whole-app red set
 ```
 
 A red test that starts passing means the deviation is fixed: drop its `red_` prefix and move it
 into the sibling `*_spec_tests.rs`. The master index — every red test, the spec section it comes
 from, what the code does today, and where the fix goes — is the module doc comment of
-`zellij-server/src/panes/kitty_graphics/unit/parser_spec_red.rs`.
+`zellij-server/src/panes/kitty_graphics/mod.rs`, which also records the judgement calls that are
+deliberately pinned green and the six groups already closed.
 
 ## Benchmarks
 

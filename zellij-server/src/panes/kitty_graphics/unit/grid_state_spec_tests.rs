@@ -6,7 +6,8 @@
 //!
 //! This level works directly on `KittyGrid`, one step below the terminal grid: it can assert on
 //! placement geometry in pixels and on image lifetime in the store without also depending on
-//! cursor movement or scrollback. Deviations live in `grid_state_spec_red.rs`.
+//! cursor movement or scrollback. The deviations still outstanding are indexed in the module doc
+//! of `kitty_graphics/mod.rs`.
 
 use super::super::grid_state::{KittyGrid, KittyVerticalAnchor};
 use super::super::parser::{
@@ -377,6 +378,49 @@ fn scaling_by_rows_alone_derives_the_columns_from_the_aspect_ratio() {
     let placement = &model.kitty.placements()[0];
     assert_eq!(placement.dest_cells, (4, 2));
     assert_eq!(placement.display_rect.width, 40);
+}
+
+#[test]
+fn scaling_by_columns_ignores_the_horizontal_cell_offset_when_deriving_rows() {
+    // Spec: "Note that if you specify a start cell offset via the `X,Y` keys, it is not added to
+    // the number of rows/columns." A square 40x40 image scaled to 4 columns is 40px wide, and by
+    // aspect ratio 40px tall, which is exactly two 20px rows — a start offset within the first
+    // cell does not change how many rows the image needs.
+    let mut model = Model::new();
+    model.ok("a=T,f=24,s=40,v=40,i=1,c=4", &rgb(40, 40));
+    assert_eq!(
+        model.kitty.placements()[0].dest_cells,
+        (4, 2),
+        "sanity: without an offset the derived row count is two"
+    );
+
+    let mut model = Model::new();
+    model.ok("a=T,f=24,s=40,v=40,i=1,c=4,X=5", &rgb(40, 40));
+    assert_eq!(
+        model.kitty.placements()[0].dest_cells,
+        (4, 2),
+        "the X offset must not be added to the derived row count"
+    );
+}
+
+#[test]
+fn scaling_by_rows_ignores_the_vertical_cell_offset_when_deriving_columns() {
+    // The mirror image: 40x40 scaled to 2 rows is 40px tall and 40px wide, four 10px columns.
+    let mut model = Model::new();
+    model.ok("a=T,f=24,s=40,v=40,i=1,r=2", &rgb(40, 40));
+    assert_eq!(
+        model.kitty.placements()[0].dest_cells,
+        (4, 2),
+        "sanity: without an offset the derived column count is four"
+    );
+
+    let mut model = Model::new();
+    model.ok("a=T,f=24,s=40,v=40,i=1,r=2,Y=5", &rgb(40, 40));
+    assert_eq!(
+        model.kitty.placements()[0].dest_cells,
+        (4, 2),
+        "the Y offset must not be added to the derived column count"
+    );
 }
 
 #[test]

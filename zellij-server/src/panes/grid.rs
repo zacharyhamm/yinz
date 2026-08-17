@@ -4536,11 +4536,16 @@ impl Perform for Grid {
                     self.kitty_grid
                         .clear_visible_placements(self.lines_above.len());
                 } else if clear_type == 3 {
+                    let dropped_rows = self.lines_above.len();
                     self.clear_lines_above();
                     if let Some(images_to_reap) = self.sixel_grid.clear() {
                         self.sixel_grid.reap_images(images_to_reap);
                     }
-                    self.kitty_grid.clear_all_placements();
+                    // Only the images that lived in the scrollback go with it - the ones on screen
+                    // are untouched, per "the other commands to erase text must have no effect on
+                    // graphics".
+                    self.kitty_grid.drop_scrollback_rows(dropped_rows);
+                    self.kitty_reanchor_all_from_pixels();
                 }
             };
         } else if c == 'H' || c == 'f' {

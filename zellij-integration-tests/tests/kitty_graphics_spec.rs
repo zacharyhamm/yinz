@@ -7,8 +7,8 @@
 //!
 //! The unit levels can assert on internal state; what only this level can show is that the
 //! replies actually reach the application's stdin and that the re-encoded commands actually reach
-//! the client. Deviations are named `red_*`; see the master index in
-//! `zellij-server/src/panes/kitty_graphics/unit/parser_spec_red.rs`.
+//! the client. Every test here passes; the deviations that are still outstanding are all at the
+//! unit level, indexed in the module doc of `zellij-server/src/panes/kitty_graphics/mod.rs`.
 #![cfg(unix)]
 
 use zellij_integration_tests::kitty_protocol::{
@@ -208,13 +208,10 @@ fn erasing_the_screen_withdraws_the_images_from_the_host() {
 }
 
 #[test]
-fn red_erasing_the_scrollback_leaves_the_images_on_the_host() {
-    // RED-2. Spec, "Interaction with other terminal actions": "The other commands to erase text
-    // must have no effect on graphics". `ESC[3J` erases the scrollback and does not touch the
-    // screen, so the image on screen must stay — and the host must not be told to delete it.
-    //
-    // Today the ED-3 branch in `grid.rs` calls `clear_all_placements`, so a program that trims
-    // its scrollback loses the image it is currently displaying.
+fn erasing_the_scrollback_leaves_the_images_on_the_host() {
+    // Spec, "Interaction with other terminal actions": "The other commands to erase text must have
+    // no effect on graphics". `ESC[3J` erases the scrollback and does not touch the screen, so the
+    // image on screen must stay — and the host must not be told to delete it.
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
     setup_kitty_host(&zellij, &terminal);
@@ -243,13 +240,13 @@ fn red_erasing_the_scrollback_leaves_the_images_on_the_host() {
 }
 
 #[test]
-fn red_a_temp_file_without_the_marker_is_not_deleted() {
-    // RED-1. Spec, "The transmission medium": a `t=t` transfer deletes the file only when it is
-    // in a known temporary directory *and* its path contains `tty-graphics-protocol`. Here only
-    // the first condition holds, so the file must survive.
+fn a_temp_file_without_the_marker_is_not_deleted() {
+    // Spec, "The transmission medium": a `t=t` transfer deletes the file only when it is in a
+    // known temporary directory *and* its path contains `tty-graphics-protocol`. Here only the
+    // first condition holds, so the file must survive.
     //
-    // End to end because this is the case where the cost of the bug is real: an application
-    // pointing zellij at a file it did not create for this transfer loses that file.
+    // End to end because this is the case where the cost of getting it wrong is real: an
+    // application pointing zellij at a file it did not create for this transfer loses that file.
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
     setup_kitty_host(&zellij, &terminal);

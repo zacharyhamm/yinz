@@ -1,5 +1,5 @@
 //! Relative placements. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/unit/parser_spec_red.rs`.
+//! `kitty_graphics/mod.rs`.
 //!
 //! RED-4. Spec, "Relative placements": a placement can be positioned relative to another one
 //! rather than to the cursor, with

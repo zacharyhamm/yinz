@@ -35,6 +35,7 @@ pub enum KittyMedium {
     Direct,
     File,
     TempFile,
+    SharedMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +43,9 @@ pub enum KittyErrorCode {
     Einval,
     Enoent,
     Ebadf,
+    Ebadpng,
     Enodata,
+    Enospc,
     Enotsupported,
 }
 
@@ -52,7 +55,9 @@ impl KittyErrorCode {
             KittyErrorCode::Einval => "EINVAL",
             KittyErrorCode::Enoent => "ENOENT",
             KittyErrorCode::Ebadf => "EBADF",
+            KittyErrorCode::Ebadpng => "EBADPNG",
             KittyErrorCode::Enodata => "ENODATA",
+            KittyErrorCode::Enospc => "ENOSPC",
             KittyErrorCode::Enotsupported => "ENOTSUPPORTED",
         }
     }
@@ -357,12 +362,7 @@ pub fn parse_control_data(control: &[u8]) -> Result<KittyCommand, KittyError> {
                     b'd' => KittyMedium::Direct,
                     b'f' => KittyMedium::File,
                     b't' => KittyMedium::TempFile,
-                    b's' => {
-                        return Err(echo.error(
-                            KittyErrorCode::Enotsupported,
-                            "shared memory transfer is not supported",
-                        ));
-                    },
+                    b's' => KittyMedium::SharedMemory,
                     _ => {
                         return Err(
                             echo.error(KittyErrorCode::Einval, "invalid transmission medium")
@@ -513,24 +513,30 @@ pub fn parse_control_data(control: &[u8]) -> Result<KittyCommand, KittyError> {
     Ok(command)
 }
 
+/// Spec, "the transmission medium": a `t=t` transfer may delete the file only when it is in a
+/// known temporary directory **and** its path contains `tty-graphics-protocol`. The marker is what
+/// distinguishes a file the client created for this transfer from any other file it happened to
+/// name, so both conditions have to hold before deleting somebody's data.
 fn should_delete_temp_file(path: &Path) -> bool {
-    path.to_string_lossy().contains("tty-graphics-protocol")
-        || path.starts_with(std::env::temp_dir())
+    let in_a_temporary_directory = path.starts_with(std::env::temp_dir())
         || path.starts_with("/tmp")
-        || path.starts_with("/dev/shm")
+        || path.starts_with("/dev/shm");
+    in_a_temporary_directory && path.to_string_lossy().contains("tty-graphics-protocol")
 }
 
-fn read_file_range(
-    path: &Path,
-    file_len: u64,
+/// Read the `O`/`S` window of an already-open file, shared by every medium that names one.
+fn read_range(
+    mut file: std::fs::File,
+    len: u64,
     command: &KittyCommand,
     echo: &EchoFields,
+    unreadable: &str,
 ) -> Result<Vec<u8>, KittyError> {
     let start = command.data_offset.unwrap_or(0) as u64;
-    if start > file_len {
-        return Err(echo.error(KittyErrorCode::Ebadf, "could not read file"));
+    if start > len {
+        return Err(echo.error(KittyErrorCode::Ebadf, unreadable));
     }
-    let available = file_len - start;
+    let available = len - start;
     let length = match command.data_size {
         Some(size) if size > 0 => std::cmp::min(size as u64, available),
         _ => available,
@@ -538,16 +544,61 @@ fn read_file_range(
     if length > MAX_DECODED_BYTES as u64 {
         return Err(echo.error(KittyErrorCode::Einval, "image too large"));
     }
-    let read = |path: &Path| -> std::io::Result<Vec<u8>> {
-        let mut file = std::fs::File::open(path)?;
+    let mut read = || -> std::io::Result<Vec<u8>> {
         if start > 0 {
             file.seek(std::io::SeekFrom::Start(start))?;
         }
         let mut bytes = Vec::new();
-        file.take(length).read_to_end(&mut bytes)?;
+        Read::by_ref(&mut file)
+            .take(length)
+            .read_to_end(&mut bytes)?;
         Ok(bytes)
     };
-    read(path).map_err(|_| echo.error(KittyErrorCode::Ebadf, "could not read file"))
+    read().map_err(|_| echo.error(KittyErrorCode::Ebadf, unreadable))
+}
+
+/// Read a `t=s` POSIX shared memory object and unlink it, as the spec requires: "The terminal
+/// emulator must read the data from the memory object and then unlink and close it on POSIX."
+/// The unlink happens whatever the read did, so a client that sent an unreadable object does not
+/// leak it until reboot.
+#[cfg(unix)]
+fn read_shared_memory_object(
+    name: &str,
+    command: &KittyCommand,
+    echo: &EchoFields,
+) -> Result<Vec<u8>, KittyError> {
+    use std::os::unix::io::FromRawFd;
+
+    const UNREADABLE: &str = "could not read shared memory object";
+    let name =
+        std::ffi::CString::new(name).map_err(|_| echo.error(KittyErrorCode::Ebadf, UNREADABLE))?;
+    // SAFETY: `name` is a valid NUL-terminated C string for the duration of the call, and the
+    // returned descriptor is handed straight to `File`, which owns and closes it.
+    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
+    if fd < 0 {
+        return Err(echo.error(KittyErrorCode::Ebadf, UNREADABLE));
+    }
+    // SAFETY: `fd` is a freshly opened descriptor this function exclusively owns.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let read_result = match file.metadata() {
+        Ok(metadata) => read_range(file, metadata.len(), command, echo, UNREADABLE),
+        Err(_) => Err(echo.error(KittyErrorCode::Ebadf, UNREADABLE)),
+    };
+    // SAFETY: same string, still valid; unlinking a name that is already gone is harmless.
+    unsafe { libc::shm_unlink(name.as_ptr()) };
+    read_result
+}
+
+#[cfg(not(unix))]
+fn read_shared_memory_object(
+    _name: &str,
+    _command: &KittyCommand,
+    echo: &EchoFields,
+) -> Result<Vec<u8>, KittyError> {
+    Err(echo.error(
+        KittyErrorCode::Enotsupported,
+        "shared memory transfer is not supported",
+    ))
 }
 
 fn run_payload_pipeline(
@@ -565,6 +616,12 @@ fn run_payload_pipeline(
         .map_err(|_| echo.error(KittyErrorCode::Einval, "invalid base64 payload"))?;
     let data = match command.medium {
         KittyMedium::Direct => decoded,
+        KittyMedium::SharedMemory => {
+            let name = String::from_utf8(decoded).map_err(|_| {
+                echo.error(KittyErrorCode::Ebadf, "invalid shared memory object name")
+            })?;
+            read_shared_memory_object(&name, &command, &echo)?
+        },
         KittyMedium::File | KittyMedium::TempFile => {
             let path_string = String::from_utf8(decoded)
                 .map_err(|_| echo.error(KittyErrorCode::Ebadf, "invalid file path"))?;
@@ -574,7 +631,11 @@ fn run_payload_pipeline(
             if !metadata.is_file() {
                 return Err(echo.error(KittyErrorCode::Ebadf, "could not read file"));
             }
-            let read_result = read_file_range(&path, metadata.len(), &command, &echo);
+            let read_result = std::fs::File::open(&path)
+                .map_err(|_| echo.error(KittyErrorCode::Ebadf, "could not read file"))
+                .and_then(|file| {
+                    read_range(file, metadata.len(), &command, &echo, "could not read file")
+                });
             if command.medium == KittyMedium::TempFile && should_delete_temp_file(&path) {
                 let _ = std::fs::remove_file(&path);
             }
@@ -645,7 +706,7 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder
         .read_info()
-        .map_err(|_| echo.error(KittyErrorCode::Einval, "invalid png data"))?;
+        .map_err(|_| echo.error(KittyErrorCode::Ebadpng, "invalid png data"))?;
     let width = reader.info().width;
     let height = reader.info().height;
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
@@ -657,7 +718,7 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
     let mut buf = vec![0; reader.output_buffer_size()];
     let out = reader
         .next_frame(&mut buf)
-        .map_err(|_| echo.error(KittyErrorCode::Einval, "invalid png data"))?;
+        .map_err(|_| echo.error(KittyErrorCode::Ebadpng, "invalid png data"))?;
     buf.truncate(out.buffer_size());
     let rgba = match out.color_type {
         png::ColorType::Rgba => buf,
@@ -683,7 +744,7 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
             }
             rgba
         },
-        _ => return Err(echo.error(KittyErrorCode::Einval, "invalid png data")),
+        _ => return Err(echo.error(KittyErrorCode::Ebadpng, "invalid png data")),
     };
     if rgba.len() > MAX_DECODED_BYTES {
         return Err(echo.error(KittyErrorCode::Einval, "image too large"));
@@ -703,7 +764,3 @@ mod parser_tests;
 #[cfg(test)]
 #[path = "./unit/parser_spec_tests.rs"]
 mod parser_spec_tests;
-
-#[cfg(test)]
-#[path = "./unit/parser_spec_red.rs"]
-mod parser_spec_red;

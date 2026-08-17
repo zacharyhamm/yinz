@@ -897,7 +897,9 @@ fn kitty_reply_icat_detection_sequence() {
     let mut vte_parser = vte::Parser::new();
     let mut interceptor = KittyApcInterceptor::new();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("icat-detect.bin");
+    // The marker in the name is half of what licenses a `t=t` transfer to delete the file; the
+    // temp directory is the other half. See `should_delete_temp_file`.
+    let path = dir.path().join("tty-graphics-protocol-icat-detect.bin");
     std::fs::write(&path, [1u8, 2, 3]).unwrap();
     let path_bytes = path.to_str().unwrap().as_bytes();
     feed_kitty_bytes(
@@ -937,7 +939,9 @@ fn kitty_reply_icat_detection_sequence() {
         b"\x1b_Gi=2;OK\x1b\\".to_vec()
     );
     let third = String::from_utf8(grid.pending_messages_to_pty[2].clone()).unwrap();
-    assert!(third.starts_with("\x1b_Gi=3;ENOTSUPPORTED"));
+    // The shared memory medium is supported, so what this probe finds out is that the object it
+    // named is not there - which is what tells icat the medium works at all.
+    assert!(third.starts_with("\x1b_Gi=3;EBADF"));
     assert!(third.ends_with("\x1b\\"));
     assert!(path.starts_with(std::env::temp_dir()));
     assert!(!path.exists());
