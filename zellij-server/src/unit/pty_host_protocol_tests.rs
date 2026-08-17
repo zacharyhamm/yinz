@@ -600,9 +600,8 @@ fn a_control_path_that_only_fits_without_the_ssh_rename_margin_is_refused() {
     use crate::pty_host::protocol::SSH_CONTROL_PATH_RENAME_MARGIN;
     use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
 
-    let control_path = PathBuf::from(
-        "a".repeat(ZELLIJ_SOCK_MAX_LENGTH - SSH_CONTROL_PATH_RENAME_MARGIN),
-    );
+    let control_path =
+        PathBuf::from("a".repeat(ZELLIJ_SOCK_MAX_LENGTH - SSH_CONTROL_PATH_RENAME_MARGIN));
     check_socket_path_length(&control_path, 0)
         .expect("fits on its own, without reserving ssh's rename margin");
     check_socket_path_length(&control_path, SSH_CONTROL_PATH_RENAME_MARGIN)

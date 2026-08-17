@@ -1077,3 +1077,48 @@ fn closing_a_pane_retracts_its_host() {
         "closing a pane should retract its host, got {hosts:?}"
     );
 }
+
+/// Which failures the pty thread can survive is decided here and nowhere else:
+/// anything this does not recognise reaches `.fatal()` and takes the session —
+/// every local pane in it included — down with the pane that could not start.
+#[test]
+fn a_pane_that_could_not_start_names_its_terminal_and_its_reason() {
+    let not_found: anyhow::Error = ZellijError::CommandNotFound {
+        terminal_id: 3,
+        command: "htop".to_owned(),
+    }
+    .into();
+    let (terminal_id, message) =
+        pane_start_failure(&not_found).expect("a missing command must stay survivable");
+    assert_eq!(terminal_id, 3);
+    assert!(
+        message.contains("htop"),
+        "the pane should say what was missing, got: {message}"
+    );
+
+    let unreachable: anyhow::Error = ZellijError::PaneStartFailed {
+        terminal_id: 4,
+        message: "could not open a pane on build-box: the broker closed the connection".to_owned(),
+    }
+    .into();
+    let (terminal_id, message) =
+        pane_start_failure(&unreachable).expect("an unreachable host must not end the session");
+    assert_eq!(terminal_id, 4);
+    assert!(
+        message.contains("build-box"),
+        "the pane should name the machine, got: {message}"
+    );
+
+    // Context wrapping is what the error picks up on its way through
+    // `spawn_terminal`, so the match has to survive it.
+    let wrapped = unreachable.context("failed to apply run instruction");
+    assert!(
+        pane_start_failure(&wrapped).is_some(),
+        "a wrapped failure is the same failure"
+    );
+
+    assert!(
+        pane_start_failure(&anyhow!("the pty thread has no pane to blame this on")).is_none(),
+        "an unrelated failure must stay fatal"
+    );
+}

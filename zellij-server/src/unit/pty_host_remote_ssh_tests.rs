@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 #[test]
 fn a_broker_endpoint_parses_from_the_line_ensure_prints() {
     let line = serde_json::json!({
-        "socket": "/run/user/1000/zellij/cv1/pty-broker.sock",
+        "socket": "/run/user/1000/zellij/cv1/pty-broker-v2.sock",
         "protocol_version": REMOTE_PROTOCOL_VERSION,
         "zellij_version": "0.45.0",
     })
@@ -19,7 +19,7 @@ fn a_broker_endpoint_parses_from_the_line_ensure_prints() {
     let endpoint: BrokerEndpoint = serde_json::from_str(&line).expect("parse failed");
     assert_eq!(
         endpoint.socket,
-        "/run/user/1000/zellij/cv1/pty-broker.sock"
+        "/run/user/1000/zellij/cv1/pty-broker-v2.sock"
     );
     assert_eq!(endpoint.protocol_version, REMOTE_PROTOCOL_VERSION);
 }
@@ -144,9 +144,10 @@ fn the_handshake_refuses_a_version_gap_and_names_both_sides() {
 }
 
 /// A command that does not exist on the *remote* machine has to come back as
-/// `ZellijError::CommandNotFound`, not as a generic failure: eight sites in
-/// pty.rs downcast for exactly that, and a remote pane should behave like a
-/// local one when the command is simply mistyped.
+/// `ZellijError::CommandNotFound`, not as a generic failure: `pane_start_failure`
+/// in pty.rs sorts the survivable failures from the fatal ones by exactly that,
+/// and a remote pane should behave like a local one when the command is simply
+/// mistyped.
 #[test]
 fn a_missing_remote_command_arrives_as_command_not_found() {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
@@ -282,4 +283,69 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
         },
         other => panic!("expected a Spawn, got {other:?}"),
     }
+}
+
+/// A forward whose broker died still accepts locally — the ssh holding it is
+/// alive, so `ensure_forward`'s liveness probe says all is well and the
+/// handshake is the first thing to notice, by reading EOF. Nothing rebuilds the
+/// forward unless that failure does, and until something does, every later pane
+/// on that host fails the same way for the life of the session.
+#[test]
+fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
+    // `.invalid` is reserved precisely so it never resolves: the retry's ssh
+    // fails immediately instead of reaching anything.
+    let host = "zellij-test-stale-forward.invalid";
+    let dir = std::env::temp_dir().join(format!("zellij-stale-forward-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("could not make a test dir");
+    let local_socket = dir.join("forward.sock");
+    let _ = std::fs::remove_file(&local_socket);
+
+    // Stands in for a forward that is up with nothing behind it: it accepts,
+    // then closes without a word, exactly as ssh does when the socket on the
+    // other machine is gone.
+    let listener = std::os::unix::net::UnixListener::bind(&local_socket)
+        .expect("could not bind a fake forward");
+    let accepting = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            drop(stream);
+        }
+    });
+    let ssh = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("could not stand in for the forward's ssh");
+
+    let hosts = Arc::new(RemoteHosts::new());
+    hosts.forwards.lock().unwrap().insert(
+        host.to_owned(),
+        Arc::new(HostForward {
+            host: host.to_owned(),
+            local_socket: local_socket.clone(),
+            ssh,
+        }),
+    );
+
+    let cmd = RunCommand {
+        command: std::path::PathBuf::from("/bin/sh"),
+        remote_host: Some(host.to_owned()),
+        ..Default::default()
+    };
+    let msg = match hosts.open_pane(host, &cmd, None) {
+        Err(err) => format!("{err:#}"),
+        Ok(_) => panic!("an unreachable host cannot open a pane"),
+    };
+    assert!(
+        !msg.contains("the broker closed the connection"),
+        "the error should come from the retry, not from the stale forward: {msg}"
+    );
+    assert!(
+        !hosts.forwards.lock().unwrap().contains_key(host),
+        "the stale forward must not be left in the table for the next pane"
+    );
+
+    let _ = accepting.join();
+    let _ = std::fs::remove_file(&local_socket);
 }
