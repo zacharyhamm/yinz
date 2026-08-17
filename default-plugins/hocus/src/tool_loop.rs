@@ -15,11 +15,8 @@ impl State {
     /// model.
     pub(crate) fn pump_tools(&mut self) {
         while let Some(call) = self.pending.front().cloned() {
-            let grants_job_authority = call.name == "schedule"
-                && tools::Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm);
-            if (grants_job_authority || tools::needs_confirmation(&call.name))
-                && !self.job_auto_confirm
-            {
+            let needs_confirmation = tools::call_needs_confirmation(&call);
+            if needs_confirmation && !self.job_auto_confirm {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
                 // The prompt renders into the sidebar, and the sidebar is very
@@ -35,7 +32,7 @@ impl State {
                 self.raise_spotlight(&call);
                 return;
             }
-            if tools::needs_confirmation(&call.name) {
+            if needs_confirmation {
                 self.log(
                     "tool_confirm",
                     serde_json::json!({

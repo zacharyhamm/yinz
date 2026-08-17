@@ -31,8 +31,39 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// Tools that need explicit confirmation before dispatch. All other tools run
-/// without asking.
+/// Whether this call — arguments and all — stops for a y/n.
+///
+/// `needs_confirmation` answers for the tools that always stop; a couple stop
+/// only in one shape, and the shape is in the arguments. That decision lives
+/// here, next to `consequence`, because the two have to agree: a call that stops
+/// needs a sentence explaining it, and a sentence is only ever shown for a call
+/// that stops.
+pub fn call_needs_confirmation(call: &ToolCall) -> bool {
+    match call.name.as_str() {
+        // A login shell on another machine runs nothing the model chose — it is
+        // `new_pane`, one machine along, and that does not ask either. Making
+        // that shell do something still goes through `send_input`, which does.
+        // Naming a command up front is the confirmable part.
+        "new_remote_pane" => !opens_a_bare_remote_shell(call),
+        // Scheduling is otherwise free; handing a job standing permission to use
+        // tools without asking again is the confirmable part.
+        "schedule" => Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm),
+        name => needs_confirmation(name),
+    }
+}
+
+/// True only when the arguments parsed *and* named no command.
+///
+/// The `is_ok_and` is load-bearing: defaulted `Args` have no command either, so
+/// reading a malformed call as a bare shell would let it through without a
+/// prompt — the one case `consequence`'s doc singles out as needing one most.
+fn opens_a_bare_remote_shell(call: &ToolCall) -> bool {
+    Args::parse(&call.arguments).is_ok_and(|args| args.command_words().iter().all(String::is_empty))
+}
+
+/// Tools that need explicit confirmation before dispatch whatever they are
+/// given. `call_needs_confirmation` is the question the tool loop actually asks;
+/// this is the part of the answer that does not depend on the arguments.
 pub fn needs_confirmation(name: &str) -> bool {
     matches!(
         name,
@@ -55,9 +86,6 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "warp_tab"
             | "warp_tab_here"
             | "adopt_orphaned_pane"
-            // Runs a command on a foreign machine over ssh, unlike anything
-            // else on this list.
-            | "new_remote_pane"
     )
 }
 
@@ -134,18 +162,13 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             format!("takes a tab from {session} into this one")
         },
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
-        "new_remote_pane" => {
+        // Only the shape that stops: a bare login shell is not confirmed, so it
+        // has nothing to say here. See `call_needs_confirmation`.
+        "new_remote_pane" if !opens_a_bare_remote_shell(call) => {
             let host = args.remote_host.as_deref().unwrap_or("another machine");
-            // What is about to happen is what the user is being asked to allow,
-            // so this must not promise a command that was never named.
-            if args.command_words().iter().all(String::is_empty) {
-                format!("logs in to {host} over ssh, opening a new pane running its shell")
-            } else {
-                format!("runs a command on {host} over ssh, opening a new pane connected to it")
-            }
+            format!("runs a command on {host} over ssh, opening a new pane connected to it")
         },
-        // Scheduling is otherwise free; handing a job standing permission is the
-        // confirmable part, and `pump_tools` stops for exactly that case.
+        // Likewise: `pump_tools` stops for exactly the standing-permission case.
         "schedule" if args.auto_confirm => {
             "lets every run of this job use tools without stopping to ask again".to_owned()
         },
