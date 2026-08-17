@@ -19,8 +19,6 @@ pub const FILE: &str = "/cache/todos.json";
 
 /// The most levels a list holds. A top item is level 1.
 pub const MAX_DEPTH: usize = 5;
-/// The most characters in the text of one item.
-pub const MAX_TEXT: usize = 500;
 /// The most open items in one list. An item that is crossed off does not count.
 pub const MAX_OPEN: usize = 200;
 /// The most items of any state in one list. This bounds the file.
@@ -222,9 +220,6 @@ fn clean_text(text: &str) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() || text.chars().any(char::is_control) {
         return Err("todo text must contain visible characters".to_owned());
-    }
-    if text.chars().count() > MAX_TEXT {
-        return Err(format!("todo text must be 1 to {MAX_TEXT} characters"));
     }
     Ok(text.to_owned())
 }
@@ -1335,13 +1330,6 @@ mod tests {
     }
 
     #[test]
-    fn planning_an_add_rejects_text_that_is_too_long() {
-        let list = List::default();
-        let long = "x".repeat(MAX_TEXT + 1);
-        assert!(plan_add(&list, "/work", &long, None).is_err());
-    }
-
-    #[test]
     fn crossing_an_item_off_cascades_to_its_subtree_in_one_write() {
         let list = List {
             next_id: 4,
@@ -1399,16 +1387,6 @@ mod tests {
         let list = List::default();
         let error = plan_edit(&list, 7, "text").expect_err("no such item");
         assert!(error.contains("no todo item 7 in this project"), "{error}");
-    }
-
-    #[test]
-    fn planning_an_edit_rejects_text_that_is_too_long() {
-        let list = List {
-            next_id: 2,
-            items: vec![item(1, "old text", vec![])],
-        };
-        let long = "x".repeat(MAX_TEXT + 1);
-        assert!(plan_edit(&list, 1, &long).is_err());
     }
 
     #[test]
@@ -1788,11 +1766,9 @@ mod tests {
     }
 
     #[test]
-    fn text_that_is_empty_or_too_long_is_refused() {
+    fn text_that_is_empty_is_refused() {
         let mut saved = Store::new();
         assert!(add(&mut saved, "/work/hocus", "   ", None).is_err());
-        let long = "x".repeat(MAX_TEXT + 1);
-        assert!(add(&mut saved, "/work/hocus", &long, None).is_err());
         assert!(saved.is_empty());
     }
 
