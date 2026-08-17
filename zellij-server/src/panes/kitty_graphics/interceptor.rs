@@ -65,6 +65,12 @@ impl KittyApcInterceptor {
         self.buffer.clear();
         self.overflowed = false;
     }
+    /// Whether the interceptor is between sequences. In this state `advance` forwards every byte
+    /// but `0x1b` unchanged and stays put, so a caller holding a whole pty read can forward the
+    /// run up to the next escape in one go instead of driving the state machine byte by byte.
+    pub fn is_in_ground_state(&self) -> bool {
+        self.state == State::Ground
+    }
     pub fn advance(&mut self, byte: u8) -> InterceptorResult {
         match self.state {
             State::Ground => match byte {
