@@ -147,6 +147,7 @@ pub struct TerminalPane {
     pane_title: String,
     pane_name: String,
     prev_pane_name: String,
+    remote_host: Option<String>,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
@@ -578,7 +579,7 @@ impl Pane for TerminalPane {
             }
             format!("SEARCHING: {}{}", self.search_term, modifier_text)
         } else {
-            self.current_title()
+            self.display_title()
         };
         let frame_color_override = self
             .pane_frame_color_override
@@ -1173,8 +1174,20 @@ impl Pane for TerminalPane {
             self.pane_name.to_owned()
         }
     }
+    fn set_remote_host(&mut self, host: Option<String>) {
+        self.remote_host = host;
+    }
+    fn display_title(&self) -> String {
+        match &self.remote_host {
+            Some(host) if self.has_explicit_title() => {
+                format!("{}: {}", host, self.current_title())
+            },
+            Some(host) => host.clone(),
+            None => self.current_title(),
+        }
+    }
     fn stack_list_entry_label(&self) -> String {
-        self.title_with_bell_indicator(self.current_title())
+        self.title_with_bell_indicator(self.display_title())
     }
     fn custom_title(&self) -> Option<String> {
         if self.pane_name.is_empty() {
@@ -1429,6 +1442,7 @@ impl TerminalPane {
             pane_title: initial_pane_title,
             pane_name: pane_name.clone(),
             prev_pane_name: pane_name,
+            remote_host: None,
             borderless: false,
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),

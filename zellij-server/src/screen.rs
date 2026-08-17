@@ -13000,6 +13000,12 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
                 // A pane's host never changes while it lives, so this arrives
                 // once when it is created and once more when it is closed.
+                for tab in screen.tabs.values_mut() {
+                    if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(terminal_id)) {
+                        pane.set_remote_host(host.clone());
+                        break;
+                    }
+                }
                 match host {
                     Some(host) => screen.terminal_hosts.insert(terminal_id, host),
                     None => screen.terminal_hosts.remove(&terminal_id),
