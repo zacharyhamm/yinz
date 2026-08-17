@@ -433,6 +433,7 @@ pub enum ScreenContext {
     AddHighlightPaneFrameColorOverride,
     GroupAndUngroupPanes,
     HighlightAndUnhighlightPanes,
+    RevealPaneWithId,
     FloatMultiplePanes,
     EmbedMultiplePanes,
     TogglePaneInGroup,

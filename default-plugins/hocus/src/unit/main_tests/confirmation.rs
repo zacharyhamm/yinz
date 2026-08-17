@@ -105,6 +105,86 @@ fn confirming_runs_the_call_and_moves_on() {
     assert!(state.pending.is_empty());
 }
 
+// -- the spotlight ------------------------------------------------------
+//
+// The host calls are no-ops off wasm, so what these pin is the bookkeeping:
+// which pane was singled out, and that it stops being singled out on every way
+// out of the prompt. A pane left wearing `hocus: send_input?` after the answer
+// was given is a lie about what the session is waiting for.
+
+/// The prompt says "types into pane 7"; `spotlight` is how the session then goes
+/// and shows you pane 7.
+#[test]
+fn confirming_a_pane_tool_singles_out_that_pane() {
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "send_input", r#"{"pane_id":7,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    assert_eq!(state.spotlight, Some(PaneId::Terminal(7)));
+}
+
+/// A confirmation with nothing to point at is still a confirmation. `slack_post`
+/// asks because it is public, not because it touches this session.
+#[test]
+fn a_confirmation_about_no_pane_singles_out_nothing() {
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "slack_post", r#"{"channel":"general"}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    assert_eq!(state.spotlight, None);
+}
+
+/// Every way out. Written as a table rather than three tests because the point
+/// is that *none* of them leaves the mark up, and a fourth exit added later
+/// should be added here.
+#[test]
+fn answering_takes_the_mark_back_off() {
+    for (answer, resolve) in [
+        ("y", State::confirm_tool as fn(&mut State) -> bool),
+        ("n", State::decline_tool),
+        ("Esc", State::abort_tools),
+        ("Ctrl-l", State::new_chat),
+    ] {
+        let mut state = ready_state();
+        let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":3,"is_plugin":false}"#);
+        state.on_chunk("hocus-1", &frame, false, None);
+        state.on_chunk("hocus-1", b"", true, None);
+        assert_eq!(
+            state.spotlight,
+            Some(PaneId::Terminal(3)),
+            "{answer}: the mark goes up to begin with"
+        );
+
+        resolve(&mut state);
+
+        assert_eq!(state.spotlight, None, "{answer} should clear the mark");
+    }
+}
+
+/// A chat parked mid-confirmation is still waiting on that pane, and is the one
+/// that will have to clear it. Leaving the mark behind on the foreground chat
+/// would have the wrong conversation take it down.
+#[test]
+fn the_mark_travels_with_a_parked_chat() {
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":5,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    let parked = state.take_chat();
+
+    assert_eq!(state.spotlight, None, "the foreground keeps nothing");
+    assert_eq!(parked.spotlight, Some(PaneId::Terminal(5)));
+
+    state.put_chat(parked);
+
+    assert_eq!(state.spotlight, Some(PaneId::Terminal(5)));
+}
+
 /// Aborting answers every outstanding call, so the transcript stays valid if
 /// the conversation continues.
 #[test]

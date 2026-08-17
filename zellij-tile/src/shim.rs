@@ -3226,6 +3226,27 @@ pub fn highlight_and_unhighlight_panes(
     unsafe { host_run_plugin_command() };
 }
 
+/// Bring a pane into view for this client and highlight its frame, without
+/// taking keyboard focus - unlike [`focus_pane_with_id`], which does both.
+///
+/// `label` is drawn in place of the pane's title for as long as the highlight is
+/// up, so a pane can say what it has been singled out *for*. Clear both with
+/// [`highlight_and_unhighlight_panes`], passing the pane as one to unhighlight.
+///
+/// How much can be revealed depends on where this client's keyboard focus is,
+/// because Zellij gives a client one tab that is both the one it sees and the
+/// one it types into. A suppressed or hidden floating pane is always brought
+/// out; a pane in another tab is switched to only when focus is parked on a
+/// session-global pane, which no tab owns and which therefore keeps focus across
+/// the switch. Otherwise the highlight is applied where the pane stands and the
+/// client's view is left alone - that is the promise, focus does not move.
+pub fn reveal_pane_with_id(pane_id: PaneId, label: Option<String>) {
+    let plugin_command = PluginCommand::RevealPaneWithId(pane_id, label);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 pub fn close_multiple_panes(pane_ids: Vec<PaneId>) {
     let plugin_command = PluginCommand::CloseMultiplePanes(pane_ids);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();

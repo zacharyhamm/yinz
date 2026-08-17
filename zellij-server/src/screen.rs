@@ -1026,6 +1026,9 @@ pub enum ScreenInstruction {
     // message
     GroupAndUngroupPanes(Vec<PaneId>, Vec<PaneId>, bool, ClientId), // panes_to_group, panes_to_ungroup, bool -> for all clients
     HighlightAndUnhighlightPanes(Vec<PaneId>, Vec<PaneId>, ClientId), // panes_to_highlight, panes_to_unhighlight
+    /// Show a client a pane and mark it, without moving that client's keyboard
+    /// focus. `Option<String>` is a label drawn in place of the pane's title.
+    RevealPaneWithId(PaneId, Option<String>, ClientId),
     FloatMultiplePanes(Vec<PaneId>, ClientId),
     EmbedMultiplePanes(Vec<PaneId>, ClientId),
     TogglePaneInGroup(ClientId, Option<NotificationEnd>),
@@ -1392,6 +1395,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::HighlightAndUnhighlightPanes(..) => {
                 ScreenContext::HighlightAndUnhighlightPanes
             },
+            ScreenInstruction::RevealPaneWithId(..) => ScreenContext::RevealPaneWithId,
             ScreenInstruction::FloatMultiplePanes(..) => ScreenContext::FloatMultiplePanes,
             ScreenInstruction::EmbedMultiplePanes(..) => ScreenContext::EmbedMultiplePanes,
             ScreenInstruction::TogglePaneInGroup(..) => ScreenContext::TogglePaneInGroup,
@@ -8050,6 +8054,80 @@ impl Screen {
                 log::error!("Could not find pane with id: {:?}", pane_id);
             },
         };
+        Ok(())
+    }
+    /// Show `client_id` a pane and mark its frame, without moving that client's
+    /// keyboard focus.
+    ///
+    /// The sibling of `focus_pane_with_id` for the caller that wants to point at
+    /// a pane rather than hand it the keyboard - a plugin asking "shall I type
+    /// into this one?" needs you to see the pane *and* to still be in the plugin
+    /// to answer.
+    ///
+    /// How much of the pane can be shown depends on where the client's focus
+    /// already is, because `active_tab_ids` is at once the tab a client sees and
+    /// the tab it types into: switching it moves focus, and there is no third
+    /// state. The exception is a global pane, which no tab owns - a client
+    /// focused on one keeps that focus across a tab switch (see
+    /// `switch_active_tab`), and that is the case this trades on. For every
+    /// other client the mark is applied where the pane stands and the view is
+    /// left alone, which is worth more than a reveal that costs them their
+    /// place.
+    pub fn reveal_pane_with_id(
+        &mut self,
+        pane_id: PaneId,
+        label: Option<String>,
+        client_id: ClientId,
+    ) -> Result<()> {
+        // First, and whatever else happens below: an unreachable pane still gets
+        // marked, so the mark is waiting on it when the client does arrive.
+        if self.global_panes.pane(pane_id).is_some() {
+            self.with_pane(pane_id, |pane| {
+                pane.add_highlight_pane_frame_color_override(label.clone(), Some(client_id))
+            });
+            // A global pane is in view from every tab; there is nothing to switch to.
+            self.show_pane(pane_id)?;
+            self.render(None)?;
+            self.log_and_report_session_state()?;
+            return Ok(());
+        }
+
+        let Some((tab_id, tab_position)) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.has_pane_with_pid(&pane_id))
+            .map(|(tab_id, tab)| (*tab_id, tab.position))
+        else {
+            log::error!("Could not find pane with id: {:?}", pane_id);
+            return Ok(());
+        };
+
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.add_highlight_pane_frame_color_override(pane_id, label, Some(client_id));
+        }
+
+        let pane_is_in_view = self.active_tab_ids.get(&client_id) == Some(&tab_id);
+        // Deliberately *not* `defocus_global_pane` first, which is the one line
+        // that makes `focus_pane_with_id` a focus operation.
+        let can_switch_tabs = self.global_panes.focused_pane_id(client_id).is_some();
+        if !pane_is_in_view {
+            if !can_switch_tabs {
+                self.render(None)?;
+                self.log_and_report_session_state()?;
+                return Ok(());
+            }
+            self.go_to_tab(tab_position + 1, client_id)?;
+        }
+
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            // Suppressed, or floating while floating panes are hidden: in the
+            // right tab and still not on screen. Unlike the tab-level
+            // `focus_pane_with_id` this leaves the tab's own active pane alone,
+            // so nothing about where the keyboard goes changes.
+            tab.unsuppress_or_expand_pane(pane_id, true);
+        }
+        self.render(None)?;
+        self.log_and_report_session_state()?;
         Ok(())
     }
     pub fn rerun_command_pane_with_id(
@@ -15839,6 +15917,9 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                 }
                 let _ = screen.log_and_report_session_state();
+            },
+            ScreenInstruction::RevealPaneWithId(pane_id, label, client_id) => {
+                screen.reveal_pane_with_id(pane_id, label, client_id)?;
             },
             ScreenInstruction::FloatMultiplePanes(pane_ids_to_float, client_id) => {
                 if pane_ids_to_float

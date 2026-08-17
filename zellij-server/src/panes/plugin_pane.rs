@@ -7,7 +7,7 @@ use crate::panes::{
     kitty_graphics::KittyImageStore,
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
-    LinkHandler, PaneId,
+    FrameColorOverride, LinkHandler, PaneId,
 };
 use crate::plugins::PluginInstruction;
 use crate::pty::VteBytes;
@@ -100,7 +100,7 @@ pub(crate) struct PluginPane {
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
-    pane_frame_color_override: Option<(PaletteColor, Option<String>)>,
+    pane_frame_color_override: Option<FrameColorOverride>,
     invoked_with: Option<Run>,
     loading_indication: LoadingIndication,
     requesting_permissions: Option<PluginPermission>,
@@ -439,12 +439,14 @@ impl Pane for PluginPane {
             .unwrap_or_else(|| self.current_geom());
         let grid = get_or_create_grid!(self, client_id);
         let err_context = || format!("failed to render frame for client {client_id}");
-        let pane_title = if frame_params.blank_title {
-            String::new()
-        } else if let Some(text_color_override) = self
+        let frame_color_override = self
             .pane_frame_color_override
             .as_ref()
-            .and_then(|(_color, text)| text.as_ref())
+            .filter(|override_| override_.applies_to(client_id));
+        let pane_title = if frame_params.blank_title {
+            String::new()
+        } else if let Some(text_color_override) =
+            frame_color_override.and_then(|override_| override_.text.as_ref())
         {
             text_color_override.into()
         } else if self.pane_name.is_empty()
@@ -468,8 +470,8 @@ impl Pane for PluginPane {
             frame_params,
         )
         .is_pinned(is_pinned);
-        if let Some((frame_color_override, _text)) = self.pane_frame_color_override.as_ref() {
-            frame.override_color(*frame_color_override);
+        if let Some(override_) = frame_color_override {
+            frame.override_color(override_.color);
         }
 
         let res = match self.frame.get(&client_id) {
@@ -759,24 +761,38 @@ impl Pane for PluginPane {
             .unwrap();
     }
     fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
-        self.pane_frame_color_override = Some((self.style.colors.exit_code_error.base, error_text));
+        // A command that failed is a fact about the pane, so every client sees it.
+        self.pane_frame_color_override = Some(FrameColorOverride::new(
+            self.style.colors.exit_code_error.base,
+            error_text,
+            None,
+        ));
     }
     fn add_highlight_pane_frame_color_override(
         &mut self,
         text: Option<String>,
-        _client_id: Option<ClientId>,
+        client_id: Option<ClientId>,
     ) {
-        // TODO: if we have a client_id, we should only highlight the frame for this client
-        self.pane_frame_color_override = Some((self.style.colors.frame_highlight.base, text));
+        self.pane_frame_color_override = Some(FrameColorOverride::new(
+            self.style.colors.frame_highlight.base,
+            text,
+            client_id,
+        ));
     }
-    fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {
-        // TODO: if we have a client_id, we should only clear the highlight for this client
-        self.pane_frame_color_override = None;
+    fn clear_pane_frame_color_override(&mut self, client_id: Option<ClientId>) {
+        if self
+            .pane_frame_color_override
+            .as_ref()
+            .is_none_or(|override_| override_.is_cleared_by(client_id))
+        {
+            self.pane_frame_color_override = None;
+        }
     }
-    fn frame_color_override(&self) -> Option<PaletteColor> {
+    fn frame_color_override(&self, client_id: ClientId) -> Option<PaletteColor> {
         self.pane_frame_color_override
             .as_ref()
-            .map(|(color, _text)| *color)
+            .filter(|override_| override_.applies_to(client_id))
+            .map(|override_| override_.color)
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with

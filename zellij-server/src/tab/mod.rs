@@ -781,8 +781,12 @@ pub trait Pane {
         _client_id: Option<ClientId>,
     ) {
     }
+    /// Take the override down. `None` clears whatever is there; a client only
+    /// clears an override that was put up for that same client.
     fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>);
-    fn frame_color_override(&self) -> Option<PaletteColor>;
+    /// The override colour as `client_id` sees it - `None` when there is no
+    /// override, or when the one there is drawn for somebody else.
+    fn frame_color_override(&self, _client_id: ClientId) -> Option<PaletteColor>;
     fn invoked_with(&self) -> &Option<Run>;
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);

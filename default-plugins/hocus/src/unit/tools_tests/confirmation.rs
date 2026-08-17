@@ -213,3 +213,83 @@ fn the_toast_says_who_is_asking_before_the_block() {
     assert_eq!(lines.next(), Some("clear_pane"));
     assert!(toast.ends_with("  pane_id: 4"), "got {toast:?}");
 }
+
+// -- naming the destination ---------------------------------------------
+
+/// `is_plugin` decides which pane `pane_id` even means, so the target has to
+/// read it rather than assume a terminal. Pointing at terminal 4 when the call
+/// is about plugin 4 would mark the wrong pane and reveal the wrong tab.
+#[test]
+fn the_target_respects_which_kind_of_pane_the_id_is() {
+    assert_eq!(
+        confirmation_target(&call("send_input", r#"{"pane_id":4,"is_plugin":false}"#)),
+        Some(PaneId::Terminal(4))
+    );
+    assert_eq!(
+        confirmation_target(&call("clear_pane", r#"{"pane_id":4,"is_plugin":true}"#)),
+        Some(PaneId::Plugin(4))
+    );
+}
+
+/// The agent tools address a terminal and don't take `is_plugin` at all —
+/// `agent_host_call` rewrites them into primitives with `is_plugin: false`.
+#[test]
+fn an_agent_call_targets_its_terminal_without_being_told() {
+    assert_eq!(
+        confirmation_target(&call("agent_send", r#"{"pane_id":9,"text":"hi"}"#)),
+        Some(PaneId::Terminal(9))
+    );
+    assert_eq!(
+        confirmation_target(&call("agent_control", r#"{"pane_id":9,"action":"close"}"#)),
+        Some(PaneId::Terminal(9))
+    );
+}
+
+/// Every confirmable tool that does *not* name a pane in this session. The
+/// `_here` warps and `adopt_orphaned_pane` all carry an id, but it belongs to
+/// another session and means nothing locally until after the call runs.
+#[test]
+fn a_tool_with_no_local_pane_has_no_target() {
+    for (name, arguments) in [
+        ("slack_post", r#"{"channel":"general"}"#),
+        ("project_forget", r#"{"name":"thing"}"#),
+        ("agent_spawn", r#"{"command":"claude"}"#),
+        ("new_remote_pane", r#"{"remote_host":"box"}"#),
+        ("warp_pane_here", r#"{"from_session":"other","pane_id":1}"#),
+        ("warp_tab", r#"{"to_session":"other","tab_id":2}"#),
+        ("warp_tab_here", r#"{"from_session":"other","tab_id":1}"#),
+        ("adopt_orphaned_pane", r#"{"host_id":"abc123","pane_id":1}"#),
+    ] {
+        assert_eq!(
+            confirmation_target(&call(name, arguments)),
+            None,
+            "{name} names no pane in this session"
+        );
+    }
+}
+
+/// Same rule as `consequence`: the prompt still goes up on a call the model got
+/// wrong, it just goes up without a destination to point at.
+#[test]
+fn a_target_is_absent_rather_than_guessed_when_the_arguments_are_wrong() {
+    assert_eq!(confirmation_target(&call("send_input", "not json")), None);
+    // Parses, but `with_pane` would refuse it too: which pane is unanswered.
+    assert_eq!(
+        confirmation_target(&call("send_input", r#"{"pane_id":4}"#)),
+        None
+    );
+    assert_eq!(
+        confirmation_target(&call("send_input", r#"{"text":"hi"}"#)),
+        None
+    );
+}
+
+/// Read from the pane, with no sidebar in sight, the label is all there is —
+/// so it has to name who is asking and that an answer is owed.
+#[test]
+fn the_label_says_whose_question_the_pane_is_wearing() {
+    assert_eq!(
+        indicator_label(&call("send_input", r#"{"pane_id":4}"#)),
+        "hocus: send_input?"
+    );
+}

@@ -134,9 +134,10 @@ pub use super::generated_api::api::{
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         RenameWebLoginTokenPayload, RenameWebTokenResponse, ReplacePaneWithExistingPanePayload,
         RequestPluginPermissionPayload, RerunCommandPanePayload, ResizePaneIdWithDirectionPayload,
-        ResizePayload, RevokeAllWebTokensResponse, RevokeTokenResponse, RevokeWebLoginTokenPayload,
-        RunActionPayload, RunCommandPayload, RunningCommand as ProtobufRunningCommand,
-        SaveLayoutPayload, SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
+        ResizePayload, RevealPaneWithIdPayload, RevokeAllWebTokensResponse, RevokeTokenResponse,
+        RevokeWebLoginTokenPayload, RunActionPayload, RunCommandPayload,
+        RunningCommand as ProtobufRunningCommand, SaveLayoutPayload,
+        SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
@@ -2431,6 +2432,19 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for HighlightAndUnhighlightPanes"),
                 }
             },
+            Some(CommandName::RevealPaneWithId) => match protobuf_plugin_command.payload {
+                Some(Payload::RevealPaneWithIdPayload(reveal_pane_with_id_payload)) => {
+                    let pane_id = reveal_pane_with_id_payload
+                        .pane_id
+                        .ok_or("RevealPaneWithId must have a pane id")?
+                        .try_into()?;
+                    Ok(PluginCommand::RevealPaneWithId(
+                        pane_id,
+                        reveal_pane_with_id_payload.label,
+                    ))
+                },
+                _ => Err("Mismatched payload for RevealPaneWithId"),
+            },
             Some(CommandName::CloseMultiplePanes) => match protobuf_plugin_command.payload {
                 Some(Payload::CloseMultiplePanesPayload(close_multiple_panes_payload)) => {
                     Ok(PluginCommand::CloseMultiplePanes(
@@ -4450,6 +4464,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::RevealPaneWithId(pane_id, label) => Ok(ProtobufPluginCommand {
+                name: CommandName::RevealPaneWithId as i32,
+                payload: Some(Payload::RevealPaneWithIdPayload(RevealPaneWithIdPayload {
+                    pane_id: pane_id.try_into().ok(),
+                    label,
+                })),
+            }),
             PluginCommand::CloseMultiplePanes(pane_ids) => Ok(ProtobufPluginCommand {
                 name: CommandName::CloseMultiplePanes as i32,
                 payload: Some(Payload::CloseMultiplePanesPayload(
@@ -5997,6 +6018,28 @@ mod tests {
                     assert_eq!(decoded_style, style)
                 },
                 other => panic!("expected SetPaneFrameStyle, got {:?}", other),
+            }
+        }
+    }
+
+    /// Both halves have to survive: a reveal that loses its pane id points at
+    /// nothing, and one that loses its label marks a pane without saying what
+    /// for.
+    #[test]
+    fn reveal_pane_with_id_protobuf_round_trip() {
+        for (pane_id, label) in [
+            (PaneId::Terminal(7), Some("hocus: send_input?".to_owned())),
+            (PaneId::Plugin(3), None),
+        ] {
+            let original = PluginCommand::RevealPaneWithId(pane_id, label.clone());
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::RevealPaneWithId(decoded_pane_id, decoded_label) => {
+                    assert_eq!(decoded_pane_id, pane_id);
+                    assert_eq!(decoded_label, label);
+                },
+                other => panic!("expected RevealPaneWithId, got {:?}", other),
             }
         }
     }

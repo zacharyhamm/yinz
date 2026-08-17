@@ -3794,6 +3794,10 @@ pub enum PluginCommand {
     // bool -> for all clients
     HighlightAndUnhighlightPanes(Vec<PaneId>, Vec<PaneId>), // panes to highlight, panes to
     // unhighlight
+    /// Bring a pane into view for this client and highlight it, without taking
+    /// keyboard focus. The `String` is a label drawn in place of the pane's
+    /// title for as long as the highlight is up.
+    RevealPaneWithId(PaneId, Option<String>),
     CloseMultiplePanes(Vec<PaneId>),
     FloatMultiplePanes(Vec<PaneId>),
     EmbedMultiplePanes(Vec<PaneId>),

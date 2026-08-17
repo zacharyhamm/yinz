@@ -204,6 +204,41 @@ pub fn confirmation_toast(call: &ToolCall) -> String {
 /// Named rather than inline so the test that reads it back cannot drift from it.
 pub const TOAST_HEADLINE: &str = "hocus needs confirmation";
 
+/// The pane a pending confirmation is about to act on, for the ones that name a
+/// pane at all.
+///
+/// The prompt already says "types into pane 7"; this is what lets the session
+/// then go and show you pane 7. Only tools that act on a pane *already in this
+/// session* qualify — `warp_pane_here`, `warp_tab_here` and
+/// `adopt_orphaned_pane` all name something that is somewhere else, and there is
+/// nothing local to point at until after they run.
+///
+/// `None` for arguments that don't parse, matching `consequence`: the confirmation
+/// still goes up on a malformed call, it just goes up without a destination.
+pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
+    let args = Args::parse(&call.arguments).ok()?;
+    let pane_id = args.pane_id?;
+    match call.name.as_str() {
+        // The agent tools address a terminal and say so: `agent_host_call`
+        // rewrites them into pane-addressed primitives with `is_plugin: false`.
+        "agent_send" | "agent_control" => Some(PaneId::Terminal(pane_id)),
+        "send_input" | "rerun_pane" | "clear_pane" | "warp_pane" => match args.is_plugin? {
+            true => Some(PaneId::Plugin(pane_id)),
+            false => Some(PaneId::Terminal(pane_id)),
+        },
+        _ => None,
+    }
+}
+
+/// What to write on the destination pane's frame while it is being pointed at.
+///
+/// The pane wears this in place of its own title, so it has to say who put it
+/// there and that an answer is owed — read from the pane, with no sidebar in
+/// sight, `send_input?` alone would be a riddle.
+pub fn indicator_label(call: &ToolCall) -> String {
+    format!("hocus: {}?", call.name)
+}
+
 /// Every advertised tool name, for the manual `/tool` prompt and its completion.
 pub fn names() -> Vec<String> {
     specs()
@@ -2524,6 +2559,27 @@ pub use host::dispatch;
 pub fn dispatch(_call: &ToolCall) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
+
+/// Point at the pane a confirmation is about: bring it into view for whoever is
+/// being asked, and write `label` on its frame. Never moves keyboard focus, so
+/// the `y` still lands in hocus.
+#[cfg(target_arch = "wasm32")]
+pub fn raise_spotlight(pane: PaneId, label: String) {
+    zellij_tile::shim::reveal_pane_with_id(pane, Some(label));
+}
+
+/// Take the mark back off. The reveal is not undone — you are left where the
+/// answer was given, which is where the thing you agreed to just happened.
+#[cfg(target_arch = "wasm32")]
+pub fn drop_spotlight(pane: PaneId) {
+    zellij_tile::shim::highlight_and_unhighlight_panes(vec![], vec![pane]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn raise_spotlight(_pane: PaneId, _label: String) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drop_spotlight(_pane: PaneId) {}
 
 // ---------------------------------------------------------------------------
 

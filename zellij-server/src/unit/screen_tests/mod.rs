@@ -2351,6 +2351,7 @@ mod mouse;
 mod nested_sessions;
 mod overlays;
 mod plugin_broadcasts;
+mod reveal_pane;
 mod scroll_and_warp;
 mod single_pane_and_fit;
 mod sizing;
