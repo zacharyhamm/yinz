@@ -100,7 +100,9 @@ fn start_without_hocus() -> TestSession {
 }
 
 fn open_popup(zellij: &TestSession) {
-    zellij.send_stdin(&keys::alt('a'));
+    // `Ctrl e` then `k`: the popup lives in Agent mode now, not on a bare `Alt a`.
+    zellij.send_stdin(&keys::ctrl('e'));
+    zellij.send_stdin(&keys::key('k'));
     zellij.wait_until("the popup is up", |grid_snapshot| {
         grid_snapshot.contains(POPUP_PROMPT)
     });

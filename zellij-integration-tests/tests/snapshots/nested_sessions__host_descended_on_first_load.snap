@@ -5,5 +5,5 @@ expression: normalized(&host_descended_on_load)
  Zellij (test)  test-1  + 
  Zellij (test)  Tab #1  + 
 █
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT        ...
- Ascend: Ctrl + <o> + <]>                                                                                               
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ascend: Ctrl + <o> + <]>

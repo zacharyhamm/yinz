@@ -41,7 +41,7 @@ fn switch_to_resize_mode() {
     zellij.send_stdin(&keys::ctrl('n'));
 
     let grid_snapshot = zellij.wait_until("resize mode active", |grid_snapshot| {
-        grid_snapshot.contains("RESIZE") && !grid_snapshot.contains("LOCK")
+        grid_snapshot.contains("SIZE") && !grid_snapshot.contains("LOCK")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -85,6 +85,35 @@ fn switch_to_session_mode() {
     let grid_snapshot = zellij.wait_until("session mode active", |grid_snapshot| {
         grid_snapshot.contains("Detach") && !grid_snapshot.contains("LOCK")
     });
+    assert_snapshot!(normalized(&grid_snapshot));
+    zellij.quit();
+}
+
+/// `Ctrl e` gathers the agent actions the way `Ctrl p` gathers the pane ones.
+///
+/// The hints are the point: each of the three launches a *different* plugin, and the keymap cannot
+/// tell them apart by action variant alone, so a regression here shows up as all three sharing one
+/// key rather than as a missing mode.
+#[test]
+fn switch_to_agent_mode() {
+    let mut zellij = start_zellij();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    zellij.send_stdin(&keys::ctrl('e'));
+
+    let grid_snapshot = zellij.wait_until("agent mode active", |grid_snapshot| {
+        grid_snapshot.contains("Agents") && !grid_snapshot.contains("LOCK")
+    });
+    // Each label preceded by its own key, in order — ribbon separators between them are arrow
+    // glyphs rather than spaces, so match on the sequence rather than on exact spacing.
+    let hints = grid_snapshot.lines().last().cloned().unwrap();
+    let mut rest = hints.as_str();
+    for expected in [" a ", " Agents ", " c ", " Chat ", " k ", " Ask "] {
+        let found = rest.find(expected).unwrap_or_else(|| {
+            panic!("agent hints lost {expected:?} in order, got: {hints:?}");
+        });
+        rest = &rest[found + expected.len() - 1..];
+    }
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
 }

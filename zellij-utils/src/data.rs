@@ -1241,6 +1241,9 @@ pub enum InputMode {
     /// `Tmux` mode allows for basic tmux keybindings functionality
     #[serde(alias = "tmux")]
     Tmux,
+    /// `Agent` mode gathers the hocus agent actions behind a single leader.
+    #[serde(alias = "agent")]
+    Agent,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -1372,6 +1375,7 @@ impl FromStr for InputMode {
             "move" | "Move" => Ok(InputMode::Move),
             "prompt" | "Prompt" => Ok(InputMode::Prompt),
             "tmux" | "Tmux" => Ok(InputMode::Tmux),
+            "agent" | "Agent" => Ok(InputMode::Agent),
             "entersearch" | "Entersearch" | "EnterSearch" => Ok(InputMode::EnterSearch),
             e => Err(ConversionError::UnknownInputMode(e.into())),
         }
