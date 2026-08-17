@@ -266,16 +266,27 @@ pub fn metadata_path(host_id: &str) -> PathBuf {
     socket_dir().join(format!("{host_id}.json"))
 }
 
+/// OpenSSH's `mux.c` binds `ControlMaster` at `<ControlPath>.<random>` before renaming
+/// it into place — observed suffixes are `.` + 16 random chars (17 bytes); round up for
+/// safety. Pass this as `margin` to [`check_socket_path_length`] for any path ssh itself
+/// binds through (i.e. a `ControlPath`), 0 for a path zellij binds directly.
+pub const SSH_CONTROL_PATH_RENAME_MARGIN: usize = 20;
+
 /// A `sockaddr_un.sun_path` is 104 bytes on macOS and 108 elsewhere. The default
 /// `ZELLIJ_SOCK_DIR` leaves plenty of room, but a long `$TMPDIR` fallback does
 /// not, so check before binding rather than failing obscurely inside `bind`.
-pub fn check_socket_path_length(path: &std::path::Path) -> Result<()> {
+///
+/// `margin` reserves extra bytes beyond `path` itself — for a `ControlPath`, ssh binds
+/// a longer temp name first (see [`SSH_CONTROL_PATH_RENAME_MARGIN`]), so `path` alone
+/// fitting is not enough.
+pub fn check_socket_path_length(path: &std::path::Path, margin: usize) -> Result<()> {
     use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
-    let len = path.as_os_str().len();
+    let len = path.as_os_str().len() + margin;
     if len >= ZELLIJ_SOCK_MAX_LENGTH {
         return Err(anyhow!(
-            "pty-host socket path is {} bytes, over the {} byte limit: {}",
+            "pty-host socket path is {} bytes ({} margin reserved), over the {} byte limit: {}",
             len,
+            margin,
             ZELLIJ_SOCK_MAX_LENGTH,
             path.display()
         ));

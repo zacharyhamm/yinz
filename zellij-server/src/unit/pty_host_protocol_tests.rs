@@ -171,7 +171,7 @@ fn host_ids_are_short_and_distinct() {
 #[test]
 fn socket_paths_fit_in_sun_path() {
     let path = socket_path(&new_host_id());
-    check_socket_path_length(&path).expect("pty-host socket path does not fit in sockaddr_un");
+    check_socket_path_length(&path, 0).expect("pty-host socket path does not fit in sockaddr_un");
 }
 
 // ---- property-based tests (hegel) ----
@@ -583,12 +583,30 @@ fn a_socket_path_at_the_length_limit_is_refused_and_one_under_it_is_accepted() {
     use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
 
     let just_fits = PathBuf::from("a".repeat(ZELLIJ_SOCK_MAX_LENGTH - 1));
-    check_socket_path_length(&just_fits)
+    check_socket_path_length(&just_fits, 0)
         .expect("a path one byte under the limit should be accepted");
 
     let one_too_many = PathBuf::from("a".repeat(ZELLIJ_SOCK_MAX_LENGTH));
-    check_socket_path_length(&one_too_many)
+    check_socket_path_length(&one_too_many, 0)
         .expect_err("a path exactly at the limit leaves no room for the trailing NUL");
+}
+
+/// A `ControlPath` ssh accepts outright can still fail deep inside ssh, because
+/// ssh binds its `ControlMaster` at a longer temp name first (see
+/// `SSH_CONTROL_PATH_RENAME_MARGIN`). The margin has to catch that before ssh
+/// does.
+#[test]
+fn a_control_path_that_only_fits_without_the_ssh_rename_margin_is_refused() {
+    use crate::pty_host::protocol::SSH_CONTROL_PATH_RENAME_MARGIN;
+    use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
+
+    let control_path = PathBuf::from(
+        "a".repeat(ZELLIJ_SOCK_MAX_LENGTH - SSH_CONTROL_PATH_RENAME_MARGIN),
+    );
+    check_socket_path_length(&control_path, 0)
+        .expect("fits on its own, without reserving ssh's rename margin");
+    check_socket_path_length(&control_path, SSH_CONTROL_PATH_RENAME_MARGIN)
+        .expect_err("does not leave room for ssh's ControlMaster temp-rename suffix");
 }
 
 /// Two samples cannot tell a working id generator from one that repeats every

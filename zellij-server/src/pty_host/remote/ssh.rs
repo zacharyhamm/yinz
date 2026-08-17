@@ -35,6 +35,7 @@ use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::protocol::{self, BrokerToServerMsg, Frame, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION};
 use crate::pty_host::protocol::{
     check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
+    SSH_CONTROL_PATH_RENAME_MARGIN,
 };
 
 /// How long to wait for the forwarded socket to become connectable.
@@ -301,7 +302,7 @@ pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
     // ssh's ControlPath is bound as a unix socket too, and overflowing
     // `sun_path` there fails deep inside ssh with a message about multiplexing
     // rather than about the length.
-    check_socket_path_length(&control_path(host))?;
+    check_socket_path_length(&control_path(host), SSH_CONTROL_PATH_RENAME_MARGIN)?;
     let mut child = Command::new("ssh")
         .args(ssh_common_args(host))
         .arg(host)
@@ -416,7 +417,7 @@ fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
 
     let dir = ensure_local_socket_dir()?;
     let local_socket = local_socket_path(instance, host);
-    check_socket_path_length(&local_socket)?;
+    check_socket_path_length(&local_socket, 0)?;
     sweep_stale_sockets(&dir, &local_socket);
     // ssh refuses to bind over an existing file, and a stale one from a crashed
     // session is the common case. The failure it produces otherwise names only

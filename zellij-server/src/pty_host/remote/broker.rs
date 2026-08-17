@@ -739,7 +739,7 @@ pub fn broker_socket_path() -> std::path::PathBuf {
 /// so it goes to stdout and nothing else may.
 pub fn ensure() -> Result<()> {
     let socket = broker_socket_path();
-    check_socket_path_length(&socket)?;
+    check_socket_path_length(&socket, 0)?;
 
     if UnixStream::connect(&socket).is_err() {
         // Either nothing is listening or the file is a leftover from a crash.
@@ -801,7 +801,7 @@ fn await_socket(socket: &std::path::Path) -> Result<()> {
 /// `zellij --pty-broker serve` — the daemon itself.
 pub fn serve_forever() -> Result<()> {
     let socket = broker_socket_path();
-    check_socket_path_length(&socket)?;
+    check_socket_path_length(&socket, 0)?;
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
