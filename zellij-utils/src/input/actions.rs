@@ -3389,6 +3389,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,

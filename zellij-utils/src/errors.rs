@@ -683,6 +683,17 @@ pub enum ZellijError {
     #[error("could not find command '{command}' for terminal {terminal_id}")]
     CommandNotFound { terminal_id: u32, command: String },
 
+    /// A pane that could not be started, for a reason the user should read
+    /// rather than a reason that should end the session.
+    ///
+    /// Carries the reserved terminal id so the failure can be shown *inside* the
+    /// pane it was meant to be, the way a missing command already is. Opening a
+    /// pane on another machine fails in a dozen ways no local pane can — an ssh
+    /// that will not connect, a broker that is not there — and none of them are
+    /// worth taking every other pane in the session down with.
+    #[error("could not start a pane in terminal {terminal_id}: {message}")]
+    PaneStartFailed { terminal_id: u32, message: String },
+
     #[error("could not determine default editor")]
     NoEditorFound,
 

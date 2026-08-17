@@ -216,7 +216,33 @@ impl RemoteHosts {
     /// The handshake and spawn both complete here, so a pane never reaches the
     /// screen in a state where the far side has not confirmed its child is
     /// running.
+    ///
+    /// A cached forward that fails buys one retry through a rebuilt one. The
+    /// liveness probe in `ensure_forward` can only ask whether the *local* end
+    /// accepts, and it always does while the ssh lives — a broker that died
+    /// behind it looks healthy from here right up until the handshake reads EOF.
+    /// Rebuilding re-runs `bootstrap`, which starts a broker again.
     pub fn open_pane(
+        self: &Arc<Self>,
+        host: &str,
+        cmd: &RunCommand,
+        initial_size: Option<WireWinsize>,
+    ) -> Result<(Arc<RemoteConn>, UnixStream)> {
+        // Sampled before the attempt: a forward this call built itself failing is
+        // not something rebuilding it again would fix, and only a reused one has
+        // gone stale behind our back.
+        let was_cached = self.has_cached_forward(host);
+        match self.try_open_pane(host, cmd, initial_size) {
+            Err(e) if was_cached && !is_a_real_answer(&e) => {
+                log::warn!("retrying a pane on {host} through a fresh forward ({e:#})");
+                self.forget_forward(host);
+                self.try_open_pane(host, cmd, initial_size)
+            },
+            result => result,
+        }
+    }
+
+    fn try_open_pane(
         self: &Arc<Self>,
         host: &str,
         cmd: &RunCommand,
@@ -236,6 +262,20 @@ impl RemoteHosts {
             Some(self.clone() as Arc<dyn Reconnector>),
         )?);
         Ok((conn, reader_socket))
+    }
+
+    fn has_cached_forward(&self, host: &str) -> bool {
+        self.forwards
+            .lock()
+            .map(|forwards| forwards.contains_key(host))
+            .unwrap_or(false)
+    }
+
+    /// Drop the cached forward to `host`, so the next connect rebuilds it.
+    fn forget_forward(&self, host: &str) {
+        if let Ok(mut forwards) = self.forwards.lock() {
+            forwards.remove(host);
+        }
     }
 
     fn connect(&self, host: &str) -> Result<UnixStream> {
@@ -280,9 +320,7 @@ impl Reconnector for RemoteHosts {
         // Drop the cached forward first. The usual reason a pane's connection
         // died is that the forward did, and reusing a dead one would fail in a
         // way that looks like the broker refusing us.
-        if let Ok(mut forwards) = self.forwards.lock() {
-            forwards.remove(host);
-        }
+        self.forget_forward(host);
         let socket = self.connect(host)?;
         let read_socket = socket
             .try_clone()
@@ -500,9 +538,10 @@ fn handshake_and_spawn(
     match read_broker_msg(&mut read_half)? {
         BrokerToServerMsg::Spawned { pane_token } => Ok(pane_token),
         BrokerToServerMsg::SpawnFailed { kind, message } => match kind {
-            // Rebuilt on this side so the eight `downcast_ref::<ZellijError>()`
-            // sites in pty.rs behave for a remote pane exactly as for a local
-            // one — a mistyped command is a mistyped command either way.
+            // Rebuilt on this side so a remote pane behaves exactly as a local
+            // one — a mistyped command is a mistyped command either way. The id
+            // is a placeholder the far machine could not know; `spawn_terminal`
+            // rewrites it with the one it reserved before asking.
             SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
                 terminal_id: 0,
                 command: cmd.command.to_string_lossy().to_string(),
@@ -571,6 +610,16 @@ fn handshake_and_resume(
             "expected a resume result from {host}, got {other:?}"
         )),
     }
+}
+
+/// Whether the far side answered rather than went missing.
+///
+/// A `ZellijError` at this point was rebuilt from a `SpawnFailed` the broker
+/// sent, so a healthy broker is on the other end and a mistyped command is its
+/// answer. Rebuilding the forward under it would spend an ssh to be told the
+/// same thing.
+fn is_a_real_answer(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ZellijError>().is_some()
 }
 
 fn read_broker_msg(reader: &mut UnixStream) -> Result<BrokerToServerMsg> {

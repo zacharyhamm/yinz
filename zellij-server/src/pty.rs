@@ -546,12 +546,12 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             .send_to_screen(instruction)
                             .with_context(err_context)?;
                     },
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, message)) => {
                             if hold_on_close {
                                 let hold_for_command = None; // we do not hold an "error" pane
                                 let instruction = new_terminal_screen_instruction(
-                                    PaneId::Terminal(*terminal_id),
+                                    PaneId::Terminal(terminal_id),
                                     pane_title,
                                     hold_for_command,
                                     invoked_with,
@@ -567,20 +567,21 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     .send_to_screen(instruction)
                                     .with_context(err_context)?;
                                 if let Some(run_command) = run_command {
-                                    send_command_not_found_to_screen(
+                                    send_pane_error_to_screen(
                                         pty.bus.senders.clone(),
-                                        *terminal_id,
+                                        terminal_id,
+                                        message,
                                         run_command.clone(),
                                     )
                                     .with_context(err_context)?;
                                 }
                             } else {
                                 log::error!("Failed to spawn terminal: {:?}", err);
-                                pty.close_pane(PaneId::Terminal(*terminal_id))
+                                pty.close_pane(PaneId::Terminal(terminal_id))
                                     .with_context(err_context)?;
                             }
                         },
-                        _ => Err::<(), _>(err).non_fatal(),
+                        None => Err::<(), _>(err).non_fatal(),
                     },
                 }
             },
@@ -646,14 +647,14 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             ))
                             .with_context(err_context)?;
                     },
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, message)) => {
                             if hold_on_close {
                                 let hold_for_command = None; // we do not hold an "error" pane
                                 pty.bus
                                     .senders
                                     .send_to_screen(ScreenInstruction::ReplacePane(
-                                        PaneId::Terminal(*terminal_id),
+                                        PaneId::Terminal(terminal_id),
                                         hold_for_command,
                                         pane_title,
                                         invoked_with,
@@ -663,20 +664,21 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     ))
                                     .with_context(err_context)?;
                                 if let Some(run_command) = run_command {
-                                    send_command_not_found_to_screen(
+                                    send_pane_error_to_screen(
                                         pty.bus.senders.clone(),
-                                        *terminal_id,
+                                        terminal_id,
+                                        message,
                                         run_command.clone(),
                                     )
                                     .with_context(err_context)?;
                                 }
                             } else {
                                 log::error!("Failed to spawn terminal: {:?}", err);
-                                pty.close_pane(PaneId::Terminal(*terminal_id))
+                                pty.close_pane(PaneId::Terminal(terminal_id))
                                     .with_context(err_context)?;
                             }
                         },
-                        _ => Err::<(), _>(err).non_fatal(),
+                        None => Err::<(), _>(err).non_fatal(),
                     },
                 }
             },
@@ -938,32 +940,19 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     .with_context(err_context)
                 {
                     Ok(..) => {},
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, message)) => {
                             if run_command.hold_on_close {
-                                pty.bus
-                                    .senders
-                                    .send_to_screen(ScreenInstruction::PtyBytes(
-                                        *terminal_id,
-                                        format!(
-                                            "Command not found: {}",
-                                            run_command.command.display()
-                                        )
-                                        .as_bytes()
-                                        .to_vec(),
-                                    ))
-                                    .with_context(err_context)?;
-                                pty.bus
-                                    .senders
-                                    .send_to_screen(ScreenInstruction::HoldPane(
-                                        PaneId::Terminal(*terminal_id),
-                                        Some(2), // exit status
-                                        run_command,
-                                    ))
-                                    .with_context(err_context)?;
+                                send_pane_error_to_screen(
+                                    pty.bus.senders.clone(),
+                                    terminal_id,
+                                    message,
+                                    run_command,
+                                )
+                                .with_context(err_context)?;
                             }
                         },
-                        _ => Err::<(), _>(err).non_fatal(),
+                        None => Err::<(), _>(err).non_fatal(),
                     },
                 }
             },
@@ -990,32 +979,19 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     .with_context(err_context)
                 {
                     Ok(..) => {},
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, message)) => {
                             if run_command.hold_on_close {
-                                pty.bus
-                                    .senders
-                                    .send_to_screen(ScreenInstruction::PtyBytes(
-                                        *terminal_id,
-                                        format!(
-                                            "Command not found: {}",
-                                            run_command.command.display()
-                                        )
-                                        .as_bytes()
-                                        .to_vec(),
-                                    ))
-                                    .with_context(err_context)?;
-                                pty.bus
-                                    .senders
-                                    .send_to_screen(ScreenInstruction::HoldPane(
-                                        PaneId::Terminal(*terminal_id),
-                                        Some(2), // exit status
-                                        run_command,
-                                    ))
-                                    .with_context(err_context)?;
+                                send_pane_error_to_screen(
+                                    pty.bus.senders.clone(),
+                                    terminal_id,
+                                    message,
+                                    run_command,
+                                )
+                                .with_context(err_context)?;
                             }
                         },
-                        _ => Err::<(), _>(err).non_fatal(),
+                        None => Err::<(), _>(err).non_fatal(),
                     },
                 }
             },
@@ -1788,12 +1764,16 @@ impl Pty {
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
                     self.report_terminal_host(terminal_id);
                 },
-                _ => match run_command {
+                Err(err) => match run_command {
                     Some(run_command) => {
                         if run_command.hold_on_close {
-                            send_command_not_found_to_screen(
+                            let message = pane_start_failure(&err)
+                                .map(|(_, message)| message)
+                                .unwrap_or_else(|| format!("{err:#}"));
+                            send_pane_error_to_screen(
                                 self.bus.senders.clone(),
                                 terminal_id,
+                                message,
                                 run_command.clone(),
                             )
                             .with_context(err_context)?;
@@ -1967,12 +1947,16 @@ impl Pty {
                     self.pane_activity_flags.insert(terminal_id, activity_flag);
                     self.report_terminal_host(terminal_id);
                 },
-                _ => match run_command {
+                Err(err) => match run_command {
                     Some(run_command) => {
                         if run_command.hold_on_close {
-                            send_command_not_found_to_screen(
+                            let message = pane_start_failure(&err)
+                                .map(|(_, message)| message)
+                                .unwrap_or_else(|| format!("{err:#}"));
+                            send_pane_error_to_screen(
                                 self.bus.senders.clone(),
                                 terminal_id,
+                                message,
                                 run_command.clone(),
                             )
                             .with_context(err_context)?;
@@ -2133,13 +2117,14 @@ impl Pty {
                                 Ok(reader),
                             )))
                         },
-                        Err(err) => {
-                            match err.downcast_ref::<ZellijError>() {
-                                Some(ZellijError::CommandNotFound { terminal_id, .. }) => Ok(Some(
-                                    (*terminal_id, starts_held, Some(command.clone()), Err(err)),
-                                )),
-                                _ => Err(err),
-                            }
+                        Err(err) => match pane_start_failure(&err) {
+                            Some((terminal_id, _)) => Ok(Some((
+                                terminal_id,
+                                starts_held,
+                                Some(command.clone()),
+                                Err(err),
+                            ))),
+                            None => Err(err),
                         },
                     }
                 }
@@ -2164,11 +2149,11 @@ impl Pty {
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
-                            Ok(Some((*terminal_id, starts_held, None, Err(err))))
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, _)) => {
+                            Ok(Some((terminal_id, starts_held, None, Err(err))))
                         },
-                        _ => Err(err),
+                        None => Err(err),
                     },
                 }
             },
@@ -2198,11 +2183,11 @@ impl Pty {
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
-                            Ok(Some((*terminal_id, starts_held, None, Err(err))))
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, _)) => {
+                            Ok(Some((terminal_id, starts_held, None, Err(err))))
                         },
-                        _ => Err(err),
+                        None => Err(err),
                     },
                 }
             },
@@ -2228,11 +2213,11 @@ impl Pty {
                         }
                         Ok(Some((terminal_id, starts_held, None, Ok(reader))))
                     },
-                    Err(err) => match err.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::CommandNotFound { terminal_id, .. }) => {
-                            Ok(Some((*terminal_id, starts_held, None, Err(err))))
+                    Err(err) => match pane_start_failure(&err) {
+                        Some((terminal_id, _)) => {
+                            Ok(Some((terminal_id, starts_held, None, Err(err))))
                         },
-                        _ => Err(err),
+                        None => Err(err),
                     },
                 }
             },
@@ -3169,18 +3154,44 @@ impl Drop for Pty {
     }
 }
 
-fn send_command_not_found_to_screen(
+/// A pane that could not be started, told apart from a failure that should end
+/// the session — and where to put the message.
+///
+/// Everything the pty thread can show the user instead of dying on comes through
+/// here: a command that is not there, and a pane on another machine that could
+/// not be opened at all. Both name the terminal id they were reserved under, and
+/// anything else is a failure this thread has no pane to blame it on.
+fn pane_start_failure(err: &anyhow::Error) -> Option<(u32, String)> {
+    match err.downcast_ref::<ZellijError>()? {
+        ZellijError::CommandNotFound {
+            terminal_id,
+            command,
+        } => Some((
+            *terminal_id,
+            format!(
+                "Command not found: {command}\n\rIf you were including arguments as part of \
+                 the command, try including them as 'args' instead."
+            ),
+        )),
+        ZellijError::PaneStartFailed {
+            terminal_id,
+            message,
+        } => Some((*terminal_id, message.clone())),
+        _ => None,
+    }
+}
+
+fn send_pane_error_to_screen(
     senders: ThreadSenders,
     terminal_id: u32,
+    message: String,
     run_command: RunCommand,
 ) -> Result<()> {
-    let err_context = || format!("failed to send command_not_fount for terminal {terminal_id}");
+    let err_context = || format!("failed to report a failed start for terminal {terminal_id}");
     senders
         .send_to_screen(ScreenInstruction::PtyBytes(
             terminal_id,
-            format!("Command not found: {}\n\rIf you were including arguments as part of the command, try including them as 'args' instead.", run_command.command.display())
-                .as_bytes()
-                .to_vec(),
+            message.into_bytes(),
         ))
         .with_context(err_context)?;
     senders

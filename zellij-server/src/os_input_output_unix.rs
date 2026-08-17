@@ -444,8 +444,9 @@ impl UnixPtyBackend {
         terminal_id: u32,
     ) -> Result<pty_host_client::PendingHost> {
         // Kept here rather than left to the supervisor so that a mistyped command
-        // still produces a synchronous `ZellijError::CommandNotFound` — eight
-        // sites in pty.rs downcast for it — without paying for a process spawn.
+        // still produces a synchronous `ZellijError::CommandNotFound` — which is
+        // what `pane_start_failure` in pty.rs shows the user inside the pane
+        // rather than dying on — without paying for a process spawn.
         if !command_exists(cmd) {
             return Err(ZellijError::CommandNotFound {
                 terminal_id,

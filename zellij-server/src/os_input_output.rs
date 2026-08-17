@@ -389,6 +389,29 @@ pub struct ServerOsInputOutput {
     remote_hosts: Arc<RemoteHosts>,
 }
 
+/// Turn a failure to open a pane on another machine into one the pty thread can
+/// show the user instead of dying on.
+///
+/// The terminal id is the reserved one, which only this side knows: a
+/// `CommandNotFound` rebuilt from the broker's answer carries a placeholder id
+/// (the far machine has never heard of ours), and everything else arrives as
+/// plain `anyhow`, which the pty thread treats as fatal. Both become a
+/// `ZellijError` naming the pane the message belongs in.
+fn pane_start_failed(terminal_id: u32, host: &str, err: anyhow::Error) -> anyhow::Error {
+    if let Some(ZellijError::CommandNotFound { command, .. }) = err.downcast_ref::<ZellijError>() {
+        return ZellijError::CommandNotFound {
+            terminal_id,
+            command: command.clone(),
+        }
+        .into();
+    }
+    ZellijError::PaneStartFailed {
+        terminal_id,
+        message: format!("could not open a pane on {host}: {err:#}"),
+    }
+    .into()
+}
+
 /// A null `AsyncReader` for held panes (produces EOF immediately).
 pub(crate) struct NullAsyncReader;
 
@@ -586,7 +609,7 @@ impl ServerOsApi for ServerOsInputOutput {
             let (conn, reader_socket) = self
                 .remote_hosts
                 .open_pane(&host, &cmd, None)
-                .with_context(|| format!("failed to open a pane on {host}"))?;
+                .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
                 .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, cmd)
@@ -828,7 +851,7 @@ impl ServerOsApi for ServerOsInputOutput {
             let (conn, reader_socket) = self
                 .remote_hosts
                 .open_pane(&host, &run_command, None)
-                .with_context(|| format!("failed to re-run a pane on {host}"))?;
+                .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
                 .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, run_command)
