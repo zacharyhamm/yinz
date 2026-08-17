@@ -785,11 +785,19 @@ impl State {
             })
             .map(|pane| pane.pane_id)
             .collect();
+        // Every pane still classified as an agent, whatever its status. `AgentStatus` is a
+        // lifecycle flag (running/held/exited), not the idle/busy activity heuristic - an
+        // agent finishing up and going `Held` is not the pane going away, so its summary
+        // should not go away either. It dies only when the pane itself does.
+        let known: BTreeSet<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .map(|pane| pane.pane_id)
+            .collect();
         self.activity.retain(|id, _| running.contains(id));
-        // Kept in step with `activity`, so a pane that stops being a running agent takes
-        // its summary and its in-flight request with it — the same rule, one line apart,
-        // rather than a second lifetime to reason about.
-        self.summaries.retain(|id, _| running.contains(id));
+        self.summaries.retain(|id, _| known.contains(id));
         self.summary_requests.retain(|id, request| {
             request.ticks += 1;
             running.contains(id) && request.ticks <= SUMMARY_TICKS
@@ -2437,6 +2445,30 @@ mod tests {
             state.activity.is_empty(),
             "the same rule that prunes activity"
         );
+    }
+
+    /// `AgentStatus` is a lifecycle flag, not the pane leaving. A summary dies with the
+    /// pane, not with a status change - an agent going `Held` (finished, or `Exited`) is
+    /// exactly the moment its last summary is worth keeping on screen.
+    #[test]
+    fn an_agent_gone_held_or_exited_still_shows_its_last_summary() {
+        for status in [agents::AgentStatus::Held, agents::AgentStatus::Exited] {
+            let (mut state, _) = idle_agent(BUSY_PANE);
+            finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
+            assert!(!state.summaries.is_empty());
+
+            state.panes.as_mut().unwrap()[0].status = status;
+            state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+
+            assert!(
+                state.summaries.contains_key(&7),
+                "{status:?} is a status change, not the pane closing"
+            );
+            assert!(
+                state.activity.is_empty(),
+                "activity still resets - only the summary is kept"
+            );
+        }
     }
 
     /// The context is what makes a reply ours. Every `WebRequestResult` in the session
