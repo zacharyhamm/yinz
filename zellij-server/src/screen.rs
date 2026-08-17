@@ -615,6 +615,7 @@ pub enum ScreenInstruction {
     GoToTabWithId(usize, Option<ClientId>, Option<NotificationEnd>),
     CloseTabWithId(usize, Option<NotificationEnd>),
     RenameTabWithId(usize, Vec<u8>, Option<NotificationEnd>),
+    SetTabProjects(BTreeMap<usize, String>),
     BreakPanesToTabWithId {
         pane_ids: Vec<PaneId>,
         tab_id: usize,
@@ -1219,6 +1220,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::GoToTabWithId(..) => ScreenContext::GoToTabWithId,
             ScreenInstruction::CloseTabWithId(..) => ScreenContext::CloseTabWithId,
             ScreenInstruction::RenameTabWithId(..) => ScreenContext::RenameTabWithId,
+            ScreenInstruction::SetTabProjects(..) => ScreenContext::SetTabProjects,
             ScreenInstruction::BreakPanesToTabWithId { .. } => ScreenContext::BreakPanesToTabWithId,
             ScreenInstruction::RecomputeTabSize(..) => ScreenContext::RecomputeTabSize,
             ScreenInstruction::TerminalPixelDimensions(..) => {
@@ -1732,7 +1734,17 @@ pub(crate) struct Screen {
     /// nearly all of them.
     terminal_hosts: HashMap<u32, String>,
     pub(crate) global_panes: GlobalPaneManager,
-    last_single_pane_tab_names: HashMap<usize, Option<String>>,
+    /// The name each tab last showed a plugin, so a change to one that no other
+    /// event reports — a lone pane retitling itself, a project arriving, a
+    /// collision forming or clearing — still redraws the tab bar.
+    last_plugin_tab_names: HashMap<usize, String>,
+    /// The project each tab is working on, as the last `SetTabProjects` had it.
+    ///
+    /// Only a plugin knows what a project is, so this is told to us rather than
+    /// worked out. Held raw — without the `#1`/`#2` a collision earns — because
+    /// the suffixes depend on tab order, which changes without anyone sending us
+    /// anything.
+    tab_projects: HashMap<usize, String>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -2000,7 +2012,8 @@ impl Screen {
             terminal_cwds: HashMap::new(),
             terminal_hosts: HashMap::new(),
             global_panes,
-            last_single_pane_tab_names: HashMap::new(),
+            last_plugin_tab_names: HashMap::new(),
+            tab_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
             tab_history: BTreeMap::new(),
@@ -5547,8 +5560,8 @@ impl Screen {
                 }
             }
 
-            let single_pane_names_changed = self.update_single_pane_tab_names();
-            if bell_state_changed || single_pane_names_changed {
+            let derived_names_changed = self.update_plugin_tab_names();
+            if bell_state_changed || derived_names_changed {
                 self.log_and_report_session_state()?;
             }
         } else {
@@ -6429,6 +6442,7 @@ impl Screen {
             };
             tab_infos_for_screen_state.insert(tab.position, tab_info_for_screen);
         }
+        let plugin_tab_names = self.plugin_tab_names();
         for (client_id, active_tab_index) in self.active_tab_ids.iter() {
             let mut plugin_tab_updates = vec![];
             for tab in self.tabs.values() {
@@ -6451,8 +6465,9 @@ impl Screen {
                 let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
                 let tab_info_for_plugins = TabInfo {
                     position: tab.position,
-                    name: tab
-                        .single_pane_tab_name()
+                    name: plugin_tab_names
+                        .get(&tab.id)
+                        .cloned()
                         .unwrap_or_else(|| tab.name.clone()),
                     active: *active_tab_index == tab.id,
                     panes_to_hide: tab.panes_to_hide_count(),
@@ -6605,14 +6620,80 @@ impl Screen {
         }
     }
 
-    fn update_single_pane_tab_names(&mut self) -> bool {
-        let current: HashMap<usize, Option<String>> = self
-            .tabs
-            .values()
-            .map(|tab| (tab.id, tab.single_pane_tab_name()))
-            .collect();
-        if current != self.last_single_pane_tab_names {
-            self.last_single_pane_tab_names = current;
+    /// The name each tab shows a plugin, which is not always the name it holds.
+    ///
+    /// Three things can name a tab, and they are asked in this order:
+    ///
+    /// 1. A lone pane that lends its own title (see [`Tab::single_pane_tab_name`]).
+    /// 2. The project the tab is working on, when a plugin has told us of one.
+    /// 3. The tab's own name — what the user typed, or the "Tab #N" it was born with.
+    ///
+    /// Only the third is stored on the tab. The other two are worked out afresh
+    /// each time, so a tab the user names keeps that name, and a tab goes back to
+    /// its own the moment the thing that was lending it one is gone. Nothing here
+    /// reaches session serialization, which wants the name the user would
+    /// recognise as theirs.
+    fn plugin_tab_names(&self) -> HashMap<usize, String> {
+        // Positions, because the `#1`/`#2` a collision earns are read off the tab
+        // bar left to right. Ids would number by age instead, which is invisible.
+        let mut by_position: Vec<&Tab> = self.tabs.values().collect();
+        by_position.sort_by_key(|tab| tab.position);
+
+        let mut project_counts: HashMap<&str, usize> = HashMap::new();
+        for tab in &by_position {
+            if let Some(project) = self.tab_project_name(tab) {
+                *project_counts.entry(project).or_default() += 1;
+            }
+        }
+
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut names = HashMap::new();
+        for tab in by_position {
+            let name = match self.tab_project_name(tab) {
+                // A project only one tab is on reads better without a "#1" that
+                // implies a "#2" somewhere. Two or more, and every one of them is
+                // numbered — a bare name beside a numbered one would look like the
+                // original and its copies.
+                Some(project) if project_counts.get(project).copied().unwrap_or(0) > 1 => {
+                    let ordinal = seen.entry(project).or_default();
+                    *ordinal += 1;
+                    format!("{} #{}", project, ordinal)
+                },
+                Some(project) => project.to_owned(),
+                None => tab
+                    .single_pane_tab_name()
+                    .unwrap_or_else(|| tab.name.clone()),
+            };
+            names.insert(tab.id, name);
+        }
+        names
+    }
+
+    /// The project name a tab shows, before any `#1`/`#2` is worked out.
+    ///
+    /// `None` for a tab that has something better to show. A name the user typed
+    /// is never spoken over, and neither is a title a lone pane is lending: the
+    /// pane's title is the more specific answer to "what is in this tab", and it
+    /// changes as the work does, where the project is the same all session.
+    fn tab_project_name(&self, tab: &Tab) -> Option<&str> {
+        if !tab.tab_name_is_default() {
+            return None;
+        }
+        // `single_pane_tab_name` answers with the tab's own name when a lone pane
+        // has no title to lend, so what makes a pane win is having *changed* it.
+        if tab
+            .single_pane_tab_name()
+            .is_some_and(|borrowed| borrowed != tab.name)
+        {
+            return None;
+        }
+        self.tab_projects.get(&tab.id).map(String::as_str)
+    }
+
+    fn update_plugin_tab_names(&mut self) -> bool {
+        let current = self.plugin_tab_names();
+        if current != self.last_plugin_tab_names {
+            self.last_plugin_tab_names = current;
             true
         } else {
             false
@@ -14667,6 +14748,19 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                 } else {
                     log::error!("Failed to find tab with ID: {}", tab_id);
+                }
+            },
+            ScreenInstruction::SetTabProjects(tab_projects) => {
+                // Whole map each time, so a tab that lost its project loses the
+                // name with it. Tabs we have never heard of are kept: a plugin can
+                // know about a tab before we have finished making it, and the next
+                // pass drops whatever is genuinely gone.
+                let tab_projects: HashMap<usize, String> = tab_projects.into_iter().collect();
+                if tab_projects != screen.tab_projects {
+                    screen.tab_projects = tab_projects;
+                    if screen.update_plugin_tab_names() {
+                        screen.log_and_report_session_state()?;
+                    }
                 }
             },
             ScreenInstruction::CloseTabWithId(tab_id, _completion_tx) => {

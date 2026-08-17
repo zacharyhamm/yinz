@@ -237,6 +237,7 @@ enum CommandName {
   WarpTabFromSession = 245;
   LaunchOrFocusGlobalPaneSplit = 246;
   GetPluginAliasConfiguration = 247;
+  SetTabProjects = 248;
 }
 
 message PluginCommand {
@@ -414,7 +415,17 @@ message PluginCommand {
     WarpTabFromSessionPayload warp_tab_from_session_payload = 186;
     LaunchOrFocusGlobalPaneSplitPayload launch_or_focus_global_pane_split_payload = 187;
     GetPluginAliasConfigurationPayload get_plugin_alias_configuration_payload = 188;
+    SetTabProjectsPayload set_tab_projects_payload = 189;
   }
+}
+
+message SetTabProjectsPayload {
+  repeated TabProject tab_projects = 1;
+}
+
+message TabProject {
+  uint64 tab_id = 1;
+  string project = 2;
 }
 
 // ---------------------------------------------------------------- data store

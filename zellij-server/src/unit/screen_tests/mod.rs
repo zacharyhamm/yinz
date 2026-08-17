@@ -2355,5 +2355,6 @@ mod scroll_and_warp;
 mod single_pane_and_fit;
 mod sizing;
 mod subscribers;
+mod tab_projects;
 mod tabs;
 mod theme;

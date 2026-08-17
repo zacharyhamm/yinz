@@ -967,6 +967,36 @@ impl State {
                 .and_then(|tab| self.tab_project(tab.tab_id))
                 .map(str::to_owned)
         });
+        self.refresh_tab_project_labels();
+    }
+
+    /// Work out what each tab should be called, and tell the host when it changes.
+    ///
+    /// The host does the naming itself from here: it knows the tab order the
+    /// `#1`/`#2` of two tabs on one project are read in, and it knows which tabs
+    /// the user has named and must be left alone. All it is missing is what a
+    /// project is, which is the one thing this plugin can say.
+    fn refresh_tab_project_labels(&mut self) {
+        let owners = self.pane_projects();
+        let detected = agents::tab_project_labels(&self.panes, &self.manual_kinds, &owners);
+        let mut labels: BTreeMap<usize, String> = detected
+            .into_iter()
+            // Two projects in one tab name it after both. A tab is a place to
+            // work, not a thing that belongs to one project.
+            .map(|(tab_id, projects)| (tab_id, projects.join(" + ")))
+            .collect();
+        // An assignment the user made outranks what the agents in the tab suggest,
+        // the same way it does everywhere else.
+        for (tab_id, project) in &self.tab_projects {
+            labels.insert(*tab_id, project.clone());
+        }
+        if !self.tabs.is_empty() {
+            labels.retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
+        }
+        if labels != self.tab_project_labels {
+            self.tab_project_labels = labels;
+            self.publish_tab_projects();
+        }
     }
 
     /// The snapshot every agent tool works from. Split out so the host calls in
