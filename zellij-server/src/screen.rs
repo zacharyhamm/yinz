@@ -2286,20 +2286,20 @@ impl Screen {
     }
 
     /// Repaint the surface a client is about to stop seeing `tab_id` from, if that tab was
-    /// painting an overlay.
+    /// painting a floating pane outside its own viewport.
     ///
-    /// An overlay is placed against the whole surface, so unlike every other pane its cells can
-    /// land on the global panes - outside the viewport of every tab, its own included. The tab
-    /// the client leaves stops rendering the moment its last client is gone, which is right: the
-    /// popup belongs to that tab and nobody looking elsewhere should see it. But nothing else
-    /// owns those cells either. The tab being entered repaints only its own centre, and the
-    /// global panes and the strip rows no pane owns are both diffed - neither changed, so neither
-    /// emits anything, and the popup stays on the host terminal over a tab it is not in.
+    /// A floating pane can be placed - or dragged - onto the global panes, outside the viewport of
+    /// every tab, its own included. The tab the client leaves stops rendering the moment its last
+    /// client is gone, which is right: the pane belongs to that tab and nobody looking elsewhere
+    /// should see it. But nothing else owns those cells either. The tab being entered repaints
+    /// only its own centre, and the global panes and the strip rows no pane owns are both diffed -
+    /// neither changed, so neither emits anything, and the pane stays on the host terminal over a
+    /// tab it is not in.
     fn repaint_after_overlay_in(&mut self, tab_id: usize, client_id: ClientId) {
         if !self
             .tabs
             .get(&tab_id)
-            .map(|tab| tab.has_visible_overlays())
+            .map(|tab| tab.has_floating_panes_outside_viewport())
             .unwrap_or(false)
         {
             return;
@@ -5438,7 +5438,7 @@ impl Screen {
                             force,
                         )?;
                         if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                            tab.render_overlays_after_global_panes(
+                            tab.render_floating_panes_after_global_panes(
                                 &mut output,
                                 None,
                                 &global_focused_clients,
@@ -5659,7 +5659,7 @@ impl Screen {
                     .get_mut(&focused_tab_index_of_followed_client_id)
                     .as_mut()
                 {
-                    tab.render_overlays_after_global_panes(
+                    tab.render_floating_panes_after_global_panes(
                         &mut watcher_output,
                         Some(followed_client_id),
                         &global_focused_clients,
@@ -9816,13 +9816,44 @@ impl Screen {
             }
         }
     }
+    /// Whether this client's tab takes the mouse at `event`'s position, ahead of any global pane
+    /// there.
+    ///
+    /// Two cases. A floating pane being dragged holds the mouse for the duration of the drag - it
+    /// has to, or it could never be dragged across the tab's edge onto a global pane at all, and
+    /// the drag would end wherever the pointer first left the tab. And a floating pane painted at
+    /// that position owns it, because floating panes draw over the global panes: what is under the
+    /// pointer is what gets clicked.
+    ///
+    /// A global pane that has already captured this client's mouse for a selection keeps it, so a
+    /// selection dragged under a floating pane still ends where it was released.
+    ///
+    /// The drag state is per-tab rather than per-client, so while one client drags a floating pane
+    /// another client on the same tab loses global-pane mouse routing until the drag ends. Short
+    /// lived, and not worth threading a client id through the drag bookkeeping for.
+    fn tab_wins_mouse_event(&self, event: &MouseEvent, client_id: ClientId) -> bool {
+        if self.global_panes.is_selecting_with_mouse(client_id) {
+            return false;
+        }
+        self.get_active_tab(client_id)
+            .map(|tab| {
+                tab.floating_pane_is_being_moved_with_mouse()
+                    || tab.visible_floating_pane_at(&event.position).is_some()
+            })
+            .unwrap_or(false)
+    }
     /// Dragging the border between a global pane and the tab area resizes the global pane.
     ///
     /// This runs before the mouse event is routed to a pane, because the border cell belongs to the
     /// global pane on one edge and to the tab pane on the other (see `GlobalPaneManager`'s
     /// `apply_layout`) - hit-testing the position instead of the pane makes all four edges behave
     /// the same. Returns whether the event was consumed by a drag.
-    fn handle_global_pane_border_drag(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
+    fn handle_global_pane_border_drag(
+        &mut self,
+        event: &MouseEvent,
+        client_id: ClientId,
+        tab_wins_mouse: bool,
+    ) -> bool {
         if let Some(border) = self.global_panes.mouse_resize_border(client_id) {
             let surface = self.surface_size();
             match event.event_type {
@@ -9854,12 +9885,13 @@ impl Screen {
         if event.event_type == MouseEventType::Press && event.left {
             // a ui pane (tab bar, status bar) beside a right or bottom global pane draws no
             // boundary on the cell they share, so there is nothing to drag there - the click is the
-            // ui pane's
+            // ui pane's. Same for a floating pane drawn over the border cell: it is what the user
+            // sees there, and pressing it must not start a global pane resize behind it
             let is_on_tab_chrome = self
                 .get_active_tab(client_id)
                 .map(|tab| tab.position_is_on_ui_pane(&event.position))
                 .unwrap_or(false);
-            if !is_on_tab_chrome {
+            if !is_on_tab_chrome && !tab_wins_mouse {
                 if let Some(border) = self.global_panes.border_hit_at(&event.position) {
                     self.global_panes.start_mouse_resize(border, client_id);
                     return true;
@@ -9913,10 +9945,21 @@ impl Screen {
         // tab as often as not - everything below hit-tests and takes relative positions against
         // their geometry, so it has to be this client's view of them
         self.position_global_panes_for_client(client_id);
-        if self.handle_global_pane_border_drag(&event, client_id) {
+        let tab_wins_mouse = self.tab_wins_mouse_event(&event, client_id);
+        if self.handle_global_pane_border_drag(&event, client_id, tab_wins_mouse) {
             return;
         }
-        if let Some(global_pane_id) = self.global_panes.pane_id_for_mouse_event(&event, client_id) {
+        if tab_wins_mouse {
+            // `pane_id_for_mouse_event` is being skipped, so do the one thing it would have done
+            // besides answering: a fresh button press ends any global-pane selection
+            if event.event_type == MouseEventType::Press
+                && (event.left || event.right || event.middle)
+            {
+                self.global_panes.stop_selecting_with_mouse(client_id);
+            }
+        } else if let Some(global_pane_id) =
+            self.global_panes.pane_id_for_mouse_event(&event, client_id)
+        {
             let mouse_effect =
                 self.global_panes
                     .handle_mouse_event(global_pane_id, &event, client_id);
