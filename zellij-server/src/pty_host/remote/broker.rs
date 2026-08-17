@@ -148,32 +148,38 @@ pub fn serve_connection(
 
 fn handshake(reader: &mut UnixStream, wire: &Wire) -> Result<()> {
     let hello = read_control(reader)?.ok_or_else(|| anyhow!("peer closed before saying hello"))?;
-    match hello {
-        ServerToBrokerMsg::Hello {
-            protocol_version, ..
-        } if protocol_version == REMOTE_PROTOCOL_VERSION => {},
-        ServerToBrokerMsg::Hello {
-            protocol_version,
-            zellij_version,
-        } => {
-            // Name both sides. A remote box on a different build is the normal
-            // case, and "connection refused" would send the user hunting the
-            // network rather than the version.
-            return Err(anyhow!(
-                "remote pane protocol mismatch: this broker speaks v{REMOTE_PROTOCOL_VERSION} \
-                 (zellij {VERSION}), the server speaks v{protocol_version} (zellij \
-                 {zellij_version}). Install matching zellij versions on both machines."
-            ));
-        },
-        other => return Err(anyhow!("expected a hello, got {other:?}")),
-    }
+    let ServerToBrokerMsg::Hello {
+        protocol_version,
+        zellij_version,
+    } = hello
+    else {
+        return Err(anyhow!("expected a hello, got {hello:?}"));
+    };
+
+    // Acknowledged before the version is judged, and deliberately so: this ack is
+    // the only way the far side can learn what this broker speaks. Closing on a
+    // mismatch instead leaves it reading EOF, which it can only report as "the
+    // broker closed the connection" — the version gap, the one thing worth
+    // saying, is exactly what goes missing.
     send(
         wire,
         &BrokerToServerMsg::HelloAck {
             protocol_version: REMOTE_PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
         },
-    )
+    )?;
+
+    if protocol_version != REMOTE_PROTOCOL_VERSION {
+        // Name both sides. A remote box on a different build is the normal
+        // case, and "connection refused" would send the user hunting the
+        // network rather than the version.
+        return Err(anyhow!(
+            "remote pane protocol mismatch: this broker speaks v{REMOTE_PROTOCOL_VERSION} \
+             (zellij {VERSION}), the server speaks v{protocol_version} (zellij \
+             {zellij_version}). Install matching zellij versions on both machines."
+        ));
+    }
+    Ok(())
 }
 
 /// What the quit callback talks to, before and after the session exists.
@@ -729,8 +735,15 @@ fn broker_invocation_from_args<I: IntoIterator<Item = String>>(args: I) -> Optio
 /// Computed here and never on the connecting side: `ZELLIJ_SOCK_DIR` resolves
 /// differently per platform, and the connecting machine cannot know which
 /// applies. `ensure` prints this back over ssh for exactly that reason.
+///
+/// The protocol version is in the name because `ensure` cannot ask a running
+/// broker what it speaks — it prints *its own* constant, so a daemon left over
+/// from a build before a version bump would be adopted by a newer binary and
+/// answer a handshake it does not understand. A version in the path means a new
+/// binary simply starts its own broker alongside the old one, which keeps
+/// serving the panes it already has until they exit.
 pub fn broker_socket_path() -> std::path::PathBuf {
-    ZELLIJ_SOCK_DIR.join("pty-broker.sock")
+    ZELLIJ_SOCK_DIR.join(format!("pty-broker-v{REMOTE_PROTOCOL_VERSION}.sock"))
 }
 
 /// `zellij --pty-broker ensure` — make sure a broker is up and say where.
