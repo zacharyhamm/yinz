@@ -141,6 +141,26 @@ fn a_remote_pane_consequence_names_the_host() {
     );
 }
 
+/// The prompt is the user's only account of what they are allowing, so a pane
+/// with no command must not be described as running one.
+#[test]
+fn a_remote_shell_consequence_says_it_is_a_login() {
+    let logs_in = Some("logs in to box over ssh, opening a new pane running its shell".into());
+    assert_eq!(
+        consequence(&call("new_remote_pane", r#"{"remote_host":"box"}"#)),
+        logs_in
+    );
+    // An empty command is a command in form only, and reaches the far machine
+    // as a login shell too.
+    assert_eq!(
+        consequence(&call(
+            "new_remote_pane",
+            r#"{"remote_host":"box","command":""}"#
+        )),
+        logs_in
+    );
+}
+
 /// `agent_control`'s argument is a verb, and interrupting is not restarting.
 #[test]
 fn agent_control_says_which_of_its_verbs_is_about_to_run() {

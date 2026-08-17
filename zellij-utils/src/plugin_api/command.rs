@@ -11,11 +11,13 @@ impl TryFrom<ProtobufCommand> for CommandToRun {
         let args = protobuf_command.args;
         let cwd = protobuf_command.cwd.map(PathBuf::from);
         let remote_host = protobuf_command.remote_host;
+        let remote_default_shell = protobuf_command.remote_default_shell;
         Ok(CommandToRun {
             path,
             args,
             cwd,
             remote_host,
+            remote_default_shell,
         })
     }
 }
@@ -28,6 +30,7 @@ impl TryFrom<CommandToRun> for ProtobufCommand {
             args: command_to_run.args,
             cwd: command_to_run.cwd.map(|c| c.display().to_string()),
             remote_host: command_to_run.remote_host,
+            remote_default_shell: command_to_run.remote_default_shell,
         })
     }
 }
@@ -46,6 +49,7 @@ mod tests {
             args: vec![],
             cwd: None,
             remote_host: Some("user@example.com".to_owned()),
+            ..Default::default()
         };
         let protobuf_command = ProtobufCommand::try_from(command_to_run.clone()).unwrap();
         assert_eq!(
@@ -61,5 +65,26 @@ mod tests {
         let command_to_run = CommandToRun::new("/bin/sh");
         let protobuf_command = ProtobufCommand::try_from(command_to_run).unwrap();
         assert_eq!(protobuf_command.remote_host, None);
+        assert!(!protobuf_command.remote_default_shell);
+    }
+
+    /// A pane that wants the far machine's login shell crosses this boundary
+    /// with no command at all — the flag is the entire request, and losing it
+    /// would turn the pane into an attempt to exec an empty path.
+    #[test]
+    fn a_remote_default_shell_survives_the_round_trip_with_no_command() {
+        let command_to_run = CommandToRun {
+            path: PathBuf::new(),
+            args: vec![],
+            cwd: None,
+            remote_host: Some("build-box".to_owned()),
+            remote_default_shell: true,
+        };
+        let protobuf_command = ProtobufCommand::try_from(command_to_run.clone()).unwrap();
+        assert!(protobuf_command.remote_default_shell);
+        let round_tripped = CommandToRun::try_from(protobuf_command).unwrap();
+        assert!(round_tripped.remote_default_shell);
+        assert_eq!(round_tripped.path, PathBuf::new());
+        assert_eq!(round_tripped.remote_host, command_to_run.remote_host);
     }
 }
