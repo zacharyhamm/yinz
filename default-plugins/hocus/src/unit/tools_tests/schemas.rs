@@ -61,8 +61,13 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
     for (name, cues) in [
         (
             "move_pane",
-            &["swap_panes", "set_floating_pane_geometry"][..],
+            &[
+                "swap_panes",
+                "set_floating_pane_geometry",
+                "set_global_pane_placement",
+            ][..],
         ),
+        ("set_global_pane_placement", &["no tab"][..]),
         ("warp_pane_here", &["list_other_sessions"][..]),
         ("schedule", &["unschedule"][..]),
         ("slack_read", &["backfill"][..]),
@@ -119,6 +124,33 @@ fn every_warp_schema_has_a_closed_placement_set() {
             spec["function"]["parameters"]["properties"]["placement"]["enum"],
             json!(["new_tab", "focused_tab", "floating"]),
             "{name} should take a closed set of placements",
+        );
+    }
+}
+
+/// The same reasoning as the warp placements: the four edges are the whole set, and a
+/// fifth would only be found out about at dispatch. Only the pane is required — the
+/// rest of a placement is inherited from where the pane already sits, which is what
+/// lets "make it wider" be one argument rather than three.
+#[test]
+fn the_global_placement_schema_closes_the_edges_and_requires_only_the_pane() {
+    let specs = specs();
+    let spec = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == "set_global_pane_placement")
+        .expect("set_global_pane_placement should be advertised");
+    let parameters = &spec["function"]["parameters"];
+    assert_eq!(
+        parameters["properties"]["edge"]["enum"],
+        json!(["left", "right", "top", "bottom"])
+    );
+    assert_eq!(parameters["required"], json!(["pane_id", "is_plugin"]));
+    for field in ["size", "length"] {
+        assert_eq!(
+            parameters["properties"][field]["type"], "string",
+            "{field} is written like \"20\" or \"20%\", so it is a string"
         );
     }
 }
