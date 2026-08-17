@@ -769,6 +769,35 @@ pub fn bell_notification_state_set_and_cleared() {
 }
 
 #[test]
+pub fn display_title_is_unaffected_for_a_non_remote_pane() {
+    let terminal_pane = make_terminal_pane_for_bell();
+    assert_eq!(terminal_pane.display_title(), terminal_pane.current_title());
+}
+
+#[test]
+pub fn display_title_is_bare_hostname_when_no_explicit_title_is_set() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "myhost");
+}
+
+#[test]
+pub fn display_title_prefixes_an_osc_title_with_the_hostname() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    terminal_pane.grid.title = Some("my-shell".to_owned());
+    assert_eq!(terminal_pane.display_title(), "myhost: my-shell");
+}
+
+#[test]
+pub fn display_title_prefixes_a_custom_rename_pane_name_with_the_hostname() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    terminal_pane.rename(b"custom-name".to_vec());
+    assert_eq!(terminal_pane.display_title(), "myhost: custom-name");
+}
+
+#[test]
 pub fn has_bell_reflects_grid_ring_bell() {
     let mut terminal_pane = make_terminal_pane_for_bell();
 

@@ -794,8 +794,15 @@ pub trait Pane {
     fn start_loading_indication(&mut self, _loading_indication: LoadingIndication) {} // only relevant for plugins
     fn progress_animation_offset(&mut self) {} // only relevant for plugins
     fn current_title(&self) -> String;
-    fn stack_list_entry_label(&self) -> String {
+    fn set_remote_host(&mut self, _host: Option<String>) {} // only relevant for terminal panes
+    /// `current_title()`, prefixed with the remote hostname for panes running
+    /// on another host. Use this for anything a human looks at; `current_title()`
+    /// stays the raw title for session serialization / layouts / plugins.
+    fn display_title(&self) -> String {
         self.current_title()
+    }
+    fn stack_list_entry_label(&self) -> String {
+        self.display_title()
     }
     fn custom_title(&self) -> Option<String>;
     fn has_explicit_title(&self) -> bool {
@@ -2296,7 +2303,7 @@ impl Tab {
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;
         let mut base = if self.tab_name_is_default() && pane.has_explicit_title() {
-            pane.current_title()
+            pane.display_title()
         } else {
             self.name.clone()
         };
