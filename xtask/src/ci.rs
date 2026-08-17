@@ -90,7 +90,34 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     }
 
     let _pd = sh.push_dir(project_root);
-    build_musl_release(sh).context(err_context)
+    build_musl_release(sh).context(err_context)?;
+    link_e2e_binary().context(err_context)
+}
+
+/// Put the musl binary where the container looks for it.
+///
+/// `remote_runner.rs` runs `/usr/src/zellij/zellij`, which is `target/zellij`
+/// through the bind mount — but `build_musl_release` writes to
+/// `target/<triple>/release/zellij`. A symlink bridges the two.
+///
+/// It has to be written the way the *container* reads it, not the way this
+/// process does: the target is the absolute in-container path, which resolves to
+/// nothing on the host. So this cannot check the link for validity, only replace
+/// it, and `symlink` rather than `sh.copy_file` because the point is to follow
+/// each rebuild without one.
+fn link_e2e_binary() -> anyhow::Result<()> {
+    let link = crate::target_dir().join("zellij");
+    let target = format!("/usr/src/zellij/{}/release/zellij", musl_target());
+
+    // `symlink` refuses to overwrite, and an existing link may point at the
+    // wrong triple after a move between machines.
+    match std::fs::remove_file(&link) {
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(e).with_context(|| format!("failed to remove {}", link.display())),
+    }
+    std::os::unix::fs::symlink(&target, &link)
+        .with_context(|| format!("failed to link {} -> {target}", link.display()))
 }
 
 /// The musl triple a container on this host runs natively.
@@ -214,10 +241,18 @@ fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
             crate::status(&msg);
             println!("{}", msg);
 
-            cmd!(sh, "{cargo} test -- --ignored --nocapture --test-threads 1")
-                .args(args.clone())
-                .run()
-                .with_context(|| "Failed to run tests for the Plugin System".to_string())?;
+            // `--lib` matters: it keeps this to the unit tests in `src/`, which is
+            // where the plugin-system tests live. Without it, `--ignored` sweeps
+            // in every ignored test in the crate's `tests/` directory too — which
+            // today means the whole remote-pane suite, whose fixtures are a far
+            // machine this task knows nothing about and never brought up.
+            cmd!(
+                sh,
+                "{cargo} test --lib -- --ignored --nocapture --test-threads 1"
+            )
+            .args(args.clone())
+            .run()
+            .with_context(|| "Failed to run tests for the Plugin System".to_string())?;
             Ok(())
         })
         .context(err_context)

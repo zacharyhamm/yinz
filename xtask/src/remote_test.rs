@@ -26,6 +26,15 @@ use xshell::{cmd, Shell};
 /// binary cannot be handed arguments, so the two sides agree on a location
 /// instead.
 const COMPOSE_FILE: &str = "docker-compose.remote-panes.yml";
+/// A project name of our own, rather than the directory basename compose would
+/// otherwise pick.
+///
+/// Both compose files here are invoked from the repository root, so without this
+/// they land in one project named `zellij` — and each file's containers are
+/// orphans of the other. `clean` runs `down --remove-orphans`, which would then
+/// take the e2e suite's sshd down with ours. The header of the compose file
+/// promises the opposite; this is what makes that true.
+const COMPOSE_PROJECT: &str = "zellij-remote-panes";
 /// Where sshd is published, through the proxy. Matches
 /// `docker/remote-pane-toxiproxy.json` and the compose port mapping.
 const SSH_PORT: u16 = 2223;
@@ -148,7 +157,7 @@ fn clean(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn compose<'a>(sh: &'a Shell, args: &[&str]) -> xshell::Cmd<'a> {
-    cmd!(sh, "docker compose -f {COMPOSE_FILE}").args(args)
+    cmd!(sh, "docker compose -p {COMPOSE_PROJECT} -f {COMPOSE_FILE}").args(args)
 }
 
 /// Write the keypair the container mounts, the ssh config that points at it, and
