@@ -4079,8 +4079,13 @@ impl Perform for Grid {
     fn print(&mut self, c: char) {
         let c = self.cursor.charsets[self.active_charset].map(c);
 
-        let terminal_character =
-            TerminalCharacter::new_styled(c, self.cursor.pending_styles.clone());
+        // Printable ASCII is always one cell wide, and is the overwhelming majority of what a
+        // program prints - take it without consulting the unicode-width tables.
+        let terminal_character = if c.is_ascii_graphic() || c == ' ' {
+            TerminalCharacter::new_singlewidth_styled(c, self.cursor.pending_styles.clone())
+        } else {
+            TerminalCharacter::new_styled(c, self.cursor.pending_styles.clone())
+        };
         self.set_preceding_character(terminal_character.clone());
         self.add_character(terminal_character);
     }
@@ -5271,6 +5276,11 @@ pub struct Row {
     pub columns: VecDeque<TerminalCharacter>,
     pub is_canonical: bool,
     width: Option<usize>,
+    /// Whether every character in the row occupies exactly one cell. When it does, a cell's
+    /// column index *is* its index into `columns`, which lets the width-aware lookups skip their
+    /// O(row) scans. Cached alongside `width` and invalidated with it - `None` means "unknown",
+    /// never "false".
+    all_single_width: Option<bool>,
     pub bg_color: Option<AnsiCode>,
     osc133_markers: Vec<Osc133Marker>,
 }
@@ -5305,6 +5315,7 @@ impl Row {
             columns: VecDeque::new(),
             is_canonical: false,
             width: None,
+            all_single_width: None,
             bg_color: None,
             osc133_markers: vec![],
         }
@@ -5314,6 +5325,7 @@ impl Row {
             columns,
             is_canonical: false,
             width: None,
+            all_single_width: None,
             bg_color: None,
             osc133_markers: vec![],
         }
@@ -5331,7 +5343,7 @@ impl Row {
     }
     pub fn with_character(mut self, terminal_character: TerminalCharacter) -> Self {
         self.columns.push_back(terminal_character);
-        self.width = None;
+        self.invalidate_width_cache();
         self
     }
     pub fn canonical(mut self) -> Self {
@@ -5342,17 +5354,43 @@ impl Row {
         self.bg_color = bg_color;
         self
     }
+    /// Drop the cached row metrics. Called from every mutation that can change how wide the row
+    /// is, or where a given column sits inside `columns`.
+    fn invalidate_width_cache(&mut self) {
+        self.width = None;
+        self.all_single_width = None;
+    }
     pub fn width_cached(&mut self) -> usize {
         if let Some(width) = self.width {
             width
         } else {
             let mut width = 0;
+            let mut all_single_width = true;
             for terminal_character in &self.columns {
-                width += terminal_character.width();
+                let character_width = terminal_character.width();
+                width += character_width;
+                all_single_width &= character_width == 1;
             }
             self.width = Some(width);
+            self.all_single_width = Some(all_single_width);
             width
         }
+    }
+    /// `true` only when every character in the row is exactly one cell wide, so column index and
+    /// `columns` index coincide. Computed with (and cached alongside) the row width; a `None`
+    /// cache means "not known yet", so this recomputes rather than assuming the slow path.
+    fn all_single_width(&mut self) -> bool {
+        if let Some(all_single_width) = self.all_single_width {
+            return all_single_width;
+        }
+        // Computed here rather than by deferring to `width_cached`, which returns early when the
+        // width alone is already cached and so would leave this `None` forever.
+        let all_single_width = self
+            .columns
+            .iter()
+            .all(|terminal_character| terminal_character.width() == 1);
+        self.all_single_width = Some(all_single_width);
+        all_single_width
     }
     pub fn width(&self) -> usize {
         let mut width = 0;
@@ -5414,6 +5452,11 @@ impl Row {
             Ordering::Equal => {
                 // this is unwrapped because this always happens after self.width_cached()
                 *self.width.as_mut().unwrap() += terminal_character.width();
+                if terminal_character.width() != 1 {
+                    // keep the companion cache honest: the width stays accurate above, so nothing
+                    // else will invalidate it and recompute this
+                    self.all_single_width = Some(false);
+                }
                 // adding the character at the end of the current line
                 self.columns.push_back(terminal_character);
             },
@@ -5430,11 +5473,25 @@ impl Row {
                 self.columns
                     .resize(x.saturating_sub(width_offset), gap_fill);
                 self.columns.push_back(terminal_character);
-                self.width = None;
+                self.invalidate_width_cache();
             },
             Ordering::Greater => {
                 // adding the character in the middle of the line
                 // we replace the character at its position
+
+                // Fast path: in a row of single-width characters the column index is already the
+                // index into `columns`, and swapping one single-width character for another can
+                // neither shift the following characters nor change the row width. That skips the
+                // O(row) index scan below *and* keeps the width cache warm, which matters because
+                // a full-line redraw walks this branch once per column.
+                if terminal_character.width() == 1 && self.all_single_width() {
+                    if self.columns[x].character != ' ' {
+                        self.osc133_markers.retain(|marker| marker.column != x);
+                    }
+                    self.columns[x] = terminal_character;
+                    return;
+                }
+
                 let (absolute_x_index, position_inside_character) =
                     self.absolute_character_index_and_position_in_char(x);
                 let character_width = terminal_character.width();
@@ -5480,7 +5537,7 @@ impl Row {
                     },
                     _ => {},
                 }
-                self.width = None;
+                self.invalidate_width_cache();
             },
         }
     }
@@ -5503,7 +5560,7 @@ impl Row {
                 self.columns.insert(insert_position, terminal_character);
             },
         }
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn replace_character_at(&mut self, terminal_character: TerminalCharacter, x: usize) {
         let absolute_x_index = self.absolute_character_index(x);
@@ -5519,16 +5576,16 @@ impl Row {
                     .insert(absolute_x_index, EMPTY_TERMINAL_CHARACTER);
             }
         }
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn replace_columns(&mut self, columns: VecDeque<TerminalCharacter>) {
         self.columns = columns;
         self.osc133_markers.clear();
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn push(&mut self, terminal_character: TerminalCharacter) {
         self.columns.push_back(terminal_character);
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn truncate(&mut self, x: usize) {
         let width_offset = self.excess_width_until(x);
@@ -5537,7 +5594,7 @@ impl Row {
             self.columns.truncate(truncate_position);
         }
         self.osc133_markers.retain(|marker| marker.column <= x);
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn position_accounting_for_widechars(&self, x: usize) -> usize {
         let mut position = x;
@@ -5566,7 +5623,7 @@ impl Row {
         self.columns
             .truncate(from_position_accounting_for_widechars);
         self.columns.append(&mut replace_with);
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn append(&mut self, to_append: &mut Row) {
         let column_offset = self.width();
@@ -5576,7 +5633,7 @@ impl Row {
                 marker.column += column_offset;
                 marker
             }));
-        self.width = None;
+        self.invalidate_width_cache();
     }
     pub fn drain_until(&mut self, x: usize) -> VecDeque<TerminalCharacter> {
         let mut drained_part_len = 0;
@@ -5593,7 +5650,7 @@ impl Row {
         }
         // Can't use split_off because it doesn't reduce capacity, causing OOM with long lines
         let drained_part = self.columns.drain(..split_pos).collect();
-        self.width = None;
+        self.invalidate_width_cache();
         drained_part
     }
     pub fn replace_and_pad_beginning(&mut self, to: usize, terminal_character: TerminalCharacter) {
@@ -5616,7 +5673,7 @@ impl Row {
             drop(self.columns.drain(0..=to_position_accounting_for_widechars));
         }
         replace_with.append(&mut self.columns);
-        self.width = None;
+        self.invalidate_width_cache();
         self.columns = replace_with;
     }
     pub fn len(&self) -> usize {
@@ -5628,7 +5685,7 @@ impl Row {
     pub fn delete_and_return_character(&mut self, x: usize) -> Option<TerminalCharacter> {
         let erase_position = self.absolute_character_index(x);
         if erase_position < self.columns.len() {
-            self.width = None;
+            self.invalidate_width_cache();
             let deleted = self.columns.remove(erase_position);
             if let Some(deleted) = &deleted {
                 let end = x + deleted.width();
@@ -5685,7 +5742,7 @@ impl Row {
                 column_offset += part_width;
             }
         }
-        self.width = None;
+        self.invalidate_width_cache();
         parts
     }
     fn add_osc133_marker(&mut self, column: usize, kind: Osc133MarkerKind) {
@@ -5774,6 +5831,10 @@ fn is_selection_boundary_character(character: char, word_separators: &str) -> bo
 #[cfg(test)]
 #[path = "./unit/grid_tests/mod.rs"]
 mod grid_tests;
+
+#[cfg(test)]
+#[path = "./unit/row_tests.rs"]
+mod row_tests;
 
 #[cfg(test)]
 mod osc7_parser_tests {

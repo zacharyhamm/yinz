@@ -1,6 +1,6 @@
 use super::super::{
-    CharacterChunk, FloatingPanesStack, HostKittyState, KittyImageChunk, Output, OutputBuffer,
-    SixelImageChunk,
+    ChangedLines, CharacterChunk, FloatingPanesStack, HostKittyState, KittyImageChunk, Output,
+    OutputBuffer, SixelImageChunk,
 };
 use crate::panes::kitty_graphics::parser::{
     DecodedImage, KittyAction, KittyCommandParser, KittyFormat,
@@ -1055,7 +1055,7 @@ fn test_output_buffer_update_line() {
     buffer.update_line(5);
 
     assert!(
-        buffer.changed_lines.contains(&5),
+        buffer.changed_lines.contains(5),
         "Changed lines should contain line 5"
     );
 }
@@ -1144,6 +1144,240 @@ fn test_output_buffer_changed_chunks_in_viewport_partial() {
     assert_eq!(chunks[0].y, 2, "First chunk should be at line 2");
     assert_eq!(chunks[1].y, 5, "Second chunk should be at line 5");
     assert_eq!(chunks[2].y, 7, "Third chunk should be at line 7");
+}
+
+fn viewport_of(line_count: usize) -> Vec<Row> {
+    (0..line_count)
+        .map(|_| {
+            let mut columns = VecDeque::new();
+            columns.push_back(TerminalCharacter::new('A'));
+            Row::from_columns(columns)
+        })
+        .collect()
+}
+
+#[test]
+fn changed_lines_tracks_indices_across_word_boundaries() {
+    let mut changed_lines = ChangedLines::default();
+    // the bitset stores 64 indices per word, so these straddle the first three words
+    let marked = [0, 1, 63, 64, 65, 127, 128, 1000];
+    for line_index in marked {
+        changed_lines.insert(line_index);
+    }
+
+    for line_index in marked {
+        assert!(
+            changed_lines.contains(line_index),
+            "line {} should be marked",
+            line_index
+        );
+    }
+    for line_index in [2, 62, 66, 126, 129, 999, 1001] {
+        assert!(
+            !changed_lines.contains(line_index),
+            "line {} should not be marked",
+            line_index
+        );
+    }
+    // beyond any word this set ever allocated
+    assert!(!changed_lines.contains(100_000));
+}
+
+#[test]
+fn changed_lines_iterates_in_ascending_order() {
+    let mut changed_lines = ChangedLines::default();
+    // inserted descending and out of order, spanning several words
+    for line_index in [200, 64, 199, 5, 63, 128, 0] {
+        changed_lines.insert(line_index);
+    }
+
+    let collected: Vec<usize> = changed_lines.iter().collect();
+    assert_eq!(
+        collected,
+        vec![0, 5, 63, 64, 128, 199, 200],
+        "iteration should be ascending, each index exactly once"
+    );
+}
+
+#[test]
+fn changed_lines_inserting_the_same_index_twice_yields_it_once() {
+    let mut changed_lines = ChangedLines::default();
+    changed_lines.insert(7);
+    changed_lines.insert(7);
+    changed_lines.insert(7);
+
+    assert_eq!(changed_lines.iter().collect::<Vec<_>>(), vec![7]);
+}
+
+#[test]
+fn changed_lines_clear_empties_the_set_and_stays_usable() {
+    let mut changed_lines = ChangedLines::default();
+    assert!(changed_lines.is_empty(), "a fresh set is empty");
+
+    changed_lines.insert(3);
+    changed_lines.insert(300);
+    assert!(!changed_lines.is_empty());
+
+    changed_lines.clear();
+    assert!(changed_lines.is_empty(), "cleared set should be empty");
+    assert_eq!(changed_lines.iter().count(), 0);
+    assert!(!changed_lines.contains(3));
+    assert!(!changed_lines.contains(300));
+
+    // the allocation is kept across a clear, so re-inserting must still work
+    changed_lines.insert(300);
+    assert!(!changed_lines.is_empty());
+    assert_eq!(changed_lines.iter().collect::<Vec<_>>(), vec![300]);
+}
+
+#[test]
+fn test_output_buffer_update_lines_marks_inclusive_range() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    buffer.update_lines(3, 6);
+
+    assert_eq!(
+        buffer.changed_lines.iter().collect::<Vec<_>>(),
+        vec![3, 4, 5, 6],
+        "update_lines should mark the range inclusively"
+    );
+}
+
+#[test]
+fn test_output_buffer_update_lines_is_a_noop_when_all_lines_are_dirty() {
+    let mut buffer = OutputBuffer::default();
+    assert!(buffer.should_update_all_lines);
+
+    buffer.update_lines(3, 6);
+
+    assert!(
+        buffer.changed_lines.is_empty(),
+        "there is no point tracking individual lines when everything is dirty"
+    );
+}
+
+#[test]
+fn test_changed_rects_groups_a_contiguous_run_into_one_rect() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    // marked out of order on purpose: grouping depends on ascending iteration
+    buffer.update_line(5);
+    buffer.update_line(3);
+    buffer.update_line(4);
+
+    let changed_rects = buffer.changed_rects_in_viewport(10);
+
+    let mut expected = HashMap::new();
+    expected.insert(3, 3);
+    assert_eq!(
+        changed_rects, expected,
+        "lines 3, 4 and 5 are contiguous and should form a single rect"
+    );
+}
+
+#[test]
+fn test_changed_rects_keeps_separate_runs_apart() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    for line_index in [8, 1, 7, 2] {
+        buffer.update_line(line_index);
+    }
+
+    let changed_rects = buffer.changed_rects_in_viewport(10);
+
+    let mut expected = HashMap::new();
+    expected.insert(1, 2);
+    expected.insert(7, 2);
+    assert_eq!(changed_rects, expected);
+}
+
+#[test]
+fn test_changed_rects_when_all_lines_are_dirty() {
+    let buffer = OutputBuffer::default();
+    assert!(buffer.should_update_all_lines);
+
+    let changed_rects = buffer.changed_rects_in_viewport(10);
+
+    let mut expected = HashMap::new();
+    expected.insert(0, 10);
+    assert_eq!(changed_rects, expected);
+}
+
+#[test]
+fn test_changed_rects_across_bitset_word_boundaries() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    // a run that crosses the 64-index word boundary of the underlying bitset
+    buffer.update_lines(62, 66);
+
+    let changed_rects = buffer.changed_rects_in_viewport(100);
+
+    let mut expected = HashMap::new();
+    expected.insert(62, 5);
+    assert_eq!(
+        changed_rects, expected,
+        "a run spanning two bitset words is still one rect"
+    );
+}
+
+#[test]
+fn test_output_buffer_changed_chunks_are_ascending_regardless_of_mark_order() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    for line_index in [7, 2, 9, 0, 5] {
+        buffer.update_line(line_index);
+    }
+
+    let chunks = buffer.changed_chunks_in_viewport(&viewport_of(10), 10, 10, 0, 0);
+
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+        vec![0, 2, 5, 7, 9]
+    );
+}
+
+#[test]
+fn test_output_buffer_changed_chunks_drops_lines_below_the_viewport() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    buffer.update_line(1);
+    buffer.update_line(3);
+    // the viewport shrank since these were marked
+    buffer.update_line(5);
+    buffer.update_line(70);
+
+    let chunks = buffer.changed_chunks_in_viewport(&viewport_of(4), 10, 4, 0, 0);
+
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+        vec![1, 3],
+        "lines at or past viewport_height should be dropped"
+    );
+}
+
+#[test]
+fn test_output_buffer_changed_chunks_apply_offsets() {
+    let mut buffer = OutputBuffer::default();
+    buffer.clear();
+
+    buffer.update_line(1);
+    buffer.update_line(2);
+
+    let chunks = buffer.changed_chunks_in_viewport(&viewport_of(10), 10, 10, 4, 20);
+
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| (chunk.x, chunk.y))
+            .collect::<Vec<_>>(),
+        vec![(4, 21), (4, 22)]
+    );
 }
 
 #[test]

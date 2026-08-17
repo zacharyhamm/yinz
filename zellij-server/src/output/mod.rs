@@ -1785,9 +1785,61 @@ impl CharacterChunk {
     }
 }
 
+/// The set of viewport line indices that need re-rendering.
+///
+/// This is marked once per printed character, so it sits directly on the pty ingest path. The
+/// indices are dense and small (`0..viewport_height`), which makes a bitset a much better fit than
+/// a `HashSet` - hashing a `usize` with SipHash cost more than the render it was tracking.
+/// Iteration is ascending by construction, so callers that need ordered lines no longer sort.
+#[derive(Clone, Debug, Default)]
+pub struct ChangedLines {
+    words: Vec<u64>,
+}
+
+impl ChangedLines {
+    #[inline]
+    pub fn insert(&mut self, line_index: usize) {
+        let word = line_index / 64;
+        if word >= self.words.len() {
+            self.words.resize(word + 1, 0);
+        }
+        self.words[word] |= 1 << (line_index % 64);
+    }
+    #[inline]
+    pub fn contains(&self, line_index: usize) -> bool {
+        self.words
+            .get(line_index / 64)
+            .is_some_and(|word| word & (1 << (line_index % 64)) != 0)
+    }
+    pub fn clear(&mut self) {
+        // keep the allocation - the same pane dirties lines again next frame
+        self.words.clear();
+    }
+    pub fn is_empty(&self) -> bool {
+        self.words.iter().all(|word| *word == 0)
+    }
+    /// Ascending line indices.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.words
+            .iter()
+            .enumerate()
+            .flat_map(|(word_index, word)| {
+                let mut remaining = *word;
+                std::iter::from_fn(move || {
+                    if remaining == 0 {
+                        return None;
+                    }
+                    let bit = remaining.trailing_zeros() as usize;
+                    remaining &= remaining - 1;
+                    Some(word_index * 64 + bit)
+                })
+            })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OutputBuffer {
-    pub changed_lines: HashSet<usize>, // line index
+    pub changed_lines: ChangedLines, // line index
     pub should_update_all_lines: bool,
     styled_underlines: bool,
 }
@@ -1795,7 +1847,7 @@ pub struct OutputBuffer {
 impl Default for OutputBuffer {
     fn default() -> Self {
         OutputBuffer {
-            changed_lines: HashSet::new(),
+            changed_lines: ChangedLines::default(),
             should_update_all_lines: true, // first time we should do a full render
             styled_underlines: true,
         }
@@ -1811,9 +1863,7 @@ impl OutputBuffer {
     pub fn update_lines(&mut self, start: usize, end: usize) {
         if !self.should_update_all_lines {
             for idx in start..=end {
-                if !self.changed_lines.contains(&idx) {
-                    self.changed_lines.insert(idx);
-                }
+                self.changed_lines.insert(idx);
             }
         }
     }
@@ -1869,15 +1919,9 @@ impl OutputBuffer {
             }
             changed_chunks
         } else {
-            let mut line_changes: Vec<_> = self
-                .changed_lines
-                .iter()
-                .filter(|i| *i < &viewport_height)
-                .copied()
-                .collect();
-            line_changes.sort_unstable();
+            // `ChangedLines::iter` is already ascending, so this no longer collects and sorts
             let mut changed_chunks = Vec::new();
-            for line_index in line_changes {
+            for line_index in self.changed_lines.iter().filter(|i| *i < viewport_height) {
                 let terminal_characters =
                     self.extract_line_from_viewport(line_index, viewport, viewport_width);
                 let x = x_offset;
@@ -1956,7 +2000,10 @@ impl OutputBuffer {
                 add_changed_line(line_index);
             }
         } else {
-            for line_index in self.changed_lines.iter().copied() {
+            // ascending, which `add_changed_line` requires to group contiguous lines into one
+            // rect - the previous `HashSet` iteration order was arbitrary, so runs were split and
+            // `changed_rects.insert` could clobber an earlier rect at the same start index
+            for line_index in self.changed_lines.iter() {
                 add_changed_line(line_index);
             }
         }
