@@ -307,8 +307,16 @@ impl State {
             width,
             height,
         } = geometry(&self.config);
-        FloatingPaneCoordinates::new(Some(x), Some(y), Some(width), Some(height), None, None)
-            .map(FloatingPaneCoordinates::as_overlay)
+        FloatingPaneCoordinates::new(
+            Some(x),
+            Some(y),
+            Some(width),
+            Some(height),
+            None,
+            None,
+            None,
+        )
+        .map(FloatingPaneCoordinates::as_overlay)
     }
 }
 

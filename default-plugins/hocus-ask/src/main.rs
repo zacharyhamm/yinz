@@ -408,6 +408,7 @@ fn floating_geometry(config: &BTreeMap<String, String>) -> Option<FloatingPaneCo
         Some(dimension("height", DEFAULT_HEIGHT)),
         None,
         None,
+        None,
     )
     .map(FloatingPaneCoordinates::as_overlay)
 }
@@ -463,6 +464,7 @@ mod tests {
             Some(DEFAULT_Y.to_owned()),
             Some(DEFAULT_WIDTH.to_owned()),
             Some(DEFAULT_HEIGHT.to_owned()),
+            None,
             None,
             None,
         )

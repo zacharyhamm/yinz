@@ -3283,6 +3283,7 @@ impl FloatingPaneCoordinates {
         height: Option<String>,
         pinned: Option<bool>,
         borderless: Option<bool>,
+        overlay: Option<bool>,
     ) -> Option<Self> {
         // Parse x/y coordinates - allows 0% or 0
         let x = x.and_then(|x| PercentOrFixed::from_str(&x).ok());
@@ -3314,6 +3315,7 @@ impl FloatingPaneCoordinates {
             && height.is_none()
             && pinned.is_none()
             && borderless.is_none()
+            && overlay.is_none()
         {
             None
         } else {
@@ -3324,7 +3326,7 @@ impl FloatingPaneCoordinates {
                 height,
                 pinned,
                 borderless,
-                overlay: None,
+                overlay,
             })
         }
     }
