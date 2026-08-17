@@ -3,12 +3,12 @@ use ansi_term::{
     Color::{Fixed, RGB},
     Style,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use zellij_tile::prelude::actions::Action;
 use zellij_tile::prelude::*;
 use zellij_tile_utils::{palette_match, style};
 
-use crate::first_line::{to_char, KeyAction, KeyMode, KeyShortcut};
+use crate::first_line::{is_generic_to_normal_key, to_char, KeyAction, KeyMode, KeyShortcut};
 use crate::second_line::{
     ascended_to_host_session_hint, descended_into_nested_session_hint, system_clipboard_error,
     text_copied_hint,
@@ -753,36 +753,40 @@ fn shortened_modes_shortcut_list(default_keys: &Vec<KeyShortcut>, help: &ModeInf
     shortened_shortcut_list
 }
 
+/// The modifier every mode shortcut shares, if there is one, so the ribbon can print it once as a
+/// `Ctrl +` prefix and leave bare letters in the tiles.
+///
+/// Two kinds of shortcut contribute nothing here rather than cancelling the prefix:
+///
+/// - Ones the user has no key for. Such a tile renders as nothing at all (see the empty-key paths
+///   in `full_modes_shortcut_list` and friends), so letting one collapse the intersection would
+///   cost every *other* tile its prefix over a tile that isn't even drawn.
+/// - Ones that resolved to `Enter`/`Esc`/`Space`. Those are the generic get-back-to-normal keys,
+///   which `to_char` falls back to when a mode has nothing else; being unmodified, a single one
+///   empties the intersection. `mode_switch_keys` skips them for the same reason.
+///
+/// A config with no `agent` keybind block hit both at once when the AGENT tile was added: the
+/// Normal-mode AGENT tile has no key, and agent mode itself inherits only the shared `Enter`/`Esc`.
 fn common_modifiers_in_all_modes(
     key_shortcuts: &HashMap<InputMode, Vec<KeyShortcut>>,
 ) -> Option<Vec<KeyModifier>> {
-    let mut common_modifiers = key_shortcuts.iter().next().and_then(|k| {
-        k.1.iter()
-            .next()
-            .and_then(|k| k.get_key().map(|k| k.key_modifiers.clone()))
-    })?;
+    let mut common_modifiers: Option<BTreeSet<KeyModifier>> = None;
     for key_shortcuts in key_shortcuts.values() {
-        if key_shortcuts.is_empty() {
-            return None;
-        }
-        let mut common_modifiers_for_mode = key_shortcuts
+        for key in key_shortcuts
             .iter()
-            .next()
-            .unwrap()
-            .get_key()
-            .map(|k| k.key_modifiers.clone())?;
-        for key in key_shortcuts {
-            let key = key.get_key()?;
-            common_modifiers_for_mode = common_modifiers_for_mode
-                .intersection(&key.key_modifiers)
-                .cloned()
-                .collect();
+            .filter_map(|k| k.get_key())
+            .filter(|k| !is_generic_to_normal_key(k))
+        {
+            common_modifiers = Some(match common_modifiers {
+                Some(common_modifiers) => common_modifiers
+                    .intersection(&key.key_modifiers)
+                    .cloned()
+                    .collect(),
+                None => key.key_modifiers.clone(),
+            });
         }
-        common_modifiers = common_modifiers
-            .intersection(&common_modifiers_for_mode)
-            .cloned()
-            .collect();
     }
+    let common_modifiers = common_modifiers?;
     if common_modifiers.is_empty() {
         return None;
     }
@@ -2143,4 +2147,127 @@ fn get_common_modifiers(mut keyvec: Vec<&KeyWithModifier>) -> Vec<KeyModifier> {
             .collect();
     }
     common_modifiers.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctrl(character: char) -> Option<KeyWithModifier> {
+        Some(KeyWithModifier::new_with_modifiers(
+            BareKey::Char(character),
+            BTreeSet::from([KeyModifier::Ctrl]),
+        ))
+    }
+
+    fn alt(character: char) -> Option<KeyWithModifier> {
+        Some(KeyWithModifier::new_with_modifiers(
+            BareKey::Char(character),
+            BTreeSet::from([KeyModifier::Alt]),
+        ))
+    }
+
+    fn shortcut(action: KeyAction, key: Option<KeyWithModifier>) -> KeyShortcut {
+        KeyShortcut::new(KeyMode::Unselected, action, key)
+    }
+
+    // The regression this guards: an AGENT tile with nothing bound to it short-circuited the whole
+    // intersection, and every other tile then printed its own "Ctrl".
+    #[test]
+    fn an_unbound_shortcut_does_not_cost_the_others_their_common_modifier() {
+        let key_shortcuts = HashMap::from([
+            (
+                InputMode::Normal,
+                vec![
+                    shortcut(KeyAction::Pane, ctrl('p')),
+                    shortcut(KeyAction::Tab, ctrl('t')),
+                    shortcut(KeyAction::Agent, None),
+                ],
+            ),
+            (InputMode::Pane, vec![shortcut(KeyAction::Pane, ctrl('p'))]),
+        ]);
+
+        assert_eq!(
+            common_modifiers_in_all_modes(&key_shortcuts),
+            Some(vec![KeyModifier::Ctrl])
+        );
+    }
+
+    // A mode whose only way back to normal is the shared `Enter`/`Esc` resolves to that key, which
+    // carries no modifier. It must not empty the intersection either - agent mode looks exactly
+    // like this in a config that has no `agent` block but does have the shared Enter/Esc binding.
+    #[test]
+    fn a_shortcut_that_fell_back_to_enter_does_not_cost_the_others_their_common_modifier() {
+        let key_shortcuts = HashMap::from([
+            (
+                InputMode::Normal,
+                vec![
+                    shortcut(KeyAction::Pane, ctrl('p')),
+                    shortcut(KeyAction::Tab, ctrl('t')),
+                ],
+            ),
+            (
+                InputMode::Agent,
+                vec![shortcut(
+                    KeyAction::Agent,
+                    Some(KeyWithModifier::new(BareKey::Enter)),
+                )],
+            ),
+        ]);
+
+        assert_eq!(
+            common_modifiers_in_all_modes(&key_shortcuts),
+            Some(vec![KeyModifier::Ctrl])
+        );
+    }
+
+    #[test]
+    fn a_mode_with_no_shortcuts_does_not_cost_the_others_their_common_modifier() {
+        let key_shortcuts = HashMap::from([
+            (
+                InputMode::Normal,
+                vec![
+                    shortcut(KeyAction::Pane, ctrl('p')),
+                    shortcut(KeyAction::Tab, ctrl('t')),
+                ],
+            ),
+            (InputMode::Agent, vec![]),
+        ]);
+
+        assert_eq!(
+            common_modifiers_in_all_modes(&key_shortcuts),
+            Some(vec![KeyModifier::Ctrl])
+        );
+    }
+
+    // Modifiers that genuinely differ still cancel the prefix - there is nothing to factor out.
+    #[test]
+    fn a_bound_key_with_a_different_modifier_cancels_the_common_modifier() {
+        let key_shortcuts = HashMap::from([(
+            InputMode::Normal,
+            vec![
+                shortcut(KeyAction::Pane, ctrl('p')),
+                shortcut(KeyAction::Tab, ctrl('t')),
+                shortcut(KeyAction::Agent, alt('e')),
+            ],
+        )]);
+
+        assert_eq!(common_modifiers_in_all_modes(&key_shortcuts), None);
+    }
+
+    #[test]
+    fn nothing_bound_anywhere_has_no_common_modifier() {
+        let key_shortcuts = HashMap::from([
+            (
+                InputMode::Normal,
+                vec![
+                    shortcut(KeyAction::Pane, None),
+                    shortcut(KeyAction::Tab, None),
+                ],
+            ),
+            (InputMode::Agent, vec![]),
+        ]);
+
+        assert_eq!(common_modifiers_in_all_modes(&key_shortcuts), None);
+    }
 }
