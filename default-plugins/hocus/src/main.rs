@@ -356,6 +356,24 @@ pub struct State {
     /// one can say which agent to put the cursor on, but never that the cursor is
     /// somewhere the user no longer is, which is the difference the pane draws.
     focused_pane: Option<u32>,
+    /// The plugin pane the daemon last reported focused.
+    ///
+    /// Only ever compared against `agents_plugin`: the one thing hocus wants from it
+    /// is whether the user is standing in the agents pane, which is what the summary
+    /// inset is drawn for. `None` whenever a terminal has the focus.
+    focused_plugin: Option<u32>,
+    /// The agents pane, as it announced itself.
+    ///
+    /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
+    /// pane is only known by its id — a title is a name the user can change, and a url
+    /// cannot tell two instances apart.
+    agents_plugin: Option<u32>,
+    /// The agent the cursor is on in the agents pane.
+    ///
+    /// The question the inset answers is "what was *this* one doing", and the agents
+    /// pane is where that is asked: the selection moves there under `j`/`k` with no
+    /// focus change to report, so nothing else on this side can know it.
+    agents_selected: Option<u32>,
     /// The project of `last_focused_agent`, falling back to the active tab in
     /// `tabs`.
     active_project: Option<String>,
@@ -432,6 +450,9 @@ impl Default for State {
             tabs: Vec::new(),
             last_focused_agent: None,
             focused_pane: None,
+            focused_plugin: None,
+            agents_plugin: None,
+            agents_selected: None,
             active_project: None,
         };
         // In a plugin this waits for `load`, which is where the host is ready to
@@ -558,6 +579,7 @@ impl ZellijPlugin for State {
                 self.push_strip(true);
                 return false;
             },
+            wire::AGENT_SELECTION => return self.on_selection(&pipe_message),
             wire::ASK => return self.on_ask(&pipe_message),
             wire::AGENT_SNAPSHOT => {},
             _ => return false,
@@ -585,6 +607,10 @@ impl ZellijPlugin for State {
         self.agent_seq = seq;
         self.repositories = reply.repositories;
         let inset = self.inset_key();
+        // Outside the panes below: a quiet reply — one from a daemon with no session
+        // to report — still says where the focus went, and the inset is gated on
+        // that alone.
+        self.focused_plugin = reply.focused_plugin;
         if let Some(panes) = reply.panes {
             self.apply_poll(panes, reply.activity, reply.summaries, reply.focused);
         }

@@ -68,6 +68,11 @@ impl ZellijPlugin for State {
         // so a reload (or a session restore) does not sit empty until the next
         // agentd snapshot.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HELLO));
+        // Unconditional, and before there are any rows: what this first one carries
+        // is the plugin id, which is how hocus tells "the agents pane is focused"
+        // from "some other plugin pane is". The pane it names follows with the
+        // strip, a moment later.
+        self.send_selection();
         // The chat is the other half of this strip, and it is the half that
         // computes the rows drawn here. Usually hocus spawns *this* pane and
         // this call adopts the hocus that did it; when a keybinding got here
@@ -91,10 +96,18 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
-        match event {
+        let selection = self.selection();
+        let rendered = match event {
             Event::Key(key) => self.on_key(key),
             _ => false,
+        };
+        // Where the cursor moved to is hocus's business, not only this pane's: it
+        // draws the selected agent's summary. Compared rather than sent on every
+        // key, so holding `j` at the end of the list says nothing.
+        if self.selection() != selection {
+            self.send_selection();
         }
+        rendered
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
@@ -108,7 +121,14 @@ impl ZellijPlugin for State {
         else {
             return false;
         };
-        self.set_rows(strip)
+        // The same comparison, for the other thing that moves the selection: a
+        // push whose focus walked onto another agent.
+        let selection = self.selection();
+        let rendered = self.set_rows(strip);
+        if self.selection() != selection {
+            self.send_selection();
+        }
+        rendered
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -229,6 +249,34 @@ impl State {
     fn live(&self) -> bool {
         live(&self.rows, self.selected, self.focused)
     }
+
+    /// The agent the cursor is on, which is what hocus draws a summary for.
+    ///
+    /// `None` on a strip with nothing selectable in it. A header cannot be selected,
+    /// so this is `Some` whenever there is an agent at all.
+    fn selection(&self) -> Option<u32> {
+        match self.rows.get(self.selected) {
+            Some(StripRow::Agent { pane_id, .. }) => Some(*pane_id),
+            _ => None,
+        }
+    }
+
+    /// Tell hocus where the cursor is.
+    ///
+    /// Called from the plugin entry points rather than from `on_key` and `set_rows`,
+    /// which the tests drive directly and which stay free of host calls for that
+    /// reason. The plugin id goes along every time: it is how hocus knows that this
+    /// pane, and not the chat below it, is the one the daemon reports focused.
+    fn send_selection(&self) {
+        let selection = wire::Selection {
+            plugin_id: get_plugin_ids().plugin_id,
+            pane_id: self.selection(),
+        };
+        let Ok(payload) = serde_json::to_string(&selection) else {
+            return;
+        };
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SELECTION).with_payload(payload));
+    }
 }
 
 /// Whether the row at `selected` names the focused pane - "you are here", as
@@ -342,6 +390,24 @@ mod tests {
         state.selected = step(&state.rows, state.selected, Motion::Up);
         state.selected = step(&state.rows, state.selected, Motion::Up);
         assert_eq!(state.selected, 2, "up from the first agent stays put");
+    }
+
+    /// What hocus is told, and the reason the keys above are worth a message:
+    /// the selection names an agent, and hocus draws that agent's summary.
+    #[test]
+    fn the_selection_is_the_agent_under_the_cursor() {
+        let mut state = State::default();
+        // Nothing on the list at all, and nothing to name.
+        assert_eq!(state.selection(), None);
+
+        state.set_rows(unfocused(strip()));
+        assert_eq!(state.selection(), Some(3));
+        state.selected = step(&state.rows, state.selected, Motion::Down);
+        assert_eq!(state.selection(), Some(7));
+
+        // A header cannot be walked onto, but a strip of nothing else can arrive.
+        state.set_rows(unfocused(vec![StripRow::Project("hocus".to_owned())]));
+        assert_eq!(state.selection(), None);
     }
 
     #[test]
