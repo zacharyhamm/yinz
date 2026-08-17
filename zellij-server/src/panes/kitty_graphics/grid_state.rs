@@ -1,5 +1,5 @@
-use super::parser::{DecodedImage, KittyCommand, KittyError, KittyErrorCode};
-use super::store::{InternalImageId, KittyImageStore};
+use super::parser::{DecodedImage, KittyCommand, KittyError, KittyErrorCode, MAX_RELATIVE_DEPTH};
+use super::store::{InternalImageId, KittyImageStore, DEFAULT_FRAME_GAP_MS};
 use crate::panes::sixel::PixelRect;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,6 +19,12 @@ pub struct KittyImageChunk {
     pub cell_offset_y: u32,
     pub z_index: i32,
     pub dest_cells: (u16, u16),
+    /// Which scaled raster in the store this chunk reads from, keyed as the store keys its scaled
+    /// variants. Equal to `dest_cells` for an ordinary placement, whose raster was scaled to
+    /// exactly the cells it covers. A run of unicode placeholder cells is different: it shows part
+    /// of an image fitted to the *whole* virtual placement, so several runs of different widths
+    /// share one raster and each names it here.
+    pub variant_key: (u16, u16),
     pub scaled_px: Option<(usize, usize)>,
     pub placement_uid: u64,
 }
@@ -41,9 +47,60 @@ pub struct KittyPlacement {
     pub emit_y: usize,
     pub scaled_px: Option<(usize, usize)>,
     pub dest_cells: (u16, u16),
+    /// See [`KittyImageChunk::variant_key`]. `dest_cells` for everything but a placeholder run.
+    pub variant_key: (u16, u16),
     pub cell_offset: (u32, u32),
     pub z_index: i32,
     pub vertical_anchor: KittyVerticalAnchor,
+    /// Derived from unicode placeholder cells rather than from a placement command, and therefore
+    /// rebuilt wholesale from the grid on every refresh. The cells *are* the placement, so erasing
+    /// them, scrolling them away or reflowing them needs no separate bookkeeping here.
+    pub is_placeholder: bool,
+    /// Set by a `P`/`Q` placement: this one has no position of its own, it sits at an offset from
+    /// another placement. [`KittyGrid::resolve_relative_placements`] recomputes `display_rect` from
+    /// the parent whenever anything moves.
+    pub relative_to: Option<RelativeParent>,
+}
+
+/// Which placement a relative placement hangs off, and how far from its top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelativeParent {
+    pub image_id: u32,
+    /// `None` when the command left `Q` out, which selects any placement of the parent image. A
+    /// client naming a virtual parent it never gave a placement id to relies on this.
+    pub placement_id: Option<u32>,
+    /// `H` and `V`, in cells, right and down positive.
+    pub offset_cells: (i32, i32),
+}
+
+impl RelativeParent {
+    /// Whether `placement` is the placement this parent reference selects.
+    fn matches(&self, image_id: u32, placement_id: u32) -> bool {
+        self.image_id == image_id
+            && self
+                .placement_id
+                .map(|wanted| wanted == placement_id)
+                .unwrap_or(true)
+    }
+}
+
+/// A placement made with `U=1`: a prototype rather than something on screen.
+///
+/// Spec, "Unicode placeholders": "Virtual placements are invisible and only play the role of
+/// prototypes for real images". It becomes visible only where the client prints
+/// [`super::PLACEHOLDER`] cells naming it, and each run of those cells materialises into an
+/// ordinary [`KittyPlacement`] showing its part of the image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VirtualPlacement {
+    pub image_id: u32,
+    pub placement_id: u32,
+    pub internal_id: InternalImageId,
+    /// The `c` x `r` cell box the image is fitted into.
+    pub columns: u16,
+    pub rows: u16,
+    /// The image is fitted into the box preserving its aspect ratio, so this is at most the box.
+    pub fitted_px: (usize, usize),
+    pub z_index: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +108,8 @@ pub struct KittyReplyData {
     pub image_id: Option<u32>,
     pub image_number: Option<u32>,
     pub placement_id: Option<u32>,
+    /// The `r` key: which frame an `a=f` wrote. Only animation replies carry it.
+    pub frame_number: Option<u32>,
     pub quiet: u8,
 }
 
@@ -60,6 +119,7 @@ impl KittyReplyData {
             image_id: command.image_id,
             image_number: command.image_number,
             placement_id: command.placement_id,
+            frame_number: None,
             quiet: command.quiet,
         }
     }
@@ -72,6 +132,11 @@ pub struct KittyGrid {
     image_ids: HashMap<u32, InternalImageId>,
     image_numbers: HashMap<u32, Vec<u32>>,
     placements: Vec<KittyPlacement>,
+    virtual_placements: Vec<VirtualPlacement>,
+    /// Keeps a placeholder run's `placement_uid` stable across the rebuilds it goes through on
+    /// every frame. The host-side diff in `output/mod.rs` treats a new uid as a new placement, so
+    /// handing out a fresh one each time would retransmit every placeholder image continuously.
+    placeholder_uids: HashMap<(u32, u32, usize, usize), u64>,
     next_synthetic_image_id: u32,
     front_drops: u64,
     merged_rows: u64,
@@ -109,6 +174,19 @@ fn enoent(command: &KittyCommand, message: &str) -> KittyError {
     }
 }
 
+/// The three ways a relative placement can be refused, all echoing the same fields as the errors
+/// above so a client can tell which of several in-flight placements was rejected.
+fn relative_error(command: &KittyCommand, code: KittyErrorCode, message: &str) -> KittyError {
+    KittyError {
+        code,
+        message: message.to_owned(),
+        image_id: command.image_id,
+        image_number: command.image_number,
+        placement_id: command.placement_id,
+        quiet: command.quiet,
+    }
+}
+
 impl KittyGrid {
     pub fn new(
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -121,6 +199,8 @@ impl KittyGrid {
             image_ids: HashMap::new(),
             image_numbers: HashMap::new(),
             placements: Vec::new(),
+            virtual_placements: Vec::new(),
+            placeholder_uids: HashMap::new(),
             next_synthetic_image_id: u32::MAX,
             front_drops: 0,
             merged_rows: 0,
@@ -196,6 +276,9 @@ impl KittyGrid {
         };
         if pane_image_id != 0 {
             if let Some(old_internal) = self.image_ids.get(&pane_image_id).copied() {
+                self.remove_virtual_placements(|virtual_placement| {
+                    virtual_placement.image_id == pane_image_id
+                });
                 let mut store = self.kitty_image_store.borrow_mut();
                 let mut kept = Vec::with_capacity(self.placements.len());
                 for placement in self.placements.drain(..) {
@@ -259,6 +342,204 @@ impl KittyGrid {
         }
         Ok((pane_image_id, internal))
     }
+    /// `a=f`: build one animation frame and add it to an image, or rewrite an existing one.
+    ///
+    /// Spec, "Transferring animation frame data": the frame starts as a copy of the frame named by
+    /// `c`, or as a flat field of the `Y` background colour when no base is given. The payload then
+    /// covers the rectangle at `x`,`y` of size `s`x`v`, either alpha-blended onto the canvas or
+    /// overwriting it when `X=1`. Returns the 1-based number of the frame written; the root image
+    /// is frame 1, so the first frame a client adds is frame 2.
+    pub fn transmit_frame(
+        &mut self,
+        command: &KittyCommand,
+        image: DecodedImage,
+    ) -> Result<u32, KittyError> {
+        let (_, internal) = self.resolve_display_target(command)?;
+        let (frame_rgba, frame_width, frame_height) = KittyImageStore::normalize_to_rgba(image);
+        let mut store = self.kitty_image_store.borrow_mut();
+        let stored = store
+            .get(internal)
+            .ok_or_else(|| enoent(command, "unknown image id"))?;
+        let (image_width, image_height) = (stored.width as usize, stored.height as usize);
+        let edit = command.frame_target();
+        if let Some(edit) = edit {
+            if stored.frame_rgba(edit).is_none() {
+                return Err(enoent(command, "no such frame"));
+            }
+        }
+        // The canvas the payload is drawn onto: a copy of the base frame, or the background colour.
+        let mut canvas = match command.base_frame() {
+            Some(base) => stored
+                .frame_rgba(base)
+                .ok_or_else(|| enoent(command, "no such base frame"))?
+                .to_vec(),
+            None => match edit {
+                // Editing a frame in place patches what is already there.
+                Some(edit) => stored
+                    .frame_rgba(edit)
+                    .ok_or_else(|| enoent(command, "no such frame"))?
+                    .to_vec(),
+                None => background_canvas(command.frame_background(), image_width, image_height),
+            },
+        };
+        let (dest_x, dest_y) = (command.source_x as usize, command.source_y as usize);
+        let (data_w, data_h) = (frame_width as usize, frame_height as usize);
+        if dest_x + data_w > image_width || dest_y + data_h > image_height {
+            return Err(einval(command, "frame data does not fit inside the image"));
+        }
+        blit_rgba(
+            &mut canvas,
+            image_width,
+            (dest_x, dest_y),
+            &frame_rgba,
+            (data_w, data_h),
+            (0, 0),
+            (data_w, data_h),
+            command.frame_overwrites(),
+        );
+        let gap_ms = match command.frame_gap_ms() {
+            0 => DEFAULT_FRAME_GAP_MS,
+            gap_ms => gap_ms,
+        };
+        store
+            .write_frame(internal, edit, canvas, gap_ms)
+            .ok_or_else(|| enoent(command, "no such frame"))
+    }
+    /// `a=a`: control playback. Nothing here advances the animation by itself — this terminal has
+    /// no playback clock — but `c` makes a frame current, which is what a client driving its own
+    /// animation uses, and the rest is recorded so it can be read back.
+    pub fn animate(&mut self, command: &KittyCommand) -> Result<(), KittyError> {
+        let (_, internal) = self.resolve_display_target(command)?;
+        let mut store = self.kitty_image_store.borrow_mut();
+        if let Some(gap_frame) = command.frame_target() {
+            store
+                .set_frame_gap(internal, gap_frame, command.frame_gap_ms())
+                .ok_or_else(|| enoent(command, "no such frame"))?;
+        }
+        if let Some(current) = command.base_frame() {
+            store
+                .set_current_frame(internal, current)
+                .ok_or_else(|| enoent(command, "no such frame"))?;
+        }
+        store.set_animation_state(
+            internal,
+            command.animation_state(),
+            command.animation_loop_count(),
+        );
+        drop(store);
+        if command.base_frame().is_some() {
+            // The pixels behind every placement of this image just changed, so the host has to be
+            // sent the new ones. A fresh uid is exactly the "this is different, retransmit it"
+            // signal `output/mod.rs` reads - the opposite of a relative placement, which keeps its
+            // uid because only its position moved.
+            self.retransmit_placements_of(internal);
+        }
+        Ok(())
+    }
+    /// `a=c`: blit a rectangle of one frame onto another.
+    ///
+    /// Note the polarity is the opposite of frame loading: here `r` is the source and `c` the
+    /// destination, and `x`,`y` locate the rectangle in the destination while `X`,`Y` locate it in
+    /// the source.
+    pub fn compose_frames(&mut self, command: &KittyCommand) -> Result<(), KittyError> {
+        let (_, internal) = self.resolve_display_target(command)?;
+        let mut store = self.kitty_image_store.borrow_mut();
+        let stored = store
+            .get(internal)
+            .ok_or_else(|| enoent(command, "unknown image id"))?;
+        let (image_width, image_height) = (stored.width as usize, stored.height as usize);
+        let source_frame = command.frame_target().unwrap_or(1);
+        let dest_frame = command.base_frame().unwrap_or(1);
+        let source = stored
+            .frame_rgba(source_frame)
+            .ok_or_else(|| enoent(command, "no such source frame"))?
+            .to_vec();
+        let mut dest = stored
+            .frame_rgba(dest_frame)
+            .ok_or_else(|| enoent(command, "no such destination frame"))?
+            .to_vec();
+        // Spec: `w` and `h` default to the whole frame. Every offset is checked rather than
+        // clamped - a client that sends a rectangle running off the edge has a bug, and silently
+        // composing a different rectangle than it asked for would hide it.
+        let width = match command.source_w {
+            0 => image_width,
+            w => w as usize,
+        };
+        let height = match command.source_h {
+            0 => image_height,
+            h => h as usize,
+        };
+        let dest_origin = (command.source_x as usize, command.source_y as usize);
+        let source_origin = (
+            command.cell_offset_x as usize,
+            command.cell_offset_y as usize,
+        );
+        for (origin, what) in [(dest_origin, "destination"), (source_origin, "source")] {
+            if origin.0.saturating_add(width) > image_width
+                || origin.1.saturating_add(height) > image_height
+            {
+                return Err(einval(
+                    command,
+                    &format!("{} rectangle is outside the frame", what),
+                ));
+            }
+        }
+        blit_rgba(
+            &mut dest,
+            image_width,
+            dest_origin,
+            &source,
+            (image_width, image_height),
+            source_origin,
+            (width, height),
+            command.frame_overwrites(),
+        );
+        store
+            .write_frame(internal, Some(dest_frame), dest, 0)
+            .ok_or_else(|| enoent(command, "no such destination frame"))?;
+        drop(store);
+        self.retransmit_placements_of(internal);
+        Ok(())
+    }
+    /// `d=f`/`d=F`: delete an image's animation frames, or the image itself.
+    ///
+    /// Spec: lowercase leaves the image displayable — it still has its root frame — while
+    /// uppercase frees the image data, as everywhere else in the delete matrix.
+    fn delete_frames(&mut self, command: &KittyCommand, uppercase: bool) -> Result<(), KittyError> {
+        let (pane_image_id, internal) = match self.resolve_display_target(command) {
+            Ok(resolved) => resolved,
+            // A delete naming an image that is already gone has nothing to do and nothing to
+            // report, which is how every other specifier treats an unknown target.
+            Err(_) => return Ok(()),
+        };
+        if uppercase {
+            self.retain_placements(|placement| placement.internal_id != internal);
+            self.remove_virtual_placements(|virtual_placement| {
+                virtual_placement.internal_id == internal
+            });
+            self.cascade_relative_deletes(true);
+            self.kitty_image_store.borrow_mut().remove_image(internal);
+            self.image_ids.remove(&pane_image_id);
+            self.drop_image_number_references(pane_image_id);
+            return Ok(());
+        }
+        self.kitty_image_store
+            .borrow_mut()
+            .remove_frames(internal, command.frame_target())
+            .ok_or_else(|| enoent(command, "no such frame"))?;
+        self.retransmit_placements_of(internal);
+        Ok(())
+    }
+    /// Give every placement of an image a new uid, which is how `output/mod.rs` is told the pixels
+    /// behind it changed and the image has to be sent to the host again.
+    fn retransmit_placements_of(&mut self, internal: InternalImageId) {
+        let mut store = self.kitty_image_store.borrow_mut();
+        for placement in self.placements.iter_mut() {
+            if placement.internal_id == internal {
+                placement.placement_uid = store.next_placement_uid();
+            }
+        }
+    }
     pub fn place(
         &mut self,
         pane_image_id: u32,
@@ -267,7 +548,7 @@ impl KittyGrid {
         cursor_px: (usize, usize),
         cell: SizeInPixels,
         vertical_anchor: KittyVerticalAnchor,
-    ) -> Result<(u16, u16), KittyError> {
+    ) -> Result<Option<(u16, u16)>, KittyError> {
         let (image_width, image_height) = {
             let store = self.kitty_image_store.borrow();
             let image = store
@@ -293,6 +574,28 @@ impl KittyGrid {
         if source_w == 0 || source_h == 0 {
             return Err(einval(command, "empty source rectangle"));
         }
+        // The id this placement will get, needed up front: the self-parent and cycle checks are
+        // about the placement being created, and they have to run before the retain further down
+        // removes the placement they are checking against.
+        let placement_id = if pane_image_id != 0 {
+            command.placement_id.unwrap_or(0)
+        } else {
+            0
+        };
+        let relative_to = self.validate_relative_parent(command, pane_image_id, placement_id)?;
+        if command.virtual_placement {
+            self.place_virtual(
+                pane_image_id,
+                internal,
+                command,
+                cell,
+                (image_width, image_height),
+                (source_x, source_y, source_w, source_h),
+            )?;
+            // Spec: a virtual placement is "invisible" until placeholder cells instantiate it, so
+            // it occupies no cells here and the cursor has nothing to move past.
+            return Ok(None);
+        }
         let off_x = std::cmp::min(command.cell_offset_x as usize, cell.width - 1);
         let off_y = std::cmp::min(command.cell_offset_y as usize, cell.height - 1);
         let ceil_div = |a: usize, b: usize| a.div_ceil(b);
@@ -305,15 +608,17 @@ impl KittyGrid {
                     ceil_div(source_h + off_y, cell.height),
                     false,
                 ),
+                // Spec, "Controlling displayed image layout": with only one of `c`/`r` given the
+                // other follows the source aspect ratio, and "if you specify a start cell offset
+                // via the X,Y keys, it is not added to the number of rows/columns" - so the
+                // derived axis is the scaled size alone.
                 (c, 0) => {
                     let dst_w = c * cell.width;
                     let dst_h = std::cmp::max(
                         ((dst_w as f64) * (source_h as f64) / (source_w as f64)).round() as usize,
                         1,
                     );
-                    let height_px =
-                        ((dst_w + off_x) as f64) * (source_h as f64) / (source_w as f64);
-                    let rows = std::cmp::max((height_px / cell.height as f64).ceil() as usize, 1);
+                    let rows = std::cmp::max(ceil_div(dst_h, cell.height), 1);
                     (dst_w, dst_h, c, rows, true)
                 },
                 (0, r) => {
@@ -322,8 +627,7 @@ impl KittyGrid {
                         ((dst_h as f64) * (source_w as f64) / (source_h as f64)).round() as usize,
                         1,
                     );
-                    let width_px = ((dst_h + off_y) as f64) * (source_w as f64) / (source_h as f64);
-                    let cols = std::cmp::max((width_px / cell.width as f64).ceil() as usize, 1);
+                    let cols = std::cmp::max(ceil_div(dst_w, cell.width), 1);
                     (dst_w, dst_h, cols, r, true)
                 },
                 (c, r) => (c * cell.width, r * cell.height, c, r, true),
@@ -336,7 +640,7 @@ impl KittyGrid {
                     .get(internal)
                     .ok_or_else(|| enoent(command, "unknown image id"))?;
                 let cropped = crop_rgba(
-                    &image.rgba,
+                    image.displayed_rgba(),
                     image_width,
                     image_height,
                     source_x,
@@ -352,16 +656,24 @@ impl KittyGrid {
                 scaled_bytes,
             );
         }
+        let (origin_x, origin_y) = match &relative_to {
+            // Spec: "a relative placement gets its position specified based on another placement,
+            // instead of the cursor". `validate_relative_parent` has already established that the
+            // parent resolves, so this cannot be `None`.
+            Some(parent) => self.relative_origin_px(parent, cell).ok_or_else(|| {
+                relative_error(
+                    command,
+                    KittyErrorCode::Enoparent,
+                    "parent placement no longer exists",
+                )
+            })?,
+            None => (cursor_px.0 + off_x, (cursor_px.1 + off_y) as isize),
+        };
         let display_rect = PixelRect {
-            x: cursor_px.0 + off_x,
-            y: (cursor_px.1 + off_y) as isize,
+            x: origin_x,
+            y: origin_y,
             width: dst_w,
             height: dst_h,
-        };
-        let placement_id = if pane_image_id != 0 {
-            command.placement_id.unwrap_or(0)
-        } else {
-            0
         };
         let mut reused_uid: Option<u64> = None;
         if pane_image_id != 0 && placement_id != 0 {
@@ -400,14 +712,363 @@ impl KittyGrid {
                 None
             },
             dest_cells,
+            variant_key: dest_cells,
             cell_offset: (off_x as u32, off_y as u32),
             z_index: command.z_index,
             vertical_anchor,
+            is_placeholder: false,
+            relative_to,
         });
         self.kitty_image_store
             .borrow_mut()
             .add_placement_ref(internal);
-        Ok(dest_cells)
+        if relative_to.is_some() {
+            // Spec, "Relative placements": "the cursor must not move after a relative position,
+            // regardless of the value of the `C` key to control cursor movement". Reporting no
+            // cells is how the caller is told there is nothing to advance past.
+            return Ok(None);
+        }
+        Ok(Some(dest_cells))
+    }
+    /// Check a `P`/`Q` pair over against everything already placed, and turn it into the parent
+    /// link the new placement will carry.
+    ///
+    /// Spec, "Relative placements": the four ways this can fail are a virtual placement asking to
+    /// be relative and a placement made its own parent (both `EINVAL`), a parent that does not
+    /// exist (`ENOPARENT`), a chain that loops (`ECYCLE`) and one that is too long (`ETOODEEP`).
+    fn validate_relative_parent(
+        &self,
+        command: &KittyCommand,
+        pane_image_id: u32,
+        placement_id: u32,
+    ) -> Result<Option<RelativeParent>, KittyError> {
+        let parent_image_id = match command.parent_image_id {
+            Some(parent_image_id) => parent_image_id,
+            None => return Ok(None),
+        };
+        // Spec: "Virtual placements created for Unicode placeholder based images cannot also be
+        // relative placements. [...] the terminal must respond with the EINVAL error code."
+        if command.virtual_placement {
+            return Err(relative_error(
+                command,
+                KittyErrorCode::Einval,
+                "a virtual placement cannot be relative",
+            ));
+        }
+        let parent = RelativeParent {
+            image_id: parent_image_id,
+            placement_id: command.parent_placement_id,
+            offset_cells: command.relative_offset_cells,
+        };
+        if parent.matches(pane_image_id, placement_id) {
+            return Err(relative_error(
+                command,
+                KittyErrorCode::Einval,
+                "a placement cannot be its own parent",
+            ));
+        }
+        if !self.relative_parent_exists(&parent) {
+            return Err(relative_error(
+                command,
+                KittyErrorCode::Enoparent,
+                "no such parent placement",
+            ));
+        }
+        // Walk up from the parent. Reaching the placement being created closes a loop; running
+        // past the depth limit means the chain is longer than this terminal resolves.
+        let mut ancestor = self.relative_parent_of(&parent);
+        for _ in 0..MAX_RELATIVE_DEPTH {
+            let link = match ancestor {
+                Some(link) => link,
+                None => return Ok(Some(parent)),
+            };
+            if link.matches(pane_image_id, placement_id) {
+                return Err(relative_error(
+                    command,
+                    KittyErrorCode::Ecycle,
+                    "relative placements form a cycle",
+                ));
+            }
+            ancestor = self.relative_parent_of(&link);
+        }
+        Err(relative_error(
+            command,
+            KittyErrorCode::Etoodeep,
+            "relative placement chain is too deep",
+        ))
+    }
+    /// Whether anything a `P`/`Q` pair could name is currently placed. A virtual placement counts
+    /// even before any placeholder cells have instantiated it — it is a placement, it just has no
+    /// position yet.
+    fn relative_parent_exists(&self, parent: &RelativeParent) -> bool {
+        self.placements
+            .iter()
+            .any(|placement| parent.matches(placement.image_id, placement.placement_id))
+            || self.virtual_placements.iter().any(|virtual_placement| {
+                parent.matches(virtual_placement.image_id, virtual_placement.placement_id)
+            })
+    }
+    /// The parent of the placement `parent` names, for walking a chain upwards.
+    fn relative_parent_of(&self, parent: &RelativeParent) -> Option<RelativeParent> {
+        self.placements
+            .iter()
+            .find(|placement| parent.matches(placement.image_id, placement.placement_id))
+            .and_then(|placement| placement.relative_to)
+    }
+    /// Where a placement hanging off `parent` starts, in absolute pixels.
+    ///
+    /// A virtual parent has no rect of its own. Spec: "When a virtual placement is the parent, its
+    /// position is derived from all the actual Unicode placeholder images that refer to it. The x
+    /// position is the minimum of all the placeholder x positions and the y position is the
+    /// minimum of all the placeholder y positions." That is what makes a one-pixel placeholder a
+    /// movable anchor for a real image.
+    fn relative_origin_px(
+        &self,
+        parent: &RelativeParent,
+        cell: SizeInPixels,
+    ) -> Option<(usize, isize)> {
+        let mut origin: Option<(usize, isize)> = None;
+        for placement in self
+            .placements
+            .iter()
+            .filter(|placement| parent.matches(placement.image_id, placement.placement_id))
+        {
+            let (x, y) = (placement.display_rect.x, placement.display_rect.y);
+            origin = Some(match origin {
+                Some((min_x, min_y)) => (std::cmp::min(min_x, x), std::cmp::min(min_y, y)),
+                None => (x, y),
+            });
+        }
+        let (parent_x, parent_y) = origin?;
+        let (offset_columns, offset_rows) = parent.offset_cells;
+        let x = (parent_x as isize + offset_columns as isize * cell.width as isize).max(0) as usize;
+        let y = parent_y + offset_rows as isize * cell.height as isize;
+        Some((x, y))
+    }
+    /// Reposition every relative placement from its parent.
+    ///
+    /// Parents move: the grid scrolls, lines reflow, and a virtual parent's position comes from
+    /// placeholder cells that are rebuilt every frame. Rather than hook each of those, the whole
+    /// set is re-derived, repeatedly so a chain settles from the root down. `placement_uid` is
+    /// deliberately left alone — the host-side diff in `output/mod.rs` reads a new uid as "this is
+    /// a different image, retransmit it", and a placement that merely moved is not.
+    pub fn resolve_relative_placements(&mut self, cell: SizeInPixels) {
+        if !self.has_relative_placements() {
+            return;
+        }
+        for _ in 0..MAX_RELATIVE_DEPTH {
+            let mut moved = false;
+            for index in 0..self.placements.len() {
+                let parent = match self.placements[index].relative_to {
+                    Some(parent) => parent,
+                    None => continue,
+                };
+                if let Some((x, y)) = self.relative_origin_px(&parent, cell) {
+                    let rect = &mut self.placements[index].display_rect;
+                    if rect.x != x || rect.y != y {
+                        rect.x = x;
+                        rect.y = y;
+                        moved = true;
+                    }
+                }
+            }
+            if !moved {
+                return;
+            }
+        }
+    }
+    /// Drop every placement whose parent has gone, and keep dropping until nothing more does.
+    ///
+    /// Spec, "Relative placements": "The lifetime of a relative placement is tied to the lifetime
+    /// of its parent. If its parent is deleted, it is deleted as well." A child has no position of
+    /// its own to fall back on, so leaving it behind would pin it wherever its parent last was.
+    ///
+    /// `free_image_data` follows the case of the delete specifier that started the cascade: an
+    /// uppercase delete frees the pixels, so a child image left with no placements at all goes with
+    /// them, while a lowercase one only drops the placement and leaves the image for re-display.
+    fn cascade_relative_deletes(&mut self, free_image_data: bool) {
+        if !self.has_relative_placements() {
+            return;
+        }
+        for _ in 0..MAX_RELATIVE_DEPTH {
+            let orphaned: Vec<usize> = self
+                .placements
+                .iter()
+                .enumerate()
+                .filter(|(_, placement)| match &placement.relative_to {
+                    Some(parent) => !self.relative_parent_exists(parent),
+                    None => false,
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if orphaned.is_empty() {
+                return;
+            }
+            let mut store = self.kitty_image_store.borrow_mut();
+            for index in orphaned.into_iter().rev() {
+                let placement = self.placements.remove(index);
+                if free_image_data {
+                    store.free(placement.internal_id);
+                } else {
+                    store.remove_placement_ref(placement.internal_id);
+                }
+            }
+        }
+    }
+    pub fn has_relative_placements(&self) -> bool {
+        self.placements
+            .iter()
+            .any(|placement| placement.relative_to.is_some())
+    }
+    /// Create the prototype a `U=1` command asks for: crop the source rectangle, fit it into the
+    /// `c` x `r` cell box preserving its aspect ratio, and keep that raster in the store under the
+    /// box's key so every run of placeholder cells naming this placement reads from the one copy.
+    fn place_virtual(
+        &mut self,
+        pane_image_id: u32,
+        internal: InternalImageId,
+        command: &KittyCommand,
+        cell: SizeInPixels,
+        image_size: (usize, usize),
+        source: (usize, usize, usize, usize),
+    ) -> Result<(), KittyError> {
+        let (image_width, image_height) = image_size;
+        let (source_x, source_y, source_w, source_h) = source;
+        let ceil_div = |a: usize, b: usize| std::cmp::max(a.div_ceil(b), 1);
+        // Spec, "Controlling displayed image layout": with only one of `c`/`r` given the other
+        // follows the source aspect ratio; with neither, the image keeps its natural size.
+        let (columns, rows) = match (command.columns as usize, command.rows as usize) {
+            (0, 0) => (
+                ceil_div(source_w, cell.width),
+                ceil_div(source_h, cell.height),
+            ),
+            (c, 0) => (
+                c,
+                ceil_div(c * cell.width * source_h / source_w.max(1), cell.height),
+            ),
+            (0, r) => (
+                ceil_div(r * cell.height * source_w / source_h.max(1), cell.width),
+                r,
+            ),
+            (c, r) => (c, r),
+        };
+        let box_px = (columns * cell.width, rows * cell.height);
+        // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio
+        // preserved" - so a square image in a wide box keeps its shape rather than stretching.
+        let scale = f64::min(
+            box_px.0 as f64 / source_w as f64,
+            box_px.1 as f64 / source_h as f64,
+        );
+        let fitted_px = (
+            std::cmp::max((source_w as f64 * scale).round() as usize, 1),
+            std::cmp::max((source_h as f64 * scale).round() as usize, 1),
+        );
+        let variant_key = (columns as u16, rows as u16);
+        let fitted_bytes = {
+            let store = self.kitty_image_store.borrow();
+            let image = store
+                .get(internal)
+                .ok_or_else(|| enoent(command, "unknown image id"))?;
+            let cropped = crop_rgba(
+                image.displayed_rgba(),
+                image_width,
+                image_height,
+                source_x,
+                source_y,
+                source_w,
+                source_h,
+            );
+            scale_rgba(&cropped, source_w, source_h, fitted_px.0, fitted_px.1)
+        };
+        self.kitty_image_store
+            .borrow_mut()
+            .add_scaled_variant(internal, variant_key, fitted_bytes);
+        let placement_id = if pane_image_id != 0 {
+            command.placement_id.unwrap_or(0)
+        } else {
+            0
+        };
+        self.remove_virtual_placements(|virtual_placement| {
+            virtual_placement.image_id == pane_image_id
+                && virtual_placement.placement_id == placement_id
+        });
+        self.virtual_placements.push(VirtualPlacement {
+            image_id: pane_image_id,
+            placement_id,
+            internal_id: internal,
+            columns: columns as u16,
+            rows: rows as u16,
+            fitted_px,
+            z_index: command.z_index,
+        });
+        self.kitty_image_store
+            .borrow_mut()
+            .add_placement_ref(internal);
+        Ok(())
+    }
+    pub fn virtual_placements(&self) -> &[VirtualPlacement] {
+        &self.virtual_placements
+    }
+    pub fn has_virtual_placements(&self) -> bool {
+        !self.virtual_placements.is_empty()
+    }
+    /// Drop the virtual placements matching `matches`, releasing the store reference each holds.
+    fn remove_virtual_placements<F: FnMut(&VirtualPlacement) -> bool>(&mut self, mut matches: F) {
+        if self.virtual_placements.is_empty() {
+            return;
+        }
+        let mut store = self.kitty_image_store.borrow_mut();
+        let mut kept = Vec::with_capacity(self.virtual_placements.len());
+        for virtual_placement in self.virtual_placements.drain(..) {
+            if matches(&virtual_placement) {
+                store.remove_placement_ref(virtual_placement.internal_id);
+            } else {
+                kept.push(virtual_placement);
+            }
+        }
+        self.virtual_placements = kept;
+    }
+    /// Replace the placements derived from unicode placeholder cells with a freshly resolved set.
+    ///
+    /// The grid rebuilds these from its own contents rather than mutating them in step with every
+    /// edit, so erasing a line, scrolling, resizing and reflowing all come out right without a
+    /// hook in any of them: the cells are the state.
+    pub fn set_placeholder_placements(&mut self, derived: Vec<KittyPlacement>) {
+        if self.placements.iter().all(|p| !p.is_placeholder) && derived.is_empty() {
+            return;
+        }
+        let mut store = self.kitty_image_store.borrow_mut();
+        let mut kept = Vec::with_capacity(self.placements.len());
+        for placement in self.placements.drain(..) {
+            if placement.is_placeholder {
+                store.remove_placement_ref(placement.internal_id);
+            } else {
+                kept.push(placement);
+            }
+        }
+        for placement in &derived {
+            store.add_placement_ref(placement.internal_id);
+        }
+        drop(store);
+        kept.extend(derived);
+        self.placements = kept;
+    }
+    /// A `placement_uid` that stays the same for as long as this run of placeholder cells does.
+    pub fn placeholder_uid(&mut self, key: (u32, u32, usize, usize)) -> u64 {
+        if let Some(uid) = self.placeholder_uids.get(&key) {
+            return *uid;
+        }
+        let uid = self.kitty_image_store.borrow_mut().next_placement_uid();
+        self.placeholder_uids.insert(key, uid);
+        uid
+    }
+    /// Forget the uids of runs that no longer exist, so a pane that has scrolled through a lot of
+    /// placeholder content does not accumulate them forever.
+    pub fn retain_placeholder_uids(
+        &mut self,
+        live: &std::collections::HashSet<(u32, u32, usize, usize)>,
+    ) {
+        self.placeholder_uids.retain(|key, _| live.contains(key));
     }
     pub fn delete(
         &mut self,
@@ -419,6 +1080,11 @@ impl KittyGrid {
         let specifier = command.delete_specifier.unwrap_or('a');
         let uppercase = specifier.is_ascii_uppercase();
         let lower = specifier.to_ascii_lowercase();
+        // `f` names frames rather than a region of the screen, so none of the geometry below
+        // applies to it.
+        if lower == 'f' {
+            return self.delete_frames(command, uppercase);
+        }
         let cell = *self.character_cell_size.borrow();
         let geometry_needed = matches!(lower, 'a' | 'c' | 'p' | 'q' | 'x' | 'y');
         let cell = match (cell, geometry_needed) {
@@ -544,6 +1210,28 @@ impl KittyGrid {
                 _ => false,
             }
         };
+        // Spec, "Unicode placeholders": "Virtual placements can be deleted by a deletion command
+        // only when the `d` key is equal to `i`, `I`, `r`, `R`, `n` or `N`." The rest are
+        // positional, and a virtual placement has no position to select it by.
+        if matches!(lower, 'i' | 'n' | 'r') {
+            let target_image_id = target_image_id;
+            let placement_id = command.placement_id;
+            let (id_low, id_high) = (command.source_x, command.source_y);
+            self.remove_virtual_placements(|virtual_placement| match lower {
+                'r' => {
+                    virtual_placement.image_id >= id_low && virtual_placement.image_id <= id_high
+                },
+                _ => match target_image_id {
+                    Some(target) => {
+                        virtual_placement.image_id == target
+                            && placement_id
+                                .map(|id| virtual_placement.placement_id == id)
+                                .unwrap_or(true)
+                    },
+                    None => false,
+                },
+            });
+        }
         {
             let mut store = self.kitty_image_store.borrow_mut();
             let mut kept = Vec::with_capacity(self.placements.len());
@@ -560,6 +1248,7 @@ impl KittyGrid {
             }
             self.placements = kept;
         }
+        self.cascade_relative_deletes(uppercase);
         if uppercase {
             match lower {
                 'i' | 'n' => {
@@ -567,7 +1256,11 @@ impl KittyGrid {
                     let no_surviving = !self
                         .placements
                         .iter()
-                        .any(|placement| placement.image_id == target);
+                        .any(|placement| placement.image_id == target)
+                        && !self
+                            .virtual_placements
+                            .iter()
+                            .any(|virtual_placement| virtual_placement.image_id == target);
                     if no_surviving {
                         if let Some(internal) = self.image_ids.get(&target).copied() {
                             self.kitty_image_store.borrow_mut().free(internal);
@@ -651,6 +1344,37 @@ impl KittyGrid {
                         total_rows: std::cmp::max(0, frame.total_rows as isize + -1) as usize,
                     });
             let height_to_reduce = cell.height as isize;
+            let mut store = self.kitty_image_store.borrow_mut();
+            let mut kept = Vec::with_capacity(self.placements.len());
+            for mut placement in self.placements.drain(..) {
+                placement.display_rect.y -= height_to_reduce;
+                if placement.display_rect.y + placement.display_rect.height as isize <= 0 {
+                    store.free(placement.internal_id);
+                } else {
+                    kept.push(placement);
+                }
+            }
+            self.placements = kept;
+        }
+    }
+    /// The scrollback has been discarded wholesale (`ESC[3J`). Placements that lived only up there
+    /// have nowhere left to be anchored and are freed; everything still on screen simply moves up
+    /// by the rows that went away.
+    ///
+    /// Spec, "Interaction with other terminal actions": erase commands other than `ESC[2J` "must
+    /// have no effect on graphics", so this must not become a `clear_all_placements` in disguise.
+    pub fn drop_scrollback_rows(&mut self, dropped_row_count: usize) {
+        if dropped_row_count == 0 {
+            return;
+        }
+        if let Some(cell) = *self.character_cell_size.borrow() {
+            self.rows_below_the_viewport =
+                self.rows_below_the_viewport
+                    .map(|frame| KittyRowsBelowTheViewport {
+                        first_row: frame.first_row.saturating_sub(dropped_row_count),
+                        total_rows: frame.total_rows.saturating_sub(dropped_row_count),
+                    });
+            let height_to_reduce = (dropped_row_count * cell.height) as isize;
             let mut store = self.kitty_image_store.borrow_mut();
             let mut kept = Vec::with_capacity(self.placements.len());
             for mut placement in self.placements.drain(..) {
@@ -859,7 +1583,7 @@ impl KittyGrid {
                         match store.get(internal) {
                             Some(image) => {
                                 let cropped = crop_rgba(
-                                    &image.rgba,
+                                    image.displayed_rgba(),
                                     image.width as usize,
                                     image.height as usize,
                                     source_rect.x,
@@ -1064,6 +1788,7 @@ impl KittyGrid {
                             cell_offset_y: placement.cell_offset.1,
                             z_index: placement.z_index,
                             dest_cells: placement.dest_cells,
+                            variant_key: placement.variant_key,
                             scaled_px: placement.scaled_px,
                             placement_uid: placement.placement_uid,
                         });
@@ -1072,6 +1797,66 @@ impl KittyGrid {
             }
         }
         changed_kitty_image_chunks
+    }
+}
+
+/// A frame-sized field of one colour, the canvas a new animation frame starts from.
+///
+/// Spec, `a=f` key `Y`: "the background colour to use for the frame, in 32-bit RGBA format. The
+/// default background colour when none is specified is 0 i.e. a black, transparent pixel."
+fn background_canvas(background: u32, width: usize, height: usize) -> Vec<u8> {
+    let pixel = background.to_be_bytes();
+    pixel.repeat(width * height)
+}
+
+/// Draw `src`'s rectangle onto `dest`, either overwriting the destination pixels or alpha-blending
+/// onto them.
+///
+/// Both rasters are RGBA and both rectangles are the same size; the caller has already checked
+/// that they fit, so anything running past an edge here is clipped rather than wrapped.
+#[allow(clippy::too_many_arguments)]
+fn blit_rgba(
+    dest: &mut [u8],
+    dest_width: usize,
+    dest_origin: (usize, usize),
+    src: &[u8],
+    src_size: (usize, usize),
+    src_origin: (usize, usize),
+    size: (usize, usize),
+    overwrite: bool,
+) {
+    let (width, height) = size;
+    for row in 0..height {
+        let src_row = src_origin.1 + row;
+        let dest_row = dest_origin.1 + row;
+        if src_row >= src_size.1 {
+            break;
+        }
+        for column in 0..width {
+            let src_column = src_origin.0 + column;
+            let dest_column = dest_origin.0 + column;
+            if src_column >= src_size.0 || dest_column >= dest_width {
+                break;
+            }
+            let src_index = (src_row * src_size.0 + src_column) * 4;
+            let dest_index = (dest_row * dest_width + dest_column) * 4;
+            if src_index + 4 > src.len() || dest_index + 4 > dest.len() {
+                break;
+            }
+            if overwrite {
+                dest[dest_index..dest_index + 4].copy_from_slice(&src[src_index..src_index + 4]);
+                continue;
+            }
+            let alpha = src[src_index + 3] as u32;
+            for channel in 0..3 {
+                let over = src[src_index + channel] as u32;
+                let under = dest[dest_index + channel] as u32;
+                dest[dest_index + channel] =
+                    ((over * alpha + under * (255 - alpha)) / 255).min(255) as u8;
+            }
+            dest[dest_index + 3] =
+                (alpha + (dest[dest_index + 3] as u32) * (255 - alpha) / 255).min(255) as u8;
+        }
     }
 }
 
@@ -1134,3 +1919,7 @@ pub fn scale_rgba(src: &[u8], src_w: usize, src_h: usize, dst_w: usize, dst_h: u
 #[cfg(test)]
 #[path = "./unit/grid_state_tests.rs"]
 mod grid_state_tests;
+
+#[cfg(test)]
+#[path = "./unit/grid_state_spec_tests.rs"]
+mod grid_state_spec_tests;

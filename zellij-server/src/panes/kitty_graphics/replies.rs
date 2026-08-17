@@ -1,7 +1,12 @@
 use super::grid_state::KittyReplyData;
 use super::parser::KittyError;
 
-fn keys(image_id: Option<u32>, image_number: Option<u32>, placement_id: Option<u32>) -> String {
+fn keys(
+    image_id: Option<u32>,
+    image_number: Option<u32>,
+    placement_id: Option<u32>,
+    frame_number: Option<u32>,
+) -> String {
     let mut components = Vec::new();
     if let Some(image_id) = image_id {
         components.push(format!("i={}", image_id));
@@ -11,6 +16,10 @@ fn keys(image_id: Option<u32>, image_number: Option<u32>, placement_id: Option<u
     }
     if let Some(placement_id) = placement_id {
         components.push(format!("p={}", placement_id));
+    }
+    // Spec, "Animation": a frame transmission is answered with the number of the frame it wrote.
+    if let Some(frame_number) = frame_number {
+        components.push(format!("r={}", frame_number));
     }
     components.join(",")
 }
@@ -35,7 +44,12 @@ pub fn format_kitty_reply(reply: &KittyReplyData, was_query: bool) -> Option<Vec
         return None;
     }
     Some(wrap(
-        keys(reply.image_id, reply.image_number, reply.placement_id),
+        keys(
+            reply.image_id,
+            reply.image_number,
+            reply.placement_id,
+            reply.frame_number,
+        ),
         b"OK",
     ))
 }
@@ -45,7 +59,11 @@ pub fn format_kitty_error(error: &KittyError) -> Option<Vec<u8>> {
         return None;
     }
     Some(wrap(
-        keys(error.image_id, error.image_number, error.placement_id),
+        keys(error.image_id, error.image_number, error.placement_id, None),
         format!("{}:{}", error.code.as_str(), error.message).as_bytes(),
     ))
 }
+
+#[cfg(test)]
+#[path = "./unit/replies_tests.rs"]
+mod replies_tests;

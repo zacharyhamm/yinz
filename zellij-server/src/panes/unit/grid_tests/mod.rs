@@ -305,7 +305,15 @@ const KITTY_PNG_2X2: [u8; 75] = [
 ];
 
 fn new_kitty_grid(rows: usize, columns: usize) -> (Grid, Rc<RefCell<KittyImageStore>>) {
-    let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
+    new_kitty_grid_with_store(rows, columns, KittyImageStore::default())
+}
+
+fn new_kitty_grid_with_store(
+    rows: usize,
+    columns: usize,
+    store: KittyImageStore,
+) -> (Grid, Rc<RefCell<KittyImageStore>>) {
+    let kitty_image_store = Rc::new(RefCell::new(store));
     let grid = Grid::new(
         rows,
         columns,
@@ -367,7 +375,7 @@ fn rgba_raster(width: usize, height: usize) -> Vec<u8> {
     (0..width * height * 4).map(|i| (i % 251) as u8).collect()
 }
 
-fn kitty_placement_id_set(grid: &Grid) -> Vec<(u32, u32)> {
+fn kitty_placement_id_set(grid: &mut Grid) -> Vec<(u32, u32)> {
     let mut ids: Vec<(u32, u32)> = grid
         .kitty_placements()
         .iter()
@@ -405,14 +413,175 @@ fn build_three_kitty_placements(
     assert_eq!(grid.kitty_placement_count(), 3);
 }
 
-fn kitty_image_px_below_canonical_line(grid: &Grid, canonical_index: usize) -> isize {
-    let placement = &grid.kitty_placements()[0];
-    let cell_height = 20isize;
-    let line_start = buffer_cell_row_of_canonical_line(grid, canonical_index);
-    placement.display_rect.y - line_start * cell_height
+use crate::panes::kitty_graphics::test_support::{self, KittyReply};
+
+/// A terminal grid wired up the way `TerminalPane` wires one, so a conformance test can send
+/// graphics commands and read back the replies the application would see.
+///
+/// Cells are 10x20 pixels, matching [`new_kitty_grid`].
+pub struct KittySession {
+    pub grid: Grid,
+    pub store: Rc<RefCell<KittyImageStore>>,
+    vte_parser: vte::Parser,
+    interceptor: KittyApcInterceptor,
 }
 
-fn kitty_image_absolute_cell_row(grid: &Grid) -> isize {
+#[allow(dead_code)]
+impl KittySession {
+    pub fn new(rows: usize, columns: usize) -> Self {
+        Self::from_parts(new_kitty_grid(rows, columns))
+    }
+
+    /// A session whose image store is limited to `quota_bytes`, for exercising eviction.
+    pub fn with_quota(rows: usize, columns: usize, quota_bytes: usize) -> Self {
+        Self::from_parts(new_kitty_grid_with_store(
+            rows,
+            columns,
+            KittyImageStore::with_quota(quota_bytes),
+        ))
+    }
+
+    fn from_parts((grid, store): (Grid, Rc<RefCell<KittyImageStore>>)) -> Self {
+        KittySession {
+            grid,
+            store,
+            vte_parser: vte::Parser::new(),
+            interceptor: KittyApcInterceptor::new(),
+        }
+    }
+
+    /// Send a graphics command, returning the replies it produced.
+    pub fn send(&mut self, control: &str, payload: &[u8]) -> Vec<KittyReply> {
+        test_support::send_kitty(
+            &mut self.grid,
+            &mut self.vte_parser,
+            &mut self.interceptor,
+            control,
+            payload,
+        )
+    }
+
+    /// Send a graphics command whose payload is already base64-encoded, for chunked uploads that
+    /// have to split the encoded stream rather than the raw one.
+    pub fn send_raw(&mut self, control: &str, payload_b64: &str) -> Vec<KittyReply> {
+        test_support::send_kitty_raw(
+            &mut self.grid,
+            &mut self.vte_parser,
+            &mut self.interceptor,
+            control,
+            payload_b64,
+        )
+    }
+
+    /// Send a graphics command that should produce exactly one reply.
+    pub fn reply(&mut self, control: &str, payload: &[u8]) -> KittyReply {
+        self.send(control, payload)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("expected a reply to {:?}", control))
+    }
+
+    /// Send a graphics command expected to succeed, returning the image id reported back.
+    pub fn ok(&mut self, control: &str, payload: &[u8]) -> Option<u32> {
+        let replies = self.send(control, payload);
+        for reply in &replies {
+            assert!(
+                reply.is_ok(),
+                "expected {:?} to succeed, got {}:{}",
+                control,
+                reply.code,
+                reply.message
+            );
+        }
+        replies.first().and_then(|reply| reply.image_id)
+    }
+
+    /// Send a graphics command expected to fail, returning the error reply.
+    pub fn err(&mut self, control: &str, payload: &[u8]) -> KittyReply {
+        let reply = self.reply(control, payload);
+        assert!(
+            !reply.is_ok(),
+            "expected {:?} to be rejected, got OK",
+            control
+        );
+        reply
+    }
+
+    /// Feed arbitrary terminal input: text, CSI sequences, anything that is not a command whose
+    /// reply we want to inspect.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        test_support::feed_bytes(
+            &mut self.grid,
+            &mut self.vte_parser,
+            &mut self.interceptor,
+            bytes,
+        );
+    }
+
+    pub fn placement_count(&mut self) -> usize {
+        self.grid.kitty_placement_count()
+    }
+
+    pub fn image_count(&self) -> usize {
+        self.store.borrow().image_count()
+    }
+
+    /// The (image id, placement id) pairs on screen, sorted for stable comparison.
+    pub fn placement_ids(&mut self) -> Vec<(u32, u32)> {
+        kitty_placement_id_set(&mut self.grid)
+    }
+
+    /// How many placements currently overlap the viewport. Placements that have scrolled into
+    /// the scrollback still exist — they come back when the user scrolls up — but they are not
+    /// on screen, which is the distinction most of the spec's wording is about.
+    pub fn visible_placement_count(&mut self) -> usize {
+        let cell_height = 20isize;
+        let viewport_top = self.grid.lines_above.len() as isize * cell_height;
+        let viewport_bottom = viewport_top + self.grid.height as isize * cell_height;
+        self.grid
+            .kitty_placements()
+            .iter()
+            .filter(|placement| {
+                let top = placement.display_rect.y;
+                let bottom = top + placement.display_rect.height as isize;
+                bottom > viewport_top && top < viewport_bottom
+            })
+            .count()
+    }
+
+    /// The row the placement sits on, counted from the top of the viewport. Negative once it has
+    /// scrolled off the top.
+    pub fn placement_viewport_row(&mut self, index: usize) -> isize {
+        let cell_height = 20isize;
+        let viewport_top = self.grid.lines_above.len() as isize * cell_height;
+        (self.grid.kitty_placements()[index].display_rect.y - viewport_top).div_euclid(cell_height)
+    }
+
+    pub fn cursor(&self) -> (usize, usize) {
+        self.grid
+            .cursor_coordinates()
+            .map(|(x, y, _)| (x, y))
+            .expect("the cursor is visible")
+    }
+
+    /// Whether the image can still be displayed, which is how a client observes whether its data
+    /// survived a delete.
+    ///
+    /// The probe is a real `a=p`, so a successful one **leaves a placement behind**. Call it after
+    /// any assertion on placement counts, not before.
+    pub fn can_still_display_by_placing_it(&mut self, image_id: u32) -> bool {
+        self.reply(&format!("a=p,i={},C=1", image_id), &[]).is_ok()
+    }
+}
+
+fn kitty_image_px_below_canonical_line(grid: &mut Grid, canonical_index: usize) -> isize {
+    let placement_y = grid.kitty_placements()[0].display_rect.y;
+    let cell_height = 20isize;
+    let line_start = buffer_cell_row_of_canonical_line(grid, canonical_index);
+    placement_y - line_start * cell_height
+}
+
+fn kitty_image_absolute_cell_row(grid: &mut Grid) -> isize {
     let placement = &grid.kitty_placements()[0];
     let cell_height = 20isize;
     placement.display_rect.y.div_euclid(cell_height)
@@ -510,7 +679,7 @@ fn kitty_wrapped_scrollback_setup(
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid),
         "the image must start on the row of its marker line"
     );
@@ -560,14 +729,20 @@ fn kitty_marker_with_image_on_first_row(
     );
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
-    assert_eq!(kitty_image_absolute_cell_row(&grid), 0);
+    assert_eq!(kitty_image_absolute_cell_row(&mut grid), 0);
     (grid, kitty_image_store, vte_parser, interceptor)
 }
 
 mod app_replay;
 mod highlights;
 mod host_capabilities;
+mod kitty_animation;
 mod kitty_graphics;
+mod kitty_properties;
+mod kitty_relative_placement;
+mod kitty_shared_memory;
+mod kitty_spec;
+mod kitty_unicode_placeholders;
 mod osc133_selection;
 mod scroll_region_and_forwarding;
 mod sixel_and_ui;
