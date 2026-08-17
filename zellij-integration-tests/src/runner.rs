@@ -176,6 +176,7 @@ fn new_pane_cli_action(
         width: None,
         height: None,
         pinned: None,
+        overlay: None,
         stacked: false,
         blocking: false,
         block_until_exit_success: false,

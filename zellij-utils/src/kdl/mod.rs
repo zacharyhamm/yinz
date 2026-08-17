@@ -2247,7 +2247,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         command: Some(run_command_action),
                         pane_name: name,
                         coordinates: FloatingPaneCoordinates::new(
-                            x, y, width, height, pinned, borderless,
+                            x, y, width, height, pinned, borderless, None,
                         ),
                         near_current_pane: false,
                         no_focus: false,
