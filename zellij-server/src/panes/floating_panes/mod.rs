@@ -38,6 +38,15 @@ use zellij_utils::{
 const RESIZE_INCREMENT_WIDTH: usize = 5;
 const RESIZE_INCREMENT_HEIGHT: usize = 2;
 
+/// Whether any part of `geom` lies outside `viewport` - for a floating pane, whether it hangs off
+/// its tab and onto the global panes or the chrome beside them.
+fn geom_is_outside_viewport(geom: &PaneGeom, viewport: &Viewport) -> bool {
+    geom.x < viewport.x
+        || geom.y < viewport.y
+        || geom.x + geom.cols.as_usize() > viewport.x + viewport.cols
+        || geom.y + geom.rows.as_usize() > viewport.y + viewport.rows
+}
+
 pub struct FloatingPanes {
     panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
@@ -191,6 +200,81 @@ impl FloatingPanes {
         } else {
             Some(FloatingPanesStack { layers })
         }
+    }
+    /// The absolute geometries of the panes that sit outside the tab's viewport - dragged onto a
+    /// global pane, or opened over one. A resize normalizes the tab to origin 0 and translates
+    /// every pane by the old origin, which clamps at 0 and so cannot represent a pane to the left
+    /// of (or above) the tab: it would come back stuck against the tab's edge. Nothing about such a
+    /// pane depends on the tab's layout anyway, so it is taken out of the resize and put back
+    /// afterwards - see `restore_geoms_outside_viewport`.
+    ///
+    /// A pane placed as an overlay is left out: it was given coordinates against the surface and
+    /// `reapply_overlay_coordinates` re-resolves them against the new one, which is more than
+    /// restoring an absolute geometry can do.
+    pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, PaneGeom> {
+        let viewport = *self.viewport.borrow();
+        self.panes
+            .iter()
+            .filter(|(pane_id, _)| !self.overlay_coordinates.contains_key(pane_id))
+            .filter_map(|(pane_id, pane)| {
+                let geom = pane.position_and_size();
+                geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
+            })
+            .collect()
+    }
+
+    /// Put back what `geoms_outside_viewport` took out of a resize, keeping each pane on the
+    /// surface as it is now - a surface that shrank out from under a pane still moves it.
+    pub fn restore_geoms_outside_viewport(&mut self, geoms: HashMap<PaneId, PaneGeom>) {
+        if geoms.is_empty() {
+            return;
+        }
+        let surface = self.move_surface();
+        for (pane_id, mut geom) in geoms {
+            let Some(pane) = self.panes.get_mut(&pane_id) else {
+                continue;
+            };
+            geom.x = geom.x.min(
+                (surface.x + surface.cols)
+                    .saturating_sub(geom.cols.as_usize())
+                    .max(surface.x),
+            );
+            geom.y = geom.y.min(
+                (surface.y + surface.rows)
+                    .saturating_sub(geom.rows.as_usize())
+                    .max(surface.y),
+            );
+            pane.set_geom(geom);
+            self.desired_pane_positions.insert(pane_id, geom);
+        }
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+    }
+
+    /// Whether any pane currently being painted owns cells outside the tab's own viewport - on a
+    /// global pane, or on the chrome beside one. Nothing but this tab paints those cells, so a
+    /// client that stops looking at this tab has to be handed a repaint of what is underneath.
+    pub fn has_panes_outside_viewport(&self) -> bool {
+        let viewport = *self.viewport.borrow();
+        self.stack_layer_ids().iter().any(|pane_id| {
+            self.panes
+                .get(pane_id)
+                .is_some_and(|pane| geom_is_outside_viewport(&pane.position_and_size(), &viewport))
+        })
+    }
+    /// The topmost pane actually being painted at `position`, if any. Derived from
+    /// `stack_layer_ids` rather than from `panes` so it agrees with what is on the screen -
+    /// `get_pane_id_at` answers for panes that are not currently drawn at all.
+    pub fn visible_pane_id_at(&self, position: &Position) -> Option<PaneId> {
+        self.stack_layer_ids()
+            .iter()
+            .rev()
+            .find(|pane_id| {
+                self.panes
+                    .get(pane_id)
+                    .is_some_and(|pane| pane.contains(position))
+            })
+            .copied()
     }
     pub fn has_pinned_panes(&self) -> bool {
         self.panes
@@ -511,7 +595,6 @@ impl FloatingPanes {
         inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
-        overlays: bool,
     ) -> Result<()> {
         let err_context = || "failed to render output";
         let mut connected_clients: HashSet<ClientId> =
@@ -532,9 +615,6 @@ impl FloatingPanes {
         };
 
         for (kind, pane) in &self.panes {
-            if self.is_overlay(*kind) != overlays {
-                continue;
-            }
             if let Some(fullscreen_pane_id) = self.fullscreen_pane_id {
                 if kind != &fullscreen_pane_id {
                     continue;
@@ -579,30 +659,21 @@ impl FloatingPanes {
         let regular_fullscreen =
             fullscreen_pane_id.is_some() && !self.floating_fullscreen_covers_ui;
         let pane_frame_style = self.pane_frame_style;
-        // this pass draws only half the panes (the overlays or the rest), so a pane's place
-        // among the panes drawn here is not its place in the occlusion stack - take the index
-        // from the stack itself, or a pane ends up clipped against its own geometry
+        // a pane's place among the panes drawn here is not necessarily its place in the occlusion
+        // stack (a fullscreen pane draws alone, pinned panes draw without the rest), so take the
+        // index from the stack itself, or a pane ends up clipped against its own geometry
         let layer_ids = self.stack_layer_ids();
         let mut floating_panes: Vec<_> = if let Some(fullscreen_pane_id) = fullscreen_pane_id {
             self.panes
                 .iter_mut()
-                .filter(|(id, _)| {
-                    **id == fullscreen_pane_id
-                        && self.overlay_coordinates.contains_key(*id) == overlays
-                })
+                .filter(|(id, _)| **id == fullscreen_pane_id)
                 .collect()
         } else if self.panes_are_visible() {
-            self.panes
-                .iter_mut()
-                .filter(|(id, _)| self.overlay_coordinates.contains_key(*id) == overlays)
-                .collect()
+            self.panes.iter_mut().collect()
         } else if self.has_pinned_panes() {
             self.panes
                 .iter_mut()
-                .filter(|(id, p)| {
-                    p.position_and_size().is_pinned
-                        && self.overlay_coordinates.contains_key(*id) == overlays
-                })
+                .filter(|(_id, p)| p.position_and_size().is_pinned)
                 .collect()
         } else {
             vec![]
@@ -1042,7 +1113,7 @@ impl FloatingPanes {
             return;
         }
         let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
+        let viewport = self.move_surface();
         let mut floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -1062,7 +1133,7 @@ impl FloatingPanes {
             return;
         }
         let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
+        let viewport = self.move_surface();
         let mut floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -1082,7 +1153,7 @@ impl FloatingPanes {
             return;
         }
         let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
+        let viewport = self.move_surface();
         let mut floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -1102,7 +1173,7 @@ impl FloatingPanes {
             return;
         }
         let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
+        let viewport = self.move_surface();
         let mut floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -1268,6 +1339,15 @@ impl FloatingPanes {
         if !self.overlay_coordinates.is_empty() {
             self.set_pane_frames().non_fatal();
         }
+    }
+
+    /// The area a floating pane may be *moved* around in: the whole session surface, global panes
+    /// included. Placement (percentages, and the coordinates a pane is opened with) still resolves
+    /// against the tab's own viewport unless the pane asked to be an overlay - a default floating
+    /// pane should open in the middle of its tab, not draped over a sidebar - but once it exists,
+    /// dragging it is direct manipulation and the tab's edge is not a wall.
+    fn move_surface(&self) -> Viewport {
+        self.coordinate_space(true).0
     }
 
     fn coordinate_space(&self, overlay: bool) -> (Viewport, (usize, usize)) {
@@ -1650,7 +1730,7 @@ impl FloatingPanes {
     pub fn move_pane_to_position(&mut self, click_position: &Position) -> bool {
         // true => changed position
         let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
+        let viewport = self.move_surface();
         let Some((pane_id, _initial_position, previous_position)) =
             self.pane_being_moved_with_mouse
         else {

@@ -67,6 +67,71 @@ fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyH
     zellij.expect_pty_spawn()
 }
 
+/// Open an ordinary floating pane - no `--overlay` - in the tab's own area.
+fn open_plain_floating_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
+    zellij.run_cli_action(CliAction::NewPane {
+        direction: None,
+        command: vec!["floating-cmd".to_string()],
+        remote_host: None,
+        plugin: None,
+        cwd: None,
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: Some("20".to_string()),
+        y: Some("5".to_string()),
+        width: Some("30".to_string()),
+        height: Some("6".to_string()),
+        pinned: None,
+        overlay: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
+    });
+    zellij.expect_pty_spawn()
+}
+
+/// SGR mouse reports. Coordinates are 1-based; a release is the same button with a lowercase
+/// terminator, and a motion with the left button held sets the motion bit.
+fn sgr_press(column: usize, line: usize) -> Vec<u8> {
+    format!("\u{1b}[<0;{column};{line}M").into_bytes()
+}
+fn sgr_left_motion(column: usize, line: usize) -> Vec<u8> {
+    format!("\u{1b}[<32;{column};{line}M").into_bytes()
+}
+fn sgr_release(column: usize, line: usize) -> Vec<u8> {
+    format!("\u{1b}[<0;{column};{line}m").into_bytes()
+}
+
+/// The 0-based (column, row) of `needle` in the snapshot.
+fn position_of(snapshot: &zellij_integration_tests::GridSnapshot, needle: &str) -> (usize, usize) {
+    snapshot
+        .text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find(needle)
+                .map(|byte_index| (line[..byte_index].chars().count(), row))
+        })
+        .unwrap_or_else(|| panic!("{needle} is not on the screen:\n{}", snapshot.text))
+}
+
 /// A plain floating pane opened with `--overlay` is placed against the whole surface, so
 /// its cells land on the global pane, exactly like the finder/popup overlays. It must not
 /// keep rendering once its tab is left, and must come back once its tab is focused again.
@@ -121,6 +186,51 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
     zellij.run_cli_action(CliAction::GoToTab { index: 1 });
     zellij.wait_until("the overlay pane is back with its tab", |snapshot| {
         snapshot.contains("OVERLAY-CONTENT")
+    });
+
+    zellij.quit();
+}
+
+/// A tab is laid out over what the global panes leave it, so a floating pane dragged with the mouse
+/// used to be clamped to that area and stopped dead at the global pane's edge. No `--overlay` here:
+/// an ordinary floating pane floats above the global panes just as it does above the tiled ones.
+#[test]
+fn a_plain_floating_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("{NO_BACKGROUND_PLUGINS}mouse_mode true\n"))
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"first tab shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    });
+
+    let floating = open_plain_floating_pane(&zellij);
+    floating.output(b"DRAGME");
+    let snapshot = zellij.wait_until("the floating pane is up", |snapshot| {
+        snapshot.contains("DRAGME")
+    });
+
+    // the global pane takes the left half of a 120 column terminal
+    let global_pane_ends_at = TERMINAL_SIZE.cols / 2;
+    let (column, row) = position_of(&snapshot, "DRAGME");
+    assert!(
+        column >= global_pane_ends_at,
+        "the pane starts out in the tab, right of the global pane, but it is at column {column}"
+    );
+
+    // press its top frame and drag left, past the tab's edge and onto the global pane
+    let drag_to = column - 40;
+    zellij.send_stdin(&sgr_press(column + 1, row));
+    zellij.send_stdin(&sgr_left_motion(drag_to + 1, row));
+    zellij.send_stdin(&sgr_release(drag_to + 1, row));
+
+    zellij.wait_until("the pane is drawn over the global pane", |snapshot| {
+        snapshot.contains("DRAGME") && position_of(snapshot, "DRAGME").0 < global_pane_ends_at
     });
 
     zellij.quit();
