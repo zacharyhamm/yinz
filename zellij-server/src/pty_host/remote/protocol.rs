@@ -30,7 +30,13 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// during the handshake and refuse with a message naming both versions — a
 /// remote box running a different zellij build is the normal case, not the
 /// exception, so the failure has to be legible.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 1;
+/// v2 lets a `Spawn` carry no command at all — `RunCommand::remote_default_shell`
+/// asks the broker to resolve this machine's login shell instead. A v1 broker
+/// would drop the unknown field, try to exec an empty path, and answer
+/// `CommandNotFound` with a blank command name; the bump turns that into the
+/// handshake's "install matching zellij versions" message, which is the whole
+/// point of checking.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 2;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -83,6 +89,10 @@ pub enum ServerToBrokerMsg {
     /// across would not fail loudly; it would set a plausible-looking garbage
     /// terminal mode. The remote `openpty` uses its own platform's defaults
     /// instead, and every real application calls `tcsetattr` itself anyway.
+    ///
+    /// `cmd` may name no command at all: `RunCommand::remote_default_shell` is
+    /// the pane asking for *this* machine's login shell, which the asking side
+    /// has no way to name. `broker::resolve_default_shell` fills it in.
     Spawn {
         cmd: RunCommand,
         failover_cmd: Option<RunCommand>,

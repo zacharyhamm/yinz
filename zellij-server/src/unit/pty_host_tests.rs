@@ -84,6 +84,16 @@ impl TestHost {
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
     ) -> (u32, std::fs::File) {
+        self.spawn_with_arg0(cmd, termios, initial_size, None)
+    }
+
+    fn spawn_with_arg0(
+        &mut self,
+        cmd: RunCommand,
+        termios: Option<WireTermios>,
+        initial_size: Option<WireWinsize>,
+        arg0: Option<String>,
+    ) -> (u32, std::fs::File) {
         self.send(&ServerToHostMsg::Spawn {
             terminal_id: 0,
             session_name: Some("pty-host-tests".to_owned()),
@@ -91,6 +101,7 @@ impl TestHost {
             failover_cmd: None,
             termios,
             initial_size,
+            arg0,
         });
         let child_pid = match self.recv() {
             HostToServerMsg::Spawned { child_pid } => child_pid,
@@ -124,6 +135,7 @@ fn sh(script: &str) -> RunCommand {
         originating_plugin: None,
         use_terminal_title: false,
         remote_host: None,
+        remote_default_shell: false,
     }
 }
 
@@ -179,6 +191,42 @@ fn the_handed_off_master_carries_the_childs_output() {
         HostToServerMsg::ChildExited { status } => assert_eq!(status, Some(0)),
         other => panic!("expected ChildExited, got {other:?}"),
     }
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// `arg0` is the whole of what makes a remote pane's shell a *login* shell —
+/// a shell decides to read its profile by looking at whether `argv[0]` begins
+/// with `-`, and nothing else. The remote broker is the only caller that sets
+/// it, so this pins both halves: that it reaches the exec, and that a pane
+/// without one still runs under the command's own name, as local panes do.
+#[test]
+fn arg0_overrides_the_childs_own_name() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) =
+        host.spawn_with_arg0(sh("echo argv0=$0"), None, None, Some("-sh".to_owned()));
+
+    let output = read_until(&mut master, "argv0=");
+    assert!(
+        output.contains("argv0=-sh"),
+        "the child should have been exec'd as a login shell: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+#[test]
+fn without_arg0_the_child_runs_under_its_own_name() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn(sh("echo argv0=$0"));
+
+    let output = read_until(&mut master, "argv0=");
+    assert!(
+        output.contains("argv0=/bin/sh"),
+        "a local pane's exec must be unchanged: {output:?}"
+    );
+
     host.send(&ServerToHostMsg::Terminate);
     host.join();
 }
@@ -521,10 +569,12 @@ fn a_missing_command_is_reported_rather_than_panicking() {
             originating_plugin: None,
             use_terminal_title: false,
             remote_host: None,
+            remote_default_shell: false,
         },
         failover_cmd: None,
         termios: None,
         initial_size: None,
+        arg0: None,
     });
     match host.recv() {
         HostToServerMsg::SpawnFailed { kind, .. } => {

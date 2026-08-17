@@ -42,6 +42,9 @@ pub struct SpawnParams<'a> {
     pub failover_cmd: Option<RunCommand>,
     pub termios: Option<WireTermios>,
     pub initial_size: Option<WireWinsize>,
+    /// See `ServerToHostMsg::Spawn::arg0`. `None` everywhere but the remote
+    /// broker, which uses it to start a login shell.
+    pub arg0: Option<String>,
 }
 
 /// A supervisor that is up and has handed over its pty, but whose lifecycle
@@ -375,6 +378,7 @@ fn handshake_and_spawn(
             failover_cmd: params.failover_cmd.clone(),
             termios: params.termios.clone(),
             initial_size: params.initial_size,
+            arg0: params.arg0.clone(),
         },
     )
     .context("failed to send Spawn")?;

@@ -1256,9 +1256,55 @@ impl Action {
                 // cwd should only be specified in a plugin alias if it was explicitly given to us,
                 // otherwise the current_dir might override a cwd defined in the alias itself
                 let alias_cwd = cwd.clone().map(|cwd| current_dir.join(cwd));
+                // A remote pane's cwd names a directory on the *other* machine,
+                // so this machine's working directory is neither a sensible
+                // default for it nor a sensible base to resolve a relative path
+                // against. Left exactly as given: `None` then means "wherever
+                // that machine logs you in", which is what ssh does.
+                let command_cwd = if remote_host.is_some() {
+                    cwd.clone()
+                } else {
+                    cwd.clone()
+                        .map(|cwd| current_dir.join(cwd))
+                        .or_else(|| Some(current_dir.clone()))
+                };
                 let cwd = cwd
                     .map(|cwd| current_dir.join(cwd))
                     .or_else(|| Some(current_dir.clone()));
+                // One construction for both the blocking and the ordinary pane,
+                // so that "no command, but a host" means the same thing in each.
+                let terminal_run_command = if !command.is_empty() {
+                    let mut command = command.clone();
+                    let (command, args) = (PathBuf::from(command.remove(0)), command);
+                    Some(RunCommandAction {
+                        command,
+                        args,
+                        cwd: command_cwd,
+                        direction,
+                        hold_on_close: !close_on_exit,
+                        hold_on_start: start_suspended,
+                        remote_host: remote_host.clone(),
+                        ..Default::default()
+                    })
+                } else if remote_host.is_some() {
+                    // No command and a host: that machine's login shell. Not
+                    // held on close — `ssh host` ends when you log out, and so
+                    // does a local default-shell pane; holding it would leave a
+                    // "Waiting to run" banner every time.
+                    Some(RunCommandAction {
+                        command: PathBuf::new(),
+                        args: vec![],
+                        cwd: command_cwd,
+                        direction,
+                        hold_on_close: false,
+                        hold_on_start: false,
+                        remote_host: remote_host.clone(),
+                        remote_default_shell: true,
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
                 let unblock_condition = unblock_condition.or({
                     if block_until_exit_success {
                         Some(UnblockCondition::OnExitSuccess)
@@ -1276,24 +1322,7 @@ impl Action {
                         return Err("Blocking panes do not support plugin variants".to_string());
                     }
 
-                    let command = if !command.is_empty() {
-                        let mut command = command.clone();
-                        let (command, args) = (PathBuf::from(command.remove(0)), command);
-                        let hold_on_start = start_suspended;
-                        let hold_on_close = !close_on_exit;
-                        Some(RunCommandAction {
-                            command,
-                            args,
-                            cwd,
-                            direction,
-                            hold_on_close,
-                            hold_on_start,
-                            remote_host,
-                            ..Default::default()
-                        })
-                    } else {
-                        None
-                    };
+                    let command = terminal_run_command;
 
                     let placement = if floating {
                         NewPanePlacement::Floating(FloatingPaneCoordinates::new(
@@ -1387,21 +1416,7 @@ impl Action {
                             tab_id,
                         }])
                     }
-                } else if !command.is_empty() {
-                    let mut command = command.clone();
-                    let (command, args) = (PathBuf::from(command.remove(0)), command);
-                    let hold_on_start = start_suspended;
-                    let hold_on_close = !close_on_exit;
-                    let run_command_action = RunCommandAction {
-                        command,
-                        args,
-                        cwd,
-                        direction,
-                        hold_on_close,
-                        hold_on_start,
-                        remote_host,
-                        ..Default::default()
-                    };
+                } else if let Some(run_command_action) = terminal_run_command {
                     if floating {
                         Ok(vec![Action::NewFloatingPane {
                             command: Some(run_command_action),
@@ -3345,6 +3360,114 @@ mod tests {
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_err());
+    }
+
+    /// A remote pane asked for with no command is the far machine's login
+    /// shell. It has to become a `RunCommandAction` all the same — a `None`
+    /// command would drop the host on the floor and open a pane here.
+    fn remote_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
+        CliAction::NewPane {
+            remote_host: Some("build-box".to_owned()),
+            direction: None,
+            command,
+            plugin: None,
+            cwd,
+            floating: false,
+            in_place: false,
+            close_replaced_pane: false,
+            pane_id: None,
+            name: None,
+            close_on_exit: false,
+            start_suspended: false,
+            configuration: None,
+            skip_plugin_cache: false,
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            pinned: None,
+            stacked: false,
+            blocking: false,
+            block_until_exit_success: false,
+            block_until_exit_failure: false,
+            block_until_exit: false,
+            unblock_condition: None,
+            near_current_pane: false,
+            no_focus: false,
+            borderless: None,
+            global: false,
+            edge: None,
+            size: None,
+            tab_id: None,
+        }
+    }
+
+    fn tiled_run_command(cli_action: CliAction) -> RunCommandAction {
+        let actions =
+            Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
+                .expect("the cli action should be accepted");
+        match &actions[0] {
+            Action::NewTiledPane {
+                command: Some(command),
+                ..
+            } => command.clone(),
+            other => panic!("expected a tiled pane with a command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_remote_pane_with_no_command_asks_for_that_machines_login_shell() {
+        let command = tiled_run_command(remote_new_pane(vec![], None));
+        assert!(command.remote_default_shell);
+        assert_eq!(command.remote_host.as_deref(), Some("build-box"));
+        assert_eq!(
+            command.command,
+            PathBuf::new(),
+            "naming a command here would name a path on the wrong machine"
+        );
+        assert_eq!(
+            command.cwd, None,
+            "the local working directory is not a directory on the far machine; \
+             leaving it unset is what lands the pane in the remote home"
+        );
+        assert!(
+            !command.hold_on_close,
+            "logging out of an ssh ends the session; holding it would leave a banner"
+        );
+    }
+
+    /// An explicit `--cwd` names a path on the *far* machine, so it must survive
+    /// unjoined — joining it with this machine's cwd would mangle a relative one
+    /// and is meaningless for an absolute one.
+    #[test]
+    fn an_explicit_cwd_reaches_a_remote_pane_untouched() {
+        let command = tiled_run_command(remote_new_pane(vec![], Some(PathBuf::from("srv/www"))));
+        assert_eq!(command.cwd, Some(PathBuf::from("srv/www")));
+
+        let with_command = tiled_run_command(remote_new_pane(
+            vec!["htop".to_owned()],
+            Some(PathBuf::from("/srv/www")),
+        ));
+        assert_eq!(with_command.cwd, Some(PathBuf::from("/srv/www")));
+        assert!(!with_command.remote_default_shell);
+        assert_eq!(with_command.command, PathBuf::from("htop"));
+    }
+
+    /// Without a host, no command still means no command — the local pane keeps
+    /// getting its shell from the server, not from an empty `RunCommandAction`.
+    #[test]
+    fn a_local_pane_with_no_command_is_still_commandless() {
+        let mut cli_action = remote_new_pane(vec![], None);
+        if let CliAction::NewPane { remote_host, .. } = &mut cli_action {
+            *remote_host = None;
+        }
+        let actions =
+            Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
+                .expect("the cli action should be accepted");
+        match &actions[0] {
+            Action::NewTiledPane { command, .. } => assert!(command.is_none()),
+            other => panic!("expected a tiled pane, got {other:?}"),
+        }
     }
 
     // Tab-targeting for pane creation commands

@@ -1749,6 +1749,9 @@ pub struct RunCommandAction {
     /// The machine this command runs on, if not this one
     #[prost(string, optional, tag="9")]
     pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
+    /// Resolve the login shell on the machine the pane runs on, ignoring command
+    #[prost(bool, tag="10")]
+    pub remote_default_shell: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

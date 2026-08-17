@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/open_and_session_commands.rs
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
@@ -17,6 +17,7 @@ Some(
                     originating_plugin: None,
                     use_terminal_title: true,
                     remote_host: None,
+                    remote_default_shell: false,
                 },
             ),
         ),

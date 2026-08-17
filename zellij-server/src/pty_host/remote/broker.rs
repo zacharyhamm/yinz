@@ -208,6 +208,81 @@ fn report_exit_if_complete(session: &PaneSession) {
         .non_fatal();
 }
 
+/// Where the far machine's idea of "the user's shell" comes from.
+///
+/// Split out from the resolution below so that the order of preference can be
+/// tested without arranging for a second user on the machine running the tests.
+#[derive(Debug, Default)]
+pub(crate) struct ShellSource {
+    pub passwd_shell: Option<std::path::PathBuf>,
+    pub passwd_home: Option<std::path::PathBuf>,
+    pub env_shell: Option<std::path::PathBuf>,
+    pub env_home: Option<std::path::PathBuf>,
+}
+
+impl ShellSource {
+    fn of_this_machine() -> Self {
+        let user = nix::unistd::User::from_uid(nix::unistd::Uid::effective())
+            .ok()
+            .flatten();
+        ShellSource {
+            passwd_shell: user.as_ref().map(|u| u.shell.clone()),
+            passwd_home: user.as_ref().map(|u| u.dir.clone()),
+            env_shell: std::env::var_os("SHELL").map(std::path::PathBuf::from),
+            env_home: std::env::var_os("HOME").map(std::path::PathBuf::from),
+        }
+    }
+}
+
+/// Turn "the default shell of whoever I am" into a command, here, and say what
+/// `argv[0]` it wants.
+///
+/// The passwd entry leads because it is the only authority that does not depend
+/// on how this broker was started: `$SHELL` in its environment is whatever the
+/// first bootstrap ssh session happened to inherit and then froze, and the
+/// asking machine's `$SHELL` is a path on the wrong filesystem — it never
+/// crossed the wire at all. This is the order sshd effectively lands on, for
+/// the same reasons.
+pub(crate) fn resolve_default_shell(
+    cmd: &mut zellij_utils::input::command::RunCommand,
+    source: &ShellSource,
+) -> Option<String> {
+    if !cmd.is_remote_default_shell() {
+        return None;
+    }
+    let shell = source
+        .passwd_shell
+        .clone()
+        .into_iter()
+        .chain(source.env_shell.clone())
+        .find(|s| !s.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::PathBuf::from("/bin/sh"));
+    if cmd.cwd.is_none() {
+        // No cwd asked for means "wherever ssh would have put me".
+        cmd.cwd = source
+            .passwd_home
+            .clone()
+            .or_else(|| source.env_home.clone())
+            .filter(|d| !d.as_os_str().is_empty());
+    }
+    // A login shell is a shell whose argv[0] begins with '-', and that single
+    // character is the whole mechanism: it is what makes bash read
+    // ~/.bash_profile and ash read ~/.profile. It matters more here than it
+    // would locally, because nothing about the asking machine's environment is
+    // transmitted with a remote pane — sourcing the profile on this side is the
+    // only thing that gives the pane a PATH, a prompt and a locale.
+    let arg0 = format!(
+        "-{}",
+        shell
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sh".to_owned())
+    );
+    cmd.command = shell;
+    cmd.args.clear();
+    Some(arg0)
+}
+
 fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
@@ -216,6 +291,10 @@ fn start_pane(
     failover_cmd: Option<zellij_utils::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
 ) -> Result<(Arc<PaneSession>, u64)> {
+    // Before anything looks at the command: a default-shell pane arrives with
+    // none, because only this machine can say what it should be.
+    let mut cmd = cmd;
+    let arg0 = resolve_default_shell(&mut cmd, &ShellSource::of_this_machine());
     let pending = match pty_host_client::spawn(SpawnParams {
         host_bin,
         terminal_id: 0,
@@ -226,6 +305,7 @@ fn start_pane(
         // character indices are platform constants. See the note on `Spawn`.
         termios: None,
         initial_size,
+        arg0,
     }) {
         Ok(pending) => pending,
         Err(e) => {

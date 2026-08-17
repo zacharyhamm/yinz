@@ -46,6 +46,16 @@ pub enum ServerToHostMsg {
         failover_cmd: Option<RunCommand>,
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
+        /// What to pass as `argv[0]`, if not the command itself.
+        ///
+        /// A login shell is nothing more than a shell whose `argv[0]` begins
+        /// with `-`; that single character is what makes bash read
+        /// `~/.bash_profile` and ash read `~/.profile`. Only the remote broker
+        /// sets it — see `remote::broker::resolve_default_shell` — and it is
+        /// `serde(default)` rather than a version bump because an older
+        /// supervisor simply spawning without it is the pre-existing behaviour.
+        #[serde(default)]
+        arg0: Option<String>,
     },
     // Note: there is deliberately no `Respawn`. `re_run_command_in_terminal`
     // terminates the supervisor and spawns a fresh one, which matches today's

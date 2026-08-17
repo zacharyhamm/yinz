@@ -1212,6 +1212,7 @@ fn open_command_pane_in_new_tab(
         )),
         use_terminal_title: false,
         remote_host,
+        remote_default_shell: false,
     };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
@@ -2118,6 +2119,7 @@ fn open_command_pane_in_place_of_plugin(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2223,6 +2225,7 @@ fn open_command_pane_in_place_of_pane_id(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2322,6 +2325,7 @@ fn open_command_pane(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let action = Action::NewTiledPane {
         direction,
@@ -2376,6 +2380,7 @@ fn open_command_pane_near_plugin(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2438,6 +2443,7 @@ fn open_command_pane_floating(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
@@ -2492,6 +2498,7 @@ fn open_command_pane_floating_near_plugin(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2557,6 +2564,7 @@ fn open_command_pane_in_place(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let action = Action::NewInPlacePane {
         command: Some(run_command_action),
@@ -2613,6 +2621,7 @@ fn open_command_pane_background(
         )),
         use_terminal_title,
         remote_host,
+        remote_default_shell: false,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 

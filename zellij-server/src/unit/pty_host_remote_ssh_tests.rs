@@ -223,3 +223,63 @@ fn a_confirmed_spawn_completes_the_handshake() {
     handshake_and_spawn(&ours, "build-box", &cmd, None).expect("handshake should succeed");
     let _ = peer.join();
 }
+
+/// A pane that wants the far machine's login shell must ship *no* command.
+///
+/// This side's `$SHELL` is a path on this side's filesystem; sending it would
+/// ask the other machine to exec something that need not exist there, and would
+/// silently be the wrong shell where it does. The flag is the whole request.
+#[test]
+fn a_default_shell_pane_ships_no_command_of_its_own() {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let peer = std::thread::spawn(move || {
+        let mut theirs = theirs;
+        let _ = protocol::read_frame(&mut theirs);
+        protocol::write_control(
+            &mut theirs,
+            &BrokerToServerMsg::HelloAck {
+                protocol_version: REMOTE_PROTOCOL_VERSION,
+                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            },
+        )
+        .expect("write failed");
+        let spawn = protocol::read_frame(&mut theirs)
+            .expect("read failed")
+            .expect("the server should have asked for a pane");
+        protocol::write_control(
+            &mut theirs,
+            &BrokerToServerMsg::Spawned {
+                pane_token: "tok".to_owned(),
+            },
+        )
+        .expect("write failed");
+        (theirs, spawn)
+    });
+
+    let cmd = RunCommand {
+        command: std::path::PathBuf::new(),
+        remote_default_shell: true,
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    };
+    handshake_and_spawn(&ours, "build-box", &cmd, None).expect("handshake should succeed");
+
+    let (_theirs, spawn) = peer.join().expect("peer panicked");
+    let body = match spawn {
+        protocol::Frame::Control(body) => body,
+        other => panic!("expected a control frame, got {other:?}"),
+    };
+    let msg: ServerToBrokerMsg = serde_json::from_slice(&body).expect("undecodable spawn");
+    match msg {
+        ServerToBrokerMsg::Spawn { cmd, .. } => {
+            assert!(cmd.remote_default_shell);
+            assert_eq!(cmd.command, std::path::PathBuf::new());
+            assert!(cmd.args.is_empty());
+            assert_eq!(
+                cmd.cwd, None,
+                "a local path would name a directory on the wrong machine"
+            );
+        },
+        other => panic!("expected a Spawn, got {other:?}"),
+    }
+}

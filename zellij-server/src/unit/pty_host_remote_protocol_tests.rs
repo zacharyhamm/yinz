@@ -13,6 +13,7 @@ fn sample_run_command() -> RunCommand {
         originating_plugin: None,
         use_terminal_title: true,
         remote_host: None,
+        remote_default_shell: false,
     }
 }
 
@@ -278,8 +279,9 @@ fn a_remote_spawn_carries_no_termios() {
 /// not. Tying them together would make every remote-protocol tweak cost a pane.
 #[test]
 fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
+    // v2: a Spawn may carry no command, meaning "this machine's login shell".
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 1,
+        REMOTE_PROTOCOL_VERSION, 2,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

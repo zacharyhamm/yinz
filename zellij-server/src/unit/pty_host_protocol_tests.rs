@@ -16,6 +16,7 @@ fn sample_run_command() -> RunCommand {
         originating_plugin: None,
         use_terminal_title: true,
         remote_host: None,
+        remote_default_shell: false,
     }
 }
 
@@ -38,6 +39,7 @@ fn framed_messages_round_trip() {
                 width_in_pixels: 640,
                 height_in_pixels: 384,
             }),
+            arg0: None,
         },
         ServerToHostMsg::Terminate,
     ];
@@ -198,6 +200,7 @@ fn run_commands(tc: &hegel::TestCase) -> RunCommand {
         originating_plugin: None,
         use_terminal_title: tc.draw(generators::booleans()),
         remote_host: None,
+        remote_default_shell: false,
     }
 }
 
@@ -268,6 +271,7 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
             failover_cmd: tc.draw(generators::optional(run_commands())),
             termios: tc.draw(generators::optional(wire_termioses())),
             initial_size: tc.draw(generators::optional(wire_winsizes())),
+            arg0: tc.draw(generators::optional(generators::text())),
         },
         2 => ServerToHostMsg::Terminate,
         3 => ServerToHostMsg::Release,
@@ -508,6 +512,7 @@ fn write_msg_refuses_a_body_over_the_frame_limit() {
         failover_cmd: None,
         termios: None,
         initial_size: None,
+        arg0: None,
     };
 
     let mut buf: Vec<u8> = Vec::new();
@@ -640,6 +645,7 @@ fn a_full_ring_fits_in_one_frame() {
             originating_plugin: None,
             use_terminal_title: false,
             remote_host: None,
+            remote_default_shell: false,
         },
         status: HostStatus {
             host_id: "a3f1c2d4e5b6".to_owned(),
