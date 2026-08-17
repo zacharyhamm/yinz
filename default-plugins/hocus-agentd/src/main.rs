@@ -8,7 +8,7 @@
 mod poll;
 
 use hocus_proto::llm::Endpoint;
-use hocus_proto::panes::{focused_pane, manifest_pane_ids, terminal_panes};
+use hocus_proto::panes::{focused_pane, focused_plugin_pane, manifest_pane_ids, terminal_panes};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
@@ -107,6 +107,9 @@ struct State {
     /// The terminal pane the user is looking at. Passed on rather than acted on:
     /// hocus is a global pane and hears no `PaneUpdate` for itself.
     focused: Option<u32>,
+    /// The plugin pane the user is looking at, passed on for the same reason and to
+    /// the same reader — it is how hocus tells the agents pane above it from itself.
+    focused_plugin: Option<u32>,
     commands: BTreeMap<u32, String>,
     cwds: BTreeMap<u32, String>,
     activity: agents::Activity,
@@ -303,10 +306,11 @@ impl State {
     }
 
     fn bootstrap(&mut self) {
-        let Some((panes, focused)) = poll::gather() else {
+        let Some((panes, focused, focused_plugin)) = poll::gather() else {
             return;
         };
         self.focused = focused;
+        self.focused_plugin = focused_plugin;
         self.bootstrapped = true;
         for pane in &panes {
             if let Some(command) = &pane.command {
@@ -430,6 +434,7 @@ impl State {
 
     fn rebuild_panes(&mut self) {
         self.focused = focused_pane(&self.manifest, &self.tabs);
+        self.focused_plugin = focused_plugin_pane(&self.manifest, &self.tabs);
         // Read before `self.panes` is replaced below — it is what tells a re-run
         // pane from one that was running all along.
         let was_running: BTreeSet<u32> = self
@@ -1093,6 +1098,7 @@ impl State {
             manual_kinds: self.manual_kinds.clone(),
             repositories: self.repositories.clone(),
             focused: self.focused,
+            focused_plugin: self.focused_plugin,
             summaries: self.summaries.clone(),
         };
         let Ok(payload) = serde_json::to_string(&reply) else {

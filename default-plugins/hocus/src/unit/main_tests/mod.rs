@@ -239,6 +239,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                     ),
                 ]),
                 focused: None,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
@@ -543,6 +544,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 manual_kinds: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
@@ -576,6 +578,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                     ),
                 ]),
                 focused,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),

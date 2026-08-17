@@ -105,11 +105,19 @@ fn the_strip_carries_the_focused_pane_agent_or_not() {
     assert_eq!(state.last_focused_agent, Some(7));
 }
 
-/// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 -
-/// with `focused` focused and pane 3 holding a summary made `polls` polls ago.
-fn state_with_summary(focused: Option<u32>, polls: u32) -> State {
+/// The id the agents pane announces itself with. Any number; what matters is
+/// that hocus compares it against the plugin pane the daemon reports focused.
+const AGENTS_PANE: u32 = 11;
+
+/// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 - with
+/// the agents pane known, `selected` under its cursor, and pane 3 holding a
+/// summary. `polls` is how long ago the agent was last seen moving, which the
+/// inset does not care about and the tests below say so.
+fn state_with_summary(selected: Option<u32>, polls: u32) -> State {
     let mut state = state_with_panes();
-    state.focused_pane = focused;
+    state.agents_plugin = Some(AGENTS_PANE);
+    state.focused_plugin = Some(AGENTS_PANE);
+    state.agents_selected = selected;
     state.activity = agents::Activity::from([(3, (11, polls))]);
     state.summaries = agents::Summaries::from([(
         3,
@@ -123,37 +131,93 @@ fn state_with_summary(focused: Option<u32>, polls: u32) -> State {
     state
 }
 
-/// The inset is a note about the pane the user is standing in, so it is the
-/// raw focus that gates it and not the sticky `last_focused_agent`.
+/// The inset is a note about the row the user's cursor is on in the agents
+/// pane, which is neither the focused pane nor the sticky `last_focused_agent`.
 #[test]
-fn the_focused_agents_summary_is_what_the_inset_draws() {
+fn the_selected_agents_summary_is_what_the_inset_draws() {
     let state = state_with_summary(Some(3), 2);
-    let (pane_id, kind, summary) = state.focused_summary().expect("an idle focused agent");
+    let (pane_id, kind, summary) = state.selected_summary().expect("the selected agent");
     assert_eq!((pane_id, kind), (3, "codex"));
     assert_eq!(summary.text, "Ran the tests.");
     assert_eq!(state.inset_key(), Some((3, 11, true)));
 }
 
-/// A summary outlives the moment it describes. The same idleness gate the
-/// strip's `!` marker applies, so the two cannot disagree about an agent that
-/// has gone back to work.
+/// What is asked for is the *last* thing the daemon made of this agent, so an
+/// agent that has gone back to work goes on showing it. The `!` marker in the
+/// header says which of the two kinds of stop it was; the pane id says which
+/// pane it was about; neither claims to be an account of right now.
 #[test]
-fn an_agent_back_at_work_is_not_drawn_with_what_it_used_to_be_doing() {
+fn an_agent_back_at_work_still_shows_its_last_summary() {
     let state = state_with_summary(Some(3), 0);
-    assert!(state.focused_summary().is_none());
-    assert_eq!(state.inset_key(), None);
+    assert_eq!(state.inset_key(), Some((3, 11, true)));
+}
+
+/// Anywhere but the list, the box is not what the user is reading.
+#[test]
+fn nothing_is_drawn_unless_the_agents_pane_holds_the_focus() {
+    // Standing in the agent itself.
+    let mut state = state_with_summary(Some(3), 2);
+    state.focused_plugin = None;
+    state.focused_pane = Some(3);
+    assert!(state.selected_summary().is_none());
+
+    // In another plugin pane - hocus itself, most often.
+    let mut state = state_with_summary(Some(3), 2);
+    state.focused_plugin = Some(AGENTS_PANE + 1);
+    assert!(state.selected_summary().is_none());
+
+    // And before the agents pane has said which id it is, there is nothing to
+    // compare a focused plugin pane against.
+    let mut state = state_with_summary(Some(3), 2);
+    state.agents_plugin = None;
+    assert!(state.selected_summary().is_none());
 }
 
 #[test]
-fn nothing_is_drawn_for_a_pane_that_is_no_agent_or_no_pane_at_all() {
+fn nothing_is_drawn_for_a_selection_that_is_no_agent_or_has_nothing_to_say() {
     // A shell, with the agent's summary still in the map beside it.
-    assert!(state_with_summary(Some(4), 2).focused_summary().is_none());
-    // Focus on hocus itself, which the daemon reports as no focused pane.
-    assert!(state_with_summary(None, 2).focused_summary().is_none());
+    assert!(state_with_summary(Some(4), 2).selected_summary().is_none());
+    // A strip with nothing selectable on it.
+    assert!(state_with_summary(None, 2).selected_summary().is_none());
     // An agent the daemon has never had an answer about.
     let mut state = state_with_summary(Some(3), 2);
     state.summaries.clear();
-    assert!(state.focused_summary().is_none());
+    assert!(state.selected_summary().is_none());
+}
+
+/// The agents pane's cursor arrives on a pipe, and moving it is worth a
+/// repaint here: nothing the user typed in this pane changed, but the box did.
+#[test]
+fn a_selection_message_moves_the_inset_and_repaints() {
+    let mut state = state_with_summary(None, 2);
+    state.agents_plugin = None;
+    state.agents_selected = None;
+
+    // The first message carries the plugin id and no selection yet.
+    assert!(!state.pipe(selection(AGENTS_PANE, None)));
+    assert_eq!(state.agents_plugin, Some(AGENTS_PANE));
+    assert_eq!(state.inset_key(), None);
+
+    // Walking onto the agent brings the box with it.
+    assert!(state.pipe(selection(AGENTS_PANE, Some(3))));
+    assert_eq!(state.inset_key(), Some((3, 11, true)));
+
+    // And off it again, onto a pane with nothing to show.
+    assert!(state.pipe(selection(AGENTS_PANE, Some(4))));
+    assert_eq!(state.inset_key(), None);
+}
+
+/// One `AGENT_SELECTION` from the agents pane.
+fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(plugin_id),
+        name: wire::AGENT_SELECTION.to_owned(),
+        payload: Some(
+            serde_json::to_string(&wire::Selection { plugin_id, pane_id }).expect("serialize"),
+        ),
+        args: BTreeMap::new(),
+        is_private: true,
+    }
 }
 
 /// A push is owed for a focus change alone. Walking from one agent to
