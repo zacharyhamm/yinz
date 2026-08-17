@@ -2913,6 +2913,7 @@ pub struct CommandToRun {
     pub path: PathBuf,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
+    pub remote_host: Option<String>,
 }
 
 impl CommandToRun {

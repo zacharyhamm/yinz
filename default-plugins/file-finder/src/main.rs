@@ -167,6 +167,7 @@ impl State {
                 script::build(&self.config, &self.out_path.to_string_lossy()),
             ],
             cwd: Some(cwd),
+            ..Default::default()
         };
 
         match open_command_pane_floating(command, self.floating_geometry(), BTreeMap::new()) {
@@ -232,6 +233,7 @@ impl State {
                     path: PathBuf::from(path),
                     args,
                     cwd,
+                    ..Default::default()
                 };
                 open_command_pane_in_place_of_pane_id(target, command, true, BTreeMap::new())
             },

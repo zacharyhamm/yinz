@@ -55,6 +55,9 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "warp_tab"
             | "warp_tab_here"
             | "adopt_orphaned_pane"
+            // Runs a command on a foreign machine over ssh, unlike anything
+            // else on this list.
+            | "new_remote_pane"
     )
 }
 
@@ -131,6 +134,10 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             format!("takes a tab from {session} into this one")
         },
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
+        "new_remote_pane" => {
+            let host = args.remote_host.as_deref().unwrap_or("another machine");
+            format!("runs a command on {host} over ssh, opening a new pane connected to it")
+        },
         // Scheduling is otherwise free; handing a job standing permission is the
         // confirmable part, and `pump_tools` stops for exactly that case.
         "schedule" if args.auto_confirm => {
@@ -441,6 +448,27 @@ pub fn specs() -> Value {
                     "floating": { "type": "boolean" },
                     "in_new_tab": { "type": "boolean" },
                 },
+            }),
+        ),
+        tool(
+            "new_remote_pane",
+            "Open a command pane whose process runs on another machine over ssh. \
+             Needs a zellij of the same version on the remote machine's PATH.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "remote_host": {
+                        "type": "string",
+                        "description": "An ssh destination: a host, an alias from ssh config, or user@host.",
+                    },
+                    "command": { "type": "string" },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "name": { "type": "string" },
+                    "floating": { "type": "boolean" },
+                    "in_new_tab": { "type": "boolean" },
+                },
+                "required": ["remote_host", "command"],
             }),
         ),
         tool(
@@ -1155,6 +1183,7 @@ pub struct Args {
     pub panes: Vec<PaneRef>,
     pub name: Option<String>,
     pub cwd: Option<String>,
+    pub remote_host: Option<String>,
     pub command: Option<Value>,
     pub args: Vec<String>,
     pub floating: bool,
@@ -1741,6 +1770,7 @@ mod host {
                 }
             }),
             "new_pane" => new_pane(&args),
+            "new_remote_pane" => new_remote_pane(&args),
             "new_tab" => new_tab_tool(&args),
             "focus" => focus(&args),
             "rename" => rename(&args),
@@ -2157,6 +2187,7 @@ mod host {
                     path: PathBuf::from(path),
                     args: rest.to_vec(),
                     cwd: cwd.clone(),
+                    ..Default::default()
                 };
                 if args.in_new_tab {
                     open_command_pane_in_new_tab(command, BTreeMap::new()).1
@@ -2188,6 +2219,38 @@ mod host {
             },
         };
 
+        report_opened_pane(opened, args)
+    }
+
+    /// `new_remote_pane` always runs a real command over ssh; there is no
+    /// "plain shell" branch like `new_pane`'s, since a bare `--remote-host`
+    /// with no command is not something the CLI accepts either.
+    fn new_remote_pane(args: &Args) -> String {
+        let Some(remote_host) = args.remote_host.clone() else {
+            return "remote_host is required".to_owned();
+        };
+        let words = args.command_words();
+        let Some((path, rest)) = words.split_first() else {
+            return "command is required".to_owned();
+        };
+        let command = CommandToRun {
+            path: PathBuf::from(path),
+            args: rest.to_vec(),
+            cwd: args.cwd.clone().map(PathBuf::from),
+            remote_host: Some(remote_host),
+        };
+        let opened = if args.in_new_tab {
+            open_command_pane_in_new_tab(command, BTreeMap::new()).1
+        } else if args.floating {
+            open_command_pane_floating(command, None, BTreeMap::new())
+        } else {
+            open_command_pane(command, BTreeMap::new())
+        };
+
+        report_opened_pane(opened, args)
+    }
+
+    fn report_opened_pane(opened: Option<PaneId>, args: &Args) -> String {
         match opened {
             Some(pane) => {
                 if let Some(name) = &args.name {
