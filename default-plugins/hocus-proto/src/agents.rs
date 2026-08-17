@@ -1677,8 +1677,8 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "    3  claude@build-box  running"),
-                agent(4, "    4  claude  running"),
+                agent(3, "  3  claude@build-box  running"),
+                agent(4, "  4  claude  running"),
             ],
         );
     }

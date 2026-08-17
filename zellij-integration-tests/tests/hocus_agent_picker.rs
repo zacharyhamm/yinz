@@ -255,6 +255,7 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
             && grid_snapshot.contains("0  claude")
             && grid_snapshot.contains("1  claude")
             && !grid_snapshot.contains("no branch")
+            && !grid_snapshot.contains("no project")
     });
 
     let screen = zellij.snapshot();
