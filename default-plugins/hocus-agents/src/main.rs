@@ -55,13 +55,20 @@ struct State {
     /// plugin pane — this one, most often — and coming here to work the list is
     /// not leaving the agent you were in.
     focused: Option<u32>,
+    /// Where the last render's window into `rows` began — needed to map a mouse
+    /// click's on-screen line back to an index into `rows`.
+    last_window_start: usize,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        subscribe(&[EventType::Key, EventType::PermissionRequestResult]);
+        subscribe(&[
+            EventType::Key,
+            EventType::Mouse,
+            EventType::PermissionRequestResult,
+        ]);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
         // hocus pushes the strip on every change; this asks for the current one
@@ -99,6 +106,7 @@ impl ZellijPlugin for State {
         let selection = self.selection();
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
+            Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
             _ => false,
         };
         // Where the cursor moved to is hocus's business, not only this pane's: it
@@ -149,6 +157,7 @@ impl ZellijPlugin for State {
             .selected
             .saturating_sub(rows / 2)
             .min(self.rows.len().saturating_sub(rows));
+        self.last_window_start = start;
         let live = self.live();
         for (index, row) in self.rows.iter().skip(start).take(rows).enumerate() {
             let selected = start + index == self.selected;
@@ -201,14 +210,41 @@ impl State {
                 false
             },
             BareKey::Enter => {
-                if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
-                    // the host resolves which tab holds the pane, so this works
-                    // across tabs
-                    focus_terminal_pane(*pane_id, false, false);
-                }
+                self.activate();
                 false
             },
             _ => false,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
+        match mouse_event {
+            Mouse::LeftClick(line, _) if line >= 0 => self.on_click(line as usize),
+            _ => false,
+        }
+    }
+
+    /// A click on screen line `line`: select the row it lands on, if any, and
+    /// activate it exactly as `Enter` would - clicking an agent row is meant to
+    /// feel like navigating to it and pressing Enter, whether or not it was
+    /// already selected.
+    fn on_click(&mut self, line: usize) -> bool {
+        let Some(index) = click_target(&self.rows, self.last_window_start, line) else {
+            return false;
+        };
+        let moved = index != self.selected;
+        self.selected = index;
+        self.activate();
+        moved
+    }
+
+    /// What `Enter` does, and now what a click on the selected row does too:
+    /// focus the selected agent's pane, if there is one.
+    fn activate(&self) {
+        if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
+            // the host resolves which tab holds the pane, so this works across
+            // tabs
+            focus_terminal_pane(*pane_id, false, false);
         }
     }
 
@@ -297,6 +333,13 @@ fn position_of(rows: &[StripRow], pane_id: u32) -> Option<usize> {
 
 fn selectable(row: &StripRow) -> bool {
     matches!(row, StripRow::Agent { .. })
+}
+
+/// The row a click on screen line `line` resolves to, if any - `None` for a
+/// header row or a click past the last row.
+fn click_target(rows: &[StripRow], window_start: usize, line: usize) -> Option<usize> {
+    let index = window_start + line;
+    rows.get(index).filter(|row| selectable(row)).map(|_| index)
 }
 
 /// Which way a keypress moves the selection.
@@ -425,6 +468,26 @@ mod tests {
             motion(&KeyWithModifier::new(BareKey::Char('k'))),
             Some(Motion::Up)
         );
+    }
+
+    #[test]
+    fn a_click_resolves_to_the_agent_row_under_it() {
+        let rows = strip();
+        // line 3 is "  7  codex  idle", offset by a window that starts at 1
+        assert_eq!(click_target(&rows, 1, 2), Some(3));
+    }
+
+    #[test]
+    fn a_click_on_a_header_row_hits_nothing() {
+        let rows = strip();
+        assert_eq!(click_target(&rows, 0, 0), None, "the Project header");
+        assert_eq!(click_target(&rows, 0, 1), None, "the Branch header");
+    }
+
+    #[test]
+    fn a_click_past_the_last_row_hits_nothing() {
+        let rows = strip();
+        assert_eq!(click_target(&rows, 0, rows.len()), None);
     }
 
     #[test]
