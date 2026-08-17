@@ -190,4 +190,21 @@ fn names_lists_the_advertised_tools() {
     let names = names();
     assert_eq!(names.len(), specs().as_array().unwrap().len());
     assert!(names.contains(&"new_pane".to_owned()));
+    assert!(names.contains(&"new_remote_pane".to_owned()));
+}
+
+/// Unlike `new_pane`, a remote pane always needs a real command and a
+/// destination: there is no "plain shell" fallback, mirroring the CLI's own
+/// `requires("command")` on `--remote-host`.
+#[test]
+fn new_remote_pane_requires_a_host_and_a_command() {
+    let specs = specs();
+    let parameters = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == "new_remote_pane")
+        .unwrap()["function"]["parameters"]
+        .clone();
+    assert_eq!(parameters["required"], json!(["remote_host", "command"]));
 }

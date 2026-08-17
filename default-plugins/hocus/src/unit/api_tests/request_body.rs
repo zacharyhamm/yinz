@@ -98,7 +98,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 52);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 53);
 }
 
 #[test]

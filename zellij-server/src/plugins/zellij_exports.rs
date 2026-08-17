@@ -1192,6 +1192,7 @@ fn open_command_pane_in_new_tab(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let hold_on_close = true;
     let hold_on_start = false;
     let run_command_action = RunCommandAction {
@@ -1207,9 +1208,7 @@ fn open_command_pane_in_new_tab(
             context,
         )),
         use_terminal_title: false,
-        // Plugin-opened panes are local; a plugin asking for a
-        // remote pane would go through the ordinary action path.
-        remote_host: None,
+        remote_host,
     };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
@@ -2096,6 +2095,7 @@ fn open_command_pane_in_place_of_plugin(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2114,8 +2114,7 @@ fn open_command_pane_in_place_of_plugin(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2201,6 +2200,7 @@ fn open_command_pane_in_place_of_pane_id(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2219,8 +2219,7 @@ fn open_command_pane_in_place_of_pane_id(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2300,6 +2299,7 @@ fn open_command_pane(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2318,8 +2318,7 @@ fn open_command_pane(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let action = Action::NewTiledPane {
         direction,
@@ -2354,6 +2353,7 @@ fn open_command_pane_near_plugin(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2372,8 +2372,7 @@ fn open_command_pane_near_plugin(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2416,6 +2415,7 @@ fn open_command_pane_floating(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2434,8 +2434,7 @@ fn open_command_pane_floating(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
@@ -2470,6 +2469,7 @@ fn open_command_pane_floating_near_plugin(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2488,8 +2488,7 @@ fn open_command_pane_floating_near_plugin(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2535,6 +2534,7 @@ fn open_command_pane_in_place(
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2553,8 +2553,7 @@ fn open_command_pane_in_place(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let action = Action::NewInPlacePane {
         command: Some(run_command_action),
@@ -2590,6 +2589,7 @@ fn open_command_pane_background(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let args = command_to_run.args;
+    let remote_host = command_to_run.remote_host;
     let direction = None;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -2609,8 +2609,7 @@ fn open_command_pane_background(
             context,
         )),
         use_terminal_title,
-        // Plugin-opened panes are local.
-        remote_host: None,
+        remote_host,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
