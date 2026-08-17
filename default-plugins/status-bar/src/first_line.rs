@@ -459,6 +459,26 @@ fn swap_layout_status(
 ///   to get back to normal mode from any input mode, but they aren't of interest when searching
 ///   for the super key. If for any input mode the user has bound only these keys to switching back
 ///   to `InputMode::Normal`, a '?' will be displayed as keybinding instead.
+/// ' ', '\n' and 'Esc': the default bindings to get back to normal mode from any input mode.
+///
+/// They say nothing about how the user reaches a mode, so anything reasoning about mode shortcuts -
+/// which key to show for a mode, which modifier they all share - has to look past them.
+pub fn is_generic_to_normal_key(key: &KeyWithModifier) -> bool {
+    matches!(
+        key,
+        KeyWithModifier {
+            bare_key: BareKey::Char(' '),
+            ..
+        } | KeyWithModifier {
+            bare_key: BareKey::Enter,
+            ..
+        } | KeyWithModifier {
+            bare_key: BareKey::Esc,
+            ..
+        }
+    )
+}
+
 pub fn mode_switch_keys(mode_info: &ModeInfo) -> Vec<KeyWithModifier> {
     mode_info
         .get_mode_keybinds()
@@ -467,21 +487,7 @@ pub fn mode_switch_keys(mode_info: &ModeInfo) -> Vec<KeyWithModifier> {
             // No actions defined, ignore
             None => None,
             Some(vac) => {
-                // We ignore certain "default" keybindings that switch back to normal InputMode.
-                // These include: ' ', '\n', 'Esc'
-                if matches!(
-                    key,
-                    KeyWithModifier {
-                        bare_key: BareKey::Char(' '),
-                        ..
-                    } | KeyWithModifier {
-                        bare_key: BareKey::Enter,
-                        ..
-                    } | KeyWithModifier {
-                        bare_key: BareKey::Esc,
-                        ..
-                    }
-                ) {
+                if is_generic_to_normal_key(key) {
                     return None;
                 }
                 if let actions::Action::SwitchToMode { input_mode: mode } = vac {
@@ -553,27 +559,7 @@ pub fn superkey(
 }
 
 pub fn to_char(kv: Vec<KeyWithModifier>) -> Option<KeyWithModifier> {
-    let key = kv
-        .iter()
-        .filter(|key| {
-            // These are general "keybindings" to get back to normal, they aren't interesting here.
-            !matches!(
-                key,
-                KeyWithModifier {
-                    bare_key: BareKey::Enter,
-                    ..
-                } | KeyWithModifier {
-                    bare_key: BareKey::Char(' '),
-                    ..
-                } | KeyWithModifier {
-                    bare_key: BareKey::Esc,
-                    ..
-                }
-            )
-        })
-        .collect::<Vec<&KeyWithModifier>>()
-        .into_iter()
-        .next();
+    let key = kv.iter().find(|key| !is_generic_to_normal_key(key));
     // Maybe the user bound one of the ignored keys?
     if key.is_none() {
         return kv.first().cloned();
