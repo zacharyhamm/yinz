@@ -461,6 +461,27 @@ fn open_pane_in(hosts: &Arc<RemoteHosts>, script: &str, cwd: Option<&str>) -> Pa
     pump(conn, reader)
 }
 
+/// Open a pane with no command at all — the far machine's login shell.
+///
+/// Deliberately not `open_pane_in` with a shell path: naming one here would test
+/// that this side can say "/bin/bash", which is exactly the thing that must not
+/// happen. The empty command is the request.
+fn open_default_shell_pane(hosts: &Arc<RemoteHosts>, cwd: Option<&str>) -> Pane {
+    let cmd = RunCommand {
+        command: PathBuf::new(),
+        remote_default_shell: true,
+        cwd: cwd.map(PathBuf::from),
+        remote_host: Some(HOST.to_owned()),
+        ..Default::default()
+    };
+    let (conn, reader_socket) = hosts
+        .open_pane(HOST, &cmd, None)
+        .unwrap_or_else(|e| panic!("failed to open a shell pane on {HOST}: {e:#}"));
+    let reader = RemoteReader::new(conn.clone(), reader_socket)
+        .expect("failed to build a reader for a remote pane");
+    pump(conn, reader)
+}
+
 fn pump(conn: Arc<RemoteConn>, mut reader: RemoteReader) -> Pane {
     let output = Arc::new(Mutex::new(Vec::new()));
     let ended = Arc::new(Mutex::new(None));
@@ -1018,6 +1039,79 @@ fn the_far_machine_reports_the_panes_command_and_cwd() {
     assert!(
         argv.iter().any(|a| a.contains(&marker)),
         "the reported argv is not this pane's: {argv:?}"
+    );
+
+    pane.close();
+    remote_sh(&format!("rm -rf {dir}"));
+}
+
+/// A pane opened with no command is what `ssh <host>` gives you: that machine's
+/// user's shell, logged in, in that user's home directory.
+///
+/// The container's test user has `/bin/bash` in its passwd entry precisely so
+/// this can tell a real lookup from the `/bin/sh` fallback, and the leading `-`
+/// is what makes it a login shell rather than merely an interactive one.
+#[test]
+#[ignore]
+fn a_pane_with_no_command_runs_the_remote_users_login_shell() {
+    let hosts = start();
+    let pane = open_default_shell_pane(&hosts, None);
+
+    let status = pane.wait_for_status("its own argv", |s| s.shell_argv.is_some());
+    let argv = status.shell_argv.expect("checked just above");
+    assert_eq!(
+        argv.first().map(String::as_str),
+        Some("-bash"),
+        "the pane should be running the far user's shell as a login shell: {argv:?}"
+    );
+    assert_eq!(
+        status.cwd.as_deref(),
+        Some("/home/test"),
+        "with no cwd asked for, a pane should land where ssh lands"
+    );
+
+    pane.close();
+}
+
+/// The point of a *login* shell: nothing about this machine's environment is
+/// transmitted with a remote pane, so the pane's own profile is the only thing
+/// that can give it a PATH, a prompt and a locale.
+#[test]
+#[ignore]
+fn a_default_shell_pane_sources_the_remote_profile() {
+    let hosts = start();
+    let pane = open_default_shell_pane(&hosts, None);
+    pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
+
+    pane.send_line("echo marker=$ZELLIJ_REMOTE_LOGIN_MARKER");
+
+    pane.wait_for_output("marker=profile-was-sourced");
+
+    pane.close();
+}
+
+/// An explicit cwd names a directory on the far machine and outranks the home
+/// directory the login would otherwise have chosen.
+#[test]
+#[ignore]
+fn an_explicit_cwd_wins_over_the_remote_home_directory() {
+    let hosts = start();
+    let marker = marker("shell-cwd");
+    let dir = format!("/tmp/{marker}");
+    remote_sh(&format!("mkdir -p {dir}"));
+
+    let pane = open_default_shell_pane(&hosts, Some(&dir));
+
+    let status = pane.wait_for_status("a cwd", |s| s.cwd.is_some());
+    assert_eq!(status.cwd.as_deref(), Some(dir.as_str()));
+    assert_eq!(
+        status
+            .shell_argv
+            .as_ref()
+            .and_then(|a| a.first())
+            .map(String::as_str),
+        Some("-bash"),
+        "asking for a cwd should not stop it being a login shell"
     );
 
     pane.close();

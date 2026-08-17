@@ -464,6 +464,9 @@ impl UnixPtyBackend {
             // starts at 0x0 until the first TIOCSWINSZ, and matching that keeps
             // this change pure plumbing.
             initial_size: None,
+            // A local pane execs its command under its own name, as it always
+            // has. Only the remote broker asks for a login shell's argv[0].
+            arg0: None,
         })
     }
 

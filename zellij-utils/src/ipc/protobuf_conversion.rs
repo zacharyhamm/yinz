@@ -4359,6 +4359,7 @@ impl From<crate::input::command::RunCommandAction>
             originating_plugin: action.originating_plugin.map(|op| op.into()),
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
+            remote_default_shell: action.remote_default_shell,
         }
     }
 }
@@ -4461,6 +4462,7 @@ impl From<crate::input::layout::Run>
                         originating_plugin: cmd.originating_plugin.map(|op| op.into()),
                         use_terminal_title: cmd.use_terminal_title,
                         remote_host: cmd.remote_host,
+                        remote_default_shell: cmd.remote_default_shell,
                     },
                 )),
             },
@@ -4847,6 +4849,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
                         .transpose()?,
                     use_terminal_title: cmd.use_terminal_title,
                     remote_host: cmd.remote_host,
+                    remote_default_shell: cmd.remote_default_shell,
                 },
             )),
             RunType::EditFile(edit) => Ok(crate::input::layout::Run::EditFile(
@@ -4957,6 +4960,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunCommandAc
                 .transpose()?,
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
+            remote_default_shell: action.remote_default_shell,
         })
     }
 }

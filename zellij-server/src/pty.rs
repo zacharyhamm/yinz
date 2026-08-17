@@ -457,6 +457,11 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 // User explicitly provided a name — use it regardless
                                 // of use_terminal_title
                                 name
+                            } else if run_command.is_remote_default_shell() {
+                                // The host, until the remote shell sets a title
+                                // of its own — which it will, exactly as a local
+                                // shell does.
+                                run_command.remote_host.clone()
                             } else if run_command.use_terminal_title {
                                 None
                             } else {
@@ -596,7 +601,14 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     Some(TerminalAction::RunCommand(run_command)) => (
                         run_command.hold_on_close,
                         Some(run_command.clone()),
-                        if run_command.use_terminal_title {
+                        if run_command.is_remote_default_shell() {
+                            // See the sibling site above: the host stands in
+                            // until the remote shell titles the pane itself.
+                            Some(
+                                name.or_else(|| run_command.remote_host.clone())
+                                    .unwrap_or_else(|| run_command.to_string()),
+                            )
+                        } else if run_command.use_terminal_title {
                             None
                         } else {
                             Some(name.unwrap_or_else(|| run_command.to_string()))
@@ -1294,7 +1306,39 @@ impl Pty {
             },
         }
     }
+    /// Which machine a pane's cwd would be a path on, if it is a terminal pane.
+    ///
+    /// `None` means this one. Used to keep a cwd from being inherited across a
+    /// machine boundary, where it names a directory that need not exist.
+    fn host_of_pane(&self, pane_id: &PaneId) -> Option<String> {
+        match pane_id {
+            PaneId::Terminal(id) => self
+                .bus
+                .os_input
+                .as_ref()
+                .and_then(|input| input.remote_pane_host(*id)),
+            PaneId::Plugin(_) => None,
+        }
+    }
+    /// Whether a cwd from `source` can be handed to `terminal_action`.
+    ///
+    /// Only if both run on the same machine. Inheriting a path across a machine
+    /// boundary is inheriting a path that is not there — and for a pane that
+    /// asked for a login shell, "not there" is exactly the wrong answer: with no
+    /// cwd it lands in the remote home directory, which is where ssh puts you.
+    fn cwd_may_be_inherited(&self, terminal_action: &TerminalAction, source: &PaneId) -> bool {
+        let target_host = match terminal_action {
+            TerminalAction::RunCommand(run_command) => run_command.remote_host.as_deref(),
+            TerminalAction::OpenFile(_) => None,
+        };
+        target_host == self.host_of_pane(source).as_deref()
+    }
     fn fill_cwd(&self, terminal_action: &mut TerminalAction, client_id: ClientId) {
+        if let Some(active_pane) = self.active_panes.get(&client_id) {
+            if !self.cwd_may_be_inherited(terminal_action, active_pane) {
+                return;
+            }
+        }
         let cwd = match terminal_action {
             TerminalAction::RunCommand(run_command) => &mut run_command.cwd,
             TerminalAction::OpenFile(payload) => &mut payload.cwd,
@@ -1321,6 +1365,9 @@ impl Pty {
         };
     }
     fn fill_cwd_from_pane_id(&self, terminal_action: &mut TerminalAction, pane_id: &PaneId) {
+        if !self.cwd_may_be_inherited(terminal_action, pane_id) {
+            return;
+        }
         let cwd = match terminal_action {
             TerminalAction::RunCommand(run_command) => &mut run_command.cwd,
             TerminalAction::OpenFile(payload) => &mut payload.cwd,
@@ -2032,7 +2079,9 @@ impl Pty {
                         }
                     }
                 });
-                if command.cwd.is_none() {
+                // The default shell's cwd is a path on *this* machine; a command
+                // that runs elsewhere must not inherit it.
+                if command.cwd.is_none() && command.remote_host.is_none() {
                     if let TerminalAction::RunCommand(cmd) = default_shell {
                         command.cwd = cmd.cwd;
                     }

@@ -82,10 +82,34 @@ pub struct RunCommand {
     /// parsing unchanged.
     #[serde(default)]
     pub remote_host: Option<String>,
+    /// Run the default login shell of the machine this pane runs on, and ignore
+    /// `command`.
+    ///
+    /// Only meaningful together with `remote_host`: which shell a user has, and
+    /// where their home directory is, are facts about *that* machine, and the
+    /// machine asking for the pane cannot know either. So nothing is resolved
+    /// here — the broker on the far side reads its own passwd entry, exactly as
+    /// sshd does for an interactive session. Shipping this side's `$SHELL`
+    /// instead would name a path that need not even exist there.
+    #[serde(default)]
+    pub remote_default_shell: bool,
 }
 
 impl std::fmt::Display for RunCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A pane whose shell is chosen on the far machine has no command to
+        // print, and an empty string here would reach pane frames and client
+        // listings as a blank. The host is the truthful thing to say about it
+        // until that machine reports back the argv it actually started.
+        if self.is_remote_default_shell() {
+            // Named the way the held-pane banner reads it — "Waiting to run:
+            // login shell on build-box" — rather than as a bare host.
+            return write!(
+                f,
+                "login shell on {}",
+                self.remote_host.as_deref().unwrap_or_default()
+            );
+        }
         let mut command: String = self
             .command
             .as_path()
@@ -122,6 +146,9 @@ pub struct RunCommandAction {
     /// See `RunCommand::remote_host`.
     #[serde(default)]
     pub remote_host: Option<String>,
+    /// See `RunCommand::remote_default_shell`.
+    #[serde(default)]
+    pub remote_default_shell: bool,
 }
 
 impl From<RunCommandAction> for RunCommand {
@@ -135,6 +162,7 @@ impl From<RunCommandAction> for RunCommand {
             originating_plugin: action.originating_plugin,
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
+            remote_default_shell: action.remote_default_shell,
         }
     }
 }
@@ -151,6 +179,7 @@ impl From<RunCommand> for RunCommandAction {
             originating_plugin: run_command.originating_plugin,
             use_terminal_title: run_command.use_terminal_title,
             remote_host: run_command.remote_host,
+            remote_default_shell: run_command.remote_default_shell,
         }
     }
 }
@@ -182,5 +211,15 @@ impl RunCommand {
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
         self
+    }
+    /// The predicate every consumer should use, rather than reading the flag.
+    ///
+    /// `remote_default_shell` without a host asks this machine to resolve a
+    /// shell it was never told to resolve, and an empty command is how a
+    /// mistyped command already arrives. Requiring both keeps such a pane on
+    /// the ordinary `CommandNotFound` path instead of quietly logging the user
+    /// in somewhere.
+    pub fn is_remote_default_shell(&self) -> bool {
+        self.remote_default_shell && self.remote_host.is_some()
     }
 }

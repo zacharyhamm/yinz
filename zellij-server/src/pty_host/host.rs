@@ -275,6 +275,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         failover_cmd,
         termios,
         initial_size,
+        arg0,
     } = spawn
     else {
         cleanup_socket(&host_id);
@@ -309,6 +310,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         terminal_id,
         termios.as_ref(),
         initial_size.as_ref(),
+        arg0.as_deref(),
         &event_tx,
         &wake_tx,
     ) {
@@ -950,6 +952,7 @@ fn start_session(
     terminal_id: u32,
     termios: Option<&WireTermios>,
     initial_size: Option<&WireWinsize>,
+    arg0: Option<&str>,
     event_tx: &Sender<HostEvent>,
     wake_tx: &UnixStream,
 ) -> Result<Session> {
@@ -995,6 +998,9 @@ fn start_session(
                     terminal_id,
                     None,
                     initial_size,
+                    // The failover is a different command; the argv[0] chosen
+                    // for the one that could not get a pty does not describe it.
+                    None,
                     event_tx,
                     wake_tx,
                 );
@@ -1014,6 +1020,11 @@ fn start_session(
 
     let slave_raw = slave.as_raw_fd();
     let mut command = Command::new(&cmd.command);
+    if let Some(arg0) = arg0 {
+        // The whole of what makes a shell a *login* shell. Local panes pass
+        // `None` and exec exactly as they always have.
+        command.arg0(arg0);
+    }
     if let Some(current_dir) = cmd.cwd.as_ref() {
         if current_dir.exists() && current_dir.is_dir() {
             command.current_dir(current_dir);

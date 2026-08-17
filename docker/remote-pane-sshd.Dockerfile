@@ -15,7 +15,8 @@ RUN apk add --no-cache \
     openssh-server \
     git \
     procps \
-    coreutils
+    coreutils \
+    bash
 
 # Host keys, once, at build time. The tests disable host-key checking anyway,
 # but sshd will not start without them.
@@ -29,11 +30,23 @@ RUN ssh-keygen -A
 # authorized_keys, so the failure reads as "Permission denied (publickey)" and
 # sends you hunting for a key problem that isn't there. `*` means "no password
 # will ever match", which is what is wanted: key auth only.
-RUN adduser -D -u 1000 -s /bin/sh test \
+#
+# The login shell is deliberately *not* `/bin/sh`. A pane opened with no command
+# resolves its shell from this passwd entry, and `/bin/sh` is also the
+# last-resort fallback when that lookup finds nothing — so asserting on `-sh`
+# would pass even if the passwd entry were never read. `bash` is a shell only a
+# real lookup can produce.
+RUN adduser -D -u 1000 -s /bin/bash test \
     && sed -i 's/^test:!/test:*/' /etc/shadow \
     && mkdir -p /home/test/.ssh \
     && chown -R test:test /home/test/.ssh \
     && chmod 700 /home/test/.ssh
+
+# Set only by a *login* shell reading the profile. A remote pane is handed no
+# environment at all — it inherits whatever the first bootstrap ssh froze — so
+# this marker appearing in a pane is the proof that its shell logged in.
+RUN printf 'export ZELLIJ_REMOTE_LOGIN_MARKER=profile-was-sourced\n' \
+    > /etc/profile.d/zellij-remote-login-marker.sh
 
 COPY remote-pane-sshd_config /etc/ssh/sshd_config
 COPY remote-pane-entrypoint.sh /usr/local/bin/entrypoint.sh

@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/break_panes_commands.rs
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
@@ -23,6 +23,7 @@ Some(
                     originating_plugin: None,
                     use_terminal_title: true,
                     remote_host: None,
+                    remote_default_shell: false,
                 },
             ),
         ),

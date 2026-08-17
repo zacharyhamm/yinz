@@ -321,6 +321,11 @@ fn serialize_tiled_pane(
 
 pub fn extract_command_and_args(layout_run: &Option<Run>) -> (Option<String>, Vec<String>) {
     match layout_run {
+        // Its command was never named here — the far machine chose it. Emitting
+        // the empty placeholder would resurrect as a local pane running "",
+        // where saying nothing resurrects it as a plain default-shell pane.
+        // Layouts have no remote surface to serialize into either way.
+        Some(Run::Command(run_command)) if run_command.is_remote_default_shell() => (None, vec![]),
         Some(Run::Command(run_command)) => (
             Some(run_command.command.display().to_string()),
             run_command.args.clone(),

@@ -1038,8 +1038,9 @@ pub enum CliAction {
         start_suspended: bool,
         /// Run the pane on another machine over ssh, given as an ssh destination
         /// (a host, an alias from your ssh config, or user@host). Needs a zellij
-        /// of the same version on its PATH there.
-        #[clap(long, value_parser, requires("command"))]
+        /// of the same version on its PATH there. With no command, opens that
+        /// machine's default login shell, like a plain ssh would.
+        #[clap(long, value_parser, conflicts_with("plugin"))]
         remote_host: Option<String>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,

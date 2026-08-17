@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::pty_host::remote::session::PaneRegistry;
+use zellij_utils::input::command::RunCommand;
 
 use crate::pty_host::remote::protocol::{try_decode_frame, write_control, Frame};
 
@@ -191,4 +192,110 @@ fn a_connection_that_just_ends_is_not_a_terminate() {
         matches!(outcome, Outcome::Disconnected),
         "a dropped connection must not read as a terminate, or a reconnectable pane is killed"
     );
+}
+
+// --- resolving the default shell ---
+//
+// This machine is the only authority on which shell its user has and where their
+// home directory is, so these pin the order it consults and the argv[0] that
+// makes the result a *login* shell. `ShellSource` is a parameter precisely so
+// this can be tested without arranging a second user on the test machine.
+
+fn default_shell_command(host: Option<&str>) -> RunCommand {
+    RunCommand {
+        command: PathBuf::new(),
+        remote_default_shell: true,
+        remote_host: host.map(String::from),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_passwd_shell_beats_the_environment() {
+    let mut cmd = default_shell_command(Some("build-box"));
+    let arg0 = resolve_default_shell(
+        &mut cmd,
+        &ShellSource {
+            passwd_shell: Some(PathBuf::from("/usr/local/bin/zsh")),
+            passwd_home: Some(PathBuf::from("/home/zach")),
+            env_shell: Some(PathBuf::from("/bin/bash")),
+            env_home: Some(PathBuf::from("/root")),
+        },
+    );
+    // `$SHELL` here is whatever the bootstrap ssh happened to freeze into this
+    // broker's environment; the passwd entry is the fact about the user.
+    assert_eq!(cmd.command, PathBuf::from("/usr/local/bin/zsh"));
+    assert_eq!(arg0.as_deref(), Some("-zsh"));
+    assert_eq!(cmd.cwd, Some(PathBuf::from("/home/zach")));
+}
+
+#[test]
+fn the_environment_stands_in_for_a_passwd_entry_without_a_shell() {
+    let mut cmd = default_shell_command(Some("build-box"));
+    let arg0 = resolve_default_shell(
+        &mut cmd,
+        &ShellSource {
+            passwd_shell: Some(PathBuf::new()),
+            passwd_home: Some(PathBuf::from("/home/zach")),
+            env_shell: Some(PathBuf::from("/bin/bash")),
+            ..Default::default()
+        },
+    );
+    assert_eq!(cmd.command, PathBuf::from("/bin/bash"));
+    assert_eq!(arg0.as_deref(), Some("-bash"));
+}
+
+#[test]
+fn with_nothing_to_go_on_it_falls_back_to_sh() {
+    let mut cmd = default_shell_command(Some("build-box"));
+    let arg0 = resolve_default_shell(&mut cmd, &ShellSource::default());
+    assert_eq!(cmd.command, PathBuf::from("/bin/sh"));
+    assert_eq!(arg0.as_deref(), Some("-sh"));
+    assert_eq!(
+        cmd.cwd, None,
+        "no home to be found is not a reason to invent one"
+    );
+}
+
+/// An explicit `--cwd` names a directory on this machine and outranks the home
+/// directory the login would otherwise have chosen.
+#[test]
+fn an_explicit_cwd_survives_resolution() {
+    let mut cmd = default_shell_command(Some("build-box"));
+    cmd.cwd = Some(PathBuf::from("/srv/www"));
+    resolve_default_shell(
+        &mut cmd,
+        &ShellSource {
+            passwd_shell: Some(PathBuf::from("/bin/bash")),
+            passwd_home: Some(PathBuf::from("/home/zach")),
+            ..Default::default()
+        },
+    );
+    assert_eq!(cmd.cwd, Some(PathBuf::from("/srv/www")));
+}
+
+/// The flag without a host is not a request this machine was ever given, and an
+/// empty command is also how a mistyped one arrives — so it must stay empty and
+/// fail as `CommandNotFound` rather than quietly logging someone in.
+#[test]
+fn anything_that_is_not_a_remote_default_shell_is_left_alone() {
+    let mut hostless = default_shell_command(None);
+    assert_eq!(
+        resolve_default_shell(&mut hostless, &ShellSource::default()),
+        None
+    );
+    assert_eq!(hostless.command, PathBuf::new());
+
+    let mut ordinary = RunCommand {
+        command: PathBuf::from("/usr/bin/htop"),
+        args: vec!["-d".to_owned(), "5".to_owned()],
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_default_shell(&mut ordinary, &ShellSource::default()),
+        None
+    );
+    assert_eq!(ordinary.command, PathBuf::from("/usr/bin/htop"));
+    assert_eq!(ordinary.args, vec!["-d".to_owned(), "5".to_owned()]);
 }

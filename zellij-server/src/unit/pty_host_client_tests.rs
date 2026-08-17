@@ -33,6 +33,7 @@ fn sh(script: &str) -> RunCommand {
         originating_plugin: None,
         use_terminal_title: false,
         remote_host: None,
+        remote_default_shell: false,
     }
 }
 
@@ -91,6 +92,7 @@ fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
             width_in_pixels: 0,
             height_in_pixels: 0,
         }),
+        arg0: None,
     }
 }
 
@@ -862,6 +864,7 @@ fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
             width_in_pixels: 0,
             height_in_pixels: 0,
         }),
+        arg0: None,
     };
 
     // `exec` can fail with `ETXTBSY` here for reasons that have nothing to do

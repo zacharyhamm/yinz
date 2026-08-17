@@ -988,6 +988,79 @@ fn a_local_pane_announces_no_host() {
     );
 }
 
+/// A cwd is a path on one machine. Handing a local pane's cwd to a pane that
+/// runs elsewhere names a directory that need not exist there — and for a pane
+/// that asked for a login shell it is worse than useless: an unset cwd is
+/// precisely what lands it in the remote home directory, the way ssh does.
+#[test]
+fn a_remote_pane_does_not_inherit_a_local_panes_cwd() {
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(3, PathBuf::from("/home/me/on-this-machine"));
+
+    let mut action = TerminalAction::RunCommand(RunCommand {
+        remote_default_shell: true,
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    });
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(3));
+
+    match action {
+        TerminalAction::RunCommand(command) => assert_eq!(command.cwd, None),
+        other => panic!("expected a RunCommand, got {other:?}"),
+    }
+}
+
+/// A pane on the *same* machine is a different matter: its cwd is a path the new
+/// pane can actually use, so opening a pane from a remote pane keeps landing in
+/// that pane's directory.
+#[test]
+fn a_remote_pane_inherits_the_cwd_of_a_pane_on_its_own_machine() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(3, "build-box");
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(3, PathBuf::from("/srv/on-the-far-machine"));
+
+    let mut action = TerminalAction::RunCommand(RunCommand {
+        remote_default_shell: true,
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    });
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(3));
+
+    match action {
+        TerminalAction::RunCommand(command) => {
+            assert_eq!(command.cwd, Some(PathBuf::from("/srv/on-the-far-machine")))
+        },
+        other => panic!("expected a RunCommand, got {other:?}"),
+    }
+}
+
+/// The mirror image, and the one that keeps this from being a regression: a
+/// local pane still inherits a local pane's cwd.
+#[test]
+fn a_local_pane_still_inherits_a_local_panes_cwd() {
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(3, PathBuf::from("/home/me/on-this-machine"));
+
+    let mut action = TerminalAction::RunCommand(RunCommand {
+        command: PathBuf::from("/bin/sh"),
+        ..Default::default()
+    });
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(3));
+
+    match action {
+        TerminalAction::RunCommand(command) => {
+            assert_eq!(command.cwd, Some(PathBuf::from("/home/me/on-this-machine")))
+        },
+        other => panic!("expected a RunCommand, got {other:?}"),
+    }
+}
+
 /// Closing a pane retracts it, or Screen would keep attributing a recycled
 /// terminal id to a machine it has nothing to do with.
 #[test]
