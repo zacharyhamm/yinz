@@ -73,6 +73,33 @@ fn a_read_only_call_runs_without_asking() {
     assert_eq!(state.tool_rounds, 1);
 }
 
+/// The gate reads the arguments, not just the name: the same tool stops or does
+/// not depending on whether the model named a command to run over there.
+#[test]
+fn a_remote_pane_stops_for_a_command_but_not_for_a_login_shell() {
+    let mut state = ready_state();
+    let frame = tool_call_frame(
+        "call_1",
+        "new_remote_pane",
+        r#"{"remote_host":"box","command":"htop"}"#,
+    );
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(
+        matches!(state.status, Status::ConfirmingTool),
+        "running a command on another machine should ask first"
+    );
+
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "new_remote_pane", r#"{"remote_host":"box"}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(
+        !matches!(state.status, Status::ConfirmingTool),
+        "a bare login shell should not ask, any more than new_pane does"
+    );
+}
+
 /// Declining must still answer the call: the API rejects a transcript where
 /// a requested call has no matching result.
 #[test]

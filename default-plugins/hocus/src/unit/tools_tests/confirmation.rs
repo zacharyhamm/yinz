@@ -17,12 +17,13 @@ fn confirmation_policy_lists_tools_correctly() {
         "warp_pane",
         "warp_pane_here",
         "adopt_orphaned_pane",
-        // Runs a command on a foreign machine over ssh.
-        "new_remote_pane",
     ] {
         assert!(needs_confirmation(name), "{name} should be confirmed");
     }
     for name in [
+        // Answers per call rather than per name: a command over ssh stops, a
+        // bare login shell does not. See `call_needs_confirmation`.
+        "new_remote_pane",
         "list_session",
         // Listing is always free, including the two that look outward.
         "list_other_sessions",
@@ -82,7 +83,50 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .collect();
     assert_eq!(names.len(), 53);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 14);
+    assert_eq!(confirmed, 13);
+}
+
+/// The invariant the name table cannot state on its own: whatever decides to
+/// stop must also be able to say why.
+///
+/// `every_confirmed_tool_says_what_it_will_do` walks the *name* table, so it has
+/// never covered the tools that answer per call — `schedule` was already outside
+/// it, and `new_remote_pane` has just joined. This walks the decision the tool
+/// loop actually makes instead, which is the one that has to match.
+#[test]
+fn whatever_stops_for_a_confirmation_can_say_what_it_will_do() {
+    let mut calls = vec![
+        call(
+            "new_remote_pane",
+            r#"{"remote_host":"box","command":"htop"}"#,
+        ),
+        call("new_remote_pane", r#"{"remote_host":"box"}"#),
+        call("new_remote_pane", r#"{"remote_host":"box","command":""}"#),
+        call("new_remote_pane", "not json at all"),
+        call("schedule", r#"{"prompt":"check ci","auto_confirm":true}"#),
+        call("schedule", r#"{"prompt":"check ci"}"#),
+    ];
+    // Every other tool, with nothing to go on but its name.
+    calls.extend(names().iter().map(|name| call(name, "{}")));
+    for tool_call in &calls {
+        assert_eq!(
+            call_needs_confirmation(tool_call),
+            consequence(tool_call).is_some(),
+            "{} {} disagrees about whether it stops",
+            tool_call.name,
+            tool_call.arguments,
+        );
+    }
+}
+
+/// Arguments the model got wrong are not a bare shell — they are a call nobody
+/// can read, and the one case that most needs a human to look at it.
+#[test]
+fn a_remote_pane_whose_arguments_do_not_parse_still_stops() {
+    assert!(call_needs_confirmation(&call(
+        "new_remote_pane",
+        "not json at all"
+    )));
 }
 
 /// The same guard as the confirmation table above, one layer along: a tool
@@ -141,24 +185,35 @@ fn a_remote_pane_consequence_names_the_host() {
     );
 }
 
-/// The prompt is the user's only account of what they are allowing, so a pane
-/// with no command must not be described as running one.
+/// A bare login shell never stops, so it has nothing to say — the same shape as
+/// `scheduling_only_says_anything_when_it_asks_for_standing_permission`.
 #[test]
-fn a_remote_shell_consequence_says_it_is_a_login() {
-    let logs_in = Some("logs in to box over ssh, opening a new pane running its shell".into());
+fn a_remote_pane_only_says_anything_when_it_names_a_command() {
+    assert!(!call_needs_confirmation(&call(
+        "new_remote_pane",
+        r#"{"remote_host":"box"}"#
+    )));
     assert_eq!(
         consequence(&call("new_remote_pane", r#"{"remote_host":"box"}"#)),
-        logs_in
+        None
     );
-    // An empty command is a command in form only, and reaches the far machine
-    // as a login shell too.
+    // An empty command is a command in form only: it reaches the far machine as
+    // a login shell, so it must not stop as though it were one.
+    assert!(!call_needs_confirmation(&call(
+        "new_remote_pane",
+        r#"{"remote_host":"box","command":""}"#
+    )));
     assert_eq!(
         consequence(&call(
             "new_remote_pane",
             r#"{"remote_host":"box","command":""}"#
         )),
-        logs_in
+        None
     );
+    assert!(call_needs_confirmation(&call(
+        "new_remote_pane",
+        r#"{"remote_host":"box","command":"htop"}"#
+    )));
 }
 
 /// `agent_control`'s argument is a verb, and interrupting is not restarting.
