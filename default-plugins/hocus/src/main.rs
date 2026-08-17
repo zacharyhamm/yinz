@@ -328,6 +328,13 @@ pub struct State {
     /// Tab id to project name, as the poll worked it out from the agents in the
     /// tab. Rebuilt on every poll. `tab_projects` wins over this map.
     auto_tab_projects: BTreeMap<usize, String>,
+    /// What each tab is called after the project in it, as last told to the host.
+    ///
+    /// Not the same map as the two above: a tab whose agents are in two projects
+    /// is named after both, where an *assignment* has to pick one and so picks
+    /// neither. Kept so the host is only told when the answer changes — this is
+    /// recomputed on every poll and the answer is usually the same one.
+    tab_project_labels: BTreeMap<usize, String>,
     /// The tabs as of the last `TabUpdate`.
     ///
     /// The host sends one per client, so with every client served by this one
@@ -421,6 +428,7 @@ impl Default for State {
             },
             tab_projects: BTreeMap::new(),
             auto_tab_projects: BTreeMap::new(),
+            tab_project_labels: BTreeMap::new(),
             tabs: Vec::new(),
             last_focused_agent: None,
             focused_pane: None,

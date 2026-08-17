@@ -309,6 +309,7 @@ pub enum ScreenContext {
     GoToTabWithId,
     CloseTabWithId,
     RenameTabWithId,
+    SetTabProjects,
     BreakPanesToTabWithId,
     RecomputeTabSize,
     TerminalPixelDimensions,

@@ -40,6 +40,61 @@ fn an_agent_outside_a_repository_joins_no_project_it_sits_under() {
 }
 
 #[test]
+fn a_tab_is_labelled_with_the_project_its_agents_are_in() {
+    let mut state = state_with_tab(9);
+    poll(
+        &mut state,
+        vec![agent_in(3, "/work/hocus", 9), agent_in(4, "/work/hocus", 9)],
+    );
+
+    assert_eq!(state.tab_project_labels[&9], "hocus");
+}
+
+/// The label names both, where the *assignment* names neither: a tab is a place
+/// to work rather than a thing one project owns.
+#[test]
+fn a_tab_with_two_projects_is_labelled_with_both() {
+    let mut state = state_with_tab(9);
+    poll(
+        &mut state,
+        vec![agent_in(3, "/work/pocus", 9), agent_in(4, "/work/hocus", 9)],
+    );
+
+    assert_eq!(state.tab_project_labels[&9], "hocus + pocus");
+    assert!(
+        !state.auto_tab_projects.contains_key(&9),
+        "two projects still assign nothing"
+    );
+}
+
+#[test]
+fn a_tab_the_user_assigned_is_labelled_with_that_project() {
+    let mut state = state_with_tab(9);
+    state.run_local(&agent_call(
+        "project_assign",
+        r#"{"name":"named","root":"/work/named"}"#,
+    ));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+
+    assert_eq!(state.tab_project_labels[&9], "named");
+}
+
+#[test]
+fn a_tab_that_closed_loses_its_label() {
+    let mut state = state_with_tab(9);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    assert_eq!(state.tab_project_labels[&9], "hocus");
+
+    state.on_tabs(vec![TabInfo {
+        active: true,
+        tab_id: 10,
+        ..TabInfo::default()
+    }]);
+
+    assert!(state.tab_project_labels.is_empty());
+}
+
+#[test]
 fn a_shell_folder_becomes_no_project() {
     let mut state = state_with_tab(9);
     let shell = agents::AgentPane {

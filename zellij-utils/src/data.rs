@@ -3728,10 +3728,16 @@ pub enum PluginCommand {
     // the new tab
     BreakPanesToTabWithIndex(Vec<PaneId>, usize, bool), // usize - tab_index, bool -
     // should_change_focus_to_new_tab
-    SwitchTabToId(u64),                            // u64 - tab_id
-    GoToTabWithId(u64),                            // u64 - tab_id
-    CloseTabWithId(u64),                           // u64 - tab_id
-    RenameTabWithId(u64, String),                  // u64 - tab_id, String - new name
+    SwitchTabToId(u64),           // u64 - tab_id
+    GoToTabWithId(u64),           // u64 - tab_id
+    CloseTabWithId(u64),          // u64 - tab_id
+    RenameTabWithId(u64, String), // u64 - tab_id, String - new name
+    /// The project each tab is working on, keyed by tab id.
+    ///
+    /// Advisory rather than a rename: the server shows these to fill in tabs the
+    /// user has not named, and never writes them to the tab. Sent as the whole
+    /// map, so a tab left out of it has no project.
+    SetTabProjects(BTreeMap<u64, String>),
     BreakPanesToTabWithId(Vec<PaneId>, u64, bool), // u64 - tab_id, bool -
     // should_change_focus_to_target_tab
     ReloadPlugin(u32), // u32 - plugin pane id

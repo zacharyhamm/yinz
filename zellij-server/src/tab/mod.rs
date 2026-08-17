@@ -2283,7 +2283,7 @@ impl Tab {
         self.pane_frame_style.draws_titles()
             && self.get_selectable_tiled_content_panes().count() == 1
     }
-    fn tab_name_is_default(&self) -> bool {
+    pub(crate) fn tab_name_is_default(&self) -> bool {
         !self.name.is_empty() && self.name == self.default_name
     }
     pub fn single_pane_tab_name(&self) -> Option<String> {
