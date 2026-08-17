@@ -36,6 +36,11 @@ pub const AGENT_REFRESH: &str = "agent_refresh";
 pub const AGENT_STRIP: &str = "agent_strip";
 /// hocus-agents → hocus: "I just loaded; send me the strip".
 pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
+/// hocus-agents → hocus: which row the cursor is on (`Selection` as JSON).
+///
+/// The strip goes one way and this comes back: hocus draws the selected agent's
+/// summary, and the selection lives here, where the keys that move it are.
+pub const AGENT_SELECTION: &str = "agent_selection";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
@@ -80,6 +85,15 @@ pub struct PollReply {
     /// answer it: a global pane hears no `PaneUpdate` of its own.
     #[serde(default)]
     pub focused: Option<u32>,
+    /// The plugin pane the user is looking at, if it is one.
+    ///
+    /// The counterpart of `focused`, and never set at the same time. Only the daemon
+    /// can answer this either, and for the same reason: the panes that would most like
+    /// to know — hocus and the agents pane, both global — hear no `PaneUpdate` about
+    /// themselves. It is what tells the two halves of the sidebar apart, which is what
+    /// the summary inset is gated on.
+    #[serde(default)]
+    pub focused_plugin: Option<u32>,
     /// What the model last said about each idle agent's pane.
     ///
     /// Only the daemon can answer this: it is the one thing watching for the busy→idle
@@ -87,6 +101,21 @@ pub struct PollReply {
     /// of its own because a summary is only ever read beside the pane it is about.
     #[serde(default)]
     pub summaries: agents::Summaries,
+}
+
+/// Where the cursor is in the agents pane.
+///
+/// `plugin_id` is the pane's own id, sent so hocus can compare it against the
+/// `focused_plugin` the daemon reports and know that *this* pane — and not the chat
+/// beneath it — has the focus. A name or a title would be a guess; an id is the pane.
+///
+/// `pane_id` is `None` when nothing selectable is on the list at all, which is a strip
+/// with no agents in it.
+#[derive(Serialize, Deserialize)]
+pub struct Selection {
+    pub plugin_id: u32,
+    #[serde(default)]
+    pub pane_id: Option<u32>,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the

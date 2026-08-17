@@ -90,6 +90,21 @@ pub fn manifest_pane_ids(manifest: &PaneManifest) -> BTreeSet<u32> {
 /// A global pane is in no tab and so passes neither test; the host already works out
 /// its focus per client, so `is_focused` is taken at its word there.
 pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
+    focused(manifest, tabs, false)
+}
+
+/// The plugin pane the user is looking at, if it is one.
+///
+/// The other half of `focused_pane`, and the only way anyone learns that the sidebar
+/// has the focus rather than a terminal: a global pane hears no `PaneUpdate` of its
+/// own, so hocus cannot see that hocus-agents — or hocus itself — is where the cursor
+/// is. The daemon can, and tells them.
+pub fn focused_plugin_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
+    focused(manifest, tabs, true)
+}
+
+/// The focused pane of one kind. See `focused_pane` for what makes a candidate.
+fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u32> {
     let active = tabs.iter().find(|tab| tab.active);
     let in_tabs = manifest
         .panes
@@ -99,7 +114,7 @@ pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
         .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating));
     in_tabs
         .chain(manifest.global_panes.iter())
-        .find(|pane| pane.is_focused && !pane.is_plugin && !pane.is_suppressed)
+        .find(|pane| pane.is_focused && pane.is_plugin == plugin && !pane.is_suppressed)
         .map(|pane| pane.id)
 }
 
@@ -251,5 +266,40 @@ mod tests {
         };
 
         assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), Some(7));
+    }
+
+    /// The sidebar is two global plugin panes, and which of them holds the focus
+    /// is the whole question the summary inset is gated on.
+    #[test]
+    fn the_focused_plugin_pane_is_the_half_of_the_sidebar_the_user_is_in() {
+        let plugin = |id| PaneInfo {
+            is_plugin: true,
+            ..focused(id)
+        };
+        let manifest = PaneManifest {
+            global_panes: vec![
+                PaneInfo {
+                    is_focused: false,
+                    ..plugin(11)
+                },
+                plugin(12),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            focused_plugin_pane(&manifest, &[tab(0, true, false)]),
+            Some(12)
+        );
+        // And the two never answer each other's question.
+        assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), None);
+    }
+
+    #[test]
+    fn a_focused_terminal_is_not_a_focused_plugin_pane() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(0, vec![focused(3)]);
+
+        assert_eq!(focused_plugin_pane(&manifest, &[tab(0, true, false)]), None);
     }
 }

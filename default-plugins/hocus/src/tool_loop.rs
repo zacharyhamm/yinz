@@ -1188,35 +1188,49 @@ impl State {
         })
     }
 
-    /// The agent the user is looking at and what the daemon last made of it, for the
-    /// inset drawn over the transcript.
+    /// The agent selected in the agents pane and what the daemon last made of it, for
+    /// the inset drawn at the head of the transcript.
     ///
-    /// `None` for anything that is not an idle agent with something to say. The idleness
-    /// gate is the one `waiting_marker` and `list_json` apply: a summary outlives the
-    /// moment it describes, so an agent that has gone back to work must not be drawn
-    /// with an account of what it was doing before. `focused_pane` is itself `None`
-    /// whenever hocus is the focused pane - the daemon only reports terminal panes - so
-    /// this closes as soon as the user comes here to type.
-    pub(crate) fn focused_summary(&self) -> Option<(u32, &str, &agents::Summary)> {
-        let pane_id = self.focused_pane?;
-        let summary = self.summaries.get(&pane_id)?;
-        let idle = self
-            .activity
-            .get(&pane_id)
-            .is_some_and(|(_, polls)| *polls > 0);
-        if !idle {
+    /// Drawn only while the agents pane itself holds the focus. That is the moment the
+    /// note is for: the user is working the list, deciding which agent to walk into,
+    /// and the box says what the one under the cursor was last seen doing. Standing in
+    /// an agent, or here in the chat, it is not what anyone is reading, so it goes.
+    ///
+    /// No idleness gate, unlike `waiting_marker` and the strip's `!`: what is asked for
+    /// here is the *last* thing the daemon made of this agent, and an agent that has
+    /// gone back to work still has one. The header carries the pane id, so what the box
+    /// claims to be is an account of a moment, not of right now.
+    pub(crate) fn selected_summary(&self) -> Option<(u32, &str, &agents::Summary)> {
+        if self.focused_plugin.is_none() || self.focused_plugin != self.agents_plugin {
             return None;
         }
+        let pane_id = self.agents_selected?;
+        let summary = self.summaries.get(&pane_id)?;
         let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
         let (kind, _) = agents::classify(pane, &self.manual_kinds)?;
         Some((pane_id, kind, summary))
+    }
+
+    /// Take the agents pane's cursor. Answers whether the inset moved with it.
+    pub(crate) fn on_selection(&mut self, message: &PipeMessage) -> bool {
+        let Some(selection) = message
+            .payload
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<wire::Selection>(json).ok())
+        else {
+            return false;
+        };
+        let inset = self.inset_key();
+        self.agents_plugin = Some(selection.plugin_id);
+        self.agents_selected = selection.pane_id;
+        self.inset_key() != inset
     }
 
     /// What the inset is showing, small enough to hold across a snapshot and
     /// compare. The hash names the screen the summary was made from, so a change
     /// here is a change on screen and nothing else is.
     pub(crate) fn inset_key(&self) -> Option<(u32, u64, bool)> {
-        self.focused_summary()
+        self.selected_summary()
             .map(|(pane_id, _, summary)| (pane_id, summary.hash, summary.awaiting))
     }
 
