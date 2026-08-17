@@ -239,6 +239,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                     ),
                 ]),
                 focused: None,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
@@ -437,8 +438,8 @@ fn state_with_project() -> State {
 /// pure functions hocus-store uses and pushing the result back as a
 /// snapshot — so these tests still cover hocus's half of every call.
 fn todo(state: &mut State, name: &str, arguments: &str) -> serde_json::Value {
-    let result = todo_result(state, name, arguments)
-        .unwrap_or_else(|| panic!("{name} answered nothing"));
+    let result =
+        todo_result(state, name, arguments).unwrap_or_else(|| panic!("{name} answered nothing"));
     serde_json::from_str(&result)
         .unwrap_or_else(|_| panic!("{name} answered with an error: {result}"))
 }
@@ -543,6 +544,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 manual_kinds: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),
@@ -576,6 +578,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                     ),
                 ]),
                 focused,
+                focused_plugin: None,
                 summaries: agents::Summaries::new(),
             })
             .expect("serialize"),

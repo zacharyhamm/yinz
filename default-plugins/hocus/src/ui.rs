@@ -974,14 +974,17 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     render_summary_inset(state, body_y, layout.transcript_rows, cols);
 }
 
-/// What the focused agent was last seen doing, in a box over the foot of the
+/// What the selected agent was last seen doing, in a box over the head of the
 /// transcript.
 ///
-/// Drawn only while an agent pane holds focus, so it is a thing the user reads
-/// *about the pane they are in* while the conversation sits beside it. It goes
-/// as soon as they come back here to type, which is why nothing dismisses it.
+/// Drawn only while the agents pane holds focus, so it is a thing the user reads
+/// *about the row under their cursor* while working the list beside it. It goes
+/// as soon as they walk anywhere else, which is why nothing dismisses it.
+///
+/// At the top rather than the foot: it belongs beside the list it is about, and the
+/// list is the pane directly above this one.
 fn render_summary_inset(state: &State, body_y: usize, transcript_rows: usize, cols: usize) {
-    let Some((pane_id, kind, summary)) = state.focused_summary() else {
+    let Some((pane_id, kind, summary)) = state.selected_summary() else {
         return;
     };
     // Room for the frame, a space either side of the text, and a margin column
@@ -992,7 +995,7 @@ fn render_summary_inset(state: &State, body_y: usize, transcript_rows: usize, co
     };
 
     let last = rows.len() - 1;
-    let top = body_y + transcript_rows - rows.len();
+    let top = body_y;
     for (index, row) in rows.iter().enumerate() {
         // Printed across the whole pane width, with the margin as part of the
         // string: an overlay has to cover the transcript row it sits on, and a

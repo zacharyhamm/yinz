@@ -238,6 +238,7 @@ fn poll_reply_round_trips_through_json() {
             },
         )]),
         focused: Some(7),
+        focused_plugin: Some(11),
         summaries: agents::Summaries::new(),
     };
     let json = serde_json::to_string(&reply).expect("serialize");
@@ -246,4 +247,5 @@ fn poll_reply_round_trips_through_json() {
     assert_eq!(back.activity, reply.activity);
     assert_eq!(back.repositories, reply.repositories);
     assert_eq!(back.focused, reply.focused);
+    assert_eq!(back.focused_plugin, reply.focused_plugin);
 }
