@@ -1429,6 +1429,12 @@ impl GlobalPaneManager {
         self.selecting_with_mouse.remove(&client_id);
     }
 
+    /// Whether a global pane has already captured this client's mouse for a text selection. Such a
+    /// selection keeps the mouse for its duration, even where something is drawn over the pane.
+    pub fn is_selecting_with_mouse(&self, client_id: ClientId) -> bool {
+        self.selecting_with_mouse.contains_key(&client_id)
+    }
+
     /// Move the border of `pane_id` to `position`, sizing the pane from the absolute pointer
     /// position rather than from a delta, so a drag can never accumulate drift. Returns whether
     /// anything changed, so the caller can skip re-flowing every tab for a no-op motion.
