@@ -4,4 +4,4 @@ expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  Tab #1  + 
 $ █
- Ctrl + <n> RESIZE   +|-  Increase/Decrease  ←↓↑→  Increase  HJKL  Decrease  ENTER  Select 
+ Ctrl + <n> SIZE   +|-  Increase/Decrease size  ←↓↑→  Increase to  HJKL  Decrease from  ENTER  Select pane 

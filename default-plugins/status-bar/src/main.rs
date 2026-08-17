@@ -494,6 +494,22 @@ pub fn action_key(
         .collect::<Vec<KeyWithModifier>>()
 }
 
+/// Get the key bound to launching a particular plugin, by alias.
+///
+/// [`action_key`] cannot do this: it compares actions with `shallow_eq`, which only looks at the
+/// variant, so every `LaunchOrFocusPlugin` binding in a mode looks identical to it. Matching on the
+/// alias is what keeps each hint pointing at its own key.
+pub fn plugin_launch_key(
+    keymap: &[(KeyWithModifier, Vec<Action>)],
+    alias: &str,
+) -> Vec<KeyWithModifier> {
+    keymap
+        .iter()
+        .find(|(_, acvec)| acvec.iter().any(|a| a.launches_plugin(alias)))
+        .map(|(key, _)| vec![key.clone()])
+        .unwrap_or_default()
+}
+
 /// Get multiple keys for multiple actions.
 ///
 /// An extension of [`action_key`] that iterates over all action tuples and collects the results.

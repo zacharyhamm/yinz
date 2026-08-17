@@ -6,6 +6,6 @@ expression: normalized(&outer_doubly_nested)
  Zellij (test)  test-2  + 
  Zellij (test)  Tab #1  + 
 █
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT        ...
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
  Ascend: Ctrl + <o> + <]>
- Ascend: Ctrl + <o> + <]>                                                                                               
+ Ascend: Ctrl + <o> + <]>

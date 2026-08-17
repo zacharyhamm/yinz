@@ -13,7 +13,7 @@ use crate::second_line::{
     ascended_to_host_session_hint, descended_into_nested_session_hint, system_clipboard_error,
     text_copied_hint,
 };
-use crate::{action_key, action_key_group, color_elements, MORE_MSG, TO_NORMAL};
+use crate::{action_key, action_key_group, color_elements, plugin_launch_key, MORE_MSG, TO_NORMAL};
 use crate::{ColoredElements, LinePart};
 use unicode_width::UnicodeWidthStr;
 
@@ -108,6 +108,7 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let move_binds = &help.get_keybinds_for_mode(InputMode::Move);
     let scroll_binds = &help.get_keybinds_for_mode(InputMode::Scroll);
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
+    let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
     HashMap::from([
         (
             InputMode::Locked,
@@ -197,8 +198,43 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
+                    KeyAction::Agent,
+                    to_char(action_key(
+                        normal_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Agent,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Unselected,
                     KeyAction::Quit,
                     to_char(action_key(normal_binds, &[Action::Quit])),
+                ),
+            ],
+        ),
+        (
+            InputMode::Agent,
+            vec![
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Unlock,
+                    to_char(action_key(
+                        agent_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Locked,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Agent,
+                    to_char(action_key(
+                        agent_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Normal,
+                        }],
+                    )),
                 ),
             ],
         ),
@@ -364,6 +400,7 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let move_binds = &help.get_keybinds_for_mode(InputMode::Move);
     let scroll_binds = &help.get_keybinds_for_mode(InputMode::Scroll);
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
+    let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
     HashMap::from([
         (
             InputMode::Locked,
@@ -453,10 +490,33 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
+                    KeyAction::Agent,
+                    to_char(action_key(
+                        normal_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Agent,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Unselected,
                     KeyAction::Quit,
                     to_char(action_key(normal_binds, &[Action::Quit])),
                 ),
             ],
+        ),
+        (
+            InputMode::Agent,
+            vec![KeyShortcut::new(
+                KeyMode::Selected,
+                KeyAction::Agent,
+                to_char(action_key(
+                    agent_binds,
+                    &[Action::SwitchToMode {
+                        input_mode: InputMode::Normal,
+                    }],
+                )),
+            )],
         ),
         (
             InputMode::Pane,
@@ -1790,6 +1850,11 @@ fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier
         (s("Layout Manager"), s("Layouts"), layout_manager_key(&km)),
         (s("Plugin Manager"), s("Plugins"), plugin_manager_key(&km)),
         (s("About"), s("About"), about_key(&km)),
+        (s("Select pane"), s("Select"), to_basemode_key),
+    ]} else if mi.mode == IM::Agent { vec![
+        (s("Agents"), s("Agents"), plugin_launch_key(&km, "hocus-agents")),
+        (s("Chat"), s("Chat"), plugin_launch_key(&km, "hocus")),
+        (s("Ask"), s("Ask"), plugin_launch_key(&km, "hocus-ask")),
         (s("Select pane"), s("Select"), to_basemode_key),
     ]} else if mi.mode == IM::Tmux { vec![
         (s("Move focus"), s("Move"), action_key_group(&km, &[

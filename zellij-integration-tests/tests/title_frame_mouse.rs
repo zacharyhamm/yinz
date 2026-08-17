@@ -4,7 +4,7 @@ use insta::assert_snapshot;
 use zellij_integration_tests::{normalized, FakePtyHandle, Size, TestRunner, TestSession};
 
 const PROMPT: &[u8] = b"$ ";
-const STATUS_BAR_TEST_COLS: usize = 190;
+const STATUS_BAR_TEST_COLS: usize = 205;
 
 fn start_zellij(cols: usize) -> TestSession {
     TestRunner::new(Size { cols, rows: 24 })

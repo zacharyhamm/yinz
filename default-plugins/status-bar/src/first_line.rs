@@ -27,6 +27,7 @@ pub enum KeyAction {
     Session,
     Move,
     Tmux,
+    Agent,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -48,12 +49,17 @@ impl KeyShortcut {
             KeyAction::Unlock => String::from("UNLOCK"),
             KeyAction::Pane => String::from("PANE"),
             KeyAction::Tab => String::from("TAB"),
-            KeyAction::Resize => String::from("RESIZE"),
+            KeyAction::Resize => String::from("SIZE"),
             KeyAction::Search => String::from("SEARCH"),
             KeyAction::Quit => String::from("QUIT"),
-            KeyAction::Session => String::from("SESSION"),
+            // "SESS" rather than "SESSION", and "SIZE" above rather than "RESIZE": the AGENT tile
+            // pushes the full-label ribbon over budget at 120 columns, and the renderer's answer to
+            // that is to drop every label and show bare key letters. These two abbreviations buy
+            // back enough width to keep the labels in both the one-line and the classic UI.
+            KeyAction::Session => String::from("SESS"),
             KeyAction::Move => String::from("MOVE"),
             KeyAction::Tmux => String::from("TMUX"),
+            KeyAction::Agent => String::from("AGENT"),
         }
     }
     pub fn with_shortened_modifiers(&self, common_modifiers: &[KeyModifier]) -> String {
@@ -109,6 +115,7 @@ impl KeyShortcut {
             KeyAction::Session => String::from("Se"),
             KeyAction::Move => String::from("Mo"),
             KeyAction::Tmux => String::from("Tm"),
+            KeyAction::Agent => String::from("Ag"),
         }
     }
 }
@@ -487,7 +494,8 @@ pub fn mode_switch_keys(mode_info: &ModeInfo) -> Vec<KeyWithModifier> {
                         | InputMode::Resize
                         | InputMode::Move
                         | InputMode::Scroll
-                        | InputMode::Session => Some(key.clone()),
+                        | InputMode::Session
+                        | InputMode::Agent => Some(key.clone()),
                         _ => None,
                     };
                 }
@@ -594,6 +602,7 @@ fn get_key_shortcut_for_mode<'a>(
         InputMode::Move => KeyAction::Move,
         InputMode::Scroll | InputMode::Search | InputMode::EnterSearch => KeyAction::Search,
         InputMode::Session => KeyAction::Session,
+        InputMode::Agent => KeyAction::Agent,
     };
     shortcuts
         .iter_mut()
@@ -687,6 +696,16 @@ pub fn first_line(
         ),
         KeyShortcut::new(
             KeyMode::UnselectedAlternate,
+            KeyAction::Agent,
+            to_char(action_key(
+                binds,
+                &[Action::SwitchToMode {
+                    input_mode: InputMode::Agent,
+                }],
+            )),
+        ),
+        KeyShortcut::new(
+            KeyMode::Unselected,
             KeyAction::Quit,
             to_char(action_key(binds, &[Action::Quit])),
         ),
@@ -768,6 +787,7 @@ mod tests {
             InputMode::Move,
             InputMode::Prompt,
             InputMode::Tmux,
+            InputMode::Agent,
         ]
     }
 
@@ -896,7 +916,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -912,7 +932,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -928,7 +948,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -956,7 +976,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], true);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, " <0> SESSION +".to_string());
+        assert_eq!(ret, " <0> SESS +".to_string());
     }
 
     #[test]
@@ -972,7 +992,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[KeyModifier::Ctrl], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -988,7 +1008,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <Ctrl 0> SESSION +".to_string());
+        assert_eq!(ret, "+ <Ctrl 0> SESS +".to_string());
     }
 
     #[test]
@@ -1004,7 +1024,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -1016,7 +1036,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <> SESSION +".to_string());
+        assert_eq!(ret, "+ <> SESS +".to_string());
     }
 
     #[test]
@@ -1034,7 +1054,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &[KeyModifier::Ctrl], true);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <0> SESSION +".to_string());
+        assert_eq!(ret, "+ <0> SESS +".to_string());
     }
 
     #[test]
@@ -1207,7 +1227,7 @@ mod tests {
 
         assert_eq!(
             ret,
-            " Ctrl + >> <a> PANE >> <b> RESIZE >> <c> MOVE >".to_string()
+            " Ctrl + >> <a> PANE >> <b> SIZE >> <c> MOVE >".to_string()
         );
     }
 
@@ -1231,7 +1251,7 @@ mod tests {
 
         assert_eq!(
             ret,
-            " <Ctrl a> PANE >> <Ctrl b> RESIZE >> <c> MOVE >".to_string()
+            " <Ctrl a> PANE >> <Ctrl b> SIZE >> <c> MOVE >".to_string()
         );
     }
 
@@ -1257,7 +1277,7 @@ mod tests {
 
         assert_eq!(
             ret,
-            " <Ctrl a> LOCK >> <BACKSPACE> PANE >> <ENTER> TAB >> <TAB> RESIZE >> <←> MOVE >"
+            " <Ctrl a> LOCK >> <BACKSPACE> PANE >> <ENTER> TAB >> <TAB> SIZE >> <←> MOVE >"
                 .to_string()
         );
     }
