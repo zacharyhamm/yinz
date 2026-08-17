@@ -83,7 +83,7 @@ const fn system_default_data_dir() -> &'static str {
 
 lazy_static! {
     pub static ref CLIENT_SERVER_CONTRACT_DIR: String =
-        format!("contract_version_{}", CLIENT_SERVER_CONTRACT_VERSION);
+        format!("cv{}", CLIENT_SERVER_CONTRACT_VERSION);
     pub static ref ZELLIJ_PROJ_DIR: ProjectDirs =
         ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap();
     pub static ref ZELLIJ_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR.cache_dir().to_path_buf();

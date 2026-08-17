@@ -351,7 +351,7 @@ pub fn get_tab_info(tab_id: usize) -> Option<TabInfo> {
 /// Save the current session state to disk immediately.
 ///
 /// This triggers an immediate write of the current session metadata and layout
-/// to the session cache directory (~/.cache/zellij/contract_version_1/session_info/<session_name>/).
+/// to the session cache directory (~/.cache/zellij/cv1/session_info/<session_name>/).
 ///
 /// # Returns
 ///

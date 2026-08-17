@@ -612,7 +612,7 @@ fn a_status() -> HostStatus {
 fn a_socket_whose_listener_is_gone_is_dead_and_a_live_one_is_not() {
     let dir = tempfile::tempdir().expect("failed to create a temp dir");
     let path = dir.path().join("h.sock");
-    protocol::check_socket_path_length(&path)
+    protocol::check_socket_path_length(&path, 0)
         .expect("the temp dir is too deep for a unix socket path");
 
     assert!(

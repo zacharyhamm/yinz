@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 #[test]
 fn a_broker_endpoint_parses_from_the_line_ensure_prints() {
     let line = serde_json::json!({
-        "socket": "/run/user/1000/zellij/contract_version_1/pty-broker.sock",
+        "socket": "/run/user/1000/zellij/cv1/pty-broker.sock",
         "protocol_version": REMOTE_PROTOCOL_VERSION,
         "zellij_version": "0.45.0",
     })
@@ -19,7 +19,7 @@ fn a_broker_endpoint_parses_from_the_line_ensure_prints() {
     let endpoint: BrokerEndpoint = serde_json::from_str(&line).expect("parse failed");
     assert_eq!(
         endpoint.socket,
-        "/run/user/1000/zellij/contract_version_1/pty-broker.sock"
+        "/run/user/1000/zellij/cv1/pty-broker.sock"
     );
     assert_eq!(endpoint.protocol_version, REMOTE_PROTOCOL_VERSION);
 }

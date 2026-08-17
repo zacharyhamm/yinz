@@ -898,7 +898,7 @@ fn bind_listener(host_id: &str) -> Result<UnixListener> {
     std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let _ = zellij_utils::shared::set_permissions(&dir, 0o700);
     let path = protocol::socket_path(host_id);
-    protocol::check_socket_path_length(&path)?;
+    protocol::check_socket_path_length(&path, 0)?;
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
