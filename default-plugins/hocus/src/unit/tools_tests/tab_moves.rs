@@ -11,6 +11,34 @@ fn a_tab_move_reports_the_stable_id_the_panes_landed_in() {
     );
 }
 
+/// A global pane is in the session, so the membership check would pass it straight
+/// through to a host that refuses it silently. It is answered first, and by name.
+#[test]
+fn moving_a_global_pane_to_a_tab_says_it_is_global_rather_than_missing() {
+    let error = check_move_to_tab(
+        &MoveDestination::ExistingId(2),
+        &[PaneId::Terminal(7)],
+        &diverged_session(),
+    )
+    .unwrap_err();
+    assert!(error.contains("global pane on the bottom edge"), "{error}");
+    assert!(
+        error.contains("move_panes_to_tab cannot act on it"),
+        "{error}"
+    );
+    assert!(error.contains("set_global_pane_placement"), "{error}");
+    assert!(!error.contains("is not in this session"), "{error}");
+
+    // Even for a new tab, which takes no tab_id and so passes every other check.
+    let error = check_move_to_tab(
+        &MoveDestination::New(None),
+        &[PaneId::Terminal(7)],
+        &diverged_session(),
+    )
+    .unwrap_err();
+    assert!(error.contains("global pane"), "{error}");
+}
+
 #[test]
 fn moving_panes_to_a_missing_tab_id_names_the_id() {
     let error = check_move_to_tab(

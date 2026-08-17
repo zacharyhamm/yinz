@@ -281,20 +281,33 @@ fn session(value: &Value) -> Option<String> {
         out.push_str(&pane_table(array(tab, "panes")));
         out.push('\n');
     }
-    out.push_str(&legend(tabs));
+    // Global panes are in no tab, so they cannot be shown under one. The key is
+    // absent altogether in the common session that has none.
+    let globals = array(value, "global_panes");
+    if !globals.is_empty() {
+        out.push_str("**global**\n\n");
+        out.push_str(&global_pane_table(globals));
+        out.push('\n');
+    }
+    out.push_str(&legend(tabs, globals));
     Some(out)
 }
 
 /// What the marks column means, printed once and only when something in the
 /// listing actually carries a mark. A key nobody needs is just noise, and a
 /// column of bare punctuation with no key is unreadable.
-fn legend(tabs: &[Value]) -> String {
-    let panes = || tabs.iter().flat_map(|tab| array(tab, "panes"));
+fn legend(tabs: &[Value], globals: &[Value]) -> String {
+    let panes = || {
+        tabs.iter()
+            .flat_map(|tab| array(tab, "panes"))
+            .chain(globals.iter())
+    };
     let mut keys = Vec::new();
     for (key, mark, label) in [
         ("focused", "*", "focused"),
         ("floating", "~", "floating"),
         ("is_plugin", "p", "plugin"),
+        ("hidden", "h", "hidden"),
     ] {
         if panes().any(|pane| flag(pane, key)) {
             keys.push(format!("{mark} {label}"));
@@ -334,6 +347,37 @@ fn pane_table(panes: &[Value]) -> String {
         })
         .collect();
     table(&["id", "", "title", "status"], &rows)
+}
+
+/// The global panes, which carry an edge and a size instead of a tab.
+///
+/// A table of its own rather than a wider `pane_table`: that one is shared with
+/// `other_sessions`, where there is no edge to put in the extra columns.
+fn global_pane_table(panes: &[Value]) -> String {
+    let rows: Vec<Vec<String>> = panes
+        .iter()
+        .map(|pane| {
+            let mut marks = String::new();
+            if flag(pane, "focused") {
+                marks.push('*');
+            }
+            if flag(pane, "is_plugin") {
+                marks.push('p');
+            }
+            if flag(pane, "hidden") {
+                marks.push('h');
+            }
+            vec![
+                number(pane, "pane_id"),
+                marks,
+                text(pane, "title"),
+                text(pane, "edge"),
+                text(pane, "size"),
+                exit_note(pane),
+            ]
+        })
+        .collect();
+    table(&["id", "", "title", "edge", "size", "status"], &rows)
 }
 
 /// What became of a pane's command, if it had one.
@@ -578,6 +622,11 @@ const ACKS: &[(&str, &str, &str)] = &[
     ("rename", "renamed", "Renamed."),
     ("move_pane", "moved", "Moved {pane}."),
     ("swap_panes", "swapped", "Swapped the two panes."),
+    (
+        "set_global_pane_placement",
+        "placement set",
+        "Re-placed {pane} on the screen edge.",
+    ),
     ("resize_pane", "resized", "Resized {pane}."),
     ("scroll_pane", "scrolled", "Scrolled {pane}."),
     ("stack_panes", "stacked", "Stacked the panes."),
