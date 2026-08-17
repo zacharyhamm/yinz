@@ -554,6 +554,9 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long, requires("floating"))]
+        overlay: Option<bool>,
         #[clap(long, conflicts_with("floating"), conflicts_with("direction"))]
         stacked: bool,
         /// Block until the command has finished and its pane has been closed
@@ -650,6 +653,9 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long, requires("floating"))]
+        overlay: Option<bool>,
         #[clap(
             long,
             help = "if set, will open the plugin pane without changing the focus of any client, placing it relative to the pane the command was issued from"
@@ -707,6 +713,9 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long, requires("floating"))]
+        overlay: Option<bool>,
         /// if set, will open the pane near the current one rather than following the user's focus
         #[clap(long)]
         near_current_pane: bool,
@@ -1060,6 +1069,9 @@ pub enum CliAction {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long, requires("floating"))]
+        overlay: Option<bool>,
         #[clap(long, conflicts_with("floating"), conflicts_with("direction"))]
         stacked: bool,
         /// Block until the command has finished and its pane has been closed
@@ -1187,6 +1199,9 @@ pub enum CliAction {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long, requires("floating"))]
+        overlay: Option<bool>,
         /// if set, will open the pane near the current one rather than following the user's focus
         #[clap(long)]
         near_current_pane: bool,
@@ -1688,6 +1703,9 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         /// mouse if without a border)
         #[clap(short, long, value_parser)]
         borderless: Option<bool>,
+        /// Position this pane against the whole session surface and draw it above global panes
+        #[clap(long)]
+        overlay: Option<bool>,
     },
     TogglePaneBorderless {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3 (equivalent to terminal_3)

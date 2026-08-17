@@ -179,6 +179,7 @@ fn notification_paints_over_a_floating_pane() {
         width: Some("100%".to_owned()),
         height: Some("100%".to_owned()),
         pinned: None,
+        overlay: None,
         no_focus: false,
         tab_id: None,
         close_replaced_pane: false,
