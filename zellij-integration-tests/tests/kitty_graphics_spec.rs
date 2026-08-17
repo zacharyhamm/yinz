@@ -163,21 +163,22 @@ fn a_chunked_image_from_a_real_pane_reaches_the_client_as_one_image() {
 }
 
 #[test]
-fn an_unsupported_feature_is_refused_and_the_pane_carries_on() {
-    // A client that asks for something zellij does not implement must get a refusal it can act
-    // on, and the bytes that follow must still be processed normally.
+fn a_refused_command_is_answered_and_the_pane_carries_on() {
+    // A client that asks for something zellij will not do must get a refusal it can act on, and
+    // the bytes that follow must still be processed normally.
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
     setup_kitty_host(&zellij, &terminal);
 
+    // An animation frame for an image that was never transmitted: the frame has nowhere to live.
     terminal.output(&apc_b64("a=f,f=24,s=2,v=2,i=81", &rgb_block(2, 2)));
 
-    let reply = wait_for_reply(&terminal, "the unsupported action is refused", |reply| {
+    let reply = wait_for_reply(&terminal, "the command is refused", |reply| {
         reply.image_id == Some(81)
     });
-    assert_eq!(reply.code, "ENOTSUPPORTED");
+    assert_eq!(reply.code, "ENOENT");
 
-    barrier(&mut zellij, &terminal, "after-unsupported");
+    barrier(&mut zellij, &terminal, "after-refusal");
 
     zellij.quit();
 }

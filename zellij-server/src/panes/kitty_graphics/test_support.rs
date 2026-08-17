@@ -491,18 +491,26 @@ fn unique() -> u64 {
 // ---- unicode placeholder fixtures ----
 
 /// `U+10EEEE`, the placeholder character that stands in for a virtual placement's cell.
-pub const PLACEHOLDER: char = '\u{10EEEE}';
+pub const PLACEHOLDER: char = super::placeholders::PLACEHOLDER;
 
 /// The first entries of kitty's `rowcolumn-diacritics.txt`. Index is the encoded row/column (and,
 /// for the third diacritic on a cell, the most significant byte of the image id).
-pub const ROWCOLUMN_DIACRITICS: [char; 44] = [
-    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
-    '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}',
-    '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}', '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}',
-    '\u{036A}', '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}', '\u{0483}', '\u{0484}',
-    '\u{0485}', '\u{0486}', '\u{0487}', '\u{0592}', '\u{0593}', '\u{0594}', '\u{0595}', '\u{0597}',
-    '\u{0598}', '\u{0599}', '\u{059A}', '\u{059C}',
-];
+///
+/// A prefix of the real table rather than a second copy of it: an encoder that disagreed with the
+/// decoder would make every placeholder test assert against the wrong image row. It was a
+/// hand-written copy until the table landed in `placeholders.rs`, and it had drifted — it carried
+/// a `U+059A` at index 42 that kitty's file does not list at all, which shifted every entry after
+/// it by one. `placeholders_tests::the_table_matches_the_fixture_the_conformance_suite_encodes_with`
+/// is the guard against that happening again.
+pub const ROWCOLUMN_DIACRITICS: [char; 44] = {
+    let mut prefix = ['\0'; 44];
+    let mut index = 0;
+    while index < prefix.len() {
+        prefix[index] = super::placeholders::ROWCOLUMN_DIACRITICS[index];
+        index += 1;
+    }
+    prefix
+};
 
 /// The diacritic encoding the value `n`.
 pub fn diacritic(n: usize) -> char {

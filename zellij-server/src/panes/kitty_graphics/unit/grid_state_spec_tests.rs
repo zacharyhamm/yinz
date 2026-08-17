@@ -95,6 +95,15 @@ impl Model {
             // is nothing for `KittyGrid` to do. This arm is a stub: the query rules themselves are
             // asserted against the real command path in `grid_tests::kitty_spec`, not here.
             KittyAction::Query => Ok(command.image_id),
+            KittyAction::Frame => {
+                let image = command.image.clone().expect("a frame carries its data");
+                self.kitty.transmit_frame(&command, image).map(Some)
+            },
+            KittyAction::Animate => self.kitty.animate(&command).map(|_| command.image_id),
+            KittyAction::Compose => self
+                .kitty
+                .compose_frames(&command)
+                .map(|_| command.image_id),
         }
     }
 
@@ -103,7 +112,7 @@ impl Model {
         id: u32,
         internal: crate::panes::kitty_graphics::store::InternalImageId,
         command: &KittyCommand,
-    ) -> Result<(u16, u16), KittyError> {
+    ) -> Result<Option<(u16, u16)>, KittyError> {
         self.kitty.place(
             id,
             internal,

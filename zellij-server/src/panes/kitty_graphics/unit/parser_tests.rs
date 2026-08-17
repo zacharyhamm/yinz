@@ -218,17 +218,24 @@ fn known_but_unsupported_keys_do_not_break_valid_command() {
 }
 
 #[test]
-fn unicode_placeholder_key_is_enotsupported() {
+fn the_unicode_placeholder_key_marks_the_placement_virtual() {
     let mut parser = KittyCommandParser::new();
-    let err = parse_one(&mut parser, b"a=T,U=1,f=24,s=1,v=1;AAAA").unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Enotsupported);
+    let command = parse_one(&mut parser, b"a=T,U=1,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(command.virtual_placement);
+    let command = parse_one(&mut parser, b"a=T,U=0,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(!command.virtual_placement);
+    let command = parse_one(&mut parser, b"a=T,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(!command.virtual_placement);
 }
 
 #[test]
-fn animation_actions_are_enotsupported() {
-    for control in [b"a=f".as_slice(), b"a=a".as_slice(), b"a=c".as_slice()] {
-        let err = parse_control_data(control).unwrap_err();
-        assert_eq!(err.code, KittyErrorCode::Enotsupported);
+fn animation_actions_parse() {
+    for (control, action) in [
+        (b"a=f".as_slice(), KittyAction::Frame),
+        (b"a=a".as_slice(), KittyAction::Animate),
+        (b"a=c".as_slice(), KittyAction::Compose),
+    ] {
+        assert_eq!(parse_control_data(control).unwrap().action, action);
     }
 }
 

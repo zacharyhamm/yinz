@@ -60,29 +60,20 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
 
 Finish with a full `cargo x test` before calling work done — that's what CI runs.
 
-## Kitty graphics conformance: `cargo x test` is expected to be red
+## Kitty graphics conformance
 
 The kitty graphics suite is written against the protocol specification
-(`docs/`-external: kitty's `graphics-protocol.rst`), not against the implementation. Where the
-two disagree, the test stays failing on purpose — the red set **is** the to-do list for the
-protocol work. 46 tests fail today, all in `zellij-server` and all in three feature groups:
-relative placements, animation, and unicode placeholders. The whole-app suite is green.
+(`docs/`-external: kitty's `graphics-protocol.rst`), not against the implementation, so a failure
+means the protocol work is not done rather than that the test is wrong. It used to carry an
+expected-red set in modules ending `_red`; all nine deviations are now closed and **nothing is
+skipped** — `cargo x test` and `cargo x integration-test` are both fully green.
 
-Every expected-red test lives in a module ending `_red` and is named `red_*`. Filter on the
-**module path**, not the name prefix: `red_` also appears inside unrelated names such as
-`test_has_rendered_assets`.
-
-```sh
-cargo x test -- --skip _red::                            # the green gate — must pass
-cargo x integration-test                                 # ditto, whole-app: fully green
-cargo test -p zellij-server --all-features -- _red::     # exactly the red set
-```
-
-A red test that starts passing means the deviation is fixed: drop its `red_` prefix and move it
-into the sibling `*_spec_tests.rs`. The master index — every red test, the spec section it comes
-from, what the code does today, and where the fix goes — is the module doc comment of
-`zellij-server/src/panes/kitty_graphics/mod.rs`, which also records the judgement calls that are
-deliberately pinned green and the six groups already closed.
+Write new conformance tests against the spec the same way, and quote the sentence being tested.
+The module doc comment of `zellij-server/src/panes/kitty_graphics/mod.rs` records what was closed
+and — more importantly — the eleven judgement calls that are deliberately pinned as-is, where the
+spec does not say enough to call the behaviour wrong or two of its rules pull against each other.
+Read those before changing anything they cover; the most load-bearing is that animation stores and
+composes real frames but has no playback clock.
 
 ## Benchmarks
 

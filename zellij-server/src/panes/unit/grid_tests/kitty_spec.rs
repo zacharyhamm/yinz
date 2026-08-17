@@ -453,42 +453,16 @@ fn an_image_with_no_placements_is_evicted_before_one_being_displayed() {
     );
 }
 
-// ---- unsupported features degrade predictably ----
+// ---- refused commands degrade predictably ----
 //
-// These assert that a client asking for something this terminal does not implement gets a
-// well-formed refusal and can carry on. They are the *degradation* contract, not the feature
-// contract: the feature contracts live in the `kitty_*_red.rs` files, and each of these tests
-// should be deleted when its feature lands.
+// A client asking for something this terminal will not do must get a well-formed refusal and be
+// able to carry on. This is the *degradation* contract, not a feature contract.
 
 #[test]
-fn an_unsupported_animation_command_is_refused_without_disturbing_anything() {
-    let mut session = KittySession::new(10, 20);
-    session.ok("a=T,f=24,s=10,v=20,i=1,C=1", &rgb(10, 20));
-
-    let reply = session.err("a=f,f=24,s=10,v=20,i=1", &rgb(10, 20));
-    assert_eq!(reply.code, "ENOTSUPPORTED");
-    assert_eq!(reply.image_id, Some(1));
-    assert_eq!(
-        session.placement_count(),
-        1,
-        "the existing image is untouched"
-    );
-    assert!(session.can_still_display_by_placing_it(1));
-}
-
-#[test]
-fn an_unsupported_virtual_placement_is_refused_without_disturbing_anything() {
-    let mut session = KittySession::new(10, 20);
-    let reply = session.err("a=T,f=24,s=10,v=20,i=3,U=1,c=2,r=2", &rgb(10, 20));
-    assert_eq!(reply.code, "ENOTSUPPORTED");
-    assert_eq!(reply.image_id, Some(3));
-    assert_eq!(session.placement_count(), 0);
-}
-
-#[test]
-fn the_stream_recovers_after_an_unsupported_command() {
+fn the_stream_recovers_after_a_refused_command() {
     // A refusal must not leave the parser or the grid in a state that swallows what follows.
     let mut session = KittySession::new(10, 20);
+    // A frame for an image that was never transmitted: refused, and nothing to refuse it against.
     session.err("a=f,f=24,s=10,v=20,i=1", &rgb(10, 20));
     session.ok("a=T,f=24,s=10,v=20,i=9", &rgb(10, 20));
     assert_eq!(session.placement_count(), 1);

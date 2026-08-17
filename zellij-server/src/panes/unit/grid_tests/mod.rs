@@ -375,7 +375,7 @@ fn rgba_raster(width: usize, height: usize) -> Vec<u8> {
     (0..width * height * 4).map(|i| (i % 251) as u8).collect()
 }
 
-fn kitty_placement_id_set(grid: &Grid) -> Vec<(u32, u32)> {
+fn kitty_placement_id_set(grid: &mut Grid) -> Vec<(u32, u32)> {
     let mut ids: Vec<(u32, u32)> = grid
         .kitty_placements()
         .iter()
@@ -518,7 +518,7 @@ impl KittySession {
         );
     }
 
-    pub fn placement_count(&self) -> usize {
+    pub fn placement_count(&mut self) -> usize {
         self.grid.kitty_placement_count()
     }
 
@@ -527,14 +527,14 @@ impl KittySession {
     }
 
     /// The (image id, placement id) pairs on screen, sorted for stable comparison.
-    pub fn placement_ids(&self) -> Vec<(u32, u32)> {
-        kitty_placement_id_set(&self.grid)
+    pub fn placement_ids(&mut self) -> Vec<(u32, u32)> {
+        kitty_placement_id_set(&mut self.grid)
     }
 
     /// How many placements currently overlap the viewport. Placements that have scrolled into
     /// the scrollback still exist — they come back when the user scrolls up — but they are not
     /// on screen, which is the distinction most of the spec's wording is about.
-    pub fn visible_placement_count(&self) -> usize {
+    pub fn visible_placement_count(&mut self) -> usize {
         let cell_height = 20isize;
         let viewport_top = self.grid.lines_above.len() as isize * cell_height;
         let viewport_bottom = viewport_top + self.grid.height as isize * cell_height;
@@ -551,7 +551,7 @@ impl KittySession {
 
     /// The row the placement sits on, counted from the top of the viewport. Negative once it has
     /// scrolled off the top.
-    pub fn placement_viewport_row(&self, index: usize) -> isize {
+    pub fn placement_viewport_row(&mut self, index: usize) -> isize {
         let cell_height = 20isize;
         let viewport_top = self.grid.lines_above.len() as isize * cell_height;
         (self.grid.kitty_placements()[index].display_rect.y - viewport_top).div_euclid(cell_height)
@@ -574,14 +574,14 @@ impl KittySession {
     }
 }
 
-fn kitty_image_px_below_canonical_line(grid: &Grid, canonical_index: usize) -> isize {
-    let placement = &grid.kitty_placements()[0];
+fn kitty_image_px_below_canonical_line(grid: &mut Grid, canonical_index: usize) -> isize {
+    let placement_y = grid.kitty_placements()[0].display_rect.y;
     let cell_height = 20isize;
     let line_start = buffer_cell_row_of_canonical_line(grid, canonical_index);
-    placement.display_rect.y - line_start * cell_height
+    placement_y - line_start * cell_height
 }
 
-fn kitty_image_absolute_cell_row(grid: &Grid) -> isize {
+fn kitty_image_absolute_cell_row(grid: &mut Grid) -> isize {
     let placement = &grid.kitty_placements()[0];
     let cell_height = 20isize;
     placement.display_rect.y.div_euclid(cell_height)
@@ -679,7 +679,7 @@ fn kitty_wrapped_scrollback_setup(
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid),
         "the image must start on the row of its marker line"
     );
@@ -729,20 +729,20 @@ fn kitty_marker_with_image_on_first_row(
     );
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
-    assert_eq!(kitty_image_absolute_cell_row(&grid), 0);
+    assert_eq!(kitty_image_absolute_cell_row(&mut grid), 0);
     (grid, kitty_image_store, vte_parser, interceptor)
 }
 
 mod app_replay;
 mod highlights;
 mod host_capabilities;
-mod kitty_animation_red;
+mod kitty_animation;
 mod kitty_graphics;
 mod kitty_properties;
-mod kitty_relative_placement_red;
+mod kitty_relative_placement;
 mod kitty_shared_memory;
 mod kitty_spec;
-mod kitty_unicode_placeholders_red;
+mod kitty_unicode_placeholders;
 mod osc133_selection;
 mod scroll_region_and_forwarding;
 mod sixel_and_ui;

@@ -150,7 +150,7 @@ fn kitty_delete_all_visible() {
         &mut interceptor,
         &kitty_apc("a=d", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -163,7 +163,7 @@ fn kitty_delete_all_visible() {
         &mut interceptor,
         &kitty_apc("a=d,d=A", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![]);
     assert_eq!(kitty_image_store.borrow().image_count(), 0);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 0);
 }
@@ -180,7 +180,7 @@ fn kitty_delete_by_image_id() {
         &mut interceptor,
         &kitty_apc("a=d,d=i,i=2", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -204,7 +204,7 @@ fn kitty_delete_by_image_id() {
         &mut interceptor,
         &kitty_apc("a=d,d=i,i=2,p=1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(2, 2)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(2, 2)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 3200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -217,7 +217,7 @@ fn kitty_delete_by_image_id() {
         &mut interceptor,
         &kitty_apc("a=d,d=I,i=2", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().image_count(), 2);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 4000);
 }
@@ -243,7 +243,10 @@ fn kitty_delete_by_image_number() {
         &mut interceptor,
         &kitty_apc("a=d,d=n,I=7", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0), (5, 0)]);
+    assert_eq!(
+        kitty_placement_id_set(&mut grid),
+        vec![(1, 0), (2, 0), (5, 0)]
+    );
     assert_eq!(kitty_image_store.borrow().total_bytes(), 8000);
     feed_kitty_bytes(
         &mut grid,
@@ -267,7 +270,7 @@ fn kitty_delete_cursor_intersecting() {
         &mut interceptor,
         &kitty_apc("a=d,d=c", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (2, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -280,7 +283,7 @@ fn kitty_delete_cursor_intersecting() {
         &mut interceptor,
         &kitty_apc("a=d,d=C", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (2, 0)]);
     assert_eq!(kitty_image_store.borrow().image_count(), 2);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 6400);
 }
@@ -297,7 +300,7 @@ fn kitty_delete_cell_intersecting() {
         &mut interceptor,
         &kitty_apc("a=d,d=p,x=11,y=6", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -310,7 +313,7 @@ fn kitty_delete_cell_intersecting() {
         &mut interceptor,
         &kitty_apc("a=d,d=P,x=11,y=6", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 4000);
 }
 
@@ -326,14 +329,17 @@ fn kitty_delete_cell_with_z() {
         &mut interceptor,
         &kitty_apc("a=d,d=q,x=11,y=6,z=5", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0), (5, 0)]);
+    assert_eq!(
+        kitty_placement_id_set(&mut grid),
+        vec![(1, 0), (2, 0), (5, 0)]
+    );
     feed_kitty_bytes(
         &mut grid,
         &mut vte_parser,
         &mut interceptor,
         &kitty_apc("a=d,d=q,x=11,y=6,z=1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -346,7 +352,7 @@ fn kitty_delete_cell_with_z() {
         &mut interceptor,
         &kitty_apc("a=d,d=Q,x=11,y=6,z=1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 4000);
 }
 
@@ -362,7 +368,7 @@ fn kitty_delete_column() {
         &mut interceptor,
         &kitty_apc("a=d,d=x,x=1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(2, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(2, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -375,7 +381,7 @@ fn kitty_delete_column() {
         &mut interceptor,
         &kitty_apc("a=d,d=X,x=1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(2, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(2, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 4000);
 }
 
@@ -391,7 +397,7 @@ fn kitty_delete_row() {
         &mut interceptor,
         &kitty_apc("a=d,d=y,y=6", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -404,7 +410,7 @@ fn kitty_delete_row() {
         &mut interceptor,
         &kitty_apc("a=d,d=Y,y=6", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 4000);
 }
 
@@ -420,7 +426,7 @@ fn kitty_delete_by_z_index() {
         &mut interceptor,
         &kitty_apc("a=d,d=z,z=-1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (2, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -433,7 +439,7 @@ fn kitty_delete_by_z_index() {
         &mut interceptor,
         &kitty_apc("a=d,d=Z,z=-1", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(1, 0), (2, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(1, 0), (2, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 6400);
 }
 
@@ -449,7 +455,7 @@ fn kitty_delete_image_id_range() {
         &mut interceptor,
         &kitty_apc("a=d,d=r,x=1,y=2", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(5, 0)]);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 7200);
 
     let (mut grid, kitty_image_store) = new_kitty_grid(20, 40);
@@ -462,7 +468,7 @@ fn kitty_delete_image_id_range() {
         &mut interceptor,
         &kitty_apc("a=d,d=R,x=1,y=2", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(5, 0)]);
     assert_eq!(kitty_image_store.borrow().image_count(), 1);
     assert_eq!(kitty_image_store.borrow().total_bytes(), 800);
 }
@@ -479,7 +485,7 @@ fn kitty_delete_image_id_range_with_omitted_lower_bound() {
         &mut interceptor,
         &kitty_apc("a=d,d=r,y=2", b""),
     );
-    assert_eq!(kitty_placement_id_set(&grid), vec![(5, 0)]);
+    assert_eq!(kitty_placement_id_set(&mut grid), vec![(5, 0)]);
     let replies: Vec<String> = grid
         .pending_messages_to_pty
         .iter()
@@ -1237,7 +1243,7 @@ fn kitty_placement_keeps_screen_row_across_width_reflow() {
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
     let anchor_canonical_line = grid.kitty_placements()[0].vertical_anchor.canonical_line;
-    let px_below_before = kitty_image_px_below_canonical_line(&grid, anchor_canonical_line);
+    let px_below_before = kitty_image_px_below_canonical_line(&mut grid, anchor_canonical_line);
     let lines_above_before = grid.lines_above.len();
 
     grid.change_size(6, 10);
@@ -1248,7 +1254,7 @@ fn kitty_placement_keeps_screen_row_across_width_reflow() {
     );
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(
-        kitty_image_px_below_canonical_line(&grid, anchor_canonical_line),
+        kitty_image_px_below_canonical_line(&mut grid, anchor_canonical_line),
         px_below_before,
         "image must keep the same pixel offset below its anchor canonical line (track the text) across a narrowing width reflow"
     );
@@ -1256,7 +1262,7 @@ fn kitty_placement_keeps_screen_row_across_width_reflow() {
     grid.change_size(6, 40);
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(
-        kitty_image_px_below_canonical_line(&grid, anchor_canonical_line),
+        kitty_image_px_below_canonical_line(&mut grid, anchor_canonical_line),
         px_below_before,
         "image must keep the same pixel offset below its anchor canonical line (track the text) across a widening width reflow"
     );
@@ -1286,7 +1292,7 @@ fn kitty_placement_follows_text_across_width_reflow() {
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
 
-    let image_row_before = kitty_image_absolute_cell_row(&grid);
+    let image_row_before = kitty_image_absolute_cell_row(&mut grid);
     let text_row_before = buffer_cell_row_of_canonical_line(&grid, image_canonical_line);
     assert_eq!(
         image_row_before, text_row_before,
@@ -1295,7 +1301,7 @@ fn kitty_placement_follows_text_across_width_reflow() {
 
     grid.change_size(10, 10);
     assert_eq!(grid.kitty_placement_count(), 1);
-    let image_row_narrow = kitty_image_absolute_cell_row(&grid);
+    let image_row_narrow = kitty_image_absolute_cell_row(&mut grid);
     let text_row_narrow = buffer_cell_row_of_canonical_line(&grid, image_canonical_line);
     assert_eq!(
         image_row_narrow, text_row_narrow,
@@ -1308,7 +1314,7 @@ fn kitty_placement_follows_text_across_width_reflow() {
 
     grid.change_size(10, 40);
     assert_eq!(grid.kitty_placement_count(), 1);
-    let image_row_wide = kitty_image_absolute_cell_row(&grid);
+    let image_row_wide = kitty_image_absolute_cell_row(&mut grid);
     let text_row_wide = buffer_cell_row_of_canonical_line(&grid, image_canonical_line);
     assert_eq!(
         image_row_wide, text_row_wide,
@@ -1332,7 +1338,7 @@ fn kitty_placement_moves_with_csi_insert_lines() {
         &mut interceptor,
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
-    let row_before = kitty_image_absolute_cell_row(&grid);
+    let row_before = kitty_image_absolute_cell_row(&mut grid);
     assert_eq!(row_before, 5);
 
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[3;1H");
@@ -1341,7 +1347,7 @@ fn kitty_placement_moves_with_csi_insert_lines() {
 
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         row_before + inserted as isize,
         "image below the insertion point must shift down by the inserted line count"
     );
@@ -1359,7 +1365,7 @@ fn kitty_placement_moves_with_csi_delete_lines() {
         &mut interceptor,
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
-    let row_before = kitty_image_absolute_cell_row(&grid);
+    let row_before = kitty_image_absolute_cell_row(&mut grid);
     assert_eq!(row_before, 5);
 
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[3;1H");
@@ -1368,7 +1374,7 @@ fn kitty_placement_moves_with_csi_delete_lines() {
 
     assert_eq!(grid.kitty_placement_count(), 1);
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         row_before - deleted as isize,
         "image below the deletion point must shift up by the deleted line count"
     );
@@ -1386,7 +1392,7 @@ fn kitty_placement_in_deleted_range_is_removed() {
         &mut interceptor,
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
-    assert_eq!(kitty_image_absolute_cell_row(&grid), 3);
+    assert_eq!(kitty_image_absolute_cell_row(&mut grid), 3);
 
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[4;1H");
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[1M");
@@ -1418,7 +1424,7 @@ fn kitty_placement_tracks_text_when_a_wrapped_row_moves_into_the_scrollback() {
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid)
     );
     for _ in 0..5 {
@@ -1426,7 +1432,7 @@ fn kitty_placement_tracks_text_when_a_wrapped_row_moves_into_the_scrollback() {
     }
     assert!(kitty_scrollback_has_merged_wrapped_rows(&grid));
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid),
         "the image must stay on the row of its marker line after a wrapped row is merged into the scrollback"
     );
@@ -1445,7 +1451,7 @@ fn kitty_placement_tracks_text_when_a_wrapped_row_is_split_out_of_the_scrollback
             step
         );
         assert_eq!(
-            Some(kitty_image_absolute_cell_row(&grid)),
+            Some(kitty_image_absolute_cell_row(&mut grid)),
             kitty_marker_absolute_cell_row(&grid),
             "the image must stay on the row of its marker line after scrollback scroll up (step {})",
             step
@@ -1471,7 +1477,7 @@ fn kitty_placement_tracks_text_when_a_multiply_wrapped_row_is_split_out_of_the_s
             step
         );
         assert_eq!(
-            Some(kitty_image_absolute_cell_row(&grid)),
+            Some(kitty_image_absolute_cell_row(&mut grid)),
             kitty_marker_absolute_cell_row(&grid),
             "the image must stay on the row of its marker line after scrollback scroll up (step {})",
             step
@@ -1540,11 +1546,12 @@ fn kitty_placement_anchor_survives_scroll_buffer_front_eviction() {
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid)
     );
+    let anchored_line = grid.kitty_placements()[0].vertical_anchor.canonical_line;
     assert_eq!(
-        grid.kitty_placements()[0].vertical_anchor.canonical_line,
+        anchored_line,
         kitty_marker_canonical_line_index(&grid).expect("marker must exist")
     );
     let front_drops_before = grid.kitty_grid.front_drops();
@@ -1569,7 +1576,7 @@ fn kitty_placement_anchor_survives_scroll_buffer_front_eviction() {
         "the placement anchor must still resolve to its marker text line after front eviction"
     );
     assert_eq!(
-        Some(kitty_image_absolute_cell_row(&grid)),
+        Some(kitty_image_absolute_cell_row(&mut grid)),
         kitty_marker_absolute_cell_row(&grid),
         "the image must stay on the row of its marker line across scroll buffer front eviction"
     );
@@ -1593,7 +1600,7 @@ fn kitty_top_anchored_scroll_up_keeps_image_in_scrollback() {
     assert_eq!(kitty_image_store.borrow().image_count(), 1);
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         0,
         "the image must follow its text into the scrollback"
     );
@@ -1604,7 +1611,7 @@ fn kitty_top_anchored_scroll_up_keeps_image_in_scrollback() {
     assert_eq!(grid.lines_above.len(), 0);
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         0,
         "the image must still sit on its marker row when scrolled back into view"
     );
@@ -1629,7 +1636,7 @@ fn kitty_top_anchored_delete_line_keeps_image_in_scrollback() {
     assert_eq!(kitty_image_store.borrow().image_count(), 1);
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         0,
         "the image must follow its text into the scrollback"
     );
@@ -1637,7 +1644,7 @@ fn kitty_top_anchored_delete_line_keeps_image_in_scrollback() {
     grid.scroll_up_one_line();
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         0,
         "the image must still sit on its marker row when scrolled back into view"
     );
@@ -1656,7 +1663,7 @@ fn kitty_non_top_anchored_region_scroll_still_frees_image() {
         &mut interceptor,
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
-    assert_eq!(kitty_image_absolute_cell_row(&grid), 1);
+    assert_eq!(kitty_image_absolute_cell_row(&mut grid), 1);
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[S");
     assert_eq!(
         grid.lines_above.len(),
@@ -1684,7 +1691,7 @@ fn kitty_alternate_screen_top_anchored_scroll_frees_image() {
         &mut interceptor,
         &kitty_apc("a=T,f=24,s=20,v=20,i=1,C=1", &rgb_raster(20, 20)),
     );
-    assert_eq!(kitty_image_absolute_cell_row(&grid), 0);
+    assert_eq!(kitty_image_absolute_cell_row(&mut grid), 0);
     feed_kitty_bytes(&mut grid, &mut vte_parser, &mut interceptor, b"\x1b[S");
     assert_eq!(
         grid.lines_above.len(),
@@ -1767,7 +1774,7 @@ fn kitty_placement_rejoins_its_text_after_editing_while_scrolled_back() {
         "the image must survive an edit made while scrolled back"
     );
     assert_eq!(
-        kitty_image_absolute_cell_row(&grid),
+        kitty_image_absolute_cell_row(&mut grid),
         marker_row,
         "the image must rejoin its marker line once the viewport is restored"
     );
