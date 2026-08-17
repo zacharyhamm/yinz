@@ -940,19 +940,24 @@ impl State {
     /// Every `WebRequestResult` in the session reaches this, so the context is what says
     /// the reply is ours at all — the same correlation `finish_git_probe` does.
     fn finish_summary(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
-        self.finish_summary_with(status, body, context, |pane_id, title| {
-            rename_pane_with_id(PaneId::Terminal(pane_id), title)
-        });
+        self.finish_summary_with(
+            status,
+            body,
+            context,
+            |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
+            notify,
+        );
     }
 
-    /// The body of [`finish_summary`], with the one host call injected so the tests can
-    /// watch it — the same shape `observe_activity` and `send_summary` already take.
+    /// The body of [`finish_summary`], with the host calls injected so the tests can watch
+    /// them — the same shape `observe_activity` and `send_summary` already take.
     fn finish_summary_with(
         &mut self,
         status: u16,
         body: &[u8],
         context: &BTreeMap<String, String>,
         rename: impl FnOnce(u32, &str),
+        toast: impl FnOnce(&str),
     ) {
         let (Some(pane_id), Some(id)) = (
             context
@@ -995,8 +1000,31 @@ impl State {
                 rename(pane_id, title);
             }
         }
+        // Below every gate above, so a stale, failed or unreadable answer is silent: a toast
+        // is an interruption, and one describing a screen that has moved on is worse than
+        // none. The snapshot below carries the same summary to whoever is subscribed, but a
+        // snapshot only reaches a plugin that is running and only shows in a pane the user
+        // is looking at — this is the half that finds them wherever they are.
+        toast(&agents::summary_toast(
+            pane_id,
+            self.agent_kind(pane_id),
+            &summary,
+        ));
         self.summaries.insert(pane_id, summary);
         self.publish();
+    }
+
+    /// What kind of agent a pane is running, if it is one we can still classify.
+    ///
+    /// `None` for a pane that has closed or stopped looking like an agent between the
+    /// request going out and its answer landing — the toast simply goes without the label.
+    fn agent_kind(&self, pane_id: u32) -> Option<&str> {
+        let pane = self
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)?;
+        agents::classify(pane, &self.manual_kinds).map(|(kind, _)| kind)
     }
 
     /// Whether renaming this pane would cost us the pane.
@@ -1949,19 +1977,30 @@ mod tests {
         .into_bytes()
     }
 
-    /// `finish_summary` with the rename it would have asked the host for handed back
-    /// instead. Every test goes through this: the host is not there to be called.
+    /// What a [`finish`] would have asked the host to do.
+    #[derive(Default)]
+    struct Finished {
+        renames: Vec<(u32, String)>,
+        toasts: Vec<String>,
+    }
+
+    /// `finish_summary` with the host calls it would have made handed back instead. Every
+    /// test goes through this: the host is not there to be called.
     fn finish(
         state: &mut State,
         status: u16,
         body: &[u8],
         context: &BTreeMap<String, String>,
-    ) -> Vec<(u32, String)> {
-        let mut renames = Vec::new();
-        state.finish_summary_with(status, body, context, |pane_id, title| {
-            renames.push((pane_id, title.to_owned()))
-        });
-        renames
+    ) -> Finished {
+        let mut finished = Finished::default();
+        state.finish_summary_with(
+            status,
+            body,
+            context,
+            |pane_id, title| finished.renames.push((pane_id, title.to_owned())),
+            |toast| finished.toasts.push(toast.to_owned()),
+        );
+        finished
     }
 
     fn context(pane_id: u32, id: u64) -> BTreeMap<String, String> {
@@ -1983,7 +2022,7 @@ mod tests {
             .unwrap()
             .contains(BUSY_PANE));
 
-        let renames = finish(
+        let finished = finish(
             &mut state,
             200,
             &reply("Ran the tests.", true),
@@ -1993,7 +2032,7 @@ mod tests {
         assert_eq!(summary.text, "Ran the tests.");
         assert!(summary.awaiting);
         assert_eq!(
-            renames,
+            finished.renames,
             vec![(7, TITLE.to_owned())],
             "and the pane is named after what the model said it was doing",
         );
@@ -2008,13 +2047,13 @@ mod tests {
     #[test]
     fn a_summary_without_a_title_renames_nothing() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        let renames = finish(
+        let finished = finish(
             &mut state,
             200,
             &titled_reply("Done.", false, "   "),
             &context(7, 1),
         );
-        assert!(renames.is_empty());
+        assert!(finished.renames.is_empty());
         assert!(state.summaries.contains_key(&7), "but the summary is kept");
     }
 
@@ -2037,8 +2076,8 @@ mod tests {
         }
         assert_eq!(sent.len(), 1, "still summarised");
 
-        let renames = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-        assert!(renames.is_empty());
+        let finished = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        assert!(finished.renames.is_empty());
     }
 
     /// The user's own registration anchors the kind the way the command latch does, so a
@@ -2058,8 +2097,8 @@ mod tests {
             poll_showing(&mut state, BUSY_PANE, &mut sent);
         }
 
-        let renames = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-        assert_eq!(renames, vec![(7, TITLE.to_owned())]);
+        let finished = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        assert_eq!(finished.renames, vec![(7, TITLE.to_owned())]);
     }
 
     /// Going on holding still is not a new settling. Without this every idle agent would
@@ -2294,14 +2333,58 @@ mod tests {
         );
     }
 
+    /// The summary reaches the user the moment it is made, over whatever pane they are in,
+    /// naming the one it is about — the snapshot alone only reaches a hocus that is running
+    /// and only shows in a pane they are looking at.
+    #[test]
+    fn a_new_summary_is_toasted_over_whatever_pane_the_user_is_in() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Ran the tests.", false),
+            &context(7, 1),
+        );
+
+        assert_eq!(
+            finished.toasts,
+            vec!["agent idle · 7 · claude\nRan the tests.".to_owned()],
+            "one summary, one toast, naming the pane and its kind",
+        );
+    }
+
+    /// The state the toast is worth interrupting for: the agent is not finished, it is
+    /// stuck on you.
+    #[test]
+    fn a_toast_for_an_agent_waiting_on_the_user_says_so() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Shall I push?", true),
+            &context(7, 1),
+        );
+
+        assert_eq!(
+            finished.toasts,
+            vec!["agent waiting · 7 · claude\nShall I push?".to_owned()],
+        );
+    }
+
     /// A reply whose request has been replaced, or whose pane has closed, answers a
     /// question nobody is asking any more.
     #[test]
     fn a_reply_from_a_superseded_request_is_ignored() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        finish(&mut state, 200, &reply("Stale.", true), &context(7, 99));
+        let finished = finish(&mut state, 200, &reply("Stale.", true), &context(7, 99));
         assert!(state.summaries.is_empty());
+        assert!(
+            finished.toasts.is_empty(),
+            "and nothing interrupts the user over it",
+        );
         assert_eq!(
             state.summary_requests.get(&7).map(|r| r.id),
             Some(1),
@@ -2325,7 +2408,7 @@ mod tests {
         let (mut state, _) = idle_agent(BUSY_PANE);
         state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
 
-        finish(
+        let finished = finish(
             &mut state,
             200,
             &reply("Waiting on you.", true),
@@ -2333,6 +2416,10 @@ mod tests {
         );
 
         assert!(state.summaries.is_empty());
+        assert!(
+            finished.toasts.is_empty(),
+            "and a toast describing a screen that is gone is worse than none",
+        );
     }
 
     /// A failed summary is simply no summary - the same stance a failed Git probe takes.
@@ -2341,10 +2428,11 @@ mod tests {
     fn a_failed_request_stores_nothing_and_frees_the_pane_to_ask_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        finish(&mut state, 500, b"upstream is down", &context(7, 1));
+        let finished = finish(&mut state, 500, b"upstream is down", &context(7, 1));
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_requests.is_empty());
+        assert!(finished.toasts.is_empty(), "and says nothing to the user");
         // Dropped rather than polled out: a failure is not meant to shorten the window, so
         // what is asserted below is that nothing *else* is holding the pane back.
         state.summary_cooldown.clear();
@@ -2360,10 +2448,11 @@ mod tests {
     fn an_unusable_answer_is_no_answer() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
-        finish(&mut state, 200, b"{\"choices\":[]}", &context(7, 1));
+        let finished = finish(&mut state, 200, b"{\"choices\":[]}", &context(7, 1));
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_requests.is_empty());
+        assert!(finished.toasts.is_empty());
     }
 
     /// A reply is stamped with the screen the *request* was made from, not with whatever
@@ -2385,7 +2474,7 @@ mod tests {
             "idle again, so idleness alone cannot tell this answer is stale",
         );
 
-        let renames = finish(
+        let finished = finish(
             &mut state,
             200,
             &reply("About the old screen.", true),
@@ -2393,7 +2482,10 @@ mod tests {
         );
 
         assert!(state.summaries.is_empty());
-        assert!(renames.is_empty(), "and the pane keeps the name it had");
+        assert!(
+            finished.renames.is_empty(),
+            "and the pane keeps the name it had"
+        );
         // Dropped so the hash guard is what answers below - the cooldown is its own test.
         state.summary_cooldown.clear();
         assert!(

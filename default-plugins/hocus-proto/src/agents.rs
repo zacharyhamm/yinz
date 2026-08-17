@@ -365,6 +365,37 @@ pub fn rename_title(summary: &Summary) -> Option<&str> {
     (!title.is_empty()).then_some(title)
 }
 
+/// One summary as the toast the daemon shows the moment it is made.
+///
+/// The inset over hocus's transcript only draws while the user is standing in the agents
+/// pane with that row selected, which is precisely when they already know. This is the other
+/// channel: a box in the corner, over whatever pane they are actually in, saying which pane
+/// went idle and what it said. Same reasoning as hocus's confirmation toast — a thing worth
+/// reading must not wait in a pane nobody is looking at.
+///
+/// Headline then text, on two lines: the toast renderer takes `\n` as a hard row break, so
+/// what is written here is what appears. The text is passed through whole and the renderer
+/// wraps and ellipsizes what will not fit — cutting it here would only mean two places
+/// disagreeing about how much room a toast has.
+///
+/// `kind` is optional because a pane's classification can fail; the pane id alone still says
+/// which pane this is, so the segment is dropped rather than the whole toast.
+pub fn summary_toast(pane_id: u32, kind: Option<&str>, summary: &Summary) -> String {
+    // "waiting" is the same claim the strip's `!` marker makes, spelled out: a toast has the
+    // room for a word and no legend beside it to explain a punctuation mark.
+    let state = match summary.awaiting {
+        true => "waiting",
+        false => "idle",
+    };
+    // `{pane_id} · {kind}`, the spelling the inset's own header uses, so the two namings of
+    // one pane read alike.
+    let mut headline = format!("agent {state} · {pane_id}");
+    if let Some(kind) = kind {
+        headline.push_str(&format!(" · {kind}"));
+    }
+    format!("{headline}\n{}", summary.text)
+}
+
 /// Whether a pane holds enough to be worth asking about.
 pub fn worth_summarizing(text: &str) -> bool {
     text.trim().chars().count() >= SUMMARY_MIN_CHARS
@@ -1396,6 +1427,53 @@ mod tests {
         assert_eq!(
             summary.expect("parsed").text.chars().count(),
             SUMMARY_TEXT_CHARS
+        );
+    }
+
+    /// One summary, as `summary_toast` is asked to frame it.
+    fn toast_summary(text: &str, awaiting: bool) -> Summary {
+        Summary {
+            text: text.to_owned(),
+            title: "running the tests".to_owned(),
+            awaiting,
+            hash: 1,
+        }
+    }
+
+    /// The headline is the whole point of the toast: the summary text on its own says
+    /// nothing about which of several agents produced it.
+    #[test]
+    fn a_toast_names_the_pane_above_what_it_said() {
+        let toast = summary_toast(3, Some("claude"), &toast_summary("Ran the tests.", false));
+        assert_eq!(toast, "agent idle · 3 · claude\nRan the tests.");
+    }
+
+    /// The same claim the strip's `!` makes, in a word.
+    #[test]
+    fn a_toast_for_an_agent_blocked_on_the_user_says_so() {
+        let toast = summary_toast(7, Some("codex"), &toast_summary("Shall I push?", true));
+        assert!(
+            toast.starts_with("agent waiting · 7 · codex\n"),
+            "got {toast:?}"
+        );
+    }
+
+    /// A pane whose kind would not classify still gets a toast - the id names it.
+    #[test]
+    fn a_toast_without_a_kind_still_names_the_pane() {
+        let toast = summary_toast(9, None, &toast_summary("Done.", false));
+        assert_eq!(toast, "agent idle · 9\nDone.");
+    }
+
+    /// The renderer wraps and ellipsizes to the room a toast has; doing it here as well
+    /// would mean two places disagreeing about how much that is.
+    #[test]
+    fn a_toast_carries_the_summary_whole() {
+        let long = "x".repeat(SUMMARY_TEXT_CHARS);
+        let toast = summary_toast(3, Some("claude"), &toast_summary(&long, false));
+        assert!(
+            toast.ends_with(&long),
+            "the text is passed through untouched"
         );
     }
 
