@@ -136,7 +136,13 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
         "new_remote_pane" => {
             let host = args.remote_host.as_deref().unwrap_or("another machine");
-            format!("runs a command on {host} over ssh, opening a new pane connected to it")
+            // What is about to happen is what the user is being asked to allow,
+            // so this must not promise a command that was never named.
+            if args.command_words().iter().all(String::is_empty) {
+                format!("logs in to {host} over ssh, opening a new pane running its shell")
+            } else {
+                format!("runs a command on {host} over ssh, opening a new pane connected to it")
+            }
         },
         // Scheduling is otherwise free; handing a job standing permission is the
         // confirmable part, and `pump_tools` stops for exactly that case.
@@ -487,7 +493,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "new_remote_pane",
-            "Open a command pane whose process runs on another machine over ssh. \
+            "Open a shell or command pane whose process runs on another machine over ssh. \
              Needs a zellij of the same version on the remote machine's PATH.",
             json!({
                 "type": "object",
@@ -496,14 +502,20 @@ pub fn specs() -> Value {
                         "type": "string",
                         "description": "An ssh destination: a host, an alias from ssh config, or user@host.",
                     },
-                    "command": { "type": "string" },
+                    "command": {
+                        "type": "string",
+                        "description": "Omit for that machine's login shell.",
+                    },
                     "args": { "type": "array", "items": { "type": "string" } },
-                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "cwd": {
+                        "type": "string",
+                        "description": "A path on the remote machine. Defaults to the remote home directory.",
+                    },
                     "name": { "type": "string" },
                     "floating": { "type": "boolean" },
                     "in_new_tab": { "type": "boolean" },
                 },
-                "required": ["remote_host", "command"],
+                "required": ["remote_host"],
             }),
         ),
         tool(
@@ -2257,22 +2269,40 @@ mod host {
         report_opened_pane(opened, args)
     }
 
-    /// `new_remote_pane` always runs a real command over ssh; there is no
-    /// "plain shell" branch like `new_pane`'s, since a bare `--remote-host`
-    /// with no command is not something the CLI accepts either.
+    /// With no command, the far machine's login shell — `new_pane`'s "plain
+    /// shell" branch, one machine along.
+    ///
+    /// Two things differ from that branch, both because the pane is elsewhere.
+    /// The cwd is left unset rather than falling back to `focused_cwd()`: that
+    /// is a path on *this* machine, and an unset one is precisely what lands the
+    /// pane in the remote home directory. And `in_new_tab` still opens a command
+    /// pane, where `new_pane` hands off to `new_tab_tool` — the shell a new tab
+    /// comes with is a local one, so it is not the pane being asked for.
     fn new_remote_pane(args: &Args) -> String {
         let Some(remote_host) = args.remote_host.clone() else {
             return "remote_host is required".to_owned();
         };
         let words = args.command_words();
-        let Some((path, rest)) = words.split_first() else {
-            return "command is required".to_owned();
-        };
-        let command = CommandToRun {
-            path: PathBuf::from(path),
-            args: rest.to_vec(),
-            cwd: args.cwd.clone().map(PathBuf::from),
-            remote_host: Some(remote_host),
+        let command = match words.split_first() {
+            // `command_words` yields `[""]` for `command=""`, which is a command
+            // in form only; an empty program name would reach the far machine as
+            // an exec of nothing.
+            Some((path, rest)) if !path.is_empty() => CommandToRun {
+                path: PathBuf::from(path),
+                args: rest.to_vec(),
+                cwd: args.cwd.clone().map(PathBuf::from),
+                remote_host: Some(remote_host),
+                remote_default_shell: false,
+            },
+            _ => CommandToRun {
+                // Deliberately empty: which shell the remote user has is a fact
+                // about that machine, so the flag asks it rather than guessing.
+                path: PathBuf::new(),
+                args: vec![],
+                cwd: args.cwd.clone().map(PathBuf::from),
+                remote_host: Some(remote_host),
+                remote_default_shell: true,
+            },
         };
         let opened = if args.in_new_tab {
             open_command_pane_in_new_tab(command, BTreeMap::new()).1

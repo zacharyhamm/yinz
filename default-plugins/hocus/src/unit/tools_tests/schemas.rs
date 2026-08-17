@@ -193,11 +193,11 @@ fn names_lists_the_advertised_tools() {
     assert!(names.contains(&"new_remote_pane".to_owned()));
 }
 
-/// Unlike `new_pane`, a remote pane always needs a real command and a
-/// destination: there is no "plain shell" fallback, mirroring the CLI's own
-/// `requires("command")` on `--remote-host`.
+/// Only the destination is required. A bare host means that machine's login
+/// shell, exactly as a bare `new_pane` means this machine's — and as
+/// `--remote-host` with no command does on the CLI.
 #[test]
-fn new_remote_pane_requires_a_host_and_a_command() {
+fn new_remote_pane_requires_only_a_host() {
     let specs = specs();
     let parameters = specs
         .as_array()
@@ -206,5 +206,11 @@ fn new_remote_pane_requires_a_host_and_a_command() {
         .find(|spec| spec["function"]["name"] == "new_remote_pane")
         .unwrap()["function"]["parameters"]
         .clone();
-    assert_eq!(parameters["required"], json!(["remote_host", "command"]));
+    assert_eq!(parameters["required"], json!(["remote_host"]));
+    // The model only learns that omitting it is allowed if the description says
+    // so; `new_pane` sets the wording.
+    assert_eq!(
+        parameters["properties"]["command"]["description"],
+        json!("Omit for that machine's login shell.")
+    );
 }

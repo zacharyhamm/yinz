@@ -2914,6 +2914,11 @@ pub struct CommandToRun {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub remote_host: Option<String>,
+    /// Ignore `path` and run the login shell of the machine named by
+    /// `remote_host`, resolved there. See `RunCommand::remote_default_shell`:
+    /// which shell a user has is a fact about that machine, so a plugin has
+    /// nothing useful to put in `path` and says so with this instead.
+    pub remote_default_shell: bool,
 }
 
 impl CommandToRun {

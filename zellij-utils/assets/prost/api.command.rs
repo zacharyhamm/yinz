@@ -10,4 +10,6 @@ pub struct Command {
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="4")]
     pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="5")]
+    pub remote_default_shell: bool,
 }

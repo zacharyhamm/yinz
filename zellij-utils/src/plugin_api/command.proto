@@ -7,4 +7,5 @@ message Command {
   repeated string args = 2;
   optional string cwd = 3;
   optional string remote_host = 4;
+  bool remote_default_shell = 5;
 }
