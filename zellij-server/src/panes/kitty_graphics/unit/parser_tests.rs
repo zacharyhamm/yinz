@@ -132,10 +132,10 @@ fn embedded_png_fixture_decodes_to_expected_rgba() {
 }
 
 #[test]
-fn non_png_payload_with_png_format_is_einval() {
+fn non_png_payload_with_png_format_is_ebadpng() {
     let mut parser = KittyCommandParser::new();
     let err = parse_one(&mut parser, &raw_cmd("a=T,f=100", b"this is not a png")).unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Einval);
+    assert_eq!(err.code, KittyErrorCode::Ebadpng);
 }
 
 #[test]
@@ -225,13 +225,6 @@ fn unicode_placeholder_key_is_enotsupported() {
 }
 
 #[test]
-fn shared_memory_medium_is_enotsupported() {
-    let mut parser = KittyCommandParser::new();
-    let err = parse_one(&mut parser, &raw_cmd("a=T,t=s,s=1,v=1", b"/x")).unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Enotsupported);
-}
-
-#[test]
 fn animation_actions_are_enotsupported() {
     for control in [b"a=f".as_slice(), b"a=a".as_slice(), b"a=c".as_slice()] {
         let err = parse_control_data(control).unwrap_err();
@@ -279,7 +272,7 @@ fn file_medium_nonexistent_path_is_ebadf() {
 
 // A temp-directory file with no `tty-graphics-protocol` marker used to be asserted here as
 // "deleted". The spec requires it to survive — see
-// `parser_spec_red::red_temp_file_without_the_marker_survives_even_inside_a_temp_directory`.
+// `parser_spec_tests::a_temp_file_without_the_marker_survives_even_inside_a_temp_directory`.
 // The conforming case (marker *and* temp directory) is covered by
 // `parser_spec_tests::a_temp_file_carrying_the_marker_inside_a_temp_directory_is_deleted`.
 
@@ -360,7 +353,7 @@ fn file_medium_offset_beyond_eof_is_ebadf() {
 
 // A marked file outside any temp directory used to be asserted here as "deleted". The spec
 // requires it to survive — see
-// `parser_spec_red::red_temp_file_with_the_marker_outside_a_temp_directory_survives`.
+// `parser_spec_tests::a_temp_file_with_the_marker_outside_a_temp_directory_survives`.
 
 // ---- property-based tests (hegel) ----
 

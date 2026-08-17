@@ -1,5 +1,5 @@
 //! Animation. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/unit/parser_spec_red.rs`.
+//! `kitty_graphics/mod.rs`.
 //!
 //! RED-5. Spec, "Animation": an image can carry additional frames, composed and played by the
 //! terminal, using three actions and one delete specifier:

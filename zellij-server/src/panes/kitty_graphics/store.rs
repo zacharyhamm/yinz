@@ -60,8 +60,11 @@ impl KittyImageStore {
         let (rgba, width, height) = Self::normalize_to_rgba(image);
         let size = rgba.len();
         if size > self.quota_bytes {
+            // No amount of eviction can make room for this one, so the client is being told about
+            // storage pressure rather than about a malformed command: ENOSPC says "retry smaller"
+            // where EINVAL would say "fix your control data".
             return Err(KittyError {
-                code: KittyErrorCode::Einval,
+                code: KittyErrorCode::Enospc,
                 message: "image exceeds storage quota".to_owned(),
                 image_id: None,
                 image_number: None,

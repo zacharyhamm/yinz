@@ -8,7 +8,8 @@
 //!
 //! The layers below this one are covered in `kitty_graphics/unit/`; what is specific here is the
 //! interaction with the cursor, the scrollback, erase commands and the alternate screen.
-//! Deviations live in `kitty_spec_red.rs` and the four `kitty_*_red.rs` feature files.
+//! Deviations live in the three `kitty_*_red.rs` feature files, indexed in the module doc of
+//! `kitty_graphics/mod.rs`.
 
 use super::*;
 
@@ -250,8 +251,8 @@ fn a_terminal_reset_clears_the_images_and_their_data() {
 #[test]
 fn erasing_the_scrollback_removes_the_images_that_lived_only_there() {
     // `ESC[3J` discards the scrollback, so an image anchored to a line that exists only there
-    // goes with it. The complementary rule — that images still on screen survive — is not met
-    // today; see `kitty_spec_red::red_ed3_leaves_the_images_on_screen_alone`.
+    // goes with it. It is the guard against the complementary rule below overshooting into never
+    // deleting anything: an image anchored to a line that no longer exists has nowhere to live.
     let mut session = KittySession::new(3, 20);
     session.ok("a=T,f=24,s=10,v=20,i=1,C=1", &rgb(10, 20));
     session.feed(b"\x1b[3;1H\n\n\n\n");
@@ -265,6 +266,38 @@ fn erasing_the_scrollback_removes_the_images_that_lived_only_there() {
 
     assert_eq!(session.placement_count(), 0);
     assert_eq!(session.image_count(), 0);
+}
+
+#[test]
+fn erasing_the_scrollback_leaves_the_images_on_screen_alone() {
+    // Spec, "Interaction with other terminal actions": only `ESC[2J` and a terminal reset may
+    // remove images — "the other commands to erase text must have no effect on graphics". `ESC[3J`
+    // erases the scrollback and does not touch the screen at all, so a program that trims its
+    // scrollback must not lose the image it is currently displaying.
+    let mut session = KittySession::new(10, 20);
+    session.ok("a=T,f=24,s=30,v=60,i=1,C=1", &rgb(30, 60));
+    assert_eq!(session.visible_placement_count(), 1);
+
+    session.feed(b"\x1b[3J");
+
+    assert_eq!(
+        session.visible_placement_count(),
+        1,
+        "erasing the scrollback must not remove an image from the screen"
+    );
+}
+
+#[test]
+fn erasing_the_scrollback_leaves_the_image_data_alone() {
+    // The stronger form: not only is the placement still on screen, the image is still there to
+    // be displayed again.
+    let mut session = KittySession::new(10, 20);
+    session.ok("a=T,f=24,s=30,v=60,i=1,C=1", &rgb(30, 60));
+
+    session.feed(b"\x1b[3J");
+
+    assert_eq!(session.image_count(), 1);
+    assert!(session.can_still_display_by_placing_it(1));
 }
 
 #[test]
@@ -384,13 +417,16 @@ fn an_image_larger_than_the_whole_store_is_refused_without_emptying_it() {
     // images to make room — but an image that cannot fit even in an empty store must be refused
     // outright rather than costing the client every image it had already sent.
     //
-    // The *code* the refusal carries is a deviation; see
-    // `kitty_spec_red::red_an_image_larger_than_the_whole_store_reports_enospc`.
+    // The code is ENOSPC rather than EINVAL, which the specification does not itself require: it
+    // names no code for this case. But no amount of eviction can make room for such an image, so
+    // the client is being told about storage pressure — worth retrying with a smaller image —
+    // where EINVAL cannot be told apart from "your command was malformed".
     let mut session = KittySession::with_quota(10, 20, 10 * 20 * 4 + 1);
     session.ok("a=T,f=32,s=10,v=20,i=1,C=1", &rgba_raster(10, 20));
 
     let reply = session.err("a=T,f=32,s=100,v=100,i=2", &rgba_raster(100, 100));
-    assert!(!reply.is_ok(), "got {}:{}", reply.code, reply.message);
+    assert_eq!(reply.code, "ENOSPC");
+    assert_eq!(reply.image_id, Some(2));
     assert_eq!(
         session.image_count(),
         1,
@@ -419,7 +455,7 @@ fn an_image_with_no_placements_is_evicted_before_one_being_displayed() {
 
 // ---- unsupported features degrade predictably ----
 //
-// These four assert that a client asking for something this terminal does not implement gets a
+// These assert that a client asking for something this terminal does not implement gets a
 // well-formed refusal and can carry on. They are the *degradation* contract, not the feature
 // contract: the feature contracts live in the `kitty_*_red.rs` files, and each of these tests
 // should be deleted when its feature lands.
@@ -438,15 +474,6 @@ fn an_unsupported_animation_command_is_refused_without_disturbing_anything() {
         "the existing image is untouched"
     );
     assert!(session.can_still_display_by_placing_it(1));
-}
-
-#[test]
-fn an_unsupported_shared_memory_transfer_is_refused_without_disturbing_anything() {
-    let mut session = KittySession::new(10, 20);
-    let reply = session.err("a=T,f=24,s=10,v=20,i=2,t=s", b"/some-shm-object");
-    assert_eq!(reply.code, "ENOTSUPPORTED");
-    assert_eq!(reply.image_id, Some(2));
-    assert_eq!(session.image_count(), 0);
 }
 
 #[test]

@@ -305,15 +305,17 @@ impl KittyGrid {
                     ceil_div(source_h + off_y, cell.height),
                     false,
                 ),
+                // Spec, "Controlling displayed image layout": with only one of `c`/`r` given the
+                // other follows the source aspect ratio, and "if you specify a start cell offset
+                // via the X,Y keys, it is not added to the number of rows/columns" - so the
+                // derived axis is the scaled size alone.
                 (c, 0) => {
                     let dst_w = c * cell.width;
                     let dst_h = std::cmp::max(
                         ((dst_w as f64) * (source_h as f64) / (source_w as f64)).round() as usize,
                         1,
                     );
-                    let height_px =
-                        ((dst_w + off_x) as f64) * (source_h as f64) / (source_w as f64);
-                    let rows = std::cmp::max((height_px / cell.height as f64).ceil() as usize, 1);
+                    let rows = std::cmp::max(ceil_div(dst_h, cell.height), 1);
                     (dst_w, dst_h, c, rows, true)
                 },
                 (0, r) => {
@@ -322,8 +324,7 @@ impl KittyGrid {
                         ((dst_h as f64) * (source_w as f64) / (source_h as f64)).round() as usize,
                         1,
                     );
-                    let width_px = ((dst_h + off_y) as f64) * (source_w as f64) / (source_h as f64);
-                    let cols = std::cmp::max((width_px / cell.width as f64).ceil() as usize, 1);
+                    let cols = std::cmp::max(ceil_div(dst_w, cell.width), 1);
                     (dst_w, dst_h, cols, r, true)
                 },
                 (c, r) => (c * cell.width, r * cell.height, c, r, true),
@@ -651,6 +652,37 @@ impl KittyGrid {
                         total_rows: std::cmp::max(0, frame.total_rows as isize + -1) as usize,
                     });
             let height_to_reduce = cell.height as isize;
+            let mut store = self.kitty_image_store.borrow_mut();
+            let mut kept = Vec::with_capacity(self.placements.len());
+            for mut placement in self.placements.drain(..) {
+                placement.display_rect.y -= height_to_reduce;
+                if placement.display_rect.y + placement.display_rect.height as isize <= 0 {
+                    store.free(placement.internal_id);
+                } else {
+                    kept.push(placement);
+                }
+            }
+            self.placements = kept;
+        }
+    }
+    /// The scrollback has been discarded wholesale (`ESC[3J`). Placements that lived only up there
+    /// have nowhere left to be anchored and are freed; everything still on screen simply moves up
+    /// by the rows that went away.
+    ///
+    /// Spec, "Interaction with other terminal actions": erase commands other than `ESC[2J` "must
+    /// have no effect on graphics", so this must not become a `clear_all_placements` in disguise.
+    pub fn drop_scrollback_rows(&mut self, dropped_row_count: usize) {
+        if dropped_row_count == 0 {
+            return;
+        }
+        if let Some(cell) = *self.character_cell_size.borrow() {
+            self.rows_below_the_viewport =
+                self.rows_below_the_viewport
+                    .map(|frame| KittyRowsBelowTheViewport {
+                        first_row: frame.first_row.saturating_sub(dropped_row_count),
+                        total_rows: frame.total_rows.saturating_sub(dropped_row_count),
+                    });
+            let height_to_reduce = (dropped_row_count * cell.height) as isize;
             let mut store = self.kitty_image_store.borrow_mut();
             let mut kept = Vec::with_capacity(self.placements.len());
             for mut placement in self.placements.drain(..) {
@@ -1138,7 +1170,3 @@ mod grid_state_tests;
 #[cfg(test)]
 #[path = "./unit/grid_state_spec_tests.rs"]
 mod grid_state_spec_tests;
-
-#[cfg(test)]
-#[path = "./unit/grid_state_spec_red.rs"]
-mod grid_state_spec_red;

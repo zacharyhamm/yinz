@@ -6,7 +6,8 @@
 //! kitty's `test_load_images`, `test_load_png`, `test_load_png_simple` and
 //! `test_suppressing_gr_command_responses`.
 //!
-//! Deviations live in `parser_spec_red.rs`, not here.
+//! Every parser-level deviation has been closed; the outstanding ones are all further up the
+//! stack, indexed in the module doc of `kitty_graphics/mod.rs`.
 
 use super::super::parser::*;
 use super::super::test_support::*;
@@ -180,7 +181,7 @@ fn keys_this_terminal_does_not_implement_are_ignored_rather_than_failing() {
     // multiplexer sits between clients and a host terminal that may be newer than it is, so
     // ignoring is the safer default: a client using a later extension still gets its image drawn.
     // Pinned here so a change of mind is a visible decision; see the master index in
-    // `parser_spec_red.rs`.
+    // `kitty_graphics/mod.rs`.
     let command = parse_ok("a=T,f=24,s=2,v=2,i=1,ZZ=5,N=1", &rgb_2x2());
     assert_eq!(command.image_id, Some(1));
     assert!(command.image.is_some());
@@ -205,7 +206,7 @@ fn specifying_both_an_image_id_and_an_image_number_is_rejected() {
 
 #[test]
 fn an_explicit_zero_image_id_does_not_count_as_specifying_one() {
-    // A judgement call, not a spec rule; see the master index in `parser_spec_red.rs`. Read
+    // A judgement call, not a spec rule; see the master index in `kitty_graphics/mod.rs`. Read
     // strictly, `i=0,I=5` specifies both keys and is an error. But `i=0` is the protocol's own
     // spelling of "no image id" — it is the documented default, and a placement id is documented
     // as ignored "for an image that does not have an id (i.e. has id=0)" — so a client that writes
@@ -580,8 +581,36 @@ fn a_temp_file_carrying_the_marker_inside_a_temp_directory_is_deleted() {
     );
 }
 
-// The two cases where only one of the spec's two conditions holds are deviations; see
-// `red_temp_file_*` in `parser_spec_red.rs`.
+#[test]
+fn a_temp_file_without_the_marker_survives_even_inside_a_temp_directory() {
+    // The other half of the same rule: the marker is what distinguishes a file the client created
+    // for this transfer from any other file the client happened to name, so deleting without it
+    // destroys unrelated user data.
+    let raster = rgb_block(2, 2);
+    let file = unmarked_temp_file(&raster);
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &file.payload());
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert!(
+        file.exists(),
+        "a temp-directory file without the tty-graphics-protocol marker must not be deleted"
+    );
+}
+
+#[test]
+fn a_temp_file_with_the_marker_outside_a_temp_directory_survives() {
+    // And the mirror image: the marker alone does not license deletion, because a client can put
+    // that string in any path it likes.
+    let raster = rgb_block(2, 2);
+    let file = marked_non_temp_file(&raster);
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &file.payload());
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert!(
+        file.exists(),
+        "a file outside any temporary directory must not be deleted"
+    );
+}
 
 #[test]
 fn an_unknown_transmission_medium_is_rejected() {
@@ -589,6 +618,97 @@ fn an_unknown_transmission_medium_is_rejected() {
         parse_err("a=T,f=24,s=2,v=2,t=q", &rgb_2x2()).code,
         KittyErrorCode::Einval
     );
+}
+
+// ---- G4b: shared memory ----
+//
+// Linux only: `/dev/shm` *is* the POSIX shm namespace there, so an object can be created and
+// inspected with ordinary file operations. The implementation is portable POSIX; a macOS fixture
+// needs `shm_open` through `libc`.
+
+#[cfg(target_os = "linux")]
+mod shared_memory {
+    use super::*;
+
+    /// A POSIX shared memory object, named the way a client would name one.
+    struct ShmObject {
+        name: String,
+    }
+
+    impl ShmObject {
+        fn new(bytes: &[u8]) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let name = format!(
+                "/zellij-kitty-shm-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            std::fs::write(format!("/dev/shm{}", name), bytes).expect("create shm object");
+            ShmObject { name }
+        }
+        fn payload(&self) -> Vec<u8> {
+            self.name.as_bytes().to_vec()
+        }
+        fn exists(&self) -> bool {
+            std::path::Path::new(&format!("/dev/shm{}", self.name)).exists()
+        }
+    }
+
+    impl Drop for ShmObject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(format!("/dev/shm{}", self.name));
+        }
+    }
+
+    #[test]
+    fn a_shared_memory_transfer_reads_the_object_contents() {
+        // Spec, "the transmission medium": `t=s` names "a *shared memory object*, which on POSIX
+        // systems is a POSIX shared memory object". It exists so a client can hand over a large
+        // image without pushing it through the tty.
+        let raster = rgb_block(4, 4);
+        let object = ShmObject::new(&raster);
+
+        let command = parse_ok("a=T,f=24,s=4,v=4,i=1,t=s", &object.payload());
+        assert_eq!(command.image.unwrap().bytes, raster);
+    }
+
+    #[test]
+    fn the_object_is_unlinked_after_being_read() {
+        // Spec: "The terminal emulator must read the data from the memory object and then unlink
+        // and close it on POSIX" — otherwise every image a client sends leaks memory until reboot.
+        let object = ShmObject::new(&rgb_block(4, 4));
+        let _ = parse("a=T,f=24,s=4,v=4,i=1,t=s", &object.payload());
+        assert!(
+            !object.exists(),
+            "the object must be unlinked after the read"
+        );
+    }
+
+    #[test]
+    fn a_shared_memory_transfer_honours_the_size_and_offset_keys() {
+        let raster = rgb_block(2, 2);
+        let mut padded = vec![0xffu8; 5];
+        padded.extend_from_slice(&raster);
+        let object = ShmObject::new(&padded);
+
+        let command = parse_ok(
+            &format!("a=T,f=24,s=2,v=2,i=1,t=s,O=5,S={}", raster.len()),
+            &object.payload(),
+        );
+        assert_eq!(command.image.unwrap().bytes, raster);
+    }
+
+    #[test]
+    fn a_missing_object_is_an_io_error() {
+        // A client racing against its own cleanup should get EBADF, not a blanket "unsupported"
+        // that tells it nothing about what went wrong.
+        let error = parse_err(
+            "a=T,f=24,s=2,v=2,i=1,t=s",
+            b"/zellij-kitty-shm-does-not-exist",
+        );
+        assert_eq!(error.code, KittyErrorCode::Ebadf);
+    }
 }
 
 // ---- G5: PNG ----
@@ -639,15 +759,16 @@ fn a_one_by_one_transparent_png_decodes_to_a_single_pixel() {
 }
 
 #[test]
-fn malformed_png_payloads_are_all_refused_rather_than_decoded() {
+fn malformed_png_payloads_are_all_refused_as_bad_pngs() {
     // Every way a PNG can be broken has to come back as an error the client can see, and none of
     // them may read past the end of the payload. The last case is a kitty regression
     // (`test_load_png_simple`): a payload shorter than the decoder's initial buffer used to be an
     // out-of-bounds read.
     //
-    // The *code* each refusal carries is a deviation — kitty answers EBADPNG where this answers
-    // EINVAL — and lives in `parser_spec_red::red_png_*`. What is pinned here is that the payload
-    // is refused at all, which is the part that must never regress.
+    // The protocol reserves no code for this, but kitty has one and clients that already speak to
+    // kitty will recognise it. It is worth distinguishing: EINVAL says "your control data was
+    // malformed", which a client answers by fixing its command, where EBADPNG says "your control
+    // data was fine and your image was not", which it answers by re-encoding the image.
     let mut corrupt_pixels = png(4, 4, PngKind::Rgba8);
     let len = corrupt_pixels.len();
     // Scribble over the compressed image data, leaving the header intact.
@@ -673,6 +794,12 @@ fn malformed_png_payloads_are_all_refused_rather_than_decoded() {
             error.image_id,
             Some(1),
             "{} must be reported against the image it names",
+            description
+        );
+        assert_eq!(
+            error.code,
+            KittyErrorCode::Ebadpng,
+            "{} is a bad png, not a malformed command",
             description
         );
     }

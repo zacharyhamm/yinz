@@ -1,5 +1,5 @@
 //! Unicode placeholders. **These tests fail on purpose.** See the master index in
-//! `kitty_graphics/unit/parser_spec_red.rs`.
+//! `kitty_graphics/mod.rs`.
 //!
 //! RED-6. Spec, "Unicode placeholders": instead of positioning an image itself, a client creates
 //! a *virtual placement* with `U=1` and then draws the placeholder character `U+10EEEE` in the

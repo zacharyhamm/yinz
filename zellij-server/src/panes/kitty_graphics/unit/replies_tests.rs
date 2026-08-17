@@ -123,7 +123,9 @@ fn every_error_code_renders_as_its_errno_name() {
         (KittyErrorCode::Einval, "EINVAL"),
         (KittyErrorCode::Enoent, "ENOENT"),
         (KittyErrorCode::Ebadf, "EBADF"),
+        (KittyErrorCode::Ebadpng, "EBADPNG"),
         (KittyErrorCode::Enodata, "ENODATA"),
+        (KittyErrorCode::Enospc, "ENOSPC"),
         (KittyErrorCode::Enotsupported, "ENOTSUPPORTED"),
     ] {
         let reply = parsed(format_kitty_error(&error(code, "boom"))).unwrap();
@@ -178,9 +180,9 @@ fn every_way_the_parser_can_refuse() -> Vec<(&'static str, &'static str, Vec<u8>
             vec![0; 3],
         ),
         (
-            "shared memory is unsupported",
+            "could not read shared memory object",
             "a=T,f=24,s=1,v=1,i=1,t=s",
-            b"/obj".to_vec(),
+            b"/zellij-kitty-no-such-object".to_vec(),
         ),
         (
             "unicode placeholders are unsupported",
