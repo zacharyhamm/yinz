@@ -3,14 +3,17 @@
 # Run every test gate CI runs, log all of it, and summarise what broke.
 #
 # Each gate runs even if an earlier one failed — a red build should not hide a
-# test failure you also need to know about. The exit code is non-zero if any
-# gate failed.
+# test failure you also need to know about. The one exception is a gate that
+# names a prerequisite: the docker suites are skipped when the gate that stands
+# their containers up did not pass, since there is nothing for them to talk to.
+# The exit code is non-zero if any gate failed.
 #
 #   scripts/run-all-tests.sh              # everything
 #   scripts/run-all-tests.sh --skip-build # straight to the tests
 #   scripts/run-all-tests.sh --with-e2e   # add the dockerized e2e suite
 #   scripts/run-all-tests.sh --with-remote # add the remote-pane suite (real ssh)
-#   scripts/run-all-tests.sh --with-ignored # include ignored tests
+#   scripts/run-all-tests.sh --with-ignored # both of the above: every ignored test,
+#                                           # run by the gate that provides its fixtures
 #
 # Logs land in target/test-logs/<timestamp>/ — one file per gate, plus
 # summary.txt. The path is printed at the end.
@@ -22,13 +25,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 skip_build=0
 with_e2e=0
 with_remote=0
-with_ignored=0
 for arg in "$@"; do
   case "$arg" in
     --skip-build) skip_build=1 ;;
     --with-e2e) with_e2e=1 ;;
     --with-remote) with_remote=1 ;;
-    --with-ignored) with_ignored=1 ;;
+    # Every ignored test in the tree belongs to one of these two suites, and both
+    # need fixtures — a container, an ssh keypair, a musl build — that only their
+    # own gate sets up. So "with ignored" means "run those gates", not
+    # `--include-ignored`: that spelling runs the same tests with no far machine
+    # to talk to, and multi-threaded besides, which both suites forbid.
+    --with-ignored) with_e2e=1; with_remote=1 ;;
     -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' \
       "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)" >&2; exit 2 ;;
@@ -39,39 +46,56 @@ log_dir="target/test-logs/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$log_dir" || exit 1
 summary="$log_dir/summary.txt"
 
-# Gates in CI's order, each as "name<TAB>command".
+# Gates in CI's order, each as "name<TAB>command" — plus an optional third field
+# naming a gate this one needs to have passed. See the loop below.
 gates=()
 [[ $skip_build -eq 0 ]] && gates+=("build	cargo x build")
-test_args=""
-integration_test_args=""
-if [[ $with_ignored -eq 1 ]]; then
-  test_args=" -- --include-ignored"
-  # nextest has no libtest-style flag; --run-ignored=all is its equivalent.
-  integration_test_args=" --run-ignored=all"
-fi
 gates+=(
-  "test	cargo x test$test_args"
-  "test-no-web	cargo x test --no-web$test_args"
-  "integration-test	cargo x integration-test$integration_test_args"
+  "test	cargo x test"
+  "test-no-web	cargo x test --no-web"
+  "integration-test	cargo x integration-test"
   "assets-check	cargo x assets --check"
   "format-check	cargo x format --check"
   "xtask	cargo test -p xtask"
 )
-[[ $with_e2e -eq 1 ]] && gates+=("e2e	cargo x ci e2e --test")
-# Two gates, because the containers have to be up before the tests can run and
-# the build gate is where that happens.
+# Both docker suites split into a fixture gate and a test gate, so a container
+# that never came up is reported as that, rather than as every test failing.
+# `ci e2e --test` builds what it needs itself; all it is missing is the machine.
+[[ $with_e2e -eq 1 ]] && gates+=(
+  "e2e-up	docker compose up -d --wait"
+  "e2e	cargo x ci e2e --test	e2e-up"
+)
 [[ $with_remote -eq 1 ]] && gates+=(
   "remote-test-build	cargo x remote-test --build"
-  "remote-test	cargo x remote-test --test"
+  "remote-test	cargo x remote-test --test	remote-test-build"
 )
 
 failed=()
+skipped=()
 printf 'Test run: %s\n\n' "$(date)" | tee "$summary"
 
+# Is $1 the name of a gate that already failed?
+gate_failed() {
+  local name
+  for name in ${failed[@]+"${failed[@]}"}; do
+    [[ "$name" == "$1" ]] && return 0
+  done
+  return 1
+}
+
 for gate in "${gates[@]}"; do
-  name="${gate%%	*}"
-  command="${gate#*	}"
+  IFS=$'\t' read -r name command needs <<< "$gate"
   log="$log_dir/$name.log"
+
+  # A test gate whose fixture gate failed has nothing to run against. Running it
+  # anyway is worse than not: it reports a wall of test failures against whatever
+  # stale container happened to still be listening.
+  if [[ -n "${needs:-}" ]] && gate_failed "$needs"; then
+    skipped+=("$name")
+    printf '=== %-18s SKIP (needs %s)\n' "$name" "$needs"
+    printf '    SKIP  %-18s       (prerequisite %s failed)\n' "$name" "$needs" >> "$summary"
+    continue
+  fi
 
   printf '=== %-18s %s\n' "$name" "$command"
   start=$SECONDS
@@ -105,6 +129,10 @@ else
   printf '%d of %d gates FAILED: %s\n' \
     "${#failed[@]}" "${#gates[@]}" "${failed[*]}" | tee -a "$summary"
   exit_code=1
+fi
+if [[ ${#skipped[@]} -gt 0 ]]; then
+  printf '%d skipped for a failed prerequisite: %s\n' \
+    "${#skipped[@]}" "${skipped[*]}" | tee -a "$summary"
 fi
 
 # Two suites are known to flake under parallel load and pass on a rerun. Worth
