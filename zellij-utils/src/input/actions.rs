@@ -1218,6 +1218,7 @@ impl Action {
                 near_current_pane,
                 no_focus,
                 borderless,
+                overlay,
                 global,
                 edge,
                 size,
@@ -1297,7 +1298,7 @@ impl Action {
 
                     let placement = if floating {
                         NewPanePlacement::Floating(FloatingPaneCoordinates::new(
-                            x, y, width, height, pinned, borderless,
+                            x, y, width, height, pinned, borderless, overlay,
                         ))
                     } else if in_place {
                         NewPanePlacement::InPlace {
@@ -1355,7 +1356,7 @@ impl Action {
                             skip_cache: skip_plugin_cache,
                             cwd,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless,
+                                x, y, width, height, pinned, borderless, overlay,
                             ),
                             no_focus,
                             tab_id,
@@ -1407,7 +1408,7 @@ impl Action {
                             command: Some(run_command_action),
                             pane_name: name,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless,
+                                x, y, width, height, pinned, borderless, overlay,
                             ),
                             near_current_pane,
                             no_focus,
@@ -1452,7 +1453,7 @@ impl Action {
                             command: None,
                             pane_name: name,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless,
+                                x, y, width, height, pinned, borderless, overlay,
                             ),
                             near_current_pane,
                             no_focus,
@@ -1509,6 +1510,7 @@ impl Action {
                 near_current_pane,
                 no_focus,
                 borderless,
+                overlay,
                 tab_id,
             } => {
                 let mut file = file;
@@ -1528,7 +1530,7 @@ impl Action {
                     close_replaced_pane,
                     start_suppressed,
                     coordinates: FloatingPaneCoordinates::new(
-                        x, y, width, height, pinned, borderless,
+                        x, y, width, height, pinned, borderless, overlay,
                     ),
                     near_current_pane,
                     no_focus,
@@ -2224,9 +2226,10 @@ impl Action {
                 height,
                 pinned,
                 borderless,
+                overlay,
             } => {
                 let Some(coordinates) =
-                    FloatingPaneCoordinates::new(x, y, width, height, pinned, borderless)
+                    FloatingPaneCoordinates::new(x, y, width, height, pinned, borderless, overlay)
                 else {
                     return Err("Failed to parse floating pane coordinates".to_string());
                 };
@@ -3371,6 +3374,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3419,6 +3423,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3467,6 +3472,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3517,6 +3523,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3558,6 +3565,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3606,6 +3614,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: true,
             blocking: false,
             block_until_exit_success: false,
@@ -3654,6 +3663,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: true,
             block_until_exit_success: false,
@@ -3695,6 +3705,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             near_current_pane: false,
             no_focus: false,
             borderless: None,
@@ -3727,6 +3738,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             near_current_pane: false,
             no_focus: false,
             borderless: None,
@@ -3766,6 +3778,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3814,6 +3827,7 @@ mod tests {
             width: None,
             height: None,
             pinned: None,
+            overlay: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
