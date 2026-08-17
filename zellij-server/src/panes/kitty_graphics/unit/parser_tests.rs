@@ -132,10 +132,10 @@ fn embedded_png_fixture_decodes_to_expected_rgba() {
 }
 
 #[test]
-fn non_png_payload_with_png_format_is_einval() {
+fn non_png_payload_with_png_format_is_ebadpng() {
     let mut parser = KittyCommandParser::new();
     let err = parse_one(&mut parser, &raw_cmd("a=T,f=100", b"this is not a png")).unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Einval);
+    assert_eq!(err.code, KittyErrorCode::Ebadpng);
 }
 
 #[test]
@@ -218,24 +218,24 @@ fn known_but_unsupported_keys_do_not_break_valid_command() {
 }
 
 #[test]
-fn unicode_placeholder_key_is_enotsupported() {
+fn the_unicode_placeholder_key_marks_the_placement_virtual() {
     let mut parser = KittyCommandParser::new();
-    let err = parse_one(&mut parser, b"a=T,U=1,f=24,s=1,v=1;AAAA").unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Enotsupported);
+    let command = parse_one(&mut parser, b"a=T,U=1,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(command.virtual_placement);
+    let command = parse_one(&mut parser, b"a=T,U=0,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(!command.virtual_placement);
+    let command = parse_one(&mut parser, b"a=T,f=24,s=1,v=1;AAAA").unwrap();
+    assert!(!command.virtual_placement);
 }
 
 #[test]
-fn shared_memory_medium_is_enotsupported() {
-    let mut parser = KittyCommandParser::new();
-    let err = parse_one(&mut parser, &raw_cmd("a=T,t=s,s=1,v=1", b"/x")).unwrap_err();
-    assert_eq!(err.code, KittyErrorCode::Enotsupported);
-}
-
-#[test]
-fn animation_actions_are_enotsupported() {
-    for control in [b"a=f".as_slice(), b"a=a".as_slice(), b"a=c".as_slice()] {
-        let err = parse_control_data(control).unwrap_err();
-        assert_eq!(err.code, KittyErrorCode::Enotsupported);
+fn animation_actions_parse() {
+    for (control, action) in [
+        (b"a=f".as_slice(), KittyAction::Frame),
+        (b"a=a".as_slice(), KittyAction::Animate),
+        (b"a=c".as_slice(), KittyAction::Compose),
+    ] {
+        assert_eq!(parse_control_data(control).unwrap().action, action);
     }
 }
 
@@ -277,21 +277,11 @@ fn file_medium_nonexistent_path_is_ebadf() {
     assert_eq!(err.code, KittyErrorCode::Ebadf);
 }
 
-#[test]
-fn temp_file_medium_inside_temp_dir_is_deleted_after_read() {
-    let raster = raster_12_bytes();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("img.bin");
-    std::fs::write(&path, &raster).unwrap();
-    let mut parser = KittyCommandParser::new();
-    let command = parse_one(
-        &mut parser,
-        &raw_cmd("a=T,f=24,s=2,v=2,t=t", path.to_str().unwrap().as_bytes()),
-    )
-    .unwrap();
-    assert_eq!(command.image.unwrap().bytes, raster);
-    assert!(!path.exists());
-}
+// A temp-directory file with no `tty-graphics-protocol` marker used to be asserted here as
+// "deleted". The spec requires it to survive — see
+// `parser_spec_tests::a_temp_file_without_the_marker_survives_even_inside_a_temp_directory`.
+// The conforming case (marker *and* temp directory) is covered by
+// `parser_spec_tests::a_temp_file_carrying_the_marker_inside_a_temp_directory_is_deleted`.
 
 #[test]
 fn temp_file_medium_outside_temp_dir_is_not_deleted() {
@@ -368,24 +358,9 @@ fn file_medium_offset_beyond_eof_is_ebadf() {
     assert_eq!(err.code, KittyErrorCode::Ebadf);
 }
 
-#[test]
-fn temp_file_outside_temp_dir_with_magic_name_is_deleted() {
-    let raster = raster_12_bytes();
-    let dir = tempfile::Builder::new()
-        .prefix("kitty-parser-test")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
-        .unwrap();
-    let path = dir.path().join("tty-graphics-protocol-img.bin");
-    std::fs::write(&path, &raster).unwrap();
-    let mut parser = KittyCommandParser::new();
-    let command = parse_one(
-        &mut parser,
-        &raw_cmd("a=T,f=24,s=2,v=2,t=t", path.to_str().unwrap().as_bytes()),
-    )
-    .unwrap();
-    assert_eq!(command.image.unwrap().bytes, raster);
-    assert!(!path.exists());
-}
+// A marked file outside any temp directory used to be asserted here as "deleted". The spec
+// requires it to survive — see
+// `parser_spec_tests::a_temp_file_with_the_marker_outside_a_temp_directory_survives`.
 
 // ---- property-based tests (hegel) ----
 

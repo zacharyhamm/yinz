@@ -1,9 +1,11 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::implicit_saturating_sub)]
+use super::kitty_graphics::diacritic_value;
 use super::kitty_graphics::{
     format_kitty_error, format_kitty_reply, KittyAction, KittyCommand, KittyCommandParser,
     KittyError, KittyErrorCode, KittyGrid, KittyHostSupport, KittyImageChunk, KittyImageStore,
     KittyPlacement, KittyReplyData, KittyRowsBelowTheViewport, KittyVerticalAnchor,
+    PlaceholderMark, PLACEHOLDER,
 };
 use super::sixel::{PixelRect, SixelGrid, SixelImageStore};
 use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
@@ -13,6 +15,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
 use unicode_width::UnicodeWidthChar;
 use zellij_utils::data::{
@@ -1322,6 +1325,212 @@ impl Grid {
             .get(anchor.canonical_line)
             .map(|line_start| *line_start as isize * cell_height + anchor.offset_px_from_line_start)
     }
+    /// Rebuild the placements that unicode placeholder cells stand for.
+    ///
+    /// Spec, "Unicode placeholders": a virtual placement is a prototype, and the cells printing
+    /// [`PLACEHOLDER`] are what instantiate it. Each cell names an image through its foreground
+    /// colour, a placement of that image through its underline colour, and its own row and column
+    /// within the image through combining marks - inheriting any of the three from the cell to its
+    /// left when it does not spell them out.
+    ///
+    /// Derived wholesale from the viewport rather than maintained incrementally: the cells *are*
+    /// the placement, so erasing a line, scrolling, resizing and reflowing all fall out correctly
+    /// with no hook in any of them. Costs nothing until a client actually creates a virtual
+    /// placement, which is the gate on the first line.
+    fn kitty_refresh_placeholder_placements(&mut self) {
+        // Relative placements are re-derived here too: their parents move with the grid, and a
+        // virtual parent's position comes from the placeholder cells this rebuilds.
+        if !self.kitty_grid.has_virtual_placements() {
+            if let Some(cell) = *self.character_cell_size.borrow() {
+                self.kitty_grid.resolve_relative_placements(cell);
+            }
+            return;
+        }
+        let cell = match *self.character_cell_size.borrow() {
+            Some(cell) => cell,
+            None => return,
+        };
+        let runs = self.kitty_placeholder_runs();
+        let starts = self.kitty_canonical_line_starts();
+        let scrollback_rows = self.lines_above.len();
+        let mut live_uids = HashSet::with_capacity(runs.len());
+        let mut derived = Vec::with_capacity(runs.len());
+        for run in runs {
+            let key = (
+                run.image_id,
+                run.placement_id,
+                scrollback_rows + run.screen_row,
+                run.screen_column,
+            );
+            live_uids.insert(key);
+            let placement_uid = self.kitty_grid.placeholder_uid(key);
+            // The emitted raster is the image already fitted to the whole `c` x `r` box, so both
+            // the part this run shows and the space it takes up are fractions of that raster
+            // rather than of the original image.
+            let (fit_w, fit_h) = run.fitted_px;
+            let slice_x = fit_w * run.column_in_image as usize / run.columns as usize;
+            let slice_y = fit_h * run.row_in_image as usize / run.rows as usize;
+            let slice_w =
+                fit_w * (run.column_in_image as usize + run.span) / run.columns as usize - slice_x;
+            let slice_h = fit_h / run.rows as usize;
+            let display_rect = PixelRect {
+                x: run.screen_column * cell.width,
+                y: ((scrollback_rows + run.screen_row) * cell.height) as isize,
+                width: slice_w,
+                height: slice_h,
+            };
+            let vertical_anchor =
+                Self::kitty_anchor_from_pixel_y(display_rect.y, cell.height as isize, &starts);
+            derived.push(KittyPlacement {
+                image_id: run.image_id,
+                placement_id: run.placement_id,
+                placement_uid,
+                internal_id: run.internal_id,
+                display_rect,
+                source_rect: PixelRect {
+                    x: slice_x,
+                    y: slice_y as isize,
+                    width: slice_w,
+                    height: slice_h,
+                },
+                emit_x: slice_x,
+                emit_y: slice_y,
+                scaled_px: Some(run.fitted_px),
+                dest_cells: (run.span as u16, 1),
+                variant_key: (run.columns, run.rows),
+                cell_offset: (0, 0),
+                z_index: run.z_index,
+                vertical_anchor,
+                is_placeholder: true,
+                relative_to: None,
+            });
+        }
+        self.kitty_grid.retain_placeholder_uids(&live_uids);
+        self.kitty_grid.set_placeholder_placements(derived);
+        self.kitty_grid.resolve_relative_placements(cell);
+    }
+    /// Walk the viewport and coalesce adjacent placeholder cells into the runs each of which
+    /// becomes one placement. A run is broken by anything that is not the next column of the same
+    /// row of the same placement - a gap, a different image, a jump in the image column.
+    fn kitty_placeholder_runs(&self) -> Vec<KittyPlaceholderRun> {
+        let mut runs: Vec<KittyPlaceholderRun> = Vec::new();
+        for (screen_row, row) in self.viewport.iter().enumerate() {
+            let mut previous: Option<ResolvedPlaceholderCell> = None;
+            for screen_column in 0..self.width {
+                let resolved = self.kitty_resolve_placeholder_cell(row, screen_column, &previous);
+                if let Some(cell) = &resolved {
+                    {
+                        let continues_the_run = previous
+                            .as_ref()
+                            .zip(runs.last())
+                            .map(|(previous, run)| {
+                                previous.image_id == cell.image_id
+                                    && previous.placement_id == cell.placement_id
+                                    && previous.row_in_image == cell.row_in_image
+                                    && previous.column_in_image + 1 == cell.column_in_image
+                                    && run.screen_row == screen_row
+                                    && run.screen_column + run.span == screen_column
+                            })
+                            .unwrap_or(false);
+                        if continues_the_run {
+                            if let Some(run) = runs.last_mut() {
+                                run.span += 1;
+                            }
+                        } else if let Some(virtual_placement) = self
+                            .kitty_grid
+                            .virtual_placements()
+                            .iter()
+                            .find(|candidate| {
+                                candidate.image_id == cell.image_id
+                                    && candidate.placement_id == cell.placement_id
+                            })
+                        {
+                            runs.push(KittyPlaceholderRun {
+                                image_id: cell.image_id,
+                                placement_id: cell.placement_id,
+                                internal_id: virtual_placement.internal_id,
+                                columns: virtual_placement.columns,
+                                rows: virtual_placement.rows,
+                                fitted_px: virtual_placement.fitted_px,
+                                z_index: virtual_placement.z_index,
+                                row_in_image: cell.row_in_image,
+                                column_in_image: cell.column_in_image,
+                                screen_row,
+                                screen_column,
+                                span: 1,
+                            });
+                        }
+                    }
+                }
+                previous = resolved;
+            }
+        }
+        runs
+    }
+    /// Decode one cell, if it is a placeholder naming a virtual placement that exists.
+    ///
+    /// A stale placeholder left in the scrollback must not conjure up whatever image happens to
+    /// hold its id now, so a cell whose image is unknown resolves to nothing.
+    fn kitty_resolve_placeholder_cell(
+        &self,
+        row: &Row,
+        screen_column: usize,
+        previous: &Option<ResolvedPlaceholderCell>,
+    ) -> Option<ResolvedPlaceholderCell> {
+        let character = row.character_at(screen_column)?;
+        if character.character != PLACEHOLDER {
+            return None;
+        }
+        let foreground = character.styles.foreground;
+        let underline_colour = character.styles.underline_color;
+        let mark = row.placeholder_mark_at(screen_column).unwrap_or_default();
+        // Spec: "If no diacritics are present, and the previous placeholder cell has the same
+        // foreground and underline colors, then the row of the current cell will be the row of the
+        // cell to the left, the column will be the column of the cell to the left plus one, and
+        // the most significant image ID byte will be the most significant image ID byte of the
+        // cell to the left."
+        let inherited = previous.as_ref().filter(|previous| {
+            previous.foreground == foreground && previous.underline_colour == underline_colour
+        });
+        let row_in_image = mark
+            .row_in_image
+            .or_else(|| inherited.map(|previous| previous.row_in_image))?;
+        let column_in_image = match mark.column_in_image {
+            Some(column) => column,
+            // A cell with only a row mark takes the next column of that row.
+            None => inherited
+                .filter(|previous| previous.row_in_image == row_in_image)
+                .map(|previous| previous.column_in_image + 1)?,
+        };
+        let id_most_significant_byte = mark
+            .id_most_significant_byte
+            .or_else(|| inherited.map(|previous| previous.id_most_significant_byte))
+            .unwrap_or(0);
+        let image_id = kitty_image_id_from_colour(foreground)?
+            | ((id_most_significant_byte as u32 & 0xff) << 24);
+        // Spec: "You can also specify a placement ID using the underline color (if it's omitted or
+        // zero, the terminal may choose any virtual placement of the given image)."
+        let requested_placement_id = kitty_image_id_from_colour(underline_colour).unwrap_or(0);
+        let placement_id = self
+            .kitty_grid
+            .virtual_placements()
+            .iter()
+            .find(|candidate| {
+                candidate.image_id == image_id
+                    && (requested_placement_id == 0
+                        || candidate.placement_id == requested_placement_id)
+            })
+            .map(|candidate| candidate.placement_id)?;
+        Some(ResolvedPlaceholderCell {
+            image_id,
+            placement_id,
+            row_in_image,
+            column_in_image,
+            id_most_significant_byte,
+            foreground,
+            underline_colour,
+        })
+    }
     fn kitty_rows_below_the_viewport(&self) -> Option<KittyRowsBelowTheViewport> {
         if self.lines_below.is_empty() {
             None
@@ -1756,6 +1965,7 @@ impl Grid {
         Vec<SixelImageChunk>,
         Vec<KittyImageChunk>,
     ) {
+        self.kitty_refresh_placeholder_placements();
         let changed_character_chunks = self.output_buffer.changed_chunks_in_viewport(
             self.viewport.make_contiguous(),
             self.width,
@@ -2290,6 +2500,12 @@ impl Grid {
         // aren't displayed correctly. Refer to this issue for more information:
         //     https://github.com/zellij-org/zellij/issues/1538
         if character_width == 0 {
+            // ...except for the row/column diacritics of a kitty unicode placeholder, which are
+            // zero width by construction and carry the position of the cell before them inside its
+            // image. Spec, "Unicode placeholders": "the row and column of the image can be
+            // specified using diacritics". Anything else zero width, or one arriving after a cell
+            // that is not a placeholder, falls through and is dropped as before.
+            self.record_placeholder_diacritic(terminal_character.character);
             return;
         }
         if self.cursor.x + character_width > self.width {
@@ -2300,6 +2516,28 @@ impl Grid {
         }
         self.add_character_at_cursor_position(terminal_character, false);
         self.move_cursor_forward_until_edge(character_width);
+    }
+    /// Attach a row/column diacritic to the placeholder cell the cursor has just moved past.
+    ///
+    /// The cell to the left is the one being annotated: printing a placeholder advances the cursor
+    /// like any other single-width character, so by the time its marks arrive the cursor sits one
+    /// column further on.
+    fn record_placeholder_diacritic(&mut self, character: char) {
+        let value = match diacritic_value(character) {
+            Some(value) => value,
+            None => return,
+        };
+        let column = match self.cursor.x.checked_sub(1) {
+            Some(column) => column,
+            None => return,
+        };
+        let row = match self.viewport.get_mut(self.cursor.y) {
+            Some(row) => row,
+            None => return,
+        };
+        if row.push_placeholder_mark_value(column, value) {
+            self.output_buffer.update_line(self.cursor.y);
+        }
     }
     pub fn get_character_under_cursor(&self) -> Option<TerminalCharacter> {
         let absolute_x_in_line = self.get_absolute_character_index(self.cursor.x, self.cursor.y)?;
@@ -3464,6 +3702,38 @@ impl Grid {
                 self.mark_for_rerender();
                 result.map(|_| KittyReplyData::from_command(&command))
             },
+            KittyAction::Frame => {
+                let image = match command.image.clone() {
+                    Some(image) => image,
+                    None => {
+                        return Err(KittyError {
+                            code: KittyErrorCode::Einval,
+                            message: "missing frame data".to_owned(),
+                            image_id: command.image_id,
+                            image_number: command.image_number,
+                            placement_id: command.placement_id,
+                            quiet: command.quiet,
+                        });
+                    },
+                };
+                let frame_number = self.kitty_grid.transmit_frame(&command, image)?;
+                Ok(KittyReplyData {
+                    frame_number: Some(frame_number),
+                    ..KittyReplyData::from_command(&command)
+                })
+            },
+            KittyAction::Animate | KittyAction::Compose => {
+                if command.action == KittyAction::Animate {
+                    self.kitty_grid.animate(&command)?;
+                } else {
+                    self.kitty_grid.compose_frames(&command)?;
+                }
+                // Making a frame current, or composing onto the one that is, changes the pixels
+                // behind every placement of the image.
+                self.render_full_viewport();
+                self.mark_for_rerender();
+                Ok(KittyReplyData::from_command(&command))
+            },
             KittyAction::Transmit => {
                 let image = match command.image.clone() {
                     Some(image) => image,
@@ -3483,6 +3753,7 @@ impl Grid {
                         image_id: Some(assigned_id),
                         image_number: command.image_number,
                         placement_id: command.placement_id,
+                        frame_number: None,
                         quiet: command.quiet,
                     }),
                     Err(e) => Err(e),
@@ -3512,6 +3783,12 @@ impl Grid {
                     self.kitty_grid.resolve_display_target(&command)
                 };
                 let (pane_image_id, internal) = resolved?;
+                // A relative placement can name a virtual parent, whose position exists only as
+                // the placeholder cells standing for it. Those are derived from the grid on
+                // demand, so they have to be up to date before the parent can be resolved.
+                if command.is_relative() {
+                    self.kitty_refresh_placeholder_placements();
+                }
                 let cursor_px = self.current_cursor_pixel_coordinates();
                 let cell = { *self.character_cell_size.borrow() };
                 let (cursor_px, cell) = match (cursor_px, cell) {
@@ -3544,9 +3821,18 @@ impl Grid {
                     cell,
                     vertical_anchor,
                 ) {
-                    Ok((cols, rows)) => {
-                        if !command.suppress_cursor_movement {
-                            self.advance_cursor_after_kitty_placement(cols as usize, rows as usize);
+                    Ok(dest_cells) => {
+                        // `None` covers the two placements that occupy no cells at the cursor: a
+                        // virtual one, which draws nothing until placeholder cells instantiate it,
+                        // and a relative one, which is positioned from its parent and so must
+                        // leave the cursor alone whatever `C` says.
+                        if let Some((cols, rows)) = dest_cells {
+                            if !command.suppress_cursor_movement {
+                                self.advance_cursor_after_kitty_placement(
+                                    cols as usize,
+                                    rows as usize,
+                                );
+                            }
                         }
                         self.kitty_reanchor_all_from_pixels();
                         self.render_full_viewport();
@@ -3555,6 +3841,7 @@ impl Grid {
                             image_id: Some(pane_image_id),
                             image_number: command.image_number,
                             placement_id: command.placement_id,
+                            frame_number: None,
                             quiet: command.quiet,
                         })
                     },
@@ -3566,10 +3853,14 @@ impl Grid {
     pub fn kitty_commands_handled(&self) -> u64 {
         self.kitty_grid.commands_handled()
     }
-    pub fn kitty_placement_count(&self) -> usize {
+    /// Placements resolve lazily: unicode placeholder cells are read out of the grid on demand
+    /// rather than tracked as they are printed, so both of these refresh before answering.
+    pub fn kitty_placement_count(&mut self) -> usize {
+        self.kitty_refresh_placeholder_placements();
         self.kitty_grid.placement_count()
     }
-    pub fn kitty_placements(&self) -> &[KittyPlacement] {
+    pub fn kitty_placements(&mut self) -> &[KittyPlacement] {
+        self.kitty_refresh_placeholder_placements();
         self.kitty_grid.placements()
     }
     fn mouse_buttons_value_x10(&self, event: &MouseEvent) -> u8 {
@@ -4088,6 +4379,20 @@ impl Perform for Grid {
         };
         self.set_preceding_character(terminal_character.clone());
         self.add_character(terminal_character);
+        if c == PLACEHOLDER {
+            // The cell has been written and the cursor has moved past it; open its mark slot so
+            // the diacritics that follow have somewhere to land. Opening it here rather than on
+            // the first diacritic is what makes a placeholder with *no* marks - which inherits
+            // everything from the cell to its left - distinguishable from an ordinary cell.
+            let (x, y) = (self.cursor.x.saturating_sub(1), self.cursor.y);
+            if let Some(row) = self.viewport.get_mut(y) {
+                // Not unconditional: with linewrap disabled at the right edge `add_character`
+                // drops the character on the floor, and there is no cell to annotate.
+                if row.character_at(x).map(|character| character.character) == Some(PLACEHOLDER) {
+                    row.begin_placeholder_marks(x);
+                }
+            }
+        }
     }
 
     fn execute(&mut self, byte: u8) {
@@ -4536,11 +4841,16 @@ impl Perform for Grid {
                     self.kitty_grid
                         .clear_visible_placements(self.lines_above.len());
                 } else if clear_type == 3 {
+                    let dropped_rows = self.lines_above.len();
                     self.clear_lines_above();
                     if let Some(images_to_reap) = self.sixel_grid.clear() {
                         self.sixel_grid.reap_images(images_to_reap);
                     }
-                    self.kitty_grid.clear_all_placements();
+                    // Only the images that lived in the scrollback go with it - the ones on screen
+                    // are untouched, per "the other commands to erase text must have no effect on
+                    // graphics".
+                    self.kitty_grid.drop_scrollback_rows(dropped_rows);
+                    self.kitty_reanchor_all_from_pixels();
                 }
             };
         } else if c == 'H' || c == 'f' {
@@ -5283,6 +5593,60 @@ pub struct Row {
     all_single_width: Option<bool>,
     pub bg_color: Option<AnsiCode>,
     osc133_markers: Vec<Osc133Marker>,
+    /// The row/column diacritics of the kitty unicode placeholder cells in this row, sparse and
+    /// keyed by column. They cannot live on `TerminalCharacter`, which is pinned at 16 bytes, and
+    /// they do not need to: a cell *is* a placeholder when its character is
+    /// [`kitty_graphics::PLACEHOLDER`], and its image and placement ids come from its foreground
+    /// and underline colours, which the cell already carries. Only the marks are extra, and only
+    /// for the cells that spell them out - a cell with no marks inherits from the one to its left.
+    ///
+    /// Maintained exactly like `osc133_markers`, alongside it in every mutation below.
+    placeholder_marks: Vec<PlaceholderMark>,
+}
+
+/// One decoded unicode placeholder cell, carried left to right so the next cell can inherit from
+/// it. The colours ride along because inheritance is only allowed between cells that share them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResolvedPlaceholderCell {
+    image_id: u32,
+    placement_id: u32,
+    row_in_image: u16,
+    column_in_image: u16,
+    id_most_significant_byte: u16,
+    foreground: Option<AnsiCode>,
+    underline_colour: Option<AnsiCode>,
+}
+
+/// A maximal run of adjacent placeholder cells showing consecutive columns of one row of one
+/// virtual placement. Each becomes a single [`KittyPlacement`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct KittyPlaceholderRun {
+    image_id: u32,
+    placement_id: u32,
+    internal_id: crate::panes::kitty_graphics::InternalImageId,
+    columns: u16,
+    rows: u16,
+    fitted_px: (usize, usize),
+    z_index: i32,
+    row_in_image: u16,
+    column_in_image: u16,
+    screen_row: usize,
+    screen_column: usize,
+    span: usize,
+}
+
+/// The image or placement id a placeholder cell carries in one of its colours.
+///
+/// Spec, "Unicode placeholders": "the image ID is encoded in the foreground color of the cell",
+/// as the low byte of a 256-colour index or the low three bytes of a 24-bit colour. A cell with no
+/// colour set names no image, which is what makes an ordinary `U+10EEEE` in text inert.
+fn kitty_image_id_from_colour(colour: Option<AnsiCode>) -> Option<u32> {
+    match colour? {
+        AnsiCode::ColorIndex(index) => Some(index as u32),
+        AnsiCode::RgbCode((r, g, b)) => Some(((r as u32) << 16) | ((g as u32) << 8) | b as u32),
+        AnsiCode::NamedColor(named) => Some(named as u32),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5318,6 +5682,7 @@ impl Row {
             all_single_width: None,
             bg_color: None,
             osc133_markers: vec![],
+            placeholder_marks: vec![],
         }
     }
     pub fn from_columns(columns: VecDeque<TerminalCharacter>) -> Self {
@@ -5328,6 +5693,7 @@ impl Row {
             all_single_width: None,
             bg_color: None,
             osc133_markers: vec![],
+            placeholder_marks: vec![],
         }
     }
     pub fn from_rows(mut rows: Vec<Row>) -> Self {
@@ -5488,6 +5854,7 @@ impl Row {
                     if self.columns[x].character != ' ' {
                         self.osc133_markers.retain(|marker| marker.column != x);
                     }
+                    self.discard_placeholder_marks_in(x..x + 1);
                     self.columns[x] = terminal_character;
                     return;
                 }
@@ -5499,6 +5866,7 @@ impl Row {
                 let overwrite_end =
                     overwrite_start + character_width.max(self.columns[absolute_x_index].width());
                 let replacing_blank = self.columns[absolute_x_index].character == ' ';
+                self.discard_placeholder_marks_in(overwrite_start..overwrite_end);
                 self.osc133_markers.retain(|marker| {
                     marker.column < overwrite_start
                         || marker.column >= overwrite_end
@@ -5548,6 +5916,11 @@ impl Row {
                 marker.column += character_width;
             }
         }
+        for mark in &mut self.placeholder_marks {
+            if mark.column >= x {
+                mark.column += character_width;
+            }
+        }
         let insert_position = self.absolute_character_index(x);
         match self.columns.len().cmp(&insert_position) {
             Ordering::Equal => self.columns.push_back(terminal_character),
@@ -5567,9 +5940,10 @@ impl Row {
         if let Some(character) = self.columns.get_mut(absolute_x_index) {
             let terminal_character_width = terminal_character.width();
             let overwrite_end = x + character.width().max(terminal_character_width);
+            let character = std::mem::replace(character, terminal_character);
             self.osc133_markers
                 .retain(|marker| marker.column < x || marker.column >= overwrite_end);
-            let character = std::mem::replace(character, terminal_character);
+            self.discard_placeholder_marks_in(x..overwrite_end);
             let excess_width = character.width().saturating_sub(terminal_character_width);
             for _ in 0..excess_width {
                 self.columns
@@ -5581,6 +5955,7 @@ impl Row {
     pub fn replace_columns(&mut self, columns: VecDeque<TerminalCharacter>) {
         self.columns = columns;
         self.osc133_markers.clear();
+        self.placeholder_marks.clear();
         self.invalidate_width_cache();
     }
     pub fn push(&mut self, terminal_character: TerminalCharacter) {
@@ -5594,6 +5969,7 @@ impl Row {
             self.columns.truncate(truncate_position);
         }
         self.osc133_markers.retain(|marker| marker.column <= x);
+        self.placeholder_marks.retain(|mark| mark.column < x);
         self.invalidate_width_cache();
     }
     pub fn position_accounting_for_widechars(&self, x: usize) -> usize {
@@ -5615,6 +5991,7 @@ impl Row {
         terminal_character: TerminalCharacter,
     ) {
         self.osc133_markers.retain(|marker| marker.column <= from);
+        self.placeholder_marks.retain(|mark| mark.column < from);
         let from_position_accounting_for_widechars = self.position_accounting_for_widechars(from);
         let to_position_accounting_for_widechars = self.position_accounting_for_widechars(to);
         let replacement_length = to_position_accounting_for_widechars
@@ -5633,6 +6010,11 @@ impl Row {
                 marker.column += column_offset;
                 marker
             }));
+        self.placeholder_marks
+            .extend(to_append.placeholder_marks.drain(..).map(|mut mark| {
+                mark.column += column_offset;
+                mark
+            }));
         self.invalidate_width_cache();
     }
     pub fn drain_until(&mut self, x: usize) -> VecDeque<TerminalCharacter> {
@@ -5650,6 +6032,14 @@ impl Row {
         }
         // Can't use split_off because it doesn't reduce capacity, causing OOM with long lines
         let drained_part = self.columns.drain(..split_pos).collect();
+        self.placeholder_marks.retain_mut(|mark| {
+            if mark.column < drained_part_len {
+                false
+            } else {
+                mark.column -= drained_part_len;
+                true
+            }
+        });
         self.invalidate_width_cache();
         drained_part
     }
@@ -5663,6 +6053,8 @@ impl Row {
         let replaced_end = to + width_of_current_character;
         self.osc133_markers
             .retain(|marker| marker.column >= replaced_end);
+        self.placeholder_marks
+            .retain(|mark| mark.column >= replaced_end);
         let mut replace_with =
             VecDeque::from(vec![terminal_character; to + width_of_current_character]);
         if to_position_accounting_for_widechars > self.columns.len() {
@@ -5689,6 +6081,16 @@ impl Row {
             let deleted = self.columns.remove(erase_position);
             if let Some(deleted) = &deleted {
                 let end = x + deleted.width();
+                self.placeholder_marks.retain_mut(|mark| {
+                    if (x..end).contains(&mark.column) {
+                        false
+                    } else {
+                        if mark.column >= end {
+                            mark.column -= deleted.width();
+                        }
+                        true
+                    }
+                });
                 self.osc133_markers.retain_mut(|marker| {
                     if (x..end).contains(&marker.column) {
                         false
@@ -5707,6 +6109,7 @@ impl Row {
     }
     pub fn split_to_rows_of_length(&mut self, max_row_length: usize) -> Vec<Row> {
         let markers = std::mem::take(&mut self.osc133_markers);
+        let marks = std::mem::take(&mut self.placeholder_marks);
         let mut parts: Vec<Row> = vec![];
         let mut current_part: VecDeque<TerminalCharacter> = VecDeque::new();
         let mut current_part_len = 0;
@@ -5742,8 +6145,66 @@ impl Row {
                 column_offset += part_width;
             }
         }
+        // The marks travel with the cell they annotate, so unlike an OSC-133 marker they are
+        // placed by which part actually holds that column rather than clamped into the last one.
+        for mut mark in marks {
+            let mut column_offset = 0;
+            for part in parts.iter_mut() {
+                let part_width = part.width();
+                if mark.column < column_offset + part_width {
+                    mark.column -= column_offset;
+                    part.placeholder_marks.push(mark);
+                    break;
+                }
+                column_offset += part_width;
+            }
+        }
         self.invalidate_width_cache();
         parts
+    }
+    /// Forget the placeholder marks of every cell in `columns`, because those cells are being
+    /// overwritten. Marks whose cell is gone are harmless - resolution only consults a mark when a
+    /// placeholder character is actually sitting at that column - but leaving them would let a
+    /// stale row/column reach a *later* placeholder printed at the same spot.
+    fn discard_placeholder_marks_in(&mut self, columns: std::ops::Range<usize>) {
+        if self.placeholder_marks.is_empty() {
+            return;
+        }
+        self.placeholder_marks
+            .retain(|mark| !columns.contains(&mark.column));
+    }
+    /// Start a placeholder cell at `column`, discarding whatever was recorded there before. The
+    /// marks themselves arrive afterwards, as zero-width characters, through
+    /// [`Row::push_placeholder_mark_value`].
+    fn begin_placeholder_marks(&mut self, column: usize) {
+        self.discard_placeholder_marks_in(column..column + 1);
+        self.placeholder_marks.push(PlaceholderMark::new(column));
+    }
+    /// Record one more diacritic on the placeholder cell at `column`. Returns `false` when that
+    /// cell never began one, which is how a combining mark that follows something other than a
+    /// placeholder falls through to being dropped as before.
+    fn push_placeholder_mark_value(&mut self, column: usize, value: u16) -> bool {
+        match self
+            .placeholder_marks
+            .iter_mut()
+            .find(|mark| mark.column == column)
+        {
+            Some(mark) => {
+                mark.push_value(value);
+                true
+            },
+            None => false,
+        }
+    }
+    /// The character occupying screen column `x`, accounting for the wide characters before it.
+    fn character_at(&self, x: usize) -> Option<&TerminalCharacter> {
+        self.columns.get(self.absolute_character_index(x))
+    }
+    fn placeholder_mark_at(&self, column: usize) -> Option<PlaceholderMark> {
+        self.placeholder_marks
+            .iter()
+            .find(|mark| mark.column == column)
+            .copied()
     }
     fn add_osc133_marker(&mut self, column: usize, kind: Osc133MarkerKind) {
         self.osc133_markers.push(Osc133Marker { column, kind });

@@ -61,12 +61,12 @@ fn refcounted_image_is_never_evicted_even_when_oldest() {
 }
 
 #[test]
-fn single_image_exceeding_quota_is_refused_with_einval_and_store_unchanged() {
+fn single_image_exceeding_quota_is_refused_with_enospc_and_store_unchanged() {
     let mut store = KittyImageStore::with_quota(1000);
     let id_a = store.store_image(rgba_image(10, 10)).unwrap();
     let result = store.store_image(rgba_image(20, 20));
     match result {
-        Err(err) => assert_eq!(err.code, KittyErrorCode::Einval),
+        Err(err) => assert_eq!(err.code, KittyErrorCode::Enospc),
         Ok(_) => panic!("expected error"),
     }
     assert_eq!(store.image_count(), 1);
