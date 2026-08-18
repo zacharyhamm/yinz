@@ -1028,7 +1028,10 @@ pub(crate) fn pty_hosts(command: zellij_utils::cli::PtyHosts) -> anyhow::Result<
     use zellij_server::pty_host::cli;
     use zellij_utils::cli::PtyHosts as PtyHostsCli;
     match command {
-        PtyHostsCli::List { json } => cli::list(json),
+        PtyHostsCli::List { json, host } => match host {
+            Some(host) => cli::remote_list(&host, json),
+            None => cli::list(json),
+        },
         PtyHostsCli::Kill { host_id } => cli::kill(&host_id),
         PtyHostsCli::KillAll => cli::kill_all(),
         // Handled by `pty_host_adopt`: it needs a session, which the rest of this
@@ -1053,6 +1056,7 @@ pub(crate) fn pty_host_adopt(
 
     let PtyHostsCli::Adopt {
         host_id,
+        host,
         session,
         focused_tab,
         floating,
@@ -1062,7 +1066,14 @@ pub(crate) fn pty_host_adopt(
     };
 
     let session = session.or(requested_session_name);
-    let (session, payload) = match cli::adopt_request(&host_id, session) {
+    // With `--host`, `host_id` is a broker pane token rather than a local
+    // supervisor id, and the broker on that machine is the only thing that can
+    // resolve it.
+    let resolved = match &host {
+        Some(host) => cli::remote_adopt_request(host, &host_id, session),
+        None => cli::adopt_request(&host_id, session),
+    };
+    let (session, payload) = match resolved {
         Ok(resolved) => resolved,
         Err(e) => {
             eprintln!("Error: {e:#}");
