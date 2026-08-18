@@ -677,6 +677,84 @@ fn a_remote_pane_leaves_its_tab_like_any_other() {
 // the tab.
 
 #[test]
+fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(None, vec![]);
+    let (first_response_tx, _first_response_rx) = crossbeam::channel::unbounded();
+    let (second_response_tx, second_response_rx) = crossbeam::channel::unbounded();
+
+    for response_channel in [first_response_tx, second_response_tx] {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::WarpTab {
+                tab_index: Some(0),
+                client_id,
+                response_channel,
+            })
+            .unwrap();
+    }
+
+    let mut releases = 0;
+    while releases < 2 {
+        if matches!(
+            pty_receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("both tab warps should reach the pty thread")
+                .0,
+            PtyInstruction::ReleaseTerminalsForWarp { .. }
+        ) {
+            releases += 1;
+        }
+    }
+
+    let refused = vec![(0, Err("the tab's pane cannot be moved".to_owned()))];
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: refused.clone(),
+        })
+        .unwrap();
+    assert!(second_response_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("the newer request should receive the first refusal")
+        .is_err(),);
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: refused,
+        })
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::WarpTab {
+            tab_index: Some(0),
+            client_id,
+            response_channel: crossbeam::channel::unbounded().0,
+        })
+        .unwrap();
+
+    loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the follow-up warp should run after both refused replies");
+        assert!(
+            !matches!(instruction, PtyInstruction::StrandPaneAfterWarp { .. }),
+            "a pane whose release was refused is still attached and must not be stranded",
+        );
+        if matches!(instruction, PtyInstruction::ReleaseTerminalsForWarp { .. }) {
+            break;
+        }
+    }
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
 fn a_tab_that_does_not_exist_cannot_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
