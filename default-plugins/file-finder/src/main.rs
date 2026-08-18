@@ -40,9 +40,14 @@ use opener::{opener_for, Opener};
 use zellij_tile::prelude::*;
 
 /// Config keys for the floating pane's geometry, and the defaults if unset.
-const DEFAULT_X: &str = "10%";
+///
+/// `DEFAULT_X` is empty rather than a percentage: a fixed `DEFAULT_WIDTH` needs `x` left
+/// unset so `PaneGeom::apply_floating_pane_position` auto-centers it against whatever the
+/// viewport turns out to be, rather than pinning it to a percentage that assumed the old
+/// percentage-based width.
+const DEFAULT_X: &str = "";
 const DEFAULT_Y: &str = "15%";
-const DEFAULT_WIDTH: &str = "80%";
+const DEFAULT_WIDTH: &str = "120";
 const DEFAULT_HEIGHT: &str = "70%";
 
 /// Frame title while the picker is up, before the tree being searched is named.
@@ -448,9 +453,9 @@ mod tests {
         assert_eq!(
             geometry(&BTreeMap::new()),
             Geometry {
-                x: "10%".to_owned(),
+                x: "".to_owned(),
                 y: "15%".to_owned(),
-                width: "80%".to_owned(),
+                width: "120".to_owned(),
                 height: "70%".to_owned(),
             }
         );
@@ -470,13 +475,13 @@ mod tests {
         assert_eq!(geometry.width, "100");
         assert_eq!(geometry.height, "50%");
         // Unset keys keep their defaults.
-        assert_eq!(geometry.x, "10%");
+        assert_eq!(geometry.x, "");
         assert_eq!(geometry.y, "15%");
     }
 
     #[test]
     fn blank_geometry_values_fall_back_to_the_defaults() {
         let config = BTreeMap::from([("width".to_owned(), "   ".to_owned())]);
-        assert_eq!(geometry(&config).width, "80%");
+        assert_eq!(geometry(&config).width, "120");
     }
 }
