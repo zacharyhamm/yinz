@@ -362,6 +362,45 @@ fn a_resume_says_whether_waiting_could_help() {
     }
 }
 
+/// The other half of the discriminant, and the half it exists for.
+///
+/// A pane some connection still holds becomes free on its own — the holder
+/// noticing its socket is dead takes a scheduling quantum — so the asking side
+/// retries briefly rather than giving up. That is only safe because this
+/// refusal says which case it is: retrying an `Unknown` would be waiting for
+/// something that never becomes true.
+#[test]
+fn a_resume_for_a_pane_someone_still_holds_is_worth_waiting_for() {
+    let holder = Arc::new(Mutex::new(None));
+    let seen = holder.clone();
+    let (ours, pump) = pump_over_session(move |session, registry| {
+        *seen.lock().unwrap() = Some((session.clone(), registry.clone()));
+    });
+    let (session, registry) = holder.lock().unwrap().clone().expect("no session recorded");
+    assert!(
+        session.is_attached(),
+        "the fixture's pane should still be held by the pump's connection"
+    );
+
+    // A second server asking for the pane the pump is still speaking for.
+    let (mut asker, asker_peer) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(asker_peer));
+    let refused = resume_pane(&registry, &wire, "token", 0);
+    assert!(refused.is_err());
+    match read_reply(&mut asker).expect("no refusal was sent") {
+        BrokerToServerMsg::ResumeRefused { kind, .. } => assert_eq!(
+            kind,
+            ResumeRefusal::AlreadyAttached,
+            "a pane whose holder has not let go yet must read as worth retrying for, or a \
+             warp that raced the release loses the pane outright"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+
+    drop(ours);
+    let _ = pump.join();
+}
+
 /// A pane nobody is speaking for is exactly what `pty-host list --host` is for
 /// finding, so the listing has to distinguish it from a healthy one.
 #[test]

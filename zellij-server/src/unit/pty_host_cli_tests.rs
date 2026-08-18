@@ -11,6 +11,7 @@
 
 use super::*;
 
+use crate::pty_host::remote::protocol::RemotePaneEntry;
 use hegel::generators;
 
 fn now_unix() -> u64 {
@@ -308,4 +309,93 @@ fn files_that_are_not_sockets_are_left_alone() {
 
     assert!(entries.is_empty());
     assert!(metadata.exists(), "a non-socket file must not be unlinked");
+}
+
+// --- the remote half of `pty-host list` and `pty-host adopt` ---
+//
+// Pure by construction: everything here is a judgement about one entry a broker
+// reported, and the broker is the part that cannot be reached without a machine
+// on the far end of an ssh.
+
+fn remote_entry(command: &str, attached: bool) -> RemotePaneEntry {
+    RemotePaneEntry {
+        pane_token: "d6a7b8c9e0f1".to_owned(),
+        command: command.to_owned(),
+        attached,
+        unattached_secs: if attached { None } else { Some(90) },
+    }
+}
+
+#[test]
+fn a_duration_reads_in_the_largest_unit_that_fits() {
+    // The boundaries, which are where a column this narrow goes wrong: 59
+    // seconds is not a minute, and 59 minutes is not an hour.
+    assert_eq!(human_duration(0), "0s");
+    assert_eq!(human_duration(59), "59s");
+    assert_eq!(human_duration(60), "1m");
+    assert_eq!(human_duration(3599), "59m");
+    assert_eq!(human_duration(3600), "1h");
+    assert_eq!(human_duration(86_400), "24h");
+}
+
+#[test]
+fn a_pane_someone_is_already_watching_is_not_offered_for_recovery() {
+    // `adopt` is for panes a failed handoff stranded. Taking one that still has
+    // a session speaking for it would be moving a live pane out from under it,
+    // which is a warp — and warps do not go through this command.
+    let refused = warped_pane_from_entry("build-box", remote_entry("/bin/sh", true));
+    let message = format!(
+        "{:#}",
+        refused.expect_err("an attached pane was offered up")
+    );
+    assert!(
+        message.contains("already has a session attached"),
+        "refused, but for the wrong reason: {message}",
+    );
+}
+
+#[test]
+fn a_stranded_pane_is_addressed_by_its_broker_and_nothing_local() {
+    let pane = warped_pane_from_entry("build-box", remote_entry("/usr/bin/cargo watch", false))
+        .expect("an unattached pane is exactly what this command recovers");
+
+    assert_eq!(pane.host_id, "", "there is no local supervisor to name");
+    assert_eq!(pane.control_socket, PathBuf::new());
+    let remote = pane.remote.expect("the pane's only address is its broker");
+    assert_eq!(remote.host, "build-box");
+    assert_eq!(remote.pane_token, "d6a7b8c9e0f1");
+    assert_eq!(
+        remote.received, 0,
+        "this side has taken delivery of nothing, so the replay starts from \
+         whatever the ring still holds",
+    );
+    assert_eq!(
+        remote.cmd.remote_host.as_deref(),
+        Some("build-box"),
+        "the host is the part that has to be right: it is what a later re-run reads",
+    );
+    assert_eq!(remote.cmd.command, PathBuf::from("/usr/bin/cargo"));
+    assert_eq!(remote.cmd.args, vec!["watch".to_owned()]);
+    assert_eq!(
+        pane.contents, None,
+        "a survivor brings no screen: the server that held its scrollback is what died",
+    );
+}
+
+#[test]
+fn a_recovered_panes_command_is_reconstructed_by_splitting_on_spaces() {
+    // Pinned as a known limitation rather than as a good outcome. The session
+    // that knew the real `RunCommand` is the one that is gone, and the broker
+    // reports a command already flattened to a string, so a quoted argument
+    // cannot be put back together. The host survives, which is the part a later
+    // re-run depends on.
+    let pane = warped_pane_from_entry("build-box", remote_entry("sh -c 'echo one two'", false))
+        .expect("TEST");
+    let cmd = pane.remote.expect("TEST").cmd;
+    assert_eq!(
+        cmd.args,
+        vec!["-c", "'echo", "one", "two'"],
+        "a quoted argument comes back split, which is what flattening it lost",
+    );
+    assert_eq!(cmd.remote_host.as_deref(), Some("build-box"));
 }

@@ -1343,3 +1343,59 @@ fn a_scrollback_within_budget_is_left_alone() {
     let contents = "hello".to_owned();
     assert_eq!(Screen::fit_to_budget(contents.clone(), 100), contents);
 }
+
+// ---------------------------------------------------------------------------
+// Warping a pane whose process is on another machine
+// ---------------------------------------------------------------------------
+//
+// A remote pane is released as a broker and a token rather than as a supervisor
+// socket, and `Screen` has to put that somewhere a `WarpedPane` can carry it.
+// The two local fields stay empty on purpose: they name an address on *this*
+// machine, and reading them for a remote pane is the mistake `remote` being
+// `Some` exists to catch.
+
+#[test]
+fn a_remote_pane_warps_as_a_broker_and_a_token() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let warped = released_remote_pane_for_warp(&mut screen, 1);
+
+    let remote = warped
+        .remote
+        .as_ref()
+        .expect("a remote pane must travel with the address of the broker holding it");
+    assert_eq!(remote.host, "build-box");
+    assert_eq!(remote.pane_token, "token-1");
+    assert_eq!(
+        remote.received, 4096,
+        "the byte count the broker replays from was dropped, which would overlap \
+         the replay with the pane's serialized screen",
+    );
+    assert_eq!(
+        remote.cmd.remote_host.as_deref(),
+        Some("build-box"),
+        "the command travels with a remote pane: the adopting server has no \
+         supervisor to learn it from",
+    );
+}
+
+#[test]
+fn a_remote_pane_carries_no_local_address() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let warped = released_remote_pane_for_warp(&mut screen, 1);
+
+    assert_eq!(
+        warped.host_id, "",
+        "a remote pane was given a local supervisor id, which names nothing here",
+    );
+    assert_eq!(
+        warped.control_socket,
+        PathBuf::new(),
+        "a remote pane was given a local socket path, which nothing is listening on",
+    );
+}

@@ -384,3 +384,49 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
         Err("recover them with `zellij pty-host adopt abc123`".to_owned())
     );
 }
+
+// --- what a stranded pane is called ---
+//
+// Only ever reached when a warp has failed in the one way it cannot undo: the
+// pane released, the handover refused, and the rollback refused too. The line
+// this produces is all that stands between the user and the work in that pane,
+// so it has to be a command that actually applies — and the two kinds of pane
+// are not recovered by the same one.
+
+fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
+    WarpedPane {
+        host_id: String::new(),
+        control_socket: PathBuf::new(),
+        title: None,
+        contents: None,
+        borderless: false,
+        remote: Some(zellij_utils::data::RemotePaneHandoff {
+            host: host.to_owned(),
+            pane_token: pane_token.to_owned(),
+            received: 0,
+            cmd: Default::default(),
+        }),
+    }
+}
+
+#[test]
+fn a_remote_pane_is_recovered_through_the_broker_holding_it() {
+    // `host_id` is empty for a remote pane, so the local wording would print
+    // `zellij pty-host adopt` with nothing after it — a command that names no
+    // pane and silently does nothing useful.
+    assert_eq!(
+        recovery_command(&remote_pane("build-box", "d6a7b8c9e0f1")),
+        "zellij pty-host adopt --host build-box d6a7b8c9e0f1",
+    );
+}
+
+#[test]
+fn a_local_pane_is_recovered_by_its_supervisor_id() {
+    assert_eq!(
+        recovery_command(&WarpedPane {
+            host_id: "abc123".to_owned(),
+            ..Default::default()
+        }),
+        "zellij pty-host adopt abc123",
+    );
+}
