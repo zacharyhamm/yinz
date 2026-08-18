@@ -15248,16 +15248,19 @@ pub(crate) fn screen_thread_main(
                          adopt <id>`"
                     );
                     for (terminal_id, released) in released {
-                        screen
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                                terminal_id,
-                                why: "this tab was moved to another session, but nothing took it"
-                                    .to_owned(),
-                                recovery: released.ok().map(|released| released.recovery_command()),
-                            })
-                            .non_fatal();
+                        if let Ok(released) = released {
+                            screen
+                                .bus
+                                .senders
+                                .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                    terminal_id,
+                                    why:
+                                        "this tab was moved to another session, but nothing took it"
+                                            .to_owned(),
+                                    recovery: Some(released.recovery_command()),
+                                })
+                                .non_fatal();
+                        }
                     }
                 }
                 screen.log_and_report_session_state().non_fatal();
