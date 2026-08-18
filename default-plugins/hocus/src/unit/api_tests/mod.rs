@@ -22,6 +22,9 @@ fn test_config() -> Config {
         // Off in most fixtures so the assertions can compare whole bodies.
         tools: false,
         max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+        // On, as it resolves by default: the fixtures that carry no reasoning
+        // are then also the proof that the field stays off the wire anyway.
+        reasoning_echo: true,
     }
 }
 

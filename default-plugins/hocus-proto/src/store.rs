@@ -129,6 +129,13 @@ pub fn chat_message_def() -> EntityDef {
         // not `full_text`: `content` is the searchable copy, and indexing this
         // one as well would return the same message twice for one hit.
         .attr(AttrDef::text("display"))
+        // A thinking model's chain-of-thought, and the field name its endpoint
+        // spells it with, kept only so the tool loop can hand it straight back
+        // — DeepSeek's thinking mode refuses a tool-calling turn that has lost
+        // it. Also not `full_text`: nobody searches for the model's reasoning,
+        // and it is much the longest thing a message can carry.
+        .attr(AttrDef::text("reasoning"))
+        .attr(AttrDef::text("reasoning_key"))
 }
 
 /// One line the user has submitted, keyed by its own text.

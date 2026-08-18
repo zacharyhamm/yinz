@@ -311,3 +311,111 @@ fn a_tool_result_with_no_call_id_sends_null_rather_than_dropping_the_field() {
         json!([{"role": "tool", "tool_call_id": null, "content": "orphaned"}])
     );
 }
+
+// -- reasoning ----------------------------------------------------------
+//
+// DeepSeek's thinking mode refuses a request whose tool-calling assistant turns
+// have lost their `reasoning_content`, so it has to go back out. Everything
+// here is about keeping that from leaking anywhere it was not asked for: the
+// field is emitted only on a tool-calling turn, only when the endpoint itself
+// produced one, and only ever under the key it arrived under.
+
+/// The assistant turn that asked for tools, with the thinking that led to it.
+fn thinking_calls(text: &str, key: ReasoningKey) -> Message {
+    Message {
+        reasoning: Some(Reasoning::new(text, key)),
+        ..Message::tool_calls(vec![call("call_1", "new_pane", "{}")])
+    }
+}
+
+#[test]
+fn a_transcript_with_no_thinking_sends_neither_reasoning_field() {
+    let transcript = [
+        Message::user("open htop"),
+        Message::assistant("On it."),
+        Message::tool_calls(vec![call("call_1", "new_pane", "{}")]),
+        Message::tool_result("call_1", "opened"),
+    ];
+    let body = String::from_utf8(request_body(&test_config(), &transcript, true)).unwrap();
+    assert!(
+        !body.contains("reasoning"),
+        "an endpoint that never sent thinking must get the request it always \
+         got — this is what keeps OpenAI unaffected: {body}"
+    );
+}
+
+#[test]
+fn a_thinking_tool_call_turn_echoes_the_key_it_arrived_under() {
+    let transcript = [thinking_calls(
+        "weighed it up",
+        ReasoningKey::ReasoningContent,
+    )];
+    assert_eq!(
+        body_value(&test_config(), &transcript)["messages"][0],
+        json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "new_pane", "arguments": "{}"},
+            }],
+            "reasoning_content": "weighed it up",
+        })
+    );
+}
+
+#[test]
+fn thinking_that_arrived_as_reasoning_goes_back_as_reasoning() {
+    let transcript = [thinking_calls("weighed it up", ReasoningKey::Reasoning)];
+    let message = &body_value(&test_config(), &transcript)["messages"][0];
+    assert_eq!(message["reasoning"], json!("weighed it up"));
+    assert!(
+        message.get("reasoning_content").is_none(),
+        "the two families do not accept each other's key, so nothing is \
+         translated between them: {message}"
+    );
+}
+
+#[test]
+fn a_plain_assistant_message_never_carries_its_thinking() {
+    // DeepSeek's own rule is scoped to tool calls: without them the
+    // intermediate reasoning "does not need to participate in the context
+    // concatenation" and is ignored, so sending it would only pay for tokens to
+    // be thrown away — and would show the field to endpoints with no use for it.
+    let transcript = [Message {
+        reasoning: Some(Reasoning::new("out loud", ReasoningKey::ReasoningContent)),
+        ..Message::assistant("Done.")
+    }];
+    assert_eq!(
+        body_value(&test_config(), &transcript)["messages"],
+        json!([{"role": "assistant", "content": "Done."}])
+    );
+}
+
+#[test]
+fn reasoning_echo_off_drops_the_field_from_a_turn_that_has_one() {
+    let mut cfg = test_config();
+    cfg.reasoning_echo = false;
+    let transcript = [thinking_calls(
+        "weighed it up",
+        ReasoningKey::ReasoningContent,
+    )];
+    let message = &body_value(&cfg, &transcript)["messages"][0];
+    assert!(
+        message.get("reasoning_content").is_none() && message.get("reasoning").is_none(),
+        "the escape hatch for an endpoint that streams thinking but rejects it \
+         on input: {message}"
+    );
+}
+
+#[test]
+fn empty_thinking_is_the_same_as_none() {
+    let transcript = [thinking_calls("", ReasoningKey::ReasoningContent)];
+    let message = &body_value(&test_config(), &transcript)["messages"][0];
+    assert!(
+        message.get("reasoning_content").is_none(),
+        "a stream that opened a reasoning field and put nothing in it has \
+         nothing to hand back: {message}"
+    );
+}
