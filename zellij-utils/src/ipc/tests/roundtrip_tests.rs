@@ -83,6 +83,62 @@ fn global_placement_ipc_rejects_invalid_sizes() {
     }
 }
 
+#[test]
+fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
+    // Fail closed. A handoff with no command is not a handoff: the adopting
+    // session would hold a running process it could not name, re-run on the
+    // right machine, or title. Dropping the whole `remote` makes the adoption
+    // fail with "no supervisor" and the warp roll back, which is recoverable;
+    // arriving half there is not.
+    use crate::client_server_contract::client_server_contract::{
+        action::ActionType, Action as ProtoAction, AdoptPaneAction as ProtoAdoptPaneAction,
+        RemotePaneHandoff as ProtoRemotePaneHandoff, WarpPlacement as ProtoWarpPlacement,
+    };
+
+    let adopt_pane = |cmd| ProtoAction {
+        action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            host_id: String::new(),
+            control_socket: String::new(),
+            title: None,
+            contents: None,
+            borderless: false,
+            placement: ProtoWarpPlacement::NewTab as i32,
+            remote: Some(ProtoRemotePaneHandoff {
+                host: "build-box".to_owned(),
+                pane_token: "d6a7b8c9e0f1".to_owned(),
+                received: 4096,
+                cmd,
+            }),
+        })),
+    };
+
+    match Action::try_from(adopt_pane(None)) {
+        Ok(Action::AdoptPane { payload, .. }) => assert_eq!(
+            payload.remote, None,
+            "a handoff with no command was let through half-built",
+        ),
+        other => panic!("expected an AdoptPane, got {other:?}"),
+    }
+
+    // The same message with a command keeps its handoff, so the assertion above
+    // is about the missing command rather than about this shape never surviving.
+    let cmd = Some(RunCommandAction {
+        command: PathBuf::from("/usr/bin/cargo"),
+        args: vec!["watch".to_owned()],
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    })
+    .map(|cmd| cmd.try_into().expect("TEST"));
+    match Action::try_from(adopt_pane(cmd)) {
+        Ok(Action::AdoptPane { payload, .. }) => {
+            let remote = payload.remote.expect("the handoff should have survived");
+            assert_eq!(remote.host, "build-box");
+            assert_eq!(remote.cmd.remote_host.as_deref(), Some("build-box"));
+        },
+        other => panic!("expected an AdoptPane, got {other:?}"),
+    }
+}
+
 fn test_client_messages() {
     let empty_context = BTreeMap::new();
     let fixed_global_placement = Some(GlobalPanePlacement {
@@ -882,6 +938,38 @@ fn test_client_messages() {
                 contents: None,
                 borderless: false,
                 remote: None,
+            }),
+            placement: WarpPlacement::NewTab,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    // Adopting a single pane whose process is on another machine. This is the
+    // exact shape `zellij pty-host adopt --host <machine> <token>` builds, and
+    // the only one where the pane's whole address is in `remote` — the two local
+    // fields are empty because there is no supervisor here to name.
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::AdoptPane {
+            payload: Box::new(WarpedPane {
+                host_id: String::new(),
+                control_socket: PathBuf::new(),
+                title: Some("cargo watch".to_owned()),
+                contents: None,
+                borderless: false,
+                remote: Some(RemotePaneHandoff {
+                    host: "build-box".to_owned(),
+                    pane_token: "d6a7b8c9e0f1".to_owned(),
+                    received: 4_294_967_296,
+                    cmd: RunCommand {
+                        command: PathBuf::from("/usr/bin/cargo"),
+                        args: vec!["watch".to_owned()],
+                        cwd: Some(PathBuf::from("/home/build/project")),
+                        remote_host: Some("build-box".to_owned()),
+                        remote_default_shell: true,
+                        ..Default::default()
+                    },
+                }),
             }),
             placement: WarpPlacement::NewTab,
         },

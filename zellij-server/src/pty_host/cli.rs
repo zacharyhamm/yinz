@@ -383,6 +383,19 @@ pub fn remote_adopt_payload(host: &str, pane_token: &str) -> Result<WarpedPane> 
                  `zellij pty-host list --host {host}` says what it does have"
             )
         })?;
+    warped_pane_from_entry(host, entry)
+}
+
+/// Turn what a broker said about a pane into a pane a session can adopt.
+///
+/// Split from the lookup so the decision has no broker in it: everything here
+/// is a judgement about one entry, and the only way to reach it otherwise is to
+/// have a machine on the far end of an ssh.
+fn warped_pane_from_entry(
+    host: &str,
+    entry: super::remote::protocol::RemotePaneEntry,
+) -> Result<WarpedPane> {
+    let pane_token = entry.pane_token.clone();
     if entry.attached {
         return Err(anyhow!(
             "{pane_token} already has a session attached to it on {host}; there is nothing to \
