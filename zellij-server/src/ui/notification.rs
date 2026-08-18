@@ -336,6 +336,102 @@ pub fn notification_chunks(
     chunks
 }
 
+/// A smoothstep curve: eases in and out rather than moving at a constant rate. Used for both the
+/// slide reveal and the displacement lerp so neither one looks mechanical.
+///
+/// `progress` is clamped to `[0.0, 1.0]` first, so a caller that overshoots (the last tick of an
+/// animation commonly does) gets a safe `0.0`/`1.0` rather than a curve value outside that range.
+pub fn ease(progress: f32) -> f32 {
+    let t = progress.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// `chunks` (as produced by [`notification_chunks`] for a box `width` columns wide with its
+/// top-left corner at `x`) trimmed to the columns visible at slide `progress` - `0.0` is fully
+/// hidden at the screen edge `position` is anchored to, `1.0` is fully in place.
+///
+/// The box's edge nearest that anchored corner stays fixed; the far edge is what moves, so a
+/// left-anchored toast grows rightward from a fixed `x` and a right-anchored one grows leftward
+/// from a fixed right edge, with `x` itself increasing as less of the box is hidden. Every
+/// coordinate this produces stays inside `[x, x + width)`, so - unlike a literal slide off the
+/// left of the screen - nothing here ever needs a negative column.
+///
+/// Returns the trimmed chunks and the `x` they should be painted at (unchanged from the input for
+/// a left-anchored toast; increasing towards the input `x` for a right-anchored one).
+pub fn notification_reveal(
+    chunks: &[CharacterChunk],
+    x: usize,
+    width: usize,
+    position: NotificationPosition,
+    progress: f32,
+) -> (Vec<CharacterChunk>, usize) {
+    let visible_cols = ((width as f32) * ease(progress)).round() as usize;
+    let visible_cols = visible_cols.min(width);
+    let hidden_cols = width - visible_cols;
+    let revealed_x = if position.is_left() {
+        x
+    } else {
+        x + hidden_cols
+    };
+
+    let trimmed = chunks
+        .iter()
+        .map(|chunk| {
+            let characters = if position.is_left() {
+                take_columns(&chunk.terminal_characters, visible_cols)
+            } else {
+                drop_columns(&chunk.terminal_characters, hidden_cols)
+            };
+            CharacterChunk::new(characters, revealed_x, chunk.y)
+        })
+        .collect();
+    (trimmed, revealed_x)
+}
+
+/// The leading `keep_cols` display columns of `characters`. Walks by [`TerminalCharacter::width`]
+/// rather than by index, so a wide glyph is never split in half - it is kept whole if it fits
+/// entirely within `keep_cols`, dropped otherwise.
+fn take_columns(characters: &[TerminalCharacter], keep_cols: usize) -> Vec<TerminalCharacter> {
+    let mut used = 0;
+    let mut kept = Vec::new();
+    for character in characters {
+        let character_width = character.width();
+        if used + character_width > keep_cols {
+            break;
+        }
+        kept.push(character.clone());
+        used += character_width;
+    }
+    kept
+}
+
+/// `characters` with the leading `drop_cols` display columns removed, same whole-glyph rule as
+/// [`take_columns`].
+fn drop_columns(characters: &[TerminalCharacter], drop_cols: usize) -> Vec<TerminalCharacter> {
+    let mut used = 0;
+    let mut start = 0;
+    for (index, character) in characters.iter().enumerate() {
+        if used >= drop_cols {
+            break;
+        }
+        used += character.width();
+        start = index + 1;
+    }
+    characters[start..].to_vec()
+}
+
+/// `before` lerped towards `after` by `progress` (`0.0` stays at `before`, `1.0` reaches `after`),
+/// eased and rounded to the nearest cell.
+pub fn lerp_origin(before: (usize, usize), after: (usize, usize), progress: f32) -> (usize, usize) {
+    let t = ease(progress);
+    let lerp = |from: usize, to: usize| -> usize {
+        let from = from as f32;
+        let to = to as f32;
+        (from + (to - from) * t).round() as usize
+    };
+    (lerp(before.0, after.0), lerp(before.1, after.1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +754,162 @@ mod tests {
         assert_eq!(painted[1], "│ hocus needs confirmation │");
         assert_eq!(painted[3], "│   pane_id: 3             │");
         assert!(painted[5].starts_with('╰'), "got {:?}", painted[5]);
+    }
+
+    #[test]
+    fn ease_is_identity_at_the_endpoints_and_clamps_outside_them() {
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
+        assert_eq!(ease(-0.5), 0.0);
+        assert_eq!(ease(1.5), 1.0);
+        // eased motion is slower than linear near the endpoints
+        assert!(ease(0.1) < 0.1);
+        assert!(ease(0.9) > 0.9);
+    }
+
+    #[test]
+    fn a_fully_hidden_reveal_paints_nothing() {
+        let style = Style::default();
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        for position in [
+            NotificationPosition::TopLeft,
+            NotificationPosition::TopRight,
+        ] {
+            let (revealed, _) = notification_reveal(&chunks, 4, 20, position, 0.0);
+            for chunk in &revealed {
+                assert!(
+                    chunk.terminal_characters.is_empty(),
+                    "{:?} at progress 0.0 should paint nothing",
+                    position
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fully_shown_reveal_is_identical_to_the_unanimated_chunks() {
+        let style = Style::default();
+        let lines = notification_lines("one\ntwo three\n  four", 20);
+        let chunks = notification_chunks(&lines, 4, 9, 20, &style);
+        for position in [
+            NotificationPosition::TopLeft,
+            NotificationPosition::TopRight,
+        ] {
+            let (revealed, x) = notification_reveal(&chunks, 4, 20, position, 1.0);
+            assert_eq!(x, 4);
+            assert_eq!(revealed.len(), chunks.len(), "{:?}", position);
+            for (revealed_chunk, chunk) in revealed.iter().zip(&chunks) {
+                assert_eq!(revealed_chunk.x, chunk.x, "{:?}", position);
+                assert_eq!(revealed_chunk.y, chunk.y, "{:?}", position);
+                assert_eq!(
+                    rows(std::slice::from_ref(revealed_chunk)),
+                    rows(std::slice::from_ref(chunk)),
+                    "{:?}",
+                    position
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_left_anchored_reveal_keeps_x_fixed_and_grows_rightward() {
+        let style = Style::default();
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let (revealed, x) =
+                notification_reveal(&chunks, 4, 20, NotificationPosition::TopLeft, progress);
+            assert_eq!(
+                x, 4,
+                "left-anchored x should never move, progress {progress}"
+            );
+            for chunk in &revealed {
+                let painted_width: usize =
+                    chunk.terminal_characters.iter().map(|c| c.width()).sum();
+                assert!(painted_width <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn a_right_anchored_reveal_keeps_the_right_edge_fixed_and_grows_leftward() {
+        let style = Style::default();
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        let mut previous_x = None;
+        for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let (revealed, x) =
+                notification_reveal(&chunks, 4, 20, NotificationPosition::TopRight, progress);
+            let painted_width: usize = revealed[0]
+                .terminal_characters
+                .iter()
+                .map(|c| c.width())
+                .sum();
+            assert_eq!(
+                x + painted_width,
+                24,
+                "the right edge should stay fixed at x + width, progress {progress}"
+            );
+            if let Some(previous_x) = previous_x {
+                assert!(
+                    x <= previous_x,
+                    "x should shrink towards 4 as progress increases"
+                );
+            }
+            previous_x = Some(x);
+        }
+        assert_eq!(previous_x, Some(4));
+    }
+
+    #[test]
+    fn a_reveal_never_splits_a_wide_glyph() {
+        let style = Style::default();
+        // 4 double-width glyphs, 8 columns of text, box is CHROME_COLS(4) + 8 = 12 wide
+        let lines = notification_lines(&"日".repeat(4), 12);
+        let chunks = notification_chunks(&lines, 0, 0, 12, &style);
+        for progress in 0..=12 {
+            let progress = progress as f32 / 12.0;
+            let (revealed, _) =
+                notification_reveal(&chunks, 0, 12, NotificationPosition::TopLeft, progress);
+            for chunk in &revealed {
+                for character in &chunk.terminal_characters {
+                    assert!(
+                        character.width() == 1 || character.character == '日',
+                        "a glyph must never be kept partially, got {:?}",
+                        character.character
+                    );
+                }
+                let painted_width: usize =
+                    chunk.terminal_characters.iter().map(|c| c.width()).sum();
+                assert!(painted_width <= 12);
+            }
+        }
+    }
+
+    #[test]
+    fn lerp_origin_reaches_before_and_after_at_the_endpoints() {
+        let before = (2, 3);
+        let after = (10, 1);
+        assert_eq!(lerp_origin(before, after, 0.0), before);
+        assert_eq!(lerp_origin(before, after, 1.0), after);
+    }
+
+    #[test]
+    fn lerp_origin_moves_monotonically_between_endpoints() {
+        let before = (2, 20);
+        let after = (10, 4);
+        let mut previous = before;
+        for progress in 1..=10 {
+            let progress = progress as f32 / 10.0;
+            let current = lerp_origin(before, after, progress);
+            assert!(
+                current.0 >= previous.0,
+                "x should move monotonically towards `after`"
+            );
+            assert!(
+                current.1 <= previous.1,
+                "y should move monotonically towards `after`"
+            );
+            previous = current;
+        }
+        assert_eq!(previous, after);
     }
 }

@@ -68,8 +68,8 @@ use crate::route::NotificationEnd;
 
 use crate::pty_host::client::ReleasedPtyHost;
 use crate::ui::notification::{
-    notification_chunks, notification_height, notification_lines, notification_origins,
-    notification_width,
+    lerp_origin, notification_chunks, notification_height, notification_lines,
+    notification_origins, notification_reveal, notification_width,
 };
 use log::{debug, warn};
 use zellij_utils::data::{
@@ -914,6 +914,7 @@ pub enum ScreenInstruction {
     RenameSession(String, ClientId, Option<NotificationEnd>), // String -> new name
     Notify(String, Option<NotificationEnd>),                  // String -> the message to show
     DismissNotification(u64),                                 // u64 -> the notification's id
+    TickNotificationAnimations,
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
@@ -1341,6 +1342,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::RenameSession(..) => ScreenContext::RenameSession,
             ScreenInstruction::Notify(..) => ScreenContext::Notify,
             ScreenInstruction::DismissNotification(..) => ScreenContext::DismissNotification,
+            ScreenInstruction::TickNotificationAnimations => {
+                ScreenContext::TickNotificationAnimations
+            },
             ScreenInstruction::ListClientsMetadata(..) => ScreenContext::ListClientsMetadata,
             ScreenInstruction::ListPanes { .. } => ScreenContext::ListPanes,
             ScreenInstruction::ListTabs { .. } => ScreenContext::ListTabs,
@@ -1791,6 +1795,13 @@ pub(crate) struct Screen {
     next_notification_id: u64,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
+    /// The notification stack as it was just before the last time it changed (a toast arrived or
+    /// one was finally removed after sliding out) - used to animate the survivors gliding from
+    /// their old stacked position to their new one. See `render_notifications`.
+    notification_stack_before_change: Vec<Notification>,
+    /// `0.0` while the stack is still at `notification_stack_before_change`'s layout, `1.0` once
+    /// it has fully settled at `notifications`' layout.
+    notification_displacement_progress: f32,
     auto_layout: bool,
     session_serialization: bool,
     serialize_pane_viewport: bool,
@@ -1889,6 +1900,12 @@ pub(crate) struct Screen {
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
 }
 
+/// Per-tick step for a toast's slide in/out, sized so the whole animation takes a handful of
+/// `NOTIFICATION_ANIMATION_TICK_MS` ticks (background_jobs.rs) - a few hundred milliseconds.
+const NOTIFICATION_HORIZONTAL_PROGRESS_STEP: f32 = 0.2;
+/// Per-tick step for the shared displacement lerp (see `render_notifications`), same rationale.
+const NOTIFICATION_DISPLACEMENT_STEP: f32 = 0.2;
+
 /// A pending forward waiting to be dispatched once the current in-flight
 /// forward's barrier reply (or timeout) arrives.
 /// A live toast notification. See [`crate::ui::notification`] for how these are drawn.
@@ -1896,6 +1913,24 @@ pub(crate) struct Screen {
 struct Notification {
     id: u64,
     text: String,
+    /// `0.0` = hidden at the anchored edge (just inserted), `1.0` = fully slid into place.
+    /// Advances toward `0.0` instead once `dismissing` is set, and the notification is dropped
+    /// from the stack once it gets there. See `notification_reveal`.
+    horizontal_progress: f32,
+    /// Set once dismissal has been requested (by the timeout or otherwise); the notification stays
+    /// in the stack; sliding out, until `horizontal_progress` reaches `0.0`.
+    dismissing: bool,
+}
+
+impl Notification {
+    fn new(id: u64, text: String) -> Self {
+        Notification {
+            id,
+            text,
+            horizontal_progress: 0.0,
+            dismissing: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2035,6 +2070,8 @@ impl Screen {
             next_notification_id: 0,
             notification_position,
             notification_timeout_secs,
+            notification_stack_before_change: vec![],
+            notification_displacement_progress: 1.0,
             auto_layout,
             session_is_mirrored,
             copy_options,
@@ -2804,6 +2841,14 @@ impl Screen {
     /// and can change the height of, every other live toast on the frame it arrives. Nothing caches
     /// the result, which is what keeps that honest; the wrapping is noise beside the chunk building
     /// already happening here, so it does not want a cache that would go stale on a resize.
+    ///
+    /// Entering/exiting toasts slide in from - and back out to - the anchored corner
+    /// (`notification_reveal`, driven by each toast's own `horizontal_progress`), and while
+    /// `notification_displacement_progress` is still settling, survivors are lerped from where
+    /// they sat in `notification_stack_before_change` to where they sit now. Both the "before" and
+    /// "after" stacks are laid out fresh for whichever `viewport` this call was given - this can
+    /// run once per distinct client viewport in a frame - rather than trusting a stored row number
+    /// that might belong to a different-sized viewport.
     fn render_notifications(
         &self,
         output: &mut Output,
@@ -2833,10 +2878,49 @@ impl Screen {
             .map(|lines| notification_height(lines.len()))
             .collect();
         let origins = notification_origins(viewport, self.notification_position, &heights, width);
+
+        let displacement_progress = self.notification_displacement_progress;
+        // Laid out at the current width, not whatever width was live when the stack last changed -
+        // that keeps the "before" row numbers comparable to `origins` above, which is all this is
+        // for; the box's own width animates separately, per toast, via `notification_reveal`.
+        let before_origins = if displacement_progress < 1.0 {
+            let before_heights: Vec<usize> = self
+                .notification_stack_before_change
+                .iter()
+                .map(|notification| {
+                    notification_height(notification_lines(&notification.text, width).len())
+                })
+                .collect();
+            notification_origins(viewport, self.notification_position, &before_heights, width)
+        } else {
+            vec![]
+        };
+
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
-            for (lines, (x, y)) in wrapped.iter().zip(origins) {
+            for ((notification, lines), (x, y)) in
+                self.notifications.iter().zip(wrapped.iter()).zip(origins)
+            {
+                let (x, y) = if displacement_progress < 1.0 {
+                    self.notification_stack_before_change
+                        .iter()
+                        .position(|before| before.id == notification.id)
+                        .and_then(|index| before_origins.get(index))
+                        .map(|&before_origin| {
+                            lerp_origin(before_origin, (x, y), displacement_progress)
+                        })
+                        .unwrap_or((x, y))
+                } else {
+                    (x, y)
+                };
                 let chunks = notification_chunks(lines, x, y, width, &self.style);
+                let (chunks, _) = notification_reveal(
+                    &chunks,
+                    x,
+                    width,
+                    self.notification_position,
+                    notification.horizontal_progress,
+                );
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
                     client_ids.iter().copied(),
@@ -2847,6 +2931,54 @@ impl Screen {
         })();
         output.set_floating_panes_stack(previous_stack);
         result.context("failed to render notifications")
+    }
+
+    /// One tick of the toast slide/displacement animation: advances every notification's
+    /// `horizontal_progress` and the shared `notification_displacement_progress`, finally removing
+    /// any toast that has finished sliding out. Returns whether anything is still mid-animation, so
+    /// the caller knows whether to keep the animation clock ticking.
+    fn advance_notification_animations(&mut self) -> bool {
+        for notification in self.notifications.iter_mut() {
+            let step = if notification.dismissing {
+                -NOTIFICATION_HORIZONTAL_PROGRESS_STEP
+            } else {
+                NOTIFICATION_HORIZONTAL_PROGRESS_STEP
+            };
+            notification.horizontal_progress =
+                (notification.horizontal_progress + step).clamp(0.0, 1.0);
+        }
+
+        let was_showing = self.notifications.len();
+        if self
+            .notifications
+            .iter()
+            .any(|n| n.dismissing && n.horizontal_progress <= 0.0)
+        {
+            // the stack is about to shrink - remember the fuller layout so the survivors glide to
+            // their new position instead of jumping into the gap
+            self.notification_stack_before_change = self.notifications.clone();
+            self.notification_displacement_progress = 0.0;
+            self.notifications
+                .retain(|n| !(n.dismissing && n.horizontal_progress <= 0.0));
+        }
+        if self.notifications.len() != was_showing {
+            // nothing under the toast is dirty, so without forcing a repaint its cells would keep
+            // the glyphs it just gave up
+            for tab in self.tabs.values_mut() {
+                tab.set_force_render();
+            }
+            self.global_panes.set_force_render();
+        }
+
+        if self.notification_displacement_progress < 1.0 {
+            self.notification_displacement_progress =
+                (self.notification_displacement_progress + NOTIFICATION_DISPLACEMENT_STEP).min(1.0);
+        }
+
+        self.notifications
+            .iter()
+            .any(|n| n.dismissing || n.horizontal_progress < 1.0)
+            || self.notification_displacement_progress < 1.0
     }
 
     /// Move the global panes to where they sit for `client_id`'s tab, so anything reading their
@@ -15251,9 +15383,13 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
+                // the survivors are about to be pushed away from the corner - remember where they
+                // were so `render_notifications` can glide them to their new spot
+                screen.notification_stack_before_change = screen.notifications.clone();
+                screen.notification_displacement_progress = 0.0;
                 let id = screen.next_notification_id;
                 screen.next_notification_id += 1;
-                screen.notifications.insert(0, Notification { id, text });
+                screen.notifications.insert(0, Notification::new(id, text));
                 screen
                     .bus
                     .senders
@@ -15261,20 +15397,35 @@ pub(crate) fn screen_thread_main(
                         id,
                         screen.notification_timeout_secs,
                     ))?;
+                screen
+                    .bus
+                    .senders
+                    .send_to_background_jobs(BackgroundJob::AnimateNotifications)?;
                 screen.render(None)?;
             },
             ScreenInstruction::DismissNotification(id) => {
-                let was_showing = screen.notifications.len();
-                screen.notifications.retain(|n| n.id != id);
-                if screen.notifications.len() != was_showing {
-                    // nothing under the toast is dirty, so without forcing a repaint its cells
-                    // would keep the glyphs it just gave up
-                    for tab in screen.tabs.values_mut() {
-                        tab.set_force_render();
+                // the toast stays in the stack, sliding back out, until
+                // `TickNotificationAnimations` sees its `horizontal_progress` reach zero and
+                // actually removes it - see `advance_notification_animations`
+                if let Some(notification) = screen.notifications.iter_mut().find(|n| n.id == id) {
+                    if !notification.dismissing {
+                        notification.dismissing = true;
+                        screen
+                            .bus
+                            .senders
+                            .send_to_background_jobs(BackgroundJob::AnimateNotifications)?;
                     }
-                    screen.global_panes.set_force_render();
-                    screen.render(None)?;
                 }
+            },
+            ScreenInstruction::TickNotificationAnimations => {
+                let still_animating = screen.advance_notification_animations();
+                if !still_animating {
+                    screen
+                        .bus
+                        .senders
+                        .send_to_background_jobs(BackgroundJob::StopAnimateNotifications)?;
+                }
+                screen.render(None)?;
             },
             ScreenInstruction::RenameSession(
                 name,
