@@ -2190,6 +2190,30 @@ fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPa
         .expect("the pane should have been taken out of its tab")
 }
 
+/// The same, for a pane whose process is on another machine.
+///
+/// What a remote release hands over is a broker and a token rather than a
+/// socket, and `received` is the byte count the replay has to resume from —
+/// nonzero here so a path that dropped it could not pass by accident.
+fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
+    screen
+        .take_released_pane_for_warp(
+            terminal_id,
+            Ok(ReleasedPane::Remote(ReleasedRemotePane {
+                host: "build-box".to_owned(),
+                pane_token: format!("token-{terminal_id}"),
+                received: 4096,
+                cmd: RunCommand {
+                    command: PathBuf::from("/usr/bin/tail"),
+                    args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
+                    remote_host: Some("build-box".to_owned()),
+                    ..Default::default()
+                },
+            })),
+        )
+        .expect("the pane should have been taken out of its tab")
+}
+
 // ---------------------------------------------------------------------------
 // Warping a tab that holds a stack list
 // ---------------------------------------------------------------------------

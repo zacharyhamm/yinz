@@ -377,6 +377,18 @@ impl TestSession {
         }
     }
 
+    /// How many panes this session let go of, and took up, as *remote* panes.
+    ///
+    /// The only way a test can tell which road a warp took. The pane's state
+    /// travels either way in this harness, so everything else about the pane
+    /// that arrives reads the same whether it went by a supervisor socket or by
+    /// a broker token — and a remote pane sent down the local road would be a
+    /// silent divergence from the real backend, where the two are not
+    /// interchangeable at all.
+    pub fn remote_warp_counts(&self) -> (usize, usize) {
+        self.fake_server_os_api.shared_ptys.remote_warp_counts()
+    }
+
     /// A handle on the next pane this session took over from another one.
     ///
     /// Deliberately not `expect_pty_spawn`: nothing was spawned. The handle

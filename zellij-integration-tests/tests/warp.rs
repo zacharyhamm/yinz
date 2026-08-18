@@ -337,6 +337,17 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
         "the command travelled without its host, so the pane no longer knows where it runs — a \
          resume carries no command, so this is the only copy there was"
     );
+    // Which road was taken, asked at both ends. Nothing above can tell: the
+    // pane's state travels either way in this harness, so a remote pane sent
+    // down the local road would arrive looking exactly like this one.
+    assert_eq!(
+        (
+            sender.remote_warp_counts().0,
+            receiver.remote_warp_counts().1
+        ),
+        (1, 1),
+        "the pane went by a supervisor socket rather than by its broker",
+    );
 
     arrived.output(b"still running after the warp\r\n");
     receiver.wait_until("the pane to go on writing", |grid_snapshot| {
@@ -370,6 +381,18 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     sender.wait_until("both panes to leave", |grid_snapshot| {
         !grid_snapshot.contains("local pane") && !grid_snapshot.contains("remote pane")
     });
+
+    // Exactly one of the tab's panes went by the broker and the rest did not,
+    // which is the whole point of the mixed tab: one released set, two roads.
+    // Without this the tab passes even if every pane took the local one.
+    assert_eq!(
+        (
+            sender.remote_warp_counts().0,
+            receiver.remote_warp_counts().1
+        ),
+        (1, 1),
+        "the tab's panes did not take one road each as their processes required",
+    );
 
     drop((local, remote));
 }
