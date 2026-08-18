@@ -74,6 +74,24 @@ pub(crate) struct FakePtyRegistry {
     /// cannot see each other's, and so a test can say which *end* did what.
     pub remote_releases: usize,
     pub remote_adoptions: usize,
+    /// Panes this session will refuse to release, and how it refuses.
+    ///
+    /// `Unwarpable` is the answer a real backend gives before anything has been
+    /// touched — no supervisor, or one that never bound a socket — and is what a
+    /// test uses to check that a refused warp leaves a working pane. `Unreleasable`
+    /// is the harder one: the pre-flight says yes and the release then fails, which
+    /// is the shape of a remote broker that will not confirm, and the only case
+    /// where a pane really is cut loose.
+    pub warp_failures: HashMap<u32, WarpFailure>,
+}
+
+/// How a test makes a release go wrong. See `FakePtyRegistry::warp_failures`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WarpFailure {
+    /// Refused by the pre-flight check, before anything is released.
+    Unwarpable,
+    /// Passes the pre-flight check and then fails to release.
+    Unreleasable,
 }
 
 /// Supervisors released by one session and not yet adopted by another.
@@ -211,6 +229,41 @@ impl SharedPtys {
     /// `output_tx` travels with it and is replaced on the far side. Dropping it
     /// would be an EOF to the reader, but `Pty::release_terminal_for_warp` aborts
     /// the reader task before this returns, so there is nobody left to hear it.
+    /// Whether this pane could be released, asked before anything is let go.
+    ///
+    /// The real backends answer this out of the maps the release would use, so
+    /// the fake answers it out of the registry the release would use: a pane it
+    /// has no state for cannot be handed over. `WarpFailure::Unwarpable` is a
+    /// test saying "answer no", which is the branch that must leave the pane
+    /// working.
+    pub(crate) fn check_can_be_warped(&self, terminal_id: u32) -> std::result::Result<(), String> {
+        self.read(|registry| {
+            if registry.warp_failures.get(&terminal_id) == Some(&WarpFailure::Unwarpable) {
+                return Err(format!(
+                    "pane {terminal_id} has no pty-host supervisor, so it cannot be moved to \
+                     another session"
+                ));
+            }
+            if !registry.fake_pty_states.contains_key(&terminal_id) {
+                return Err(format!("no fake pty for terminal id {terminal_id}"));
+            }
+            Ok(())
+        })
+    }
+
+    /// Whether a test has asked this pane's release to fail after the check
+    /// passed.
+    pub(crate) fn release_is_rigged_to_fail(&self, terminal_id: u32) -> bool {
+        self.read(|registry| {
+            registry.warp_failures.get(&terminal_id) == Some(&WarpFailure::Unreleasable)
+        })
+    }
+
+    /// Make a pane's warp fail, from a test.
+    pub fn fail_warp_of(&self, terminal_id: u32, failure: WarpFailure) {
+        self.mutate(|registry| registry.warp_failures.insert(terminal_id, failure));
+    }
+
     pub(crate) fn release_for_warp(&self, terminal_id: u32) -> Option<PathBuf> {
         let fake_pty_state =
             self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
@@ -577,6 +630,15 @@ impl FakePtyHandle {
                 .get(&self.terminal_id)
                 .and_then(|fake_pty_state| fake_pty_state.terminal_action.clone())
         })
+    }
+
+    /// Make this pane's warp fail, in one of the two ways a real one can.
+    ///
+    /// See [`WarpFailure`]: the difference between them is the difference
+    /// between a pane that goes on working and one that has been cut loose, and
+    /// it is the thing worth testing.
+    pub fn fail_warp(&self, failure: WarpFailure) {
+        self.shared_ptys.fail_warp_of(self.terminal_id, failure);
     }
 
     pub fn disable_echo(&self) {

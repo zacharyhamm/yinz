@@ -398,6 +398,34 @@ fn the_visible_half_of_a_scrollback_editor_pair_can_be_warped() {
 }
 
 #[test]
+fn a_release_that_failed_leaves_the_pane_where_it_was() {
+    // Screen is told about a release either way, and a release that did not
+    // happen must not take the pane out of its tab: on the refusal path the pane
+    // is untouched and still working, and on the failure path the pty thread has
+    // already held it and written the reason into it. Either way, taking it out
+    // here would be Screen deciding on its own that the pane is gone.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let result =
+        screen.take_released_pane_for_warp(1, Err("pane 1 has no pty-host supervisor".to_owned()));
+
+    assert_eq!(
+        result.expect_err("a pane that was not released cannot be serialized"),
+        "pane 1 has no pty-host supervisor",
+        "the reason has to reach the caller unreworded",
+    );
+    assert!(
+        screen
+            .tabs
+            .values()
+            .any(|tab| tab.get_pane_with_id(PaneId::Terminal(1)).is_some()),
+        "the pane was taken out of its tab by a warp that never happened",
+    );
+}
+
+#[test]
 fn the_hidden_half_of_a_scrollback_editor_pair_can_be_warped() {
     // The pane the user actually means when they name terminal 1. It leaves, and
     // the editor goes with it: an editor whose subject is in another session now
@@ -647,6 +675,84 @@ fn a_remote_pane_leaves_its_tab_like_any_other() {
 // The same argument as above, with more at stake: what a tab warp releases
 // before it can discover a problem is not one supervisor but every supervisor in
 // the tab.
+
+#[test]
+fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(None, vec![]);
+    let (first_response_tx, _first_response_rx) = crossbeam::channel::unbounded();
+    let (second_response_tx, second_response_rx) = crossbeam::channel::unbounded();
+
+    for response_channel in [first_response_tx, second_response_tx] {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::WarpTab {
+                tab_index: Some(0),
+                client_id,
+                response_channel,
+            })
+            .unwrap();
+    }
+
+    let mut releases = 0;
+    while releases < 2 {
+        if matches!(
+            pty_receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("both tab warps should reach the pty thread")
+                .0,
+            PtyInstruction::ReleaseTerminalsForWarp { .. }
+        ) {
+            releases += 1;
+        }
+    }
+
+    let refused = vec![(0, Err("the tab's pane cannot be moved".to_owned()))];
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: refused.clone(),
+        })
+        .unwrap();
+    assert!(second_response_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("the newer request should receive the first refusal")
+        .is_err(),);
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: refused,
+        })
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::WarpTab {
+            tab_index: Some(0),
+            client_id,
+            response_channel: crossbeam::channel::unbounded().0,
+        })
+        .unwrap();
+
+    loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the follow-up warp should run after both refused replies");
+        assert!(
+            !matches!(instruction, PtyInstruction::StrandPaneAfterWarp { .. }),
+            "a pane whose release was refused is still attached and must not be stranded",
+        );
+        if matches!(instruction, PtyInstruction::ReleaseTerminalsForWarp { .. }) {
+            break;
+        }
+    }
+
+    mock_screen.teardown(vec![screen_thread]);
+}
 
 #[test]
 fn a_tab_that_does_not_exist_cannot_be_warped() {

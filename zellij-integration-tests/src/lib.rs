@@ -14,7 +14,7 @@ pub mod test_env;
 pub use client_screen::{
     col, CellStyle, ClientScreen, Coord, CoordBuilder, CursorPosition, GridSnapshot,
 };
-pub use fake_pty::FakePtyHandle;
+pub use fake_pty::{FakePtyHandle, WarpFailure};
 pub use harness::{
     claim_first_terminal_and_wait_for_prompt, split_down_and_wait_for_prompt,
     split_right_and_wait_for_prompt, start_zellij, PROMPT, TERMINAL_SIZE,
