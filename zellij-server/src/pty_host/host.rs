@@ -276,6 +276,8 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         termios,
         initial_size,
         arg0,
+        env,
+        login_session,
     } = spawn
     else {
         cleanup_socket(&host_id);
@@ -311,6 +313,10 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         termios.as_ref(),
         initial_size.as_ref(),
         arg0.as_deref(),
+        ChildEnv {
+            vars: &env,
+            login_session,
+        },
         &event_tx,
         &wake_tx,
     ) {
@@ -941,6 +947,18 @@ fn install_signal_forwarder(event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
     });
 }
 
+/// Everything the child's environment is made of, as decided elsewhere.
+///
+/// Bundled rather than passed as two more arguments because `start_session` is
+/// already at the `too_many_arguments` threshold, and because the two always
+/// travel together: `login_session` is only ever meaningful alongside a `vars`
+/// the broker composed.
+#[derive(Clone, Copy, Default)]
+struct ChildEnv<'a> {
+    vars: &'a [(String, String)],
+    login_session: bool,
+}
+
 /// Create the pty and fork the child. This is `handle_openpty`
 /// (`os_input_output_unix.rs`) moved across the process boundary, with the
 /// panics turned into errors — a panic in a `pre_exec` hook runs the panic hook
@@ -953,6 +971,7 @@ fn start_session(
     termios: Option<&WireTermios>,
     initial_size: Option<&WireWinsize>,
     arg0: Option<&str>,
+    child_env: ChildEnv<'_>,
     event_tx: &Sender<HostEvent>,
     wake_tx: &UnixStream,
 ) -> Result<Session> {
@@ -968,7 +987,15 @@ fn start_session(
     // Ok even when the exec fails — the caller would otherwise see a child that
     // silently exits 1. The server does the same check before spawning us at all;
     // this one is the TOCTOU backstop.
-    if crate::os_input_output::resolve_command(cmd).is_none() {
+    // Against the `PATH` the *child* will get, not this supervisor's: for a remote
+    // pane those differ, and `Command` execs against the environment it was given.
+    // Searching the wrong one would reject a command that would have exec'd fine.
+    if crate::os_input_output::resolve_command_with_path(
+        cmd,
+        crate::pty_host::remote::env::path_in(child_env.vars),
+    )
+    .is_none()
+    {
         return Err(ZellijError::CommandNotFound {
             terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
@@ -1001,6 +1028,10 @@ fn start_session(
                     // The failover is a different command; the argv[0] chosen
                     // for the one that could not get a pty does not describe it.
                     None,
+                    // The environment, unlike argv[0], is not command-specific:
+                    // it describes the machine and the terminal, both of which
+                    // the failover runs on just the same.
+                    child_env,
                     event_tx,
                     wake_tx,
                 );
@@ -1035,8 +1066,31 @@ fn start_session(
             );
         }
     }
+    command.args(&cmd.args);
+    if child_env.login_session {
+        // Whatever ssh session started this machine's broker left its own
+        // `SSH_*` in the environment every pane inherits. They describe a
+        // connection this pane has no part in, and a stale one at that.
+        for name in crate::pty_host::remote::env::SCRUBBED_VARS {
+            command.env_remove(name);
+        }
+    }
+    for (name, value) in child_env.vars {
+        command.env(name, value);
+    }
+    if child_env.login_session {
+        // The one variable only this process can answer, and only now: the pane's
+        // pty exists, and nothing upstream of here can name it.
+        match nix::unistd::ttyname(&slave) {
+            Ok(path) => {
+                command.env("SSH_TTY", path);
+            },
+            // Not fatal - a pane without SSH_TTY is what every remote pane had
+            // until now.
+            Err(e) => log::warn!("could not name the pane's pty for SSH_TTY: {e}"),
+        }
+    }
     command
-        .args(&cmd.args)
         .env("ZELLIJ_PANE_ID", format!("{}", terminal_id))
         .stdin(Stdio::null())
         .stdout(Stdio::null())

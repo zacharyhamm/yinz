@@ -32,6 +32,7 @@ use serde::Deserialize;
 use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
+use super::env;
 use super::protocol::{
     self, BrokerToServerMsg, Frame, RemotePaneEntry, ResumeRefusal, ServerToBrokerMsg,
     REMOTE_PROTOCOL_VERSION,
@@ -255,16 +256,40 @@ impl RemoteHosts {
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
+        terminal_id: u32,
+    ) -> Result<(Arc<RemoteConn>, UnixStream)> {
+        // Sampled here, per pane, rather than once when the host table was built:
+        // sampling it once would freeze this side's terminal and locale for the
+        // life of the session, which is the far side's bug seen from this end.
+        self.open_pane_with_env(
+            host,
+            cmd,
+            initial_size,
+            terminal_id,
+            env::carry_from_local(),
+        )
+    }
+
+    /// `open_pane` with the carried environment supplied rather than sampled, so
+    /// a test can say what this side's terminal is without mutating the process
+    /// environment out from under every other test in the binary.
+    pub fn open_pane_with_env(
+        self: &Arc<Self>,
+        host: &str,
+        cmd: &RunCommand,
+        initial_size: Option<WireWinsize>,
+        terminal_id: u32,
+        env: Vec<(String, String)>,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         // Sampled before the attempt: a forward this call built itself failing is
         // not something rebuilding it again would fix, and only a reused one has
         // gone stale behind our back.
         let was_cached = self.has_cached_forward(host);
-        match self.try_open_pane(host, cmd, initial_size) {
+        match self.try_open_pane(host, cmd, initial_size, terminal_id, &env) {
             Err(e) if was_cached && !is_a_real_answer(&e) => {
                 log::warn!("retrying a pane on {host} through a fresh forward ({e:#})");
                 self.forget_forward(host);
-                self.try_open_pane(host, cmd, initial_size)
+                self.try_open_pane(host, cmd, initial_size, terminal_id, &env)
             },
             result => result,
         }
@@ -275,13 +300,15 @@ impl RemoteHosts {
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
+        terminal_id: u32,
+        env: &[(String, String)],
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         let socket = self.connect(host)?;
         let reader_socket = socket
             .try_clone()
             .context("failed to clone a remote pane's socket")?;
 
-        let pane_token = handshake_and_spawn(&socket, host, cmd, initial_size)?;
+        let pane_token = handshake_and_spawn(&socket, host, cmd, initial_size, terminal_id, env)?;
 
         let conn = Arc::new(RemoteConn::new(
             socket,
@@ -609,6 +636,8 @@ fn handshake_and_spawn(
     host: &str,
     cmd: &RunCommand,
     initial_size: Option<WireWinsize>,
+    terminal_id: u32,
+    env: &[(String, String)],
 ) -> Result<String> {
     let mut write_half = socket
         .try_clone()
@@ -625,6 +654,8 @@ fn handshake_and_spawn(
             cmd: cmd.clone(),
             failover_cmd: None,
             initial_size,
+            env: env.to_vec(),
+            terminal_id,
         },
     )?;
     match read_broker_msg(&mut read_half)? {

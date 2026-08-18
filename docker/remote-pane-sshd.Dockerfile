@@ -42,10 +42,15 @@ RUN adduser -D -u 1000 -s /bin/bash test \
     && chown -R test:test /home/test/.ssh \
     && chmod 700 /home/test/.ssh
 
-# Set only by a *login* shell reading the profile. A remote pane is handed no
-# environment at all — it inherits whatever the first bootstrap ssh froze — so
-# this marker appearing in a pane is the proof that its shell logged in.
-RUN printf 'export ZELLIJ_REMOTE_LOGIN_MARKER=profile-was-sourced\n' \
+# Set only by a *login* shell reading the profile, so this marker appearing in a
+# pane is the proof that its shell logged in.
+#
+# The PATH line is the other half of the precedence rule: a remote pane is handed
+# an environment composed on this machine — sshd's default PATH among it — and the
+# profile runs *after* that and may override it, exactly as under real ssh. A
+# login pane must therefore see /opt/profile-bin and an explicit-command pane,
+# which reads no profile, must not.
+RUN printf 'export ZELLIJ_REMOTE_LOGIN_MARKER=profile-was-sourced\nexport PATH="/opt/profile-bin:$PATH"\n' \
     > /etc/profile.d/zellij-remote-login-marker.sh
 
 COPY remote-pane-sshd_config /etc/ssh/sshd_config

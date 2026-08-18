@@ -26,6 +26,13 @@ fn server_messages() -> Vec<ServerToBrokerMsg> {
         ServerToBrokerMsg::Spawn {
             cmd: sample_run_command(),
             failover_cmd: None,
+            // Non-empty, so the round-trip actually exercises the carried
+            // environment rather than an absent one.
+            env: vec![
+                ("TERM".to_owned(), "xterm-256color".to_owned()),
+                ("LC_TIME".to_owned(), "C".to_owned()),
+            ],
+            terminal_id: 7,
             initial_size: Some(WireWinsize {
                 cols: 80,
                 rows: 24,
@@ -290,6 +297,8 @@ fn a_remote_spawn_carries_no_termios() {
         cmd: sample_run_command(),
         failover_cmd: None,
         initial_size: None,
+        env: vec![],
+        terminal_id: 0,
     };
     let encoded = serde_json::to_string(&spawn).expect("encode failed");
     assert!(
@@ -317,4 +326,36 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
         2,
         "the supervisor protocol must not be dragged along by a remote change"
     );
+}
+
+/// What crosses is the terminal, not the filesystem. A `PATH` or a `HOME` from
+/// the asking machine names directories that do not exist on the far one, so the
+/// far side recomputes those from its own passwd entry instead.
+#[test]
+fn a_remote_spawn_carries_the_asking_sides_terminal_but_not_its_filesystem() {
+    let spawn = ServerToBrokerMsg::Spawn {
+        cmd: sample_run_command(),
+        failover_cmd: None,
+        initial_size: None,
+        env: crate::pty_host::remote::env::select_carried(
+            [
+                ("TERM", "xterm-256color"),
+                ("PATH", "/home/me/.local/bin"),
+                ("HOME", "/home/me"),
+                ("SSH_AUTH_SOCK", "/tmp/agent"),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into())),
+        ),
+        terminal_id: 3,
+    };
+    let encoded = serde_json::to_string(&spawn).expect("encode failed");
+
+    assert!(encoded.contains("xterm-256color"));
+    for absent in ["/home/me", "SSH_AUTH_SOCK"] {
+        assert!(
+            !encoded.contains(absent),
+            "a remote Spawn must not carry {absent}, got {encoded}"
+        );
+    }
 }

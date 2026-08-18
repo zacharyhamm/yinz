@@ -17,6 +17,7 @@
 //! server names its pane by token and says how much output it actually took, and
 //! the replay picks up exactly there.
 
+use super::env as remote_env;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
@@ -124,7 +125,18 @@ pub fn serve_connection(
             cmd,
             failover_cmd,
             initial_size,
-        } => start_pane(host_bin, registry, &wire, cmd, failover_cmd, initial_size)?,
+            env,
+            terminal_id,
+        } => start_pane(
+            host_bin,
+            registry,
+            &wire,
+            cmd,
+            failover_cmd,
+            initial_size,
+            env,
+            terminal_id,
+        )?,
         ServerToBrokerMsg::Resume {
             pane_token,
             received,
@@ -253,10 +265,9 @@ pub(crate) struct ShellSource {
 }
 
 impl ShellSource {
-    fn of_this_machine() -> Self {
-        let user = nix::unistd::User::from_uid(nix::unistd::Uid::effective())
-            .ok()
-            .flatten();
+    /// Built from a passwd lookup the caller already did: `start_pane` needs one
+    /// for the login environment as well, and there is no reason to ask twice.
+    fn from_user(user: &Option<nix::unistd::User>) -> Self {
         ShellSource {
             passwd_shell: user.as_ref().map(|u| u.shell.clone()),
             passwd_home: user.as_ref().map(|u| u.dir.clone()),
@@ -300,9 +311,9 @@ pub(crate) fn resolve_default_shell(
     // A login shell is a shell whose argv[0] begins with '-', and that single
     // character is the whole mechanism: it is what makes bash read
     // ~/.bash_profile and ash read ~/.profile. It matters more here than it
-    // would locally, because nothing about the asking machine's environment is
-    // transmitted with a remote pane — sourcing the profile on this side is the
-    // only thing that gives the pane a PATH, a prompt and a locale.
+    // would locally: `remote::env` composes the environment ssh would have
+    // handed a login, and the profile is what the far machine gets to say on top
+    // of it — a prompt, and whatever PATH it would rather have.
     let arg0 = format!(
         "-{}",
         shell
@@ -315,6 +326,7 @@ pub(crate) fn resolve_default_shell(
     Some(arg0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
@@ -322,14 +334,31 @@ fn start_pane(
     cmd: zellij_utils::input::command::RunCommand,
     failover_cmd: Option<zellij_utils::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
+    carried_env: Vec<(String, String)>,
+    terminal_id: u32,
 ) -> Result<(Arc<PaneSession>, u64)> {
+    // One passwd lookup answers two different questions: which shell this user
+    // has, and what a login on this machine is handed for an environment. They
+    // have different fallback rules - see `remote::env::LoginSource` - but there
+    // is no reason to ask the system twice.
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::effective())
+        .ok()
+        .flatten();
+
     // Before anything looks at the command: a default-shell pane arrives with
     // none, because only this machine can say what it should be.
     let mut cmd = cmd;
-    let arg0 = resolve_default_shell(&mut cmd, &ShellSource::of_this_machine());
+    let arg0 = resolve_default_shell(&mut cmd, &ShellSource::from_user(&user));
+
+    // Recomputed here, per pane, from *this* machine's passwd entry. Nothing is
+    // inherited from the broker: its environment is a frozen copy of whichever
+    // ssh session happened to start it, possibly another login, hours ago, and
+    // shared by every pane and every session that reaches this machine.
+    let env = remote_env::compose(&remote_env::LoginSource::from_user(&user), carried_env);
+
     let pending = match pty_host_client::spawn(SpawnParams {
         host_bin,
-        terminal_id: 0,
+        terminal_id,
         session_name: None,
         cmd: cmd.clone(),
         failover_cmd,
@@ -338,6 +367,11 @@ fn start_pane(
         termios: None,
         initial_size,
         arg0,
+        env,
+        // Every remote pane, not just a default-shell one. An explicit command
+        // gets no login shell and so no profile, which makes it the case that
+        // needs a composed environment most - `ssh host cmd` is handed one too.
+        login_session: true,
     }) {
         Ok(pending) => pending,
         Err(e) => {

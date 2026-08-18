@@ -128,7 +128,7 @@ fn the_handshake_refuses_a_version_gap_and_names_both_sides() {
         command: std::path::PathBuf::from("/bin/sh"),
         ..Default::default()
     };
-    let err = handshake_and_spawn(&ours, "build-box", &cmd, None)
+    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[])
         .expect_err("a version gap must be refused");
     let msg = format!("{err:#}");
     assert!(msg.contains("build-box"), "should name the host: {msg}");
@@ -178,7 +178,7 @@ fn a_missing_remote_command_arrives_as_command_not_found() {
         command: std::path::PathBuf::from("definitely-not-a-command"),
         ..Default::default()
     };
-    let err = handshake_and_spawn(&ours, "build-box", &cmd, None)
+    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[])
         .expect_err("a missing command must be refused");
     assert!(
         matches!(
@@ -221,7 +221,7 @@ fn a_confirmed_spawn_completes_the_handshake() {
         command: std::path::PathBuf::from("/bin/sh"),
         ..Default::default()
     };
-    handshake_and_spawn(&ours, "build-box", &cmd, None).expect("handshake should succeed");
+    handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[]).expect("handshake should succeed");
     let _ = peer.join();
 }
 
@@ -263,7 +263,7 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
         remote_host: Some("build-box".to_owned()),
         ..Default::default()
     };
-    handshake_and_spawn(&ours, "build-box", &cmd, None).expect("handshake should succeed");
+    handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[]).expect("handshake should succeed");
 
     let (_theirs, spawn) = peer.join().expect("peer panicked");
     let body = match spawn {
@@ -333,7 +333,7 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
         remote_host: Some(host.to_owned()),
         ..Default::default()
     };
-    let msg = match hosts.open_pane(host, &cmd, None) {
+    let msg = match hosts.open_pane(host, &cmd, None, 0) {
         Err(err) => format!("{err:#}"),
         Ok(_) => panic!("an unreachable host cannot open a pane"),
     };
@@ -348,4 +348,68 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
 
     let _ = accepting.join();
     let _ = std::fs::remove_file(&local_socket);
+}
+
+/// This side's terminal and locale reach the far side on the `Spawn` itself,
+/// along with the pane's real id. Nothing else does: the rest of what a pane
+/// needs is recomputed over there, because the rest of it names a filesystem
+/// this machine cannot see.
+#[test]
+fn a_pane_carries_this_sides_terminal_and_its_own_id() {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let peer = std::thread::spawn(move || {
+        let mut theirs = theirs;
+        let _ = protocol::read_frame(&mut theirs);
+        protocol::write_control(
+            &mut theirs,
+            &BrokerToServerMsg::HelloAck {
+                protocol_version: REMOTE_PROTOCOL_VERSION,
+                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            },
+        )
+        .expect("write failed");
+        let spawn = protocol::read_frame(&mut theirs)
+            .expect("read failed")
+            .expect("the server should have asked for a pane");
+        protocol::write_control(
+            &mut theirs,
+            &BrokerToServerMsg::Spawned {
+                pane_token: "tok".to_owned(),
+            },
+        )
+        .expect("write failed");
+        (theirs, spawn)
+    });
+
+    let cmd = RunCommand {
+        command: std::path::PathBuf::new(),
+        remote_default_shell: true,
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    };
+    let carried = vec![
+        ("TERM".to_owned(), "xterm-256color".to_owned()),
+        ("LC_TIME".to_owned(), "C".to_owned()),
+    ];
+    handshake_and_spawn(&ours, "build-box", &cmd, None, 42, &carried)
+        .expect("handshake should succeed");
+
+    let (_theirs, spawn) = peer.join().expect("peer panicked");
+    let body = match spawn {
+        protocol::Frame::Control(body) => body,
+        other => panic!("expected a control frame, got {other:?}"),
+    };
+    let msg: ServerToBrokerMsg = serde_json::from_slice(&body).expect("undecodable spawn");
+    match msg {
+        ServerToBrokerMsg::Spawn {
+            env, terminal_id, ..
+        } => {
+            assert_eq!(env, carried);
+            assert_eq!(
+                terminal_id, 42,
+                "the far side needs the real id to set a truthful ZELLIJ_PANE_ID"
+            );
+        },
+        other => panic!("expected a Spawn, got {other:?}"),
+    }
 }
