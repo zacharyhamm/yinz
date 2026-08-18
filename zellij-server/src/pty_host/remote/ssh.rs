@@ -32,7 +32,10 @@ use serde::Deserialize;
 use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
-use super::protocol::{self, BrokerToServerMsg, Frame, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION};
+use super::protocol::{
+    self, BrokerToServerMsg, Frame, RemotePaneEntry, ResumeRefusal, ServerToBrokerMsg,
+    REMOTE_PROTOCOL_VERSION,
+};
 use crate::pty_host::protocol::{
     check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
     SSH_CONTROL_PATH_RENAME_MARGIN,
@@ -44,6 +47,31 @@ const FORWARD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Bootstrapping runs a remote command; a cold ssh handshake plus a broker start
 /// is comfortably under this, and a hang here would otherwise wedge a pane.
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to keep retrying a resume the broker refuses because someone is
+/// still attached. Deliberately the same as the supervisor's
+/// `ATTACH_RETRY_WINDOW`: it is the same situation, and the thing being waited
+/// for — a peer noticing its connection is over — is on the same timescale.
+const RESUME_RETRY_WINDOW: Duration = Duration::from_millis(1000);
+const RESUME_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A refusal that says whether waiting could change the answer.
+///
+/// Its own error type so the retry above can ask, rather than reading the prose
+/// a human is meant to see.
+#[derive(Debug)]
+struct ResumeRefusedError {
+    kind: ResumeRefusal,
+    message: String,
+}
+
+impl std::fmt::Display for ResumeRefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ResumeRefusedError {}
 
 /// What `zellij --pty-broker ensure` prints on the remote.
 #[derive(Debug, Clone, Deserialize)]
@@ -259,6 +287,7 @@ impl RemoteHosts {
             socket,
             host.to_owned(),
             pane_token,
+            cmd.clone(),
             Some(self.clone() as Arc<dyn Reconnector>),
         )?);
         Ok((conn, reader_socket))
@@ -307,16 +336,42 @@ impl RemoteHosts {
         Ok(forward)
     }
 
+    /// Ask a host's broker what panes it is holding.
+    ///
+    /// For finding a pane a failed handoff stranded: it is running, and nothing
+    /// on this machine records its token, because the only two places a token
+    /// ever lived were the releasing server's memory and the broker's registry.
+    /// The broker is therefore the only thing that can answer, which is why this
+    /// is a question rather than a lookup.
+    ///
+    /// Starts a broker if none is running, exactly as opening a pane does — a
+    /// host with no broker has no panes, and the empty answer is the true one.
+    pub fn list_panes(self: &Arc<Self>, host: &str) -> Result<Vec<RemotePaneEntry>> {
+        let socket = self.connect(host)?;
+        let mut write_half = socket
+            .try_clone()
+            .context("failed to clone a broker socket")?;
+        let mut read_half = socket
+            .try_clone()
+            .context("failed to clone a broker socket")?;
+
+        say_hello(&mut write_half, &mut read_half, host)?;
+        protocol::write_control(&mut write_half, &ServerToBrokerMsg::ListPanes)?;
+        match read_broker_msg(&mut read_half)? {
+            BrokerToServerMsg::PaneList { entries } => Ok(entries),
+            other => Err(anyhow!("expected a pane list from {host}, got {other:?}")),
+        }
+    }
+
     /// Drop every forward, on the way out.
     pub fn shutdown(&self) {
         if let Ok(mut forwards) = self.forwards.lock() {
             forwards.clear();
         }
     }
-}
 
-impl Reconnector for RemoteHosts {
-    fn reconnect(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
+    /// One attempt at picking a pane back up. See `Reconnector::reconnect`.
+    fn try_resume(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
         // Drop the cached forward first. The usual reason a pane's connection
         // died is that the forward did, and reusing a dead one would fail in a
         // way that looks like the broker refusing us.
@@ -331,6 +386,43 @@ impl Reconnector for RemoteHosts {
             read_socket,
             dropped,
         })
+    }
+}
+
+impl Reconnector for RemoteHosts {
+    /// Pick a pane back up, retrying briefly if the broker still thinks someone
+    /// has it.
+    ///
+    /// The retry is the same one `pty_host_client::attach` does for a local
+    /// supervisor, for the same reason. A connection the broker has not noticed
+    /// is over still holds the pane, and "not noticed yet" resolves in a
+    /// scheduling quantum: after an outage, the old connection is a socket whose
+    /// read has not returned; after a warp with no `Release` — a server that
+    /// vanished mid-handoff — likewise.
+    ///
+    /// `Release` makes this unnecessary in the ordinary warp, which is the
+    /// point of having it: the pane is provably free before the token is handed
+    /// over. This is what stops the *un*ordinary one from losing a pane outright.
+    fn reconnect(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
+        let deadline = Instant::now() + RESUME_RETRY_WINDOW;
+        loop {
+            match self.try_resume(host, pane_token, received) {
+                Ok(resumed) => return Ok(resumed),
+                Err(e) => {
+                    let worth_waiting_for = matches!(
+                        e.downcast_ref::<ResumeRefusedError>(),
+                        Some(ResumeRefusedError {
+                            kind: ResumeRefusal::AlreadyAttached,
+                            ..
+                        })
+                    );
+                    if !worth_waiting_for || Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    std::thread::sleep(RESUME_RETRY_INTERVAL);
+                },
+            }
+        }
     }
 }
 
@@ -603,9 +695,11 @@ fn handshake_and_resume(
     )?;
     match read_broker_msg(&mut read_half)? {
         BrokerToServerMsg::Resumed { dropped } => Ok(dropped),
-        BrokerToServerMsg::ResumeRefused { reason } => {
-            Err(anyhow!("{host} would not give this pane back: {reason}"))
-        },
+        BrokerToServerMsg::ResumeRefused { kind, reason } => Err(ResumeRefusedError {
+            kind,
+            message: format!("{host} would not give this pane back: {reason}"),
+        }
+        .into()),
         other => Err(anyhow!(
             "expected a resume result from {host}, got {other:?}"
         )),

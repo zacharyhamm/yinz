@@ -8,8 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zellij_utils::data::WarpedPane;
+use zellij_utils::data::{RemotePaneHandoff, WarpedPane};
 use zellij_utils::errors::prelude::*;
+use zellij_utils::input::command::RunCommand;
 
 use super::client;
 use super::protocol::{self, HostStatus};
@@ -114,21 +115,32 @@ pub fn list(as_json: bool) -> Result<()> {
         .collect();
 
     let headers = ["ID", "SESSION", "PANE", "PID", "STATE", "COMMAND"];
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in &rows {
+    let mut table = vec![headers.map(str::to_owned).to_vec()];
+    table.extend(rows.into_iter().map(|row| row.to_vec()));
+    print_table(&table);
+    Ok(())
+}
+
+/// Print rows in aligned columns, the first row being the header.
+///
+/// Shared by the local and remote listings so the two read as one command with
+/// two subjects rather than as two commands.
+fn print_table(rows: &[Vec<String>]) {
+    let columns = rows.first().map(|row| row.len()).unwrap_or(0);
+    let mut widths = vec![0usize; columns];
+    for row in rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.len());
         }
     }
-
-    let render = |cells: &[String]| {
-        let line: Vec<String> = cells
+    for row in rows {
+        let line: Vec<String> = row
             .iter()
             .enumerate()
             .map(|(i, cell)| {
                 // Never pad the last column: it is free-form and padding it just
                 // trails whitespace.
-                if i + 1 == cells.len() {
+                if i + 1 == row.len() {
                     cell.clone()
                 } else {
                     format!("{:width$}", cell, width = widths[i])
@@ -136,13 +148,7 @@ pub fn list(as_json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", line.join("  "));
-    };
-
-    render(&headers.iter().map(|h| h.to_string()).collect::<Vec<_>>());
-    for row in &rows {
-        render(row);
     }
-    Ok(())
 }
 
 fn describe_state(status: &HostStatus) -> String {
@@ -269,6 +275,153 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         title: Some(entry.status.command.clone()),
         contents: None,
         borderless: false,
+        // A local supervisor, by construction: this walks sockets in this
+        // machine's runtime directory. Remote survivors are found by asking the
+        // broker holding them — see `remote_adopt_payload`.
+        remote: None,
+    })
+}
+
+/// `zellij pty-host list --host <machine>` — what a broker over there is holding.
+///
+/// A remote pane's supervisor is on the far machine, so it leaves nothing in
+/// this one's runtime directory for `collect` to find. The broker's registry is
+/// the only record, and asking it is the only way to see a pane that a failed
+/// handoff left with no server.
+pub fn remote_list(host: &str, as_json: bool) -> Result<()> {
+    let entries = remote_entries(host)?;
+
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&entries).context("failed to render JSON")?
+        );
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("No panes are running on {host}.");
+        return Ok(());
+    }
+
+    let mut rows: Vec<Vec<String>> = vec![vec![
+        "TOKEN".to_owned(),
+        "STATE".to_owned(),
+        "COMMAND".to_owned(),
+    ]];
+    rows.extend(entries.iter().map(|entry| {
+        vec![
+            entry.pane_token.clone(),
+            match entry.unattached_secs {
+                // The one that matters: a pane in this state is running with
+                // nobody watching it, and is what `adopt --host` is for.
+                Some(secs) => format!("unattached {}", human_duration(secs)),
+                None if entry.attached => "attached".to_owned(),
+                None => "unattached".to_owned(),
+            },
+            entry.command.clone(),
+        ]
+    }));
+    print_table(&rows);
+    Ok(())
+}
+
+/// Roughly how long, in as few characters as say it.
+fn human_duration(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s => format!("{}h", s / 3600),
+    }
+}
+
+/// The panes a host's broker is holding.
+///
+/// Builds a `RemoteHosts` of its own rather than borrowing a session's: this
+/// runs as a plain CLI command, and the whole point is to work when the session
+/// that had the pane is gone.
+fn remote_entries(host: &str) -> Result<Vec<super::remote::protocol::RemotePaneEntry>> {
+    use super::remote::ssh::RemoteHosts;
+    use std::sync::Arc;
+
+    Arc::new(RemoteHosts::new())
+        .list_panes(host)
+        .with_context(|| format!("failed to ask {host} what panes it is holding"))
+}
+
+/// `zellij pty-host adopt --host <machine> <token>` — recover a stranded remote
+/// pane.
+///
+/// The remote twin of [`adopt_request`], and resolved here for the same reason:
+/// a token that names nothing, or a pane someone else is already watching,
+/// should fail before a session is involved.
+pub fn remote_adopt_request(
+    host: &str,
+    pane_token: &str,
+    session: Option<String>,
+) -> Result<(String, WarpedPane)> {
+    let payload = remote_adopt_payload(host, pane_token)?;
+    let session = match session.or_else(|| zellij_utils::envs::get_session_name().ok()) {
+        Some(session) => session,
+        None => {
+            return Err(anyhow!(
+                "not inside a zellij session; say which one to adopt into with --session"
+            ));
+        },
+    };
+    Ok((session, payload))
+}
+
+/// The remote pane a token names, ready to be adopted.
+pub fn remote_adopt_payload(host: &str, pane_token: &str) -> Result<WarpedPane> {
+    let entry = remote_entries(host)?
+        .into_iter()
+        .find(|entry| entry.pane_token == pane_token)
+        .ok_or_else(|| {
+            anyhow!(
+                "{host} is not holding a pane called '{pane_token}'. \
+                 `zellij pty-host list --host {host}` says what it does have"
+            )
+        })?;
+    if entry.attached {
+        return Err(anyhow!(
+            "{pane_token} already has a session attached to it on {host}; there is nothing to \
+             recover"
+        ));
+    }
+    Ok(WarpedPane {
+        // No local supervisor to name. See `WarpedPane::remote`.
+        host_id: String::new(),
+        control_socket: PathBuf::new(),
+        // A survivor brings no screen with it — the server that held its
+        // scrollback is what died, or never took delivery. Name it after the
+        // command, and let the broker's buffer supply what it wrote meanwhile.
+        title: Some(entry.command.clone()),
+        contents: None,
+        borderless: false,
+        remote: Some(RemotePaneHandoff {
+            host: host.to_owned(),
+            pane_token: entry.pane_token,
+            // From the beginning of what the broker still has: this side has
+            // taken delivery of nothing. `replay_from` clamps to the ring, and
+            // reports whatever it could not keep as dropped.
+            received: 0,
+            // Reconstructed from what the broker reports rather than carried:
+            // the session that knew the full `RunCommand` is the one that is
+            // gone. The host is the part that has to be right, because it is
+            // what a later re-run reads.
+            cmd: RunCommand {
+                command: PathBuf::from(entry.command.split(' ').next().unwrap_or_default()),
+                args: entry
+                    .command
+                    .split(' ')
+                    .skip(1)
+                    .map(str::to_owned)
+                    .collect(),
+                remote_host: Some(host.to_owned()),
+                ..Default::default()
+            },
+        }),
     })
 }
 

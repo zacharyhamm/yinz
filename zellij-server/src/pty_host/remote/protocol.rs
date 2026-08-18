@@ -36,7 +36,13 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// `CommandNotFound` with a blank command name; the bump turns that into the
 /// handshake's "install matching zellij versions" message, which is the whole
 /// point of checking.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 2;
+/// v3 adds `Release`/`Released`, so a pane can be handed to another *server*
+/// rather than only picked back up by the one that lost it, and `ListPanes`, so
+/// a pane stranded by a failed handoff can be found again. A v2 broker frees a
+/// pane only when its connection's blocking read returns, which a warp cannot
+/// wait on; without the bump the adopting side would race that and be told the
+/// pane already has a server attached.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 3;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -69,6 +75,42 @@ pub enum ChildSignal {
     Hup,
     Int,
     Kill,
+}
+
+/// Why a `Resume` was refused, and so whether waiting could help.
+///
+/// The remote counterpart of `AttachRefusal`, and split for the same reason: a
+/// supervisor holding a socket for a server that has died has not noticed yet,
+/// and neither has a broker whose old connection has not returned from its read.
+/// Both become free within a scheduling quantum. A pane that was never here, or
+/// has been reclaimed, never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResumeRefusal {
+    /// Some connection still holds the pane. Worth a brief retry: an explicit
+    /// `Release` makes this impossible, but a server that vanished without one
+    /// leaves the broker to notice in its own time.
+    AlreadyAttached,
+    /// This broker does not have that pane, and will not come to have it.
+    Unknown,
+}
+
+/// One pane in a broker's registry, as `ListPanes` describes it.
+///
+/// Enough to recognise a pane and nothing more. In particular no pid: a remote
+/// pid is not merely useless to the asking side, it names an unrelated local
+/// process, which is the hazard `ChildSignal` exists to avoid.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemotePaneEntry {
+    pub pane_token: String,
+    /// How the pane's command reads, already resolved — a pane that asked for
+    /// the login shell shows the shell it actually got.
+    pub command: String,
+    /// Whether some server is speaking for this pane right now. A pane stranded
+    /// by a failed handoff is exactly one where this is false.
+    pub attached: bool,
+    /// How long it has had no server, which is what the orphan reaper measures.
+    /// `None` while one is attached.
+    pub unattached_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,6 +153,25 @@ pub enum ServerToBrokerMsg {
         pane_token: String,
         received: u64,
     },
+    /// Give this pane up without ending it, so another server can `Resume` it.
+    ///
+    /// The remote counterpart of `ServerToHostMsg::Release`, and there for the
+    /// same reason: a pane moving between sessions must be detached at a moment
+    /// the releasing side can observe. Merely closing the socket does detach it
+    /// eventually — the broker notices when its blocking read returns — but
+    /// "eventually" is not a point in time a warp can hand the token over
+    /// after, and resuming before it arrives is refused as a double attach.
+    ///
+    /// Emphatically not `Terminate`: the child keeps running and the broker
+    /// keeps buffering its output, exactly as when a link drops.
+    Release,
+    /// What panes this broker is holding, for finding one that a failed handoff
+    /// left with no server.
+    ///
+    /// Answered from the registry rather than from any connection's state,
+    /// because the panes worth asking about are precisely the ones no
+    /// connection is speaking for.
+    ListPanes,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,7 +194,20 @@ pub enum BrokerToServerMsg {
     Resumed { dropped: u64 },
     /// The named pane is not one this broker still holds: it was never known, or
     /// it was reclaimed while nobody was connected.
-    ResumeRefused { reason: String },
+    ///
+    /// `kind` is what makes the difference between waiting and giving up, and it
+    /// is a discriminant rather than a matter of reading `reason` because the
+    /// two outcomes are opposite: one is worth retrying for a moment, the other
+    /// never becomes true.
+    ResumeRefused { kind: ResumeRefusal, reason: String },
+    /// The pane has been let go and is free for another server to `Resume`.
+    ///
+    /// Sent *after* the detach has happened, never before: the whole value of
+    /// this message is that receiving it means the next `Resume` cannot be
+    /// refused as a double attach.
+    Released,
+    /// The panes this broker is holding, in answer to `ListPanes`.
+    PaneList { entries: Vec<RemotePaneEntry> },
     SpawnFailed {
         kind: SpawnFailureKind,
         message: String,

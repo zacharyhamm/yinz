@@ -7,8 +7,14 @@ use crate::pty_host::remote::protocol::{try_decode_frame, Frame};
 
 fn conn_pair() -> (RemoteConn, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
-    let conn =
-        RemoteConn::new(ours, "build-box".to_owned(), "tok".to_owned(), None).expect("conn failed");
+    let conn = RemoteConn::new(
+        ours,
+        "build-box".to_owned(),
+        "tok".to_owned(),
+        RunCommand::default(),
+        None,
+    )
+    .expect("conn failed");
     (conn, theirs)
 }
 

@@ -84,6 +84,15 @@ fn next_control_socket() -> PathBuf {
     ))
 }
 
+/// Where a released remote pane is parked, keyed by the token rather than by a
+/// socket path.
+///
+/// A path only because the parking map is one; the value is never a filesystem
+/// path and the prefix is there to make that obvious in a failure message.
+fn remote_parking_key(pane_token: &str) -> PathBuf {
+    PathBuf::from(format!("/fake-broker/{pane_token}"))
+}
+
 impl FakePtyRegistry {
     fn describe_all(&self) -> String {
         let mut fake_pty_state_lines: Vec<String> = self
@@ -200,6 +209,57 @@ impl SharedPtys {
         Some(control_socket)
     }
 
+    /// The machine a pane's command names, if it is not this one.
+    ///
+    /// The fake runs no processes anywhere, let alone on another host, so a
+    /// "remote" pane here is one whose `RunCommand` says it is. That is enough
+    /// for the thing worth testing: which of the two addressing shapes a warp
+    /// builds, and whether the receiving session can follow it back.
+    pub(crate) fn remote_host_of(&self, terminal_id: u32) -> Option<String> {
+        self.read(|registry| {
+            registry
+                .fake_pty_states
+                .get(&terminal_id)
+                .and_then(|state| state.run_command().remote_host.clone())
+        })
+    }
+
+    /// The command a pane was spawned with, for the warp payload to carry.
+    pub(crate) fn run_command_of(&self, terminal_id: u32) -> Option<RunCommand> {
+        self.read(|registry| {
+            registry
+                .fake_pty_states
+                .get(&terminal_id)
+                .map(|state| state.run_command())
+        })
+    }
+
+    /// Park a remote pane under its broker token instead of a socket path.
+    ///
+    /// The same parking spot as `release_for_warp`, keyed differently — which is
+    /// exactly the real difference. A remote pane's state does not move to a
+    /// local supervisor socket; it stays where it is, and what travels is the
+    /// name the broker knows it by.
+    pub(crate) fn release_remote_for_warp(&self, terminal_id: u32) -> Option<String> {
+        let fake_pty_state =
+            self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
+        let fake_pty_state = fake_pty_state?;
+        let pane_token = format!("fake-token-{terminal_id}");
+        detached_supervisors()
+            .lock()
+            .unwrap()
+            .insert(remote_parking_key(&pane_token), fake_pty_state);
+        Some(pane_token)
+    }
+
+    pub(crate) fn adopt_remote_for_warp(
+        &self,
+        pane_token: &str,
+        quit_cb: QuitCb,
+    ) -> Option<AdoptedFakePty> {
+        self.adopt_parked(&remote_parking_key(pane_token), quit_cb)
+    }
+
     /// Take a detached supervisor over into this session under a fresh id.
     ///
     /// The new id is this session's — ids are per-server and the receiving one
@@ -210,10 +270,11 @@ impl SharedPtys {
         control_socket: &Path,
         quit_cb: QuitCb,
     ) -> Option<AdoptedFakePty> {
-        let mut fake_pty_state = detached_supervisors()
-            .lock()
-            .unwrap()
-            .remove(control_socket)?;
+        self.adopt_parked(control_socket, quit_cb)
+    }
+
+    fn adopt_parked(&self, key: &Path, quit_cb: QuitCb) -> Option<AdoptedFakePty> {
+        let mut fake_pty_state = detached_supervisors().lock().unwrap().remove(key)?;
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         let run_command = fake_pty_state.run_command();
         let child_exit_status = if fake_pty_state.exited {
