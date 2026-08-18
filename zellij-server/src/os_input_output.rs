@@ -664,6 +664,20 @@ pub trait ServerOsApi: Send + Sync {
             "this backend does not support moving panes between sessions"
         ))
     }
+    /// Whether [`Self::release_terminal_for_warp`] would work, asked before
+    /// anything has been let go.
+    ///
+    /// Everything the release can refuse for is knowable in advance, and it has
+    /// to be asked in advance: by the time the release runs, the pane's reader
+    /// task has been aborted and this server's dup of its master closed, so a
+    /// refusal after that point leaves a pane on screen that no longer has a
+    /// process to talk to. Must not change anything — it is asked precisely so
+    /// that a "no" costs the user nothing.
+    fn check_terminal_can_be_warped(&self, _terminal_id: u32) -> Result<()> {
+        Err(anyhow!(
+            "this backend does not support moving panes between sessions"
+        ))
+    }
     /// Take a detached supervisor over into this session under a fresh terminal id.
     fn adopt_terminal(
         &self,
@@ -1004,6 +1018,10 @@ impl ServerOsApi for ServerOsInputOutput {
     #[cfg(not(windows))]
     fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
         self.pty_backend.release_terminal_for_warp(terminal_id)
+    }
+    #[cfg(not(windows))]
+    fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+        self.pty_backend.check_terminal_can_be_warped(terminal_id)
     }
     #[cfg(not(windows))]
     fn adopt_terminal(

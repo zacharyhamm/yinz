@@ -19,7 +19,7 @@
 //! other keeping everything it had, and is never told to exit.
 
 use zellij_integration_tests::{
-    keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
+    keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, WarpFailure, PROMPT, TERMINAL_SIZE,
 };
 use zellij_utils::cli::CliAction;
 
@@ -529,6 +529,97 @@ fn the_sessions_last_pane_is_refused_and_the_session_survives() {
     sender_shell.output(b"the session is still here\r\n");
     sender.wait_until("the session to still be running", |grid_snapshot| {
         grid_snapshot.contains("the session is still here")
+    });
+}
+
+#[test]
+fn a_pane_that_cannot_be_warped_is_still_a_working_pane() {
+    // The bug this pins: a refused warp used to leave the pane on screen with
+    // its reader already aborted, so it took no input and never updated again.
+    // A refusal has to cost the user an error message and nothing else, which
+    // means it has to be decided before anything is let go.
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let stubborn = split_off_a_pane(&sender, "STUBBORN_MARKER");
+    // Already the focused pane: `split_off_a_pane` leaves the new one focused,
+    // which is what `warp_focused_pane_to` will move.
+    stubborn.fail_warp(WarpFailure::Unwarpable);
+
+    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
+
+    assert_ne!(exit_code, 0, "a pane with no supervisor cannot be moved");
+    assert!(
+        reported.contains("no pty-host supervisor"),
+        "refused, but for the wrong reason: {reported}",
+    );
+    assert!(!stubborn.is_exited(), "a refused warp killed the pane");
+
+    // The two halves of "still a working pane": it can still be typed into, and
+    // what it says still reaches the screen.
+    let probe = b'q';
+    sender.send_stdin(&[probe]);
+    sender.wait_until("the pane to receive input after a refused warp", |_| {
+        stubborn.stdin_bytes().contains(&probe)
+    });
+    stubborn.output(b"still alive\r\n");
+    sender.wait_until("the pane to still be showing its output", |grid_snapshot| {
+        grid_snapshot.contains("still alive")
+    });
+}
+
+#[test]
+fn a_pane_cut_loose_by_a_failed_warp_says_so_instead_of_freezing() {
+    // The residual case the check cannot rule out: the supervisor agrees to be
+    // asked and then does not confirm the handoff. The pane's reader is gone by
+    // then and there is no way to put it back — so the pane is held and told
+    // what happened to it, rather than left on screen looking live.
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let doomed = split_off_a_pane(&sender, "DOOMED_MARKER");
+    doomed.fail_warp(WarpFailure::Unreleasable);
+
+    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
+
+    assert_ne!(exit_code, 0, "a release that did not confirm is not a move");
+    assert!(
+        reported.contains("did not confirm"),
+        "refused, but for the wrong reason: {reported}",
+    );
+    sender.wait_until("the pane to say it could not be moved", |grid_snapshot| {
+        grid_snapshot.contains("could not move this pane")
+    });
+}
+
+#[test]
+fn one_unmovable_pane_stops_a_whole_tab_and_leaves_it_working() {
+    // The tab-sized version. Releasing pane by pane and stopping at the first
+    // refusal would leave the panes ahead of it handed away with nothing to give
+    // them back to; the whole tab is refused while it is still whole.
+    let ((sender, sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let travelling = split_off_a_pane(&sender, "TRAVELLING_MARKER");
+    // The pane that cannot go is the *second* one asked about, so a release that
+    // walked the tab in order would already have let the first one go.
+    travelling.fail_warp(WarpFailure::Unwarpable);
+
+    let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
+        to_session: Some(receiver.session_name().to_owned()),
+        from_session: None,
+        tab_index: None,
+    });
+
+    assert_ne!(exit_code, 0, "a tab with an unmovable pane cannot be moved");
+    assert!(
+        reported.contains("no pty-host supervisor"),
+        "refused, but for the wrong reason: {reported}",
+    );
+    assert!(
+        !sender_shell.is_exited() && !travelling.is_exited(),
+        "a refused tab warp killed a pane",
+    );
+    // Every pane in the tab is still a pane, including the one that could have
+    // gone.
+    sender_shell.output(b"shell still alive\r\n");
+    travelling.output(b"split still alive\r\n");
+    sender.wait_until("both panes to still be showing output", |grid_snapshot| {
+        grid_snapshot.contains("shell still alive") && grid_snapshot.contains("split still alive")
     });
 }
 

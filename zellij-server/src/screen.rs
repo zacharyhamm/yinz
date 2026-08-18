@@ -8404,18 +8404,24 @@ impl Screen {
 
     /// How a released pane says where its process can be picked up.
     ///
-    /// The one thing a `WarpedPane` cannot get from the tab, and the only part
-    /// of building one that can still fail: a local supervisor that never bound
-    /// a socket has no address to hand out. That check has no remote
-    /// counterpart — a broker is reached by ssh and a token, and a pane the
-    /// broker confirmed it released is reachable by definition.
+    /// The one thing a `WarpedPane` cannot get from the tab. A local supervisor
+    /// that never bound a socket has no address to hand out — but the pty
+    /// thread's pre-flight check has already refused that pane before releasing
+    /// anything, so reaching the refusal below means something changed between
+    /// the check and the release. It is kept as the backstop for that, not as
+    /// the place the case is expected to be caught.
+    ///
+    /// The check has no remote counterpart — a broker is reached by ssh and a
+    /// token, and a pane the broker confirmed it released is reachable by
+    /// definition.
     fn warp_address(released: ReleasedPane) -> Result<WarpAddress, String> {
         match released {
             ReleasedPane::Local(local) => {
                 let Some(control_socket) = local.control_socket else {
-                    // The pane is still ours and still working; it just has no
-                    // address to hand out. Nothing to roll back, because nothing
-                    // has moved yet.
+                    // No address to hand out. The pty thread refuses this before
+                    // releasing anything, so a pane that gets here has already
+                    // been cut loose and has been told so in its own scrollback;
+                    // there is nothing left for this branch to do but say why.
                     return Err(format!(
                         "the supervisor for this pane ({}) never bound a socket, so no other \
                          session can reach it — this usually means the runtime directory path \
@@ -8684,9 +8690,12 @@ impl Screen {
     ) -> Result<Box<WarpedTab>, String> {
         let mut addresses: HashMap<u32, WarpAddress> = HashMap::new();
         for (terminal_id, released) in released {
-            // The refusal `warp_address` can produce is worded for one pane. A
-            // tab is refused whole for it, which is the same outcome the pane
-            // path gets — nothing has moved yet either way.
+            // The refusal `warp_address` can produce is worded for one pane, and
+            // a tab is refused whole for it. Reaching it at all means the pty
+            // thread's pre-flight check passed and the release then failed, in
+            // which case that thread has already told every pane in the tab what
+            // happened to it — this is the reason travelling back to the caller,
+            // not the pane's only account of itself.
             addresses.insert(terminal_id, Self::warp_address(released?)?);
         }
 
@@ -15134,8 +15143,22 @@ pub(crate) fn screen_thread_main(
             } => {
                 let response_channel = screen.pending_warps.remove(&terminal_id);
                 let result = screen.take_released_pane_for_warp(terminal_id, released);
-                if let Some(response_channel) = response_channel {
-                    let _ = response_channel.send(result);
+                // Nobody listening means the caller gave up waiting — its own
+                // timeout fired while this was still in flight. The pane has
+                // been taken out of its tab by now and its process is running
+                // with nothing watching it, so the recovery line has to go
+                // somewhere: this log is the only place left that it can.
+                let stranded = match (response_channel, result) {
+                    (Some(response_channel), result) => response_channel.send(result).err(),
+                    (None, Ok(payload)) => Some(crossbeam::channel::SendError(Ok(payload))),
+                    (None, Err(_)) => None,
+                };
+                if let Some(crossbeam::channel::SendError(Ok(payload))) = stranded {
+                    log::error!(
+                        "pane {terminal_id} was released for a warp nobody was waiting on; it \
+                         is still running and can be recovered with `{}`",
+                        crate::warp::recovery_command(&payload)
+                    );
                 }
                 screen.log_and_report_session_state().non_fatal();
                 screen.render(None)?;
@@ -15194,15 +15217,51 @@ pub(crate) fn screen_thread_main(
                     screen.pending_tab_warps.remove(&tab_index)
                 {
                     let result = screen.take_released_tab_for_warp(tab_index, released, prepared);
-                    let _ = response_channel.send(result);
+                    if let Err(crossbeam::channel::SendError(Ok(payload))) =
+                        response_channel.send(result)
+                    {
+                        // The caller timed out between asking and being
+                        // answered. The tab is out of this session by now and
+                        // every process in it is running unwatched.
+                        log::error!(
+                            "tab {tab_index} was released for a warp nobody was waiting on; its \
+                             panes are still running and can be recovered with: {}",
+                            payload
+                                .tiled_panes
+                                .iter()
+                                .chain(payload.floating_panes.iter())
+                                .map(crate::warp::recovery_command)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        );
+                    }
                 } else {
                     // Nobody is waiting, which means the supervisors have been
-                    // released with no one to hand them to. Say where they went.
+                    // released with no one to hand them to. The tab is still on
+                    // screen and every pane in it is now talking to nothing, so
+                    // saying where the processes went in the log is not enough —
+                    // each pane has to say it too, or the user is left with a
+                    // tab that looks alive and answers nothing.
                     log::error!(
                         "tab {tab_index} was released for a warp nobody was waiting on; its \
                          panes are still running and can be recovered with `zellij pty-host \
                          adopt <id>`"
                     );
+                    for (terminal_id, released) in released {
+                        if let Ok(released) = released {
+                            screen
+                                .bus
+                                .senders
+                                .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                    terminal_id,
+                                    why:
+                                        "this tab was moved to another session, but nothing took it"
+                                            .to_owned(),
+                                    recovery: Some(released.recovery_command()),
+                                })
+                                .non_fatal();
+                        }
+                    }
                 }
                 screen.log_and_report_session_state().non_fatal();
                 screen.render(None)?;
