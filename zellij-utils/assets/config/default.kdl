@@ -420,7 +420,7 @@ load_plugins {
 
 // How long a notification stays on screen, in seconds
 //
-// notification_timeout 4
+// notification_timeout 10
 
 // Toggle between having Zellij lay out panes according to a predefined set of layouts whenever possible
 // Options:

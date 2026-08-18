@@ -157,7 +157,7 @@ impl FromStr for NotificationPosition {
 }
 
 /// How long a notification stays on screen when `notification_timeout` is unset.
-pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 4;
+pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize, Args)]
 /// Options that can be set either through the config file,
