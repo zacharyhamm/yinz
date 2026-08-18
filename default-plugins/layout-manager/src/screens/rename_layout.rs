@@ -2,9 +2,8 @@ use super::{ErrorScreen, KeyResponse, LayoutListScreen, OptimisticUpdate, Screen
 use zellij_tile::prelude::*;
 use zellij_tile::ui_components::forms::{Button, Form, FormEvent, TextInput};
 
-/// Rows the dialog occupies: title, blank, form (one field + one button row),
-/// blank, help.
-const DIALOG_HEIGHT: usize = 6;
+/// Rows the dialog occupies on top of the form itself: title, blank, blank, help.
+const DIALOG_CHROME_HEIGHT: usize = 4;
 const HELP_TEXT: &str = "<Enter> - Save, <Esc> - Cancel";
 const FIELD_ID: &str = "name";
 
@@ -100,8 +99,8 @@ impl RenameLayoutScreen {
     pub fn render(&mut self, rows: usize, cols: usize) {
         // Two columns of margin on each side, so nothing touches the pane edge.
         let width = cols.saturating_sub(4).max(1);
-        let height = DIALOG_HEIGHT.min(rows);
-        let base_y = rows.saturating_sub(height) / 2;
+        let dialog_height = self.form.height() + DIALOG_CHROME_HEIGHT;
+        let base_y = rows.saturating_sub(dialog_height) / 2;
         let base_x = cols.saturating_sub(width) / 2;
 
         // The form places the cursor itself, and it must do so before anything
@@ -116,10 +115,15 @@ impl RenameLayoutScreen {
             None,
         );
 
-        let mut help = Text::new(HELP_TEXT);
-        for item in ["<Enter>", "<Esc>"] {
-            help = help.color_substring(3, item);
+        // In a pane too short for the whole dialog the help line has nowhere to
+        // go but on top of the form's button row, so it is dropped instead - it
+        // is a hint, and <Enter>/<Esc> work without it.
+        if rows >= dialog_height {
+            let mut help = Text::new(HELP_TEXT);
+            for item in ["<Enter>", "<Esc>"] {
+                help = help.color_substring(3, item);
+            }
+            print_text_with_coordinates(help, base_x, base_y + dialog_height - 1, None, None);
         }
-        print_text_with_coordinates(help, base_x, base_y + height.saturating_sub(1), None, None);
     }
 }
