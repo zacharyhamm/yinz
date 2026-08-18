@@ -471,6 +471,9 @@ impl State {
                 SseItem::Delta(text) => {
                     self.append_to_reply(&text);
                 },
+                SseItem::Reasoning { text, key } => {
+                    self.append_to_reasoning(&text, key);
+                },
                 SseItem::ApiError(message) => {
                     let m = message.clone();
                     self.pop_empty_placeholder();
@@ -526,8 +529,17 @@ impl State {
                             .reply()
                             .map(|message| message.content.clone())
                             .unwrap_or_default();
+                        // The thinking that led to these calls goes with them
+                        // rather than dying with the placeholder: this is the
+                        // one message a thinking endpoint wants it back on, and
+                        // DeepSeek 400s the next round without it.
+                        let prior_reasoning =
+                            self.reply().and_then(|message| message.reasoning.take());
                         self.pop_empty_placeholder();
-                        self.messages.push(Message::tool_calls(calls.clone()));
+                        self.messages.push(Message {
+                            reasoning: prior_reasoning,
+                            ..Message::tool_calls(calls.clone())
+                        });
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
                             .map(|c| {

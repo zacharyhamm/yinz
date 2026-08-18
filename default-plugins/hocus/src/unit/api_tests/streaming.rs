@@ -95,3 +95,77 @@ fn retains_an_incomplete_trailing_line_for_the_next_feed() {
         .is_empty());
     assert_eq!(deltas(parser.feed(b"tial\"}}]}\n")), vec!["partial"]);
 }
+
+// -- reasoning ----------------------------------------------------------
+//
+// A thinking endpoint streams its chain-of-thought under its own field name and
+// wants it handed back on the next request. These pin the two spellings in use,
+// and that a delta from an endpoint that does not think yields none of it.
+
+#[test]
+fn a_reasoning_content_delta_is_read_as_deepseek_style_thinking() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"let me think\"}}]}\n\n";
+    assert_eq!(
+        parser.feed(frame),
+        vec![SseItem::Reasoning {
+            text: "let me think".to_owned(),
+            key: ReasoningKey::ReasoningContent,
+        }]
+    );
+}
+
+#[test]
+fn a_bare_reasoning_delta_keeps_its_own_spelling() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"hmm\"}}]}\n\n";
+    assert_eq!(
+        parser.feed(frame),
+        vec![SseItem::Reasoning {
+            text: "hmm".to_owned(),
+            key: ReasoningKey::Reasoning,
+        }]
+    );
+}
+
+#[test]
+fn a_chunk_carrying_thinking_and_text_yields_both_thinking_first() {
+    let mut parser = SseParser::default();
+    let frame =
+        b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"..done\",\"content\":\"Hi\"}}]}\n\n";
+    assert_eq!(
+        parser.feed(frame),
+        vec![
+            SseItem::Reasoning {
+                text: "..done".to_owned(),
+                key: ReasoningKey::ReasoningContent,
+            },
+            SseItem::Delta("Hi".to_owned()),
+        ],
+        "dropping the tail of the reasoning would echo a truncated one back, \
+         which is refused just as hard as a missing one"
+    );
+}
+
+#[test]
+fn reassembles_reasoning_split_across_chunks() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"one two\"}}]}\n\n";
+    let mut collected = Vec::new();
+    for byte in frame {
+        collected.extend(parser.feed(&[*byte]));
+    }
+    assert_eq!(
+        collected,
+        vec![SseItem::Reasoning {
+            text: "one two".to_owned(),
+            key: ReasoningKey::ReasoningContent,
+        }]
+    );
+}
+
+#[test]
+fn an_ordinary_delta_yields_no_thinking_at_all() {
+    let mut parser = SseParser::default();
+    assert_eq!(parser.feed(FRAME), vec![SseItem::Delta("Hello".to_owned())]);
+}

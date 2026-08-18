@@ -1,4 +1,4 @@
-use crate::message::{Message, Role, Status, StreamState};
+use crate::message::{Message, Reasoning, ReasoningKey, Role, Status, StreamState};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -630,6 +630,25 @@ impl State {
                 self.reply_at = Some(self.messages.len());
                 self.messages.push(Message::assistant(text));
             },
+        }
+    }
+
+    /// Grow the arriving reply's chain-of-thought.
+    ///
+    /// Unlike `append_to_reply` this does *not* start a fresh message when the
+    /// placeholder is gone: thinking with nothing to attach it to would become
+    /// a visible assistant message with no text in it, and it is only ever kept
+    /// to be handed back with the tool calls it preceded.
+    ///
+    /// The key comes from the first fragment and is left alone after that — one
+    /// endpoint does not change vocabulary mid-stream.
+    pub(crate) fn append_to_reasoning(&mut self, text: &str, key: ReasoningKey) {
+        if let Some(message) = self.reply() {
+            message
+                .reasoning
+                .get_or_insert_with(|| Reasoning::new(String::new(), key))
+                .text
+                .push_str(text);
         }
     }
 

@@ -22,6 +22,41 @@ pub enum Role {
     Notice,
 }
 
+/// A model's chain-of-thought, kept only so it can be handed straight back.
+///
+/// Endpoints disagree about both whether they produce one and what to call it,
+/// so this records the spelling alongside the text: what came back under
+/// `reasoning_content` is returned under `reasoning_content`, and likewise for
+/// `reasoning`. Nothing normalises between them, because an endpoint that has
+/// never heard of the other family's key has no reason to accept it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Reasoning {
+    pub text: String,
+    #[serde(default)]
+    pub key: ReasoningKey,
+}
+
+/// Which field a provider streams its thinking under. A closed set rather than
+/// the string as it arrived, so an endpoint can only ever be sent a field name
+/// it used itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReasoningKey {
+    /// `reasoning_content`: DeepSeek, vLLM, SGLang, Qwen.
+    #[default]
+    ReasoningContent,
+    /// `reasoning`: OpenRouter, Ollama.
+    Reasoning,
+}
+
+impl Reasoning {
+    pub fn new(text: impl Into<String>, key: ReasoningKey) -> Self {
+        Reasoning {
+            text: text.into(),
+            key,
+        }
+    }
+}
+
 /// Serialized as-is into the archive (see `history`). The optional fields
 /// carry `serde(default)` so a future field can't make an existing file
 /// unreadable, and are skipped when empty so an archived chat stays greppable.
@@ -34,6 +69,14 @@ pub struct Message {
     /// *not* what gets sent - see `api::request_body`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Assistant only: the model's chain-of-thought, as the endpoint sent it,
+    /// together with the key it sent it under. Echoed back verbatim on a
+    /// tool-calling turn - DeepSeek's thinking mode rejects a request whose
+    /// tool-calling assistant turns have lost it, and rejects a summarised one
+    /// too. `None` for every endpoint that does not produce one, which is what
+    /// keeps the field off the wire for OpenAI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Reasoning>,
     /// `Role::Tool` only: which call this message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
