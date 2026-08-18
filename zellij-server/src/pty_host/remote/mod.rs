@@ -29,6 +29,7 @@
 
 pub mod broker;
 pub mod conn;
+pub mod env;
 pub mod protocol;
 pub mod reader;
 pub mod session;

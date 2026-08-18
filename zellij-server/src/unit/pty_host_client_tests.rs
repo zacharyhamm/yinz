@@ -93,6 +93,8 @@ fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
             height_in_pixels: 0,
         }),
         arg0: None,
+        env: vec![],
+        login_session: false,
     }
 }
 
@@ -865,6 +867,8 @@ fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
             height_in_pixels: 0,
         }),
         arg0: None,
+        env: vec![],
+        login_session: false,
     };
 
     // `exec` can fail with `ETXTBSY` here for reasons that have nothing to do

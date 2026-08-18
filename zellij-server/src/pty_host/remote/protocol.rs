@@ -139,6 +139,19 @@ pub enum ServerToBrokerMsg {
         cmd: RunCommand,
         failover_cmd: Option<RunCommand>,
         initial_size: Option<WireWinsize>,
+        /// What the *asking* machine is entitled to say about this pane: its
+        /// terminal type and its locale, sampled per pane. Nothing else crosses
+        /// — a `PATH` or a `HOME` from over here names a filesystem that does not
+        /// exist over there, so the far side recomputes those from its own passwd
+        /// entry instead. See `remote::env` for the full policy and for why
+        /// `SSH_CLIENT`/`SSH_CONNECTION` are deliberately absent.
+        ///
+        /// A `Vec`, not a map: the order is the precedence when the broker
+        /// concatenates it after the login environment it built.
+        env: Vec<(String, String)>,
+        /// This pane's id in the asking session, so the far side can set a
+        /// truthful `ZELLIJ_PANE_ID`.
+        terminal_id: u32,
     },
     Resize(WireWinsize),
     SignalChild(ChildSignal),
