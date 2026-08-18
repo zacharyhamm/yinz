@@ -42,7 +42,7 @@ use zellij_server::os_input_output::AsyncReader;
 use zellij_server::pty_host::protocol::WireWinsize;
 use zellij_server::pty_host::remote::conn::{RemoteGitProbe, RemoteStatus};
 use zellij_server::pty_host::remote::protocol::{
-    self, BrokerToServerMsg, ChildSignal, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION,
+    self, BrokerToServerMsg, ChildSignal, ResumeRefusal, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION,
 };
 use zellij_server::pty_host::remote::ssh::{self, RemoteHosts};
 use zellij_server::pty_host::remote::{RemoteConn, RemoteReader};
@@ -57,6 +57,14 @@ use zellij_utils::input::command::RunCommand;
 /// what `--remote-host` promises.
 const HOST: &str = "zellij-remote-pane";
 const COMPOSE_FILE: &str = "docker-compose.remote-panes.yml";
+/// The compose project the containers actually live in.
+///
+/// Must match `COMPOSE_PROJECT` in `xtask/src/remote_test.rs`, which names
+/// the project explicitly rather than letting compose derive one from the
+/// directory basename — otherwise this suite and the e2e suite share a
+/// project and each is an orphan of the other. Without it here, every
+/// `docker compose exec` below resolves to a project with no such service.
+const COMPOSE_PROJECT: &str = "zellij-remote-panes";
 /// Toxiproxy's control API, as published by the compose file.
 const PROXY_API: &str = "127.0.0.1:8474";
 /// The proxy named in `docker/remote-pane-toxiproxy.json`.
@@ -185,6 +193,8 @@ fn remote_exec(argv: &[&str]) -> String {
     command
         .args([
             "compose",
+            "-p",
+            COMPOSE_PROJECT,
             "-f",
             COMPOSE_FILE,
             "exec",
@@ -199,7 +209,28 @@ fn remote_exec(argv: &[&str]) -> String {
         .output()
         .unwrap_or_else(|e| panic!("failed to run docker compose exec: {e}. Is docker running?"));
     // Exit status is not checked: `pgrep` exits 1 when it matches nothing, which
-    // is a perfectly ordinary answer to most of the questions asked here.
+    // is a perfectly ordinary answer to most of the questions asked here. Anything
+    // compose itself has to say is a different matter — "service not running" is
+    // indistinguishable from "no such process" once the empty stdout is all that
+    // is left, and that silence is worth more than one confusing afternoon.
+    //
+    // Only compose's own complaints, though. The commands run out here are
+    // allowed to grumble — `pkill` reports a process it may not signal, and that
+    // is not this suite's business.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let unreachable = [
+        "is not running",
+        "no such service",
+        "Cannot connect to the Docker daemon",
+        "no configuration file provided",
+    ];
+    if let Some(complaint) = unreachable.iter().find(|c| stderr.contains(*c)) {
+        panic!(
+            "docker compose could not reach the far machine ({complaint}): {}. \
+             Are the containers up? ('cargo x remote-test --build')",
+            stderr.trim()
+        );
+    }
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
@@ -598,9 +629,12 @@ fn bootstrap_starts_a_broker_on_the_far_machine_and_says_where_it_listens() {
         endpoint.protocol_version, REMOTE_PROTOCOL_VERSION,
         "the far machine speaks a different remote protocol than this build"
     );
+    // The protocol version is in the socket's *name*, so a broker of an older
+    // protocol is never adopted by this build — it is simply a different path.
+    let expected_name = format!("pty-broker-v{REMOTE_PROTOCOL_VERSION}.sock");
     assert!(
-        endpoint.socket.ends_with("pty-broker.sock"),
-        "unexpected broker socket path: {}",
+        endpoint.socket.ends_with(&expected_name),
+        "unexpected broker socket path: {} (expected it to end with {expected_name})",
         endpoint.socket
     );
     // The path is the far machine's to decide — `ZELLIJ_SOCK_DIR` resolves
@@ -1354,8 +1388,14 @@ fn an_outage_longer_than_the_ring_says_how_much_was_lost() {
     let pane = open_pane(
         &hosts,
         &format!(
+            // Idles rather than exiting once the burst is done. The assertion
+            // below is that an overrun ring is not *mistaken* for a child exit,
+            // and a script that ends of its own accord — 12 MB of `yes` takes
+            // no time at all once the link is back — makes that a race it can
+            // lose while the code under test is behaving perfectly.
             "echo {marker}-ready; while ! [ -f {trigger} ]; do sleep 0.1; done; \
-             yes zellij-remote-pane-filler | head -c 12000000; echo {marker}-done"
+             yes zellij-remote-pane-filler | head -c 12000000; echo {marker}-done; \
+             while :; do sleep 0.2; done"
         ),
     );
     pane.wait_for_output(&format!("{marker}-ready"));
@@ -1533,10 +1573,17 @@ fn a_resume_for_an_unknown_token_is_refused() {
     .expect("failed to send a resume");
 
     match read_control(&mut read) {
-        BrokerToServerMsg::ResumeRefused { reason } => {
+        BrokerToServerMsg::ResumeRefused { kind, reason } => {
             assert!(
                 reason.contains("a-pane-this-broker-never-had"),
                 "the refusal should name the pane it is about: {reason}"
+            );
+            // A pane this broker never had never becomes available, so the
+            // refusal has to say so rather than read as one worth retrying.
+            assert_eq!(
+                kind,
+                ResumeRefusal::Unknown,
+                "an unheard-of token should be refused as unknown, not as taken: {reason}"
             );
         },
         other => panic!("expected the resume to be refused, got {other:?}"),
