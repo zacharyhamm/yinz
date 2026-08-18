@@ -60,6 +60,20 @@ pub(crate) struct FakePtyRegistry {
     /// `spawn_queue` because nothing was spawned: the whole claim a warp makes is
     /// that the process was already running and went on running.
     pub adopted_queue: VecDeque<u32>,
+    /// How many panes this session let go of, and took up, by the *remote* road.
+    ///
+    /// Counted because a warp that took the wrong road still works in this
+    /// harness: the pane's state travels either way, so everything else a test
+    /// can ask about the pane that arrived — its command, its host, its
+    /// scrollback — reads the same whether it went by a supervisor socket or a
+    /// broker token. These are the only witnesses to which branch actually ran,
+    /// and without them a remote pane quietly sent down the local path would
+    /// pass every assertion.
+    ///
+    /// Per-session rather than process-global, so two tests warping at once
+    /// cannot see each other's, and so a test can say which *end* did what.
+    pub remote_releases: usize,
+    pub remote_adoptions: usize,
 }
 
 /// Supervisors released by one session and not yet adopted by another.
@@ -241,9 +255,11 @@ impl SharedPtys {
     /// local supervisor socket; it stays where it is, and what travels is the
     /// name the broker knows it by.
     pub(crate) fn release_remote_for_warp(&self, terminal_id: u32) -> Option<String> {
-        let fake_pty_state =
-            self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
-        let fake_pty_state = fake_pty_state?;
+        let fake_pty_state = self.mutate(|fake_pty_registry| {
+            let fake_pty_state = fake_pty_registry.fake_pty_states.remove(&terminal_id)?;
+            fake_pty_registry.remote_releases += 1;
+            Some(fake_pty_state)
+        })?;
         let pane_token = format!("fake-token-{terminal_id}");
         detached_supervisors()
             .lock()
@@ -257,7 +273,19 @@ impl SharedPtys {
         pane_token: &str,
         quit_cb: QuitCb,
     ) -> Option<AdoptedFakePty> {
-        self.adopt_parked(&remote_parking_key(pane_token), quit_cb)
+        let adopted = self.adopt_parked(&remote_parking_key(pane_token), quit_cb)?;
+        self.mutate(|fake_pty_registry| fake_pty_registry.remote_adoptions += 1);
+        Some(adopted)
+    }
+
+    /// How many panes this session released, and adopted, as remote ones.
+    pub(crate) fn remote_warp_counts(&self) -> (usize, usize) {
+        self.read(|fake_pty_registry| {
+            (
+                fake_pty_registry.remote_releases,
+                fake_pty_registry.remote_adoptions,
+            )
+        })
     }
 
     /// Take a detached supervisor over into this session under a fresh id.
