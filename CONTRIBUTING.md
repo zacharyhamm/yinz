@@ -125,6 +125,11 @@ The build cross-compiles for `x86_64-unknown-linux-musl`, which needs the musl l
 
 1. `sudo apt-get install -y --no-install-recommends musl-tools`
 2. `rustup target add x86_64-unknown-linux-musl`
+
+Native (non-wasm, non-musl) Linux builds link with [`mold`](https://github.com/rui314/mold)
+(configured in `.cargo/config.toml`), so it must be installed too:
+
+3. `sudo apt-get install -y mold`
 </details>
 
 
