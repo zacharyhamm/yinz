@@ -445,7 +445,7 @@ web_client {
  
 // How long a notification stays on screen, in seconds
 // Default: 4
-// notification_timeout 4
+// notification_timeout 10
  
 // When attaching to an existing session with other users,
 // should the session be mirrored (true)
