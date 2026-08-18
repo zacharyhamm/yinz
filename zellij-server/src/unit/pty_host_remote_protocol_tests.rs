@@ -62,7 +62,12 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
         BrokerToServerMsg::Resumed { dropped: 0 },
         BrokerToServerMsg::Resumed { dropped: 4096 },
         BrokerToServerMsg::ResumeRefused {
+            kind: ResumeRefusal::Unknown,
             reason: "no such pane".to_owned(),
+        },
+        BrokerToServerMsg::ResumeRefused {
+            kind: ResumeRefusal::AlreadyAttached,
+            reason: "another server still holds this pane".to_owned(),
         },
         BrokerToServerMsg::SpawnFailed {
             kind: SpawnFailureKind::CommandNotFound,
@@ -279,9 +284,11 @@ fn a_remote_spawn_carries_no_termios() {
 /// not. Tying them together would make every remote-protocol tweak cost a pane.
 #[test]
 fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
-    // v2: a Spawn may carry no command, meaning "this machine's login shell".
+    // v3: `Release`/`Released` and `ListPanes`/`PaneList`, so a pane can be handed
+    // to another server rather than only picked back up by the one that lost it,
+    // and one stranded by a failed handoff can be found again.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 2,
+        REMOTE_PROTOCOL_VERSION, 3,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(
