@@ -1,6 +1,5 @@
 mod errors;
 mod screens;
-mod text_input;
 mod ui;
 
 use errors::format_kdl_error;
@@ -217,6 +216,7 @@ impl ZellijPlugin for State {
             EventType::PastedText,
             EventType::SessionUpdate,
             EventType::Key,
+            EventType::Mouse,
             EventType::AvailableLayoutInfo,
             EventType::PermissionRequestResult,
         ]);
@@ -268,6 +268,14 @@ impl ZellijPlugin for State {
             Event::Key(key) => {
                 let response = self.handle_key_event(key);
                 should_render = self.apply_key_response(response);
+            },
+            // Only the screens built on `Form` have clickable widgets; the rest
+            // record no rectangles and so have nothing for a click to land on.
+            Event::Mouse(mouse) => {
+                if let Screen::RenameLayout(ref mut rename_screen) = self.screen {
+                    let response = rename_screen.handle_mouse(mouse);
+                    should_render = self.apply_key_response(response);
+                }
             },
             _ => {},
         }

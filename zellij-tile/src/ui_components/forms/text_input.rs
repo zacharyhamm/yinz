@@ -1,20 +1,23 @@
-//! A reusable prompt editor, shared by `hocus` and `hocus-ask`.
+//! A single-line text editor: the buffer, the cursor, and the editing keymap.
 //!
-//! Vendored from `default-plugins/layout-manager/src/text_input.rs`, whose own
-//! header explains why that copy exists rather than a shared one:
+//! This is the merge of two copies that had been maintained by hand and drifted
+//! — `default-plugins/layout-manager/src/text_input.rs` and
+//! `default-plugins/hocus-proto/src/text_input.rs`. The layout-manager header
+//! explained why both existed:
 //!
 //!   This is a duplicate of the same file in the sequence (and possibly other) plugins
 //!   Right now there's no good place to put them for shared logic except the zellij-tile-utils crate
 //!   (which I'd rather eliminate), hence the duplication.
 //!
-//! It lives here rather than in `hocus` because the ask popup edits the same
-//! kind of prompt hocus does, and two copies would drift — a key that works in
-//! the sidebar and not in the popup is the sort of difference nobody reports.
-//! Re-sync from layout-manager if it picks up fixes worth having.
+//! This module is that place. The behaviour is hocus-proto's, which was the
+//! superset (shell-style history, `replace_text`); the state-machine tests come
+//! from layout-manager, which was the only copy that had them.
 //!
-//! Known limitation: cursor arithmetic counts chars, so a wide CJK or emoji
-//! character desyncs the visual cursor from the text cursor by a column.
-use zellij_tile::prelude::*;
+//! The buffer is edited in **char** units — `cursor_position` is a char index,
+//! not a byte offset. Turning that into a screen column is the renderer's job
+//! and is measured in columns rather than chars, so a wide CJK or emoji
+//! character does not desync the two; see [`viewport`](super::viewport).
+use crate::prelude::*;
 
 const MAX_UNDO_STACK_SIZE: usize = 100;
 
@@ -677,12 +680,10 @@ impl TextInput {
     }
 }
 
-// run with:
-// make test
-//
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
 
     #[test]
     fn test_new_and_empty() {
@@ -1397,5 +1398,293 @@ mod tests {
         // Undo should remove "ab"
         input.undo();
         assert_eq!(input.get_text(), "");
+    }
+    /// Any single `char`, drawn from hegel's full-Unicode text generator (combining marks,
+    /// astral plane, exotic whitespace like U+00A0 / U+2028 -- not just ASCII).
+    #[hegel::composite]
+    fn any_char(tc: &hegel::TestCase) -> char {
+        let s = tc.draw(generators::text().min_size(1));
+        s.chars().next().unwrap()
+    }
+
+    /// `TextInput` checked against the obvious model: a `Vec<char>` plus a char cursor.
+    struct TextInputModel {
+        real: TextInput,
+        buf: Vec<char>,
+        cursor: usize,
+    }
+
+    impl TextInputModel {
+        fn model_text(&self) -> String {
+            self.buf.iter().collect()
+        }
+
+        /// Mirror of `TextInput::move_word_left`.
+        fn model_word_left(&self) -> usize {
+            let mut pos = self.cursor;
+            while pos > 0 && self.buf[pos - 1].is_whitespace() {
+                pos -= 1;
+            }
+            while pos > 0 && !self.buf[pos - 1].is_whitespace() {
+                pos -= 1;
+            }
+            pos
+        }
+
+        /// Mirror of `TextInput::move_word_right`.
+        fn model_word_right(&self) -> usize {
+            let len = self.buf.len();
+            let mut pos = self.cursor;
+            while pos < len && !self.buf[pos].is_whitespace() {
+                pos += 1;
+            }
+            while pos < len && self.buf[pos].is_whitespace() {
+                pos += 1;
+            }
+            pos
+        }
+    }
+
+    #[hegel::state_machine]
+    impl TextInputModel {
+        #[rule]
+        fn insert_char(&mut self, tc: hegel::TestCase) {
+            let c = tc.draw(any_char());
+            self.real.insert_char(c);
+            self.buf.insert(self.cursor, c);
+            self.cursor += 1;
+        }
+
+        #[rule]
+        fn backspace(&mut self, _: hegel::TestCase) {
+            self.real.backspace();
+            if self.cursor > 0 {
+                self.cursor -= 1;
+                self.buf.remove(self.cursor);
+            }
+        }
+
+        #[rule]
+        fn delete(&mut self, _: hegel::TestCase) {
+            self.real.delete();
+            if self.cursor < self.buf.len() {
+                self.buf.remove(self.cursor);
+            }
+        }
+
+        #[rule]
+        fn delete_word_backward(&mut self, _: hegel::TestCase) {
+            self.real.delete_word_backward();
+            if self.cursor > 0 {
+                let new_position = self.model_word_left();
+                self.buf.drain(new_position..self.cursor);
+                self.cursor = new_position;
+            }
+        }
+
+        #[rule]
+        fn delete_word_forward(&mut self, _: hegel::TestCase) {
+            self.real.delete_word_forward();
+            if self.cursor < self.buf.len() {
+                let end = self.model_word_right();
+                self.buf.drain(self.cursor..end);
+            }
+        }
+
+        #[rule]
+        fn move_left(&mut self, _: hegel::TestCase) {
+            self.real.move_left();
+            self.cursor = self.cursor.saturating_sub(1);
+        }
+
+        #[rule]
+        fn move_right(&mut self, _: hegel::TestCase) {
+            self.real.move_right();
+            if self.cursor < self.buf.len() {
+                self.cursor += 1;
+            }
+        }
+
+        #[rule]
+        fn move_to_start(&mut self, _: hegel::TestCase) {
+            self.real.move_to_start();
+            self.cursor = 0;
+        }
+
+        #[rule]
+        fn move_to_end(&mut self, _: hegel::TestCase) {
+            self.real.move_to_end();
+            self.cursor = self.buf.len();
+        }
+
+        #[rule]
+        fn move_word_left(&mut self, _: hegel::TestCase) {
+            self.real.move_word_left();
+            self.cursor = self.model_word_left();
+        }
+
+        #[rule]
+        fn move_word_right(&mut self, _: hegel::TestCase) {
+            self.real.move_word_right();
+            self.cursor = self.model_word_right();
+        }
+
+        #[rule]
+        fn clear(&mut self, _: hegel::TestCase) {
+            self.real.clear();
+            self.buf.clear();
+            self.cursor = 0;
+        }
+
+        #[rule]
+        fn set_text(&mut self, tc: hegel::TestCase) {
+            let text = tc.draw(generators::text());
+            self.real.set_text(text.clone());
+            self.buf = text.chars().collect();
+            self.cursor = self.buf.len();
+        }
+
+        #[rule]
+        fn set_cursor_position(&mut self, tc: hegel::TestCase) {
+            let pos = tc.draw(generators::integers::<usize>());
+            self.real.set_cursor_position(pos);
+            self.cursor = pos.min(self.buf.len());
+        }
+
+        #[rule]
+        fn drain_text(&mut self, _: hegel::TestCase) {
+            let drained = self.real.drain_text();
+            assert_eq!(
+                drained,
+                self.model_text(),
+                "drain_text returned {:?}, model held {:?}",
+                drained,
+                self.model_text()
+            );
+            self.buf.clear();
+            self.cursor = 0;
+        }
+
+        #[invariant]
+        fn matches_the_model(&self, _: hegel::TestCase) {
+            assert_eq!(
+                self.real.get_text(),
+                self.model_text(),
+                "buffer {:?} diverged from model {:?} (cursor {})",
+                self.real.get_text(),
+                self.model_text(),
+                self.cursor
+            );
+            assert_eq!(
+                self.real.get_cursor_position(),
+                self.cursor,
+                "cursor {} diverged from model cursor {} (buffer {:?})",
+                self.real.get_cursor_position(),
+                self.cursor,
+                self.real.get_text()
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn text_input_matches_a_naive_char_buffer(tc: hegel::TestCase) {
+        let machine = TextInputModel {
+            real: TextInput::empty(),
+            buf: Vec::new(),
+            cursor: 0,
+        };
+        hegel::stateful::run(machine, tc);
+    }
+
+    /// Mutating operations used to drive the undo/redo property.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Insert(char),
+        Backspace,
+        Delete,
+        DeleteWordBackward,
+        DeleteWordForward,
+        MoveLeft,
+        MoveRight,
+        MoveToStart,
+        MoveToEnd,
+        Clear,
+        SetText(String),
+    }
+
+    impl Op {
+        fn apply(&self, input: &mut TextInput) {
+            match self {
+                Op::Insert(c) => input.insert_char(*c),
+                Op::Backspace => input.backspace(),
+                Op::Delete => input.delete(),
+                Op::DeleteWordBackward => input.delete_word_backward(),
+                Op::DeleteWordForward => input.delete_word_forward(),
+                Op::MoveLeft => input.move_left(),
+                Op::MoveRight => input.move_right(),
+                Op::MoveToStart => input.move_to_start(),
+                Op::MoveToEnd => input.move_to_end(),
+                Op::Clear => input.clear(),
+                Op::SetText(s) => input.set_text(s.clone()),
+            }
+        }
+    }
+
+    #[hegel::composite]
+    fn any_op(tc: &hegel::TestCase) -> Op {
+        let which = tc.draw(generators::integers::<u8>().max_value(10));
+        match which {
+            0 => Op::Insert(tc.draw(any_char())),
+            1 => Op::Backspace,
+            2 => Op::Delete,
+            3 => Op::DeleteWordBackward,
+            4 => Op::DeleteWordForward,
+            5 => Op::MoveLeft,
+            6 => Op::MoveRight,
+            7 => Op::MoveToStart,
+            8 => Op::MoveToEnd,
+            9 => Op::Clear,
+            _ => Op::SetText(tc.draw(generators::text())),
+        }
+    }
+
+    /// After any sequence of edits, an `undo` that succeeds must be exactly undone by a `redo`.
+    #[hegel::test]
+    fn undo_then_redo_restores_the_state(tc: hegel::TestCase) {
+        let initial = tc.draw(generators::text());
+        let ops = tc.draw(generators::vecs(any_op()));
+        let mut input = TextInput::new(initial.clone());
+        for op in &ops {
+            op.apply(&mut input);
+        }
+        let text_before = input.get_text().to_string();
+        let cursor_before = input.get_cursor_position();
+        if !input.undo() {
+            return;
+        }
+        assert!(
+            input.redo(),
+            "undo succeeded but redo did not, after {:?} on {:?}",
+            ops,
+            initial
+        );
+        assert_eq!(
+            input.get_text(),
+            text_before,
+            "redo gave {:?} instead of {:?}, after {:?} on {:?}",
+            input.get_text(),
+            text_before,
+            ops,
+            initial
+        );
+        assert_eq!(
+            input.get_cursor_position(),
+            cursor_before,
+            "redo gave cursor {} instead of {}, after {:?} on {:?}",
+            input.get_cursor_position(),
+            cursor_before,
+            ops,
+            initial
+        );
     }
 }

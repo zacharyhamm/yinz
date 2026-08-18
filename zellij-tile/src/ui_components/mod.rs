@@ -1,3 +1,4 @@
+pub mod forms;
 mod nested_list;
 mod ribbon;
 mod table;
