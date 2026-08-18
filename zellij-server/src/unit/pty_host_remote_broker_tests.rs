@@ -196,16 +196,48 @@ fn a_handshake_not_followed_by_a_spawn_is_refused() {
 // every closed remote pane leaked its supervisor and its child process on the
 // remote machine, forever.
 
+/// A pump over a real pty, with a session attached to the same socketpair the
+/// caller holds the other end of.
+///
+/// The session is real rather than faked because `Release` is answered through
+/// it: the pump has to detach the pane and write the ack on the wire, and a
+/// stand-in for either would be testing the stand-in.
 fn pump_on_a_pair() -> (UnixStream, std::thread::JoinHandle<Result<Outcome>>) {
-    use std::os::unix::io::AsRawFd;
+    let (ours, theirs) = pump_over_session(|_session, _registry| {});
+    (ours, theirs)
+}
+
+/// `pump_on_a_pair`, with a look at the session and registry before the pump
+/// starts — for the tests that need to say what happened to the pane afterwards.
+fn pump_over_session(
+    inspect: impl FnOnce(&Arc<PaneSession>, &Arc<PaneRegistry>),
+) -> (UnixStream, std::thread::JoinHandle<Result<Outcome>>) {
+    use crate::pty_host::client::PtyHostHandle;
+    use std::os::fd::OwnedFd;
+
     let pty = nix::pty::openpty(None, None).expect("openpty failed");
-    let master_fd = pty.master.as_raw_fd();
+    let (control, control_peer) = UnixStream::pair().expect("socketpair failed");
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs.try_clone().expect("socket clone failed")));
+
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        OwnedFd::from(pty.master),
+        std::process::id(),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+    let generation = session.attach(wire.clone());
+    inspect(&session, &registry);
+
     let pump = std::thread::spawn(move || {
-        // The pty is kept alive by this closure for the pump's lifetime.
-        let _keep = pty;
+        // The slave and the supervisor's peer end are kept alive by this closure
+        // for the pump's lifetime; dropping either would end the pty early.
+        let _keep = (pty.slave, control_peer);
         let mut theirs = theirs;
-        pump_control(&mut theirs, master_fd, std::process::id())
+        pump_control(&mut theirs, &session, generation, &wire, &registry)
     });
     (ours, pump)
 }
@@ -232,6 +264,143 @@ fn a_connection_that_just_ends_is_not_a_terminate() {
         matches!(outcome, Outcome::Disconnected),
         "a dropped connection must not read as a terminate, or a reconnectable pane is killed"
     );
+}
+
+// --- handing a pane to another server ---
+//
+// A warp is a resume by a *different* server, and the broker cannot tell the two
+// apart — which is the reason the feature is small. What it can tell apart is a
+// connection that ended from one that said it was handing the pane over, and
+// that distinction is the whole of what `Release` buys: the detach happens
+// before the ack rather than whenever the old connection's blocking read
+// happens to return, so the token can be given away and used immediately.
+
+#[test]
+fn a_release_detaches_the_pane_without_ending_it() {
+    let holder = Arc::new(Mutex::new(None));
+    let seen = holder.clone();
+    let (mut ours, pump) = pump_over_session(move |session, registry| {
+        *seen.lock().unwrap() = Some((session.clone(), registry.clone()));
+    });
+    write_control(&mut ours, &ServerToBrokerMsg::Release).expect("write failed");
+
+    let outcome = pump.join().expect("pump panicked").expect("pump errored");
+    assert!(
+        matches!(outcome, Outcome::Released),
+        "a release must be distinguishable from a disconnect, or the ack is never sent"
+    );
+
+    let (session, registry) = holder.lock().unwrap().clone().expect("no session recorded");
+    assert!(
+        !session.is_attached(),
+        "the pane must be detached, or the adopting server's resume is refused as a double attach"
+    );
+    assert!(
+        !session.is_terminated(),
+        "a release must not end the pane — the running process is the entire point of a warp"
+    );
+    assert_eq!(
+        registry.len(),
+        1,
+        "the pane must stay in the registry, or there is nothing left for the far session to \
+         resume by token"
+    );
+}
+
+/// The race this exists to close. A server that merely closed its socket would
+/// leave the pane attached until the broker's blocking read returned, and a
+/// resume arriving in that window is refused outright.
+#[test]
+fn a_pane_is_free_to_resume_the_moment_the_release_is_acknowledged() {
+    let holder = Arc::new(Mutex::new(None));
+    let seen = holder.clone();
+    let (mut ours, pump) = pump_over_session(move |session, registry| {
+        *seen.lock().unwrap() = Some((session.clone(), registry.clone()));
+    });
+    write_control(&mut ours, &ServerToBrokerMsg::Release).expect("write failed");
+
+    // Read the ack rather than joining the pump: this is the ordering the
+    // adopting server actually relies on. Joining would prove only that the pane
+    // is free once the connection is fully torn down, which is the weaker claim
+    // a plain disconnect already satisfies.
+    let ack = read_reply(&mut ours).expect("the broker must acknowledge a release");
+    assert_eq!(
+        ack,
+        BrokerToServerMsg::Released,
+        "the release must be acknowledged, or the far side has nothing to wait for"
+    );
+
+    let (session, _) = holder.lock().unwrap().clone().expect("no session recorded");
+    assert!(
+        !session.is_attached(),
+        "the pane must already be free when the ack lands, not merely on its way to being free"
+    );
+
+    drop(ours);
+    let _ = pump.join();
+}
+
+/// The two refusals mean opposite things to the adopting side — one is worth
+/// waiting a moment for, the other never becomes true — so the broker has to say
+/// which it is rather than leaving it to be read out of the prose.
+#[test]
+fn a_resume_says_whether_waiting_could_help() {
+    let registry = Arc::new(PaneRegistry::new());
+    let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+
+    let refused = resume_pane(&registry, &wire, "never-heard-of-it", 0);
+    assert!(refused.is_err());
+    let mut ours = ours;
+    match read_reply(&mut ours).expect("no refusal was sent") {
+        BrokerToServerMsg::ResumeRefused { kind, .. } => assert_eq!(
+            kind,
+            ResumeRefusal::Unknown,
+            "a pane this broker has never held must not read as one worth retrying for"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// A pane nobody is speaking for is exactly what `pty-host list --host` is for
+/// finding, so the listing has to distinguish it from a healthy one.
+#[test]
+fn listing_panes_says_which_have_no_server() {
+    let holder = Arc::new(Mutex::new(None));
+    let seen = holder.clone();
+    let (mut ours, pump) = pump_over_session(move |session, registry| {
+        *seen.lock().unwrap() = Some((session.clone(), registry.clone()));
+    });
+
+    write_control(&mut ours, &ServerToBrokerMsg::ListPanes).expect("write failed");
+    let attached = match read_reply(&mut ours).expect("no answer to ListPanes") {
+        BrokerToServerMsg::PaneList { entries } => entries,
+        other => panic!("expected a pane list, got {other:?}"),
+    };
+    assert_eq!(attached.len(), 1);
+    assert!(
+        attached[0].attached,
+        "a pane with this connection speaking for it must not read as stranded"
+    );
+    assert_eq!(attached[0].command, "/bin/sh");
+
+    write_control(&mut ours, &ServerToBrokerMsg::Release).expect("write failed");
+    let _ = read_reply(&mut ours);
+
+    let (_, registry) = holder.lock().unwrap().clone().expect("no session recorded");
+    let stranded = registry.entries();
+    assert!(
+        !stranded[0].attached,
+        "a released pane nobody has adopted is precisely what this listing is for"
+    );
+    assert!(
+        stranded[0].unattached_secs.is_some(),
+        "an unattached pane must carry how long it has been that way — it is what the orphan \
+         reaper measures, and what tells a user whether it is about to be reclaimed"
+    );
+
+    drop(ours);
+    let _ = pump.join();
 }
 
 // --- resolving the default shell ---

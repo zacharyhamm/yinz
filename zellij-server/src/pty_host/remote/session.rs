@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::pty_host::client::PtyHostHandle;
+use crate::pty_host::remote::protocol::RemotePaneEntry;
 
 /// How much output to keep for a pane whose server is not currently connected.
 ///
@@ -130,6 +131,13 @@ pub enum ResumeStep {
 /// One pane on this machine.
 pub struct PaneSession {
     pub token: String,
+    /// How the pane's command reads, after the default shell has been resolved.
+    ///
+    /// Kept so `ListPanes` can describe a pane to someone hunting for one they
+    /// lost. Recorded rather than derived on demand because the only other
+    /// place it exists is the supervisor's copy, on the far side of a handle
+    /// this would have to lock to ask.
+    pub command: String,
     handle: Mutex<PtyHostHandle>,
     /// Kept alive for as long as the pane exists. Both pumps borrow the raw
     /// descriptor; if either owned it, its exit would close a number the other
@@ -165,10 +173,17 @@ impl PaneSession {
     /// `disconnected_since` starts `None` rather than being set by `detach()`:
     /// that is what keeps the reaper away from a pane in the moment between
     /// being built and being attached.
-    pub fn new(token: String, handle: PtyHostHandle, master: OwnedFd, child_pid: u32) -> Self {
+    pub fn new(
+        token: String,
+        command: String,
+        handle: PtyHostHandle,
+        master: OwnedFd,
+        child_pid: u32,
+    ) -> Self {
         let master_fd = master.as_raw_fd();
         Self {
             token,
+            command,
             handle: Mutex::new(handle),
             _master: master,
             master_fd,
@@ -407,6 +422,27 @@ impl PaneRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Describe every pane this broker holds, for `ListPanes`.
+    ///
+    /// Sorted by token so two calls read the same way and a person scanning the
+    /// output of one host after another is not re-reading a shuffled list.
+    pub fn entries(&self) -> Vec<RemotePaneEntry> {
+        let Ok(panes) = self.panes.lock() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<RemotePaneEntry> = panes
+            .values()
+            .map(|session| RemotePaneEntry {
+                pane_token: session.token.clone(),
+                command: session.command.clone(),
+                attached: session.is_attached(),
+                unattached_secs: session.orphaned_for().map(|elapsed| elapsed.as_secs()),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.pane_token.cmp(&b.pane_token));
+        entries
     }
 
     /// Terminate panes nobody has come back for. Returns how many were reclaimed.

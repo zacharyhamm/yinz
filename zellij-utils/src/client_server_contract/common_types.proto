@@ -923,6 +923,9 @@ message AdoptPaneAction {
   optional string contents = 4;
   bool borderless = 5;
   WarpPlacement placement = 6;
+  // See `WarpedPane.remote`. A remote pane's process is on another machine, so
+  // there is no local supervisor socket to name.
+  optional RemotePaneHandoff remote = 7;
 }
 
 // One pane of a tab moving between sessions: which supervisor to attach to,
@@ -936,6 +939,27 @@ message WarpedPane {
   // The screen and scrollback as an ANSI dump. Can be megabytes.
   optional string contents = 4;
   bool borderless = 5;
+  // Set when the pane's process is on another machine, and then the only
+  // address that means anything — the two fields above name a local supervisor
+  // socket, and a remote pane has none.
+  optional RemotePaneHandoff remote = 6;
+}
+
+// How to pick a remote pane back up from the broker holding it.
+//
+// Carries the command, which the local path does not need to: an adopting
+// server learns a local pane's command from its supervisor's attach
+// acknowledgement, but a broker's answer to a resume carries none.
+message RemotePaneHandoff {
+  // The ssh destination the pane was opened against.
+  string host = 1;
+  // How the broker on that host names this pane. Meaningful only there.
+  string pane_token = 2;
+  // Output bytes the releasing session took delivery of; the broker replays
+  // from exactly here.
+  uint64 received = 3;
+  // A `RunCommand`, carried in the same message `Run.command` carries one in.
+  RunCommandAction cmd = 4;
 }
 
 // Move a tab, arrangement and running processes and all, to another session.

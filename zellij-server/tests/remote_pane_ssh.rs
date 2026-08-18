@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use zellij_server::os_input_output::AsyncReader;
 use zellij_server::pty_host::protocol::WireWinsize;
-use zellij_server::pty_host::remote::conn::{RemoteGitProbe, RemoteStatus};
+use zellij_server::pty_host::remote::conn::{Reconnector, RemoteGitProbe, RemoteStatus};
 use zellij_server::pty_host::remote::protocol::{
     self, BrokerToServerMsg, ChildSignal, ResumeRefusal, ServerToBrokerMsg, REMOTE_PROTOCOL_VERSION,
 };
@@ -1326,6 +1326,209 @@ fn a_pane_survives_a_dropped_connection_and_replays_what_it_missed() {
     pane.close();
 }
 
+// ---------------------------------------------------------------------------
+// Handing a pane to another session
+// ---------------------------------------------------------------------------
+//
+// A warp between two zellij sessions is, on this side of the ssh, a release by
+// one `RemoteHosts` and a resume by another. The broker cannot tell that from a
+// reconnect and does not need to — which is the reason the feature is small, and
+// the reason these tests use two `RemoteHosts` where the reconnect tests use one.
+//
+// What is genuinely new is `Release`. Without it the pane is freed only when the
+// old connection's blocking read returns, which is not a moment the releasing
+// side can name; the resume then races it and is refused as a double attach.
+
+/// Stop reading and hand the pane over, the way `release_terminal_for_warp` does.
+///
+/// The reader is stopped *before* the count is sampled, and that ordering is the
+/// one this models: bytes counted after the sample would be replayed on top of a
+/// screen that already showed them.
+fn release_for_warp(mut pane: Pane) -> (String, u64) {
+    pane.stop_pump();
+    let received = pane.conn.received();
+    pane.conn
+        .release_for_warp(Duration::from_secs(5))
+        .expect("the broker should have released the pane");
+    (pane.conn.pane_token().to_owned(), received)
+}
+
+/// Pick a released pane up on a different `RemoteHosts`, as the adopting session
+/// does through its own ssh forward.
+fn adopt_elsewhere(hosts: &Arc<RemoteHosts>, token: &str, received: u64) -> (Pane, u64) {
+    let resumed = hosts
+        .reconnect(HOST, token, received)
+        .unwrap_or_else(|e| panic!("the second server could not resume {token}: {e:#}"));
+    let conn = Arc::new(
+        RemoteConn::new(
+            resumed.write_socket,
+            HOST.to_owned(),
+            token.to_owned(),
+            RunCommand {
+                command: PathBuf::from("/bin/sh"),
+                remote_host: Some(HOST.to_owned()),
+                ..Default::default()
+            },
+            Some(hosts.clone() as Arc<dyn Reconnector>),
+        )
+        .expect("failed to build a connection for an adopted pane"),
+    );
+    conn.restore_received(received);
+    let reader = RemoteReader::new(conn.clone(), resumed.read_socket)
+        .expect("failed to build a reader for an adopted pane");
+    (pump(conn, reader), resumed.dropped)
+}
+
+#[test]
+#[ignore]
+fn a_pane_moves_to_another_server_with_its_process_intact() {
+    let first_server = start();
+    let second_server = Arc::new(RemoteHosts::new());
+    assert_ne!(
+        first_server.forward_socket_path(HOST),
+        second_server.forward_socket_path(HOST),
+        "the two servers must reach the broker through their own forwards, as two sessions do"
+    );
+
+    let marker = marker("warp");
+    // A counter again, so a gap or a repeat in the handoff is visible as a gap
+    // or a repeat in the sequence rather than as merely "some output".
+    let pane = open_pane(
+        &first_server,
+        &format!(
+            "echo {marker}-ready; i=0; while :; do i=$((i+1)); echo {marker}-$i; sleep 0.1; done"
+        ),
+    );
+    pane.wait_for_output(&format!("{marker}-ready"));
+    pane.wait_for_output(&format!("{marker}-5"));
+
+    let pid_before = remote_pids(&marker);
+    assert_eq!(pid_before.len(), 1);
+    let before = pane.output();
+    let highest_before = highest_counter(&before, &marker);
+
+    let (token, received) = release_for_warp(pane);
+    let (adopted, dropped) = adopt_elsewhere(&second_server, &token, received);
+
+    assert_eq!(
+        dropped, 0,
+        "a handoff measured in milliseconds should not overrun a 4 MiB replay buffer"
+    );
+    assert_eq!(
+        remote_pids(&marker),
+        pid_before,
+        "the pane's process did not survive the move — a warp that restarts the process is not a \
+         warp"
+    );
+
+    // The stream continues rather than restarts. The adopting session's screen
+    // is seeded from the releasing session's dump, so the replay must pick up
+    // exactly where that left off: no line twice, and no line missing.
+    adopted.wait_for_output_within(
+        &format!("{marker}-{}", highest_before + 5),
+        Duration::from_secs(30),
+    );
+    let after = adopted.output();
+    let highest_after = highest_counter(&after, &marker);
+    for i in (highest_before + 1)..=highest_after {
+        assert!(
+            after.contains(&format!("{marker}-{i}\r\n")),
+            "line {i} of {highest_after} never arrived after the move — the replay has a hole in it"
+        );
+    }
+    for i in 1..=highest_before {
+        assert!(
+            !after.contains(&format!("{marker}-{i}\r\n")),
+            "line {i} arrived twice: the adopting session was replayed output the releasing one \
+             had already taken delivery of, which would double it on screen"
+        );
+    }
+
+    // And the moved pane is a working pane, not just a readable one.
+    adopted.send_line("");
+    adopted.wait_for_output_within(
+        &format!("{marker}-{}", highest_after + 3),
+        Duration::from_secs(30),
+    );
+
+    adopted.close();
+    second_server.shutdown();
+}
+
+/// The race `Release` closes. A resume with no retry window at all must succeed,
+/// because a warp hands the token over the instant the release returns.
+#[test]
+#[ignore]
+fn a_released_pane_is_resumable_immediately() {
+    let first_server = start();
+    let second_server = Arc::new(RemoteHosts::new());
+
+    let marker = marker("warp-race");
+    // A ticking counter rather than an idle pane, because what has to be
+    // observed here is the pane *going on* after the move. A byte-exact resume
+    // correctly replays nothing the releasing session already took delivery of,
+    // so an idle pane would produce no evidence either way.
+    let pane = open_pane(
+        &first_server,
+        &format!("i=0; while :; do i=$((i+1)); echo {marker}-$i; sleep 0.1; done"),
+    );
+    pane.wait_for_output(&format!("{marker}-3"));
+    let highest_before = highest_counter(&pane.output(), &marker);
+
+    let (token, received) = release_for_warp(pane);
+    // Deliberately no sleep, no retry, no settle. If the broker freed the pane
+    // only when its read returned, this is exactly the window that would fail.
+    let (adopted, _) = adopt_elsewhere(&second_server, &token, received);
+
+    adopted.wait_for_output_within(
+        &format!("{marker}-{}", highest_before + 5),
+        Duration::from_secs(10),
+    );
+
+    adopted.close();
+    second_server.shutdown();
+}
+
+/// A pane stranded by a failed handoff is running with nothing watching it, and
+/// its token lives only in the broker's registry. Listing is the only way back.
+#[test]
+#[ignore]
+fn a_stranded_pane_can_be_found_and_adopted_by_listing_the_host() {
+    let first_server = start();
+    let second_server = Arc::new(RemoteHosts::new());
+
+    let marker = marker("stranded");
+    let pane = open_pane(&first_server, &idle_marked(&marker));
+    pane.wait_for_output(&format!("{marker}-started"));
+    let (token, _) = release_for_warp(pane);
+
+    let entries = second_server
+        .list_panes(HOST)
+        .expect("a second server should be able to ask what the broker is holding");
+    let stranded = entries
+        .iter()
+        .find(|entry| entry.pane_token == token)
+        .unwrap_or_else(|| panic!("the released pane {token} was not in the listing: {entries:?}"));
+    assert!(
+        !stranded.attached,
+        "a released pane nobody adopted must read as unattached — that is what marks it as one \
+         needing recovery"
+    );
+    assert!(
+        stranded.command.contains("/bin/sh"),
+        "a listing has to say enough to recognise a pane by: {:?}",
+        stranded.command
+    );
+
+    // Recovering from zero, as `pty-host adopt --host` does: this side has taken
+    // delivery of nothing, so the broker replays everything it still holds.
+    let (adopted, _) = adopt_elsewhere(&second_server, &token, 0);
+    adopted.wait_for_output_within(&format!("{marker}-started"), Duration::from_secs(30));
+
+    adopted.close();
+    second_server.shutdown();
+}
+
 /// The same, but against a pane that is talking the whole time.
 ///
 /// Reconnecting has a moment where the broker has worked out what to replay but
@@ -1583,7 +1786,8 @@ fn a_resume_for_an_unknown_token_is_refused() {
             assert_eq!(
                 kind,
                 ResumeRefusal::Unknown,
-                "an unheard-of token should be refused as unknown, not as taken: {reason}"
+                "a pane this broker never had must not read as one worth waiting for — the \
+                 adopting side would retry for a second and then fail anyway"
             );
         },
         other => panic!("expected the resume to be refused, got {other:?}"),

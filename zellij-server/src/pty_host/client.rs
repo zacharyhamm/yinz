@@ -154,6 +154,59 @@ pub struct ReleasedPtyHost {
     pub control_socket: Option<PathBuf>,
 }
 
+/// What a caller needs to hand a *remote* pane on to its next owner.
+///
+/// The remote counterpart of `ReleasedPtyHost`, and deliberately not a variant
+/// of it: nothing here is a path or a pid this machine could act on. The whole
+/// address is "which host, and which pane the broker there is holding".
+#[derive(Debug, Clone)]
+pub struct ReleasedRemotePane {
+    /// The ssh destination, as the pane was opened with. The adopting server
+    /// builds its own forward to it rather than inheriting one.
+    pub host: String,
+    /// How the broker names this pane on a `Resume`. Meaningful only to that
+    /// broker.
+    pub pane_token: String,
+    /// Output bytes this session took delivery of, sampled after its reader
+    /// stopped. The broker replays from exactly here, so this is what keeps the
+    /// pane's serialized screen and the replay from overlapping or leaving a
+    /// gap between them.
+    pub received: u64,
+    /// What the pane runs.
+    ///
+    /// Filled in by the pty thread, which is where the command is recorded. The
+    /// local path does not need this — the adopting server gets it back from
+    /// the supervisor's `AttachAck` — but a broker's answer to a resume carries
+    /// none, and a pane that cannot name its command cannot title itself, be
+    /// re-run on the right machine when held, or be attributed to a project.
+    pub cmd: RunCommand,
+}
+
+/// A pane let go for a warp, whichever machine its process is on.
+///
+/// An enum rather than two functions for the same reason `PaneTransport` is
+/// one: every consumer of a released pane has to answer for the remote case,
+/// and the compiler naming each site is better than any of them quietly
+/// assuming a local supervisor.
+#[derive(Debug, Clone)]
+pub enum ReleasedPane {
+    Local(ReleasedPtyHost),
+    Remote(ReleasedRemotePane),
+}
+
+impl ReleasedPane {
+    /// How to name this pane to a user who has to go and recover it by hand.
+    ///
+    /// Both halves of a warp put this in their failure messages, which is why it
+    /// lives with the type rather than at either call site.
+    pub fn recovery_id(&self) -> String {
+        match self {
+            ReleasedPane::Local(local) => local.host_id.clone(),
+            ReleasedPane::Remote(remote) => format!("{}:{}", remote.host, remote.pane_token),
+        }
+    }
+}
+
 #[cfg(test)]
 impl PtyHostHandle {
     /// A handle with a socketpair where a supervisor would be, so a test can

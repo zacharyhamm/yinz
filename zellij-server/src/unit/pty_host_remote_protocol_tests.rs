@@ -47,6 +47,8 @@ fn server_messages() -> Vec<ServerToBrokerMsg> {
             pane_token: "abc123".to_owned(),
             received: 123_456,
         },
+        ServerToBrokerMsg::Release,
+        ServerToBrokerMsg::ListPanes,
     ]
 }
 
@@ -84,6 +86,24 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
             cwd: None,
             shell_argv: None,
             foreground_argv: None,
+        },
+        BrokerToServerMsg::Released,
+        BrokerToServerMsg::PaneList { entries: vec![] },
+        BrokerToServerMsg::PaneList {
+            entries: vec![
+                RemotePaneEntry {
+                    pane_token: "abc123".to_owned(),
+                    command: "/bin/zsh".to_owned(),
+                    attached: true,
+                    unattached_secs: None,
+                },
+                RemotePaneEntry {
+                    pane_token: "def456".to_owned(),
+                    command: "cargo watch -x test".to_owned(),
+                    attached: false,
+                    unattached_secs: Some(1_800),
+                },
+            ],
         },
     ]
 }
@@ -284,9 +304,10 @@ fn a_remote_spawn_carries_no_termios() {
 /// not. Tying them together would make every remote-protocol tweak cost a pane.
 #[test]
 fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
-    // v3: `Release`/`Released` and `ListPanes`/`PaneList`, so a pane can be handed
-    // to another server rather than only picked back up by the one that lost it,
-    // and one stranded by a failed handoff can be found again.
+    // v2: a Spawn may carry no command, meaning "this machine's login shell".
+    // v3: Release/Released, so a pane can be handed to another server rather
+    // than only picked back up by the one that lost it, and ListPanes, so one
+    // stranded by a failed handoff can be found again.
     assert_eq!(
         REMOTE_PROTOCOL_VERSION, 3,
         "bumping this is cheap; make sure it is deliberate"

@@ -150,6 +150,7 @@ fn test_session() -> (
     let (master, master_peer) = UnixStream::pair().expect("socketpair failed");
     let session = PaneSession::new(
         "token".to_owned(),
+        "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         OwnedFd::from(master),
         std::process::id(),

@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 use interprocess::local_socket::Stream as LocalSocketStream;
 use zellij_server::os_input_output::{AdoptedTerminal, AsyncReader, ServerOsApi};
 use zellij_server::panes::PaneId;
-use zellij_server::pty_host::client::ReleasedPtyHost;
+use zellij_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use zellij_server::ClientId;
 use zellij_utils::data::Palette;
+use zellij_utils::data::RemotePaneHandoff;
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::ipc::{
@@ -280,15 +281,63 @@ impl ServerOsApi for FakeServerOsApi {
     /// has a supervisor process — but the control socket is, because that is the
     /// only thing the receiving session is told and the only thing it can get
     /// wrong.
-    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
+        // A pane whose command names another machine has no local supervisor to
+        // hand over, so what it releases is a broker address rather than a
+        // socket. Asked before the release, because releasing is what removes
+        // the state the answer comes from.
+        if let Some(host) = self.shared_ptys.remote_host_of(terminal_id) {
+            let pane_token = self
+                .shared_ptys
+                .release_remote_for_warp(terminal_id)
+                .with_context(|| format!("no fake pty for remote terminal id {terminal_id}"))?;
+            return Ok(ReleasedPane::Remote(ReleasedRemotePane {
+                host,
+                pane_token,
+                // The fake's output goes down a channel that travels with the
+                // pane's state, so there is no byte stream to resume from and
+                // nothing to count. A real one carries the reader's tally here.
+                received: 0,
+                cmd: self
+                    .shared_ptys
+                    .run_command_of(terminal_id)
+                    .unwrap_or_default(),
+            }));
+        }
         let control_socket = self
             .shared_ptys
             .release_for_warp(terminal_id)
             .with_context(|| format!("no fake pty for terminal id {terminal_id}"))?;
-        Ok(ReleasedPtyHost {
+        Ok(ReleasedPane::Local(ReleasedPtyHost {
             host_id: format!("fake-pty-host-{terminal_id}"),
             host_pid: FAKE_PID_BASE + terminal_id,
             control_socket: Some(control_socket),
+        }))
+    }
+    fn adopt_remote_terminal(
+        &self,
+        handoff: &RemotePaneHandoff,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let adopted = self
+            .shared_ptys
+            .adopt_remote_for_warp(&handoff.pane_token, quit_cb)
+            .with_context(|| {
+                format!(
+                    "{} is not holding a pane called '{}'",
+                    handoff.host, handoff.pane_token
+                )
+            })?;
+        Ok(AdoptedTerminal {
+            terminal_id: adopted.terminal_id,
+            reader: adopted.reader,
+            // None, as a real remote pane's is: a pid from another machine names
+            // an unrelated local process. This is the fake's half of what keeps
+            // an adopted remote pane out of `id_to_child_pid`.
+            child_pid: None,
+            cmd: adopted.run_command,
+            buffered: Vec::new(),
+            child_exit_status: adopted.child_exit_status,
         })
     }
     fn adopt_terminal(
@@ -316,7 +365,7 @@ impl ServerOsApi for FakeServerOsApi {
             // survived; here the evidence is that the pty *state* travelled -
             // its stdin, its sizes, the command it was spawned with - and that it
             // was never told to exit.
-            child_pid: FAKE_PID_BASE + adopted.terminal_id,
+            child_pid: Some(FAKE_PID_BASE + adopted.terminal_id),
             cmd: adopted.run_command,
             // Not modelled: a real supervisor buffers what the child wrote while
             // nobody was attached. The fake has no way to be written to while it

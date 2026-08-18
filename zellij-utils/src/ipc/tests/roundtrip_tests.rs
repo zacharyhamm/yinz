@@ -2,8 +2,8 @@ use super::test_framework::*;
 use crate::data::{
     BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates, GlobalPaneEdge,
     GlobalPanePlacement, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
-    LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag, Resize,
-    WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag,
+    RemotePaneHandoff, Resize, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -881,6 +881,7 @@ fn test_client_messages() {
                 title: None,
                 contents: None,
                 borderless: false,
+                remote: None,
             }),
             placement: WarpPlacement::NewTab,
         },
@@ -898,6 +899,7 @@ fn test_client_messages() {
                 title: Some("vim src/main.rs".to_owned()),
                 contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(200_000)),
                 borderless: true,
+                remote: None,
             }),
             placement: WarpPlacement::Floating,
         },
@@ -988,15 +990,31 @@ fn test_client_messages() {
                         title: Some("vim src/main.rs".to_owned()),
                         contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(100_000)),
                         borderless: false,
+                        remote: None,
                     },
+                    // A pane whose process is on another machine, in a tab
+                    // otherwise full of local ones. The mix is the point: a tab
+                    // is warped whole, so both addressing shapes have to survive
+                    // the same message.
                     WarpedPane {
-                        host_id: "b4e2d3c5f6a7".to_owned(),
-                        control_socket: PathBuf::from(
-                            "/run/user/1000/zellij/pty/b4e2d3c5f6a7.sock"
-                        ),
+                        host_id: String::new(),
+                        control_socket: PathBuf::new(),
                         title: Some("cargo watch".to_owned()),
                         contents: None,
                         borderless: true,
+                        remote: Some(RemotePaneHandoff {
+                            host: "build-box".to_owned(),
+                            pane_token: "d6a7b8c9e0f1".to_owned(),
+                            received: 4_294_967_296,
+                            cmd: RunCommand {
+                                command: PathBuf::from("/usr/bin/cargo"),
+                                args: vec!["watch".to_owned()],
+                                cwd: Some(PathBuf::from("/home/build/project")),
+                                hold_on_close: true,
+                                remote_host: Some("build-box".to_owned()),
+                                ..Default::default()
+                            },
+                        }),
                     },
                 ],
                 floating_panes: vec![WarpedPane {
@@ -1005,6 +1023,7 @@ fn test_client_messages() {
                     title: Some("notes".to_owned()),
                     contents: None,
                     borderless: false,
+                    remote: None,
                 }],
                 hide_floating_panes: true,
             }),

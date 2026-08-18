@@ -172,6 +172,14 @@ pub enum PtyHosts {
         /// Print a JSON array instead of a table.
         #[clap(long)]
         json: bool,
+        /// List panes held by the zellij broker on another machine instead of
+        /// supervisors on this one.
+        ///
+        /// A remote pane's supervisor is on that machine, so it leaves nothing
+        /// here to enumerate — the broker holding it is the only thing that can
+        /// say what survived.
+        #[clap(long)]
+        host: Option<String>,
     },
     /// Terminate one supervisor and the process it is running.
     Kill {
@@ -186,7 +194,16 @@ pub enum PtyHosts {
     /// server that started it.
     Adopt {
         /// Supervisor ID from `zellij pty-host list`. A unique prefix is enough.
+        ///
+        /// With `--host`, this is a pane token from
+        /// `zellij pty-host list --host <machine>` instead, and must be given in
+        /// full: a token means something only to the broker that issued it, and
+        /// this side has nothing to match a prefix against.
         host_id: String,
+        /// Adopt a pane held by the zellij broker on this machine, rather than a
+        /// supervisor on the local one.
+        #[clap(long)]
+        host: Option<String>,
         /// Session to adopt the pane into. Defaults to the current session.
         #[clap(long, short)]
         session: Option<String>,
