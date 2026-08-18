@@ -16,6 +16,16 @@
 //! That also settles multiplexing without a multiplexer: each pane opens its own
 //! connection to the forwarded socket, ssh opens a channel per connection, and
 //! the broker accepts one connection per pane.
+//!
+//! A pane outlives its connection: it lives in the broker's `PaneRegistry`, keyed
+//! by a token, and connections attach to and detach from it. That is what lets a
+//! dropped link be ridden out — and, for free, what lets a pane be handed to
+//! another *session*. A warp is a `Resume` by a different server, which the
+//! broker cannot distinguish from a reconnect and does not need to; the two
+//! servers differ only in having built their own ssh forwards. The one addition
+//! a warp needed was `Release`, because a handoff must be able to name the moment
+//! the pane became free, and a closed socket cannot. See `warp_address` in
+//! `screen.rs` for what travels, and `ARCHITECTURE.md` for why.
 
 pub mod broker;
 pub mod conn;

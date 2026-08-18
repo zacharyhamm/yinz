@@ -1542,6 +1542,10 @@ pub struct AdoptPaneAction {
     pub borderless: bool,
     #[prost(enumeration="WarpPlacement", tag="6")]
     pub placement: i32,
+    /// See `WarpedPane.remote`. A remote pane's process is on another machine, so
+    /// there is no local supervisor socket to name.
+    #[prost(message, optional, tag="7")]
+    pub remote: ::core::option::Option<RemotePaneHandoff>,
 }
 /// One pane of a tab moving between sessions: which supervisor to attach to,
 /// plus the terminal state that supervisor cannot report. The same shape as the
@@ -1561,6 +1565,33 @@ pub struct WarpedPane {
     pub contents: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="5")]
     pub borderless: bool,
+    /// Set when the pane's process is on another machine, and then the only
+    /// address that means anything — the two fields above name a local supervisor
+    /// socket, and a remote pane has none.
+    #[prost(message, optional, tag="6")]
+    pub remote: ::core::option::Option<RemotePaneHandoff>,
+}
+/// How to pick a remote pane back up from the broker holding it.
+///
+/// Carries the command, which the local path does not need to: an adopting
+/// server learns a local pane's command from its supervisor's attach
+/// acknowledgement, but a broker's answer to a resume carries none.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RemotePaneHandoff {
+    /// The ssh destination the pane was opened against.
+    #[prost(string, tag="1")]
+    pub host: ::prost::alloc::string::String,
+    /// How the broker on that host names this pane. Meaningful only there.
+    #[prost(string, tag="2")]
+    pub pane_token: ::prost::alloc::string::String,
+    /// Output bytes the releasing session took delivery of; the broker replays
+    /// from exactly here.
+    #[prost(uint64, tag="3")]
+    pub received: u64,
+    /// A `RunCommand`, carried in the same message `Run.command` carries one in.
+    #[prost(message, optional, tag="4")]
+    pub cmd: ::core::option::Option<RunCommandAction>,
 }
 /// Move a tab, arrangement and running processes and all, to another session.
 #[allow(clippy::derive_partial_eq_without_eq)]

@@ -2,7 +2,7 @@ use super::{screen_thread_main, CopyOptions, Screen, ScreenInstruction};
 use crate::global_panes::GlobalPaneManager;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
-use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use crate::route::NotificationEnd;
 use crate::{
     channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
@@ -2181,11 +2181,11 @@ fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPa
     screen
         .take_released_pane_for_warp(
             terminal_id,
-            Ok(ReleasedPtyHost {
+            Ok(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: format!("host-{terminal_id}"),
                 host_pid: 1,
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-            }),
+            })),
         )
         .expect("the pane should have been taken out of its tab")
 }

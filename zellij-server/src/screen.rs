@@ -66,7 +66,7 @@ use std::time::{Duration, Instant};
 
 use crate::route::NotificationEnd;
 
-use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::client::ReleasedPane;
 use crate::ui::notification::{
     notification_chunks, notification_height, notification_lines, notification_origins,
     notification_width,
@@ -77,8 +77,8 @@ use zellij_utils::data::{
     GlobalPaneEdge, GlobalPanePlacement, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
     LayoutWithError, ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneContents, PaneInfo,
     PaneListEntry, PaneManifest, PaneRenderReport, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement,
-    WarpedPane, WarpedTab, WebSharing,
+    RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo,
+    ThemeHue, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
@@ -862,7 +862,7 @@ pub enum ScreenInstruction {
         to_session: String,
         placement: WarpPlacement,
         client_id: ClientId,
-        released: Result<ReleasedPtyHost, String>,
+        released: Result<ReleasedPane, String>,
     },
     /// The pty thread has taken a supervisor over and this session now owns
     /// `terminal_id`. All that is left is to give it a pane and paint it.
@@ -888,7 +888,7 @@ pub enum ScreenInstruction {
     /// the reader tasks are gone, so all their output is queued ahead of this.
     TabReleasedForWarp {
         tab_index: usize,
-        released: Vec<(u32, Result<ReleasedPtyHost, String>)>,
+        released: Vec<(u32, Result<ReleasedPane, String>)>,
     },
     /// The pty thread has taken a tab's supervisors over and this session now
     /// owns their terminal ids. All that is left is to build the tab around them.
@@ -1673,6 +1673,18 @@ pub(crate) struct PreparedTabWarp {
     tiled_panes: Vec<PaneId>,
     floating_panes: Vec<PaneId>,
     hide_floating_panes: bool,
+}
+
+/// Where a warped pane's process can be picked up, whichever machine it is on.
+///
+/// The three `WarpedPane` fields that say "attach here", pulled out so the pane
+/// and tab builders share one answer to the question. Exactly one of the two
+/// shapes is meaningful: a local supervisor socket, or a broker and a token.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WarpAddress {
+    host_id: String,
+    control_socket: PathBuf,
+    remote: Option<RemotePaneHandoff>,
 }
 
 /// What [`Screen::break_multiple_panes_to_tab_with_id`] actually did.
@@ -8352,6 +8364,50 @@ impl Screen {
             .sum()
     }
 
+    /// How a released pane says where its process can be picked up.
+    ///
+    /// The one thing a `WarpedPane` cannot get from the tab, and the only part
+    /// of building one that can still fail: a local supervisor that never bound
+    /// a socket has no address to hand out. That check has no remote
+    /// counterpart — a broker is reached by ssh and a token, and a pane the
+    /// broker confirmed it released is reachable by definition.
+    fn warp_address(released: ReleasedPane) -> Result<WarpAddress, String> {
+        match released {
+            ReleasedPane::Local(local) => {
+                let Some(control_socket) = local.control_socket else {
+                    // The pane is still ours and still working; it just has no
+                    // address to hand out. Nothing to roll back, because nothing
+                    // has moved yet.
+                    return Err(format!(
+                        "the supervisor for this pane ({}) never bound a socket, so no other \
+                         session can reach it — this usually means the runtime directory path \
+                         is too long",
+                        local.host_id
+                    ));
+                };
+                Ok(WarpAddress {
+                    host_id: local.host_id,
+                    control_socket,
+                    remote: None,
+                })
+            },
+            ReleasedPane::Remote(remote) => Ok(WarpAddress {
+                // Both empty on purpose rather than filled with something
+                // plausible: they name a local supervisor socket, and reading
+                // them for a remote pane is a mistake `remote` being `Some` is
+                // there to catch.
+                host_id: String::new(),
+                control_socket: PathBuf::new(),
+                remote: Some(RemotePaneHandoff {
+                    host: remote.host,
+                    pane_token: remote.pane_token,
+                    received: remote.received,
+                    cmd: remote.cmd,
+                }),
+            }),
+        }
+    }
+
     /// Serialize the released pane and take it out of its tab.
     ///
     /// Note what is *not* here for the warped pane: `PtyInstruction::ClosePane`.
@@ -8365,18 +8421,9 @@ impl Screen {
     fn take_released_pane_for_warp(
         &mut self,
         terminal_id: u32,
-        released: Result<ReleasedPtyHost, String>,
+        released: Result<ReleasedPane, String>,
     ) -> Result<Box<WarpedPane>, String> {
-        let released = released?;
-        let Some(control_socket) = released.control_socket else {
-            // The pane is still ours and still working; it just has no address to
-            // hand out. Nothing to roll back, because nothing has moved yet.
-            return Err(format!(
-                "the supervisor for this pane ({}) never bound a socket, so no other session \
-                 can reach it — this usually means the runtime directory path is too long",
-                released.host_id
-            ));
-        };
+        let address = Self::warp_address(released?)?;
         let pane_id = PaneId::Terminal(terminal_id);
 
         let mut payload = None;
@@ -8403,11 +8450,12 @@ impl Screen {
                 tab.close_pane(editor_pane_id, false, None);
             }
             payload = Some(Box::new(WarpedPane {
-                host_id: released.host_id.clone(),
-                control_socket: control_socket.clone(),
+                host_id: address.host_id.clone(),
+                control_socket: address.control_socket.clone(),
                 title,
                 contents,
                 borderless,
+                remote: address.remote.clone(),
             }));
             break;
         }
@@ -8593,21 +8641,15 @@ impl Screen {
     fn take_released_tab_for_warp(
         &mut self,
         tab_index: usize,
-        released: Vec<(u32, Result<ReleasedPtyHost, String>)>,
+        released: Vec<(u32, Result<ReleasedPane, String>)>,
         prepared: PreparedTabWarp,
     ) -> Result<Box<WarpedTab>, String> {
-        let mut sockets: HashMap<u32, (String, PathBuf)> = HashMap::new();
+        let mut addresses: HashMap<u32, WarpAddress> = HashMap::new();
         for (terminal_id, released) in released {
-            let released = released?;
-            let Some(control_socket) = released.control_socket else {
-                return Err(format!(
-                    "the supervisor for one of this tab's panes ({}) never bound a socket, so no \
-                     other session can reach it — this usually means the runtime directory path \
-                     is too long",
-                    released.host_id
-                ));
-            };
-            sockets.insert(terminal_id, (released.host_id, control_socket));
+            // The refusal `warp_address` can produce is worded for one pane. A
+            // tab is refused whole for it, which is the same outcome the pane
+            // path gets — nothing has moved yet either way.
+            addresses.insert(terminal_id, Self::warp_address(released?)?);
         }
 
         // The budget is shared out only now, because only now is it known how
@@ -8620,14 +8662,17 @@ impl Screen {
             .get(&tab_index)
             .ok_or_else(|| format!("tab {tab_index} vanished while it was being released"))?;
         let warped_pane = |pane_id: &PaneId| {
-            let (host_id, control_socket) = match pane_id {
-                PaneId::Terminal(terminal_id) => sockets.get(terminal_id).cloned(),
+            // A plugin pane has no process and so no address; it rides along as
+            // its `Run::Plugin` layout node and starts afresh in the same slot.
+            let address = match pane_id {
+                PaneId::Terminal(terminal_id) => addresses.get(terminal_id).cloned(),
                 PaneId::Plugin(_) => None,
             }
             .unwrap_or_default();
             WarpedPane {
-                host_id,
-                control_socket,
+                host_id: address.host_id,
+                control_socket: address.control_socket,
+                remote: address.remote,
                 // A tab's titles and borders ride in its layout, which is what
                 // the receiving session reads when it builds the panes. Repeating
                 // them here would be a second answer to the same question.

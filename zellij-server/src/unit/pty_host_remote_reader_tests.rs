@@ -10,8 +10,14 @@ fn reader_pair() -> (RemoteReader, Arc<RemoteConn>, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
     let for_conn = ours.try_clone().expect("clone failed");
     let conn = Arc::new(
-        RemoteConn::new(for_conn, "build-box".to_owned(), "tok".to_owned(), None)
-            .expect("conn failed"),
+        RemoteConn::new(
+            for_conn,
+            "build-box".to_owned(),
+            "tok".to_owned(),
+            RunCommand::default(),
+            None,
+        )
+        .expect("conn failed"),
     );
     let reader = RemoteReader::new(conn.clone(), ours).expect("reader failed");
     (reader, conn, theirs)
@@ -314,6 +320,7 @@ fn reconnecting_pair(dropped: u64, fail_first: u32) -> ReconnectingPair {
             for_conn,
             "build-box".to_owned(),
             "tok".to_owned(),
+            RunCommand::default(),
             Some(reconnector.clone() as Arc<dyn Reconnector>),
         )
         .expect("conn failed"),

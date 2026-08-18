@@ -12,10 +12,14 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 
-use zellij_utils::errors::prelude::*;
+use zellij_utils::{errors::prelude::*, input::command::RunCommand};
 
-use super::protocol::{self, ChildSignal, ServerToBrokerMsg, FRAME_HEADER_LEN, MAX_STREAM_PAYLOAD};
+use super::protocol::{
+    self, BrokerToServerMsg, ChildSignal, Frame, ServerToBrokerMsg, FRAME_HEADER_LEN,
+    MAX_STREAM_PAYLOAD,
+};
 use crate::pty_host::protocol::WireWinsize;
 
 /// How many bytes of un-sent input we will hold before telling the caller to
@@ -117,6 +121,14 @@ pub struct RemoteConn {
     host: String,
     /// How the broker names this pane on a resume.
     pane_token: String,
+    /// What the pane runs, as it was asked for.
+    ///
+    /// Held because nothing else on this side does. A local pane's command can
+    /// always be got back from its supervisor; a broker's answer to a resume
+    /// carries none, so a pane handed to another session would arrive unable to
+    /// name what it runs — and so unable to title itself, be re-run on the right
+    /// machine when held, or be attributed to a project.
+    cmd: RunCommand,
     /// Output bytes actually taken delivery of. The broker replays from exactly
     /// here, so this must count bytes *handed to the reader's caller*, not bytes
     /// received off the socket — anything still buffered locally when the
@@ -133,6 +145,7 @@ impl RemoteConn {
         socket: UnixStream,
         host: String,
         pane_token: String,
+        cmd: RunCommand,
         reconnector: Option<Arc<dyn Reconnector>>,
     ) -> Result<Self> {
         socket
@@ -154,6 +167,7 @@ impl RemoteConn {
             transport_lost: AtomicBool::new(false),
             host,
             pane_token,
+            cmd,
             received: AtomicU64::new(0),
             last_size: Mutex::new(None),
             reconnector,
@@ -162,6 +176,11 @@ impl RemoteConn {
 
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    /// What the pane runs. See the field.
+    pub fn cmd(&self) -> &RunCommand {
+        &self.cmd
     }
 
     /// Queue pty input, returning how many bytes were accepted.
@@ -291,6 +310,17 @@ impl RemoteConn {
         self.received.fetch_add(bytes as u64, Ordering::SeqCst);
     }
 
+    /// Start this connection's byte count where another session's left off.
+    ///
+    /// For a pane adopted from a warp. The `RemoteConn` is new, so its counter
+    /// starts at zero, but the pane it speaks for is not — the broker's stream
+    /// is already thousands of bytes in. Left at zero, the *next* reconnect
+    /// would ask to resume from the start and be replayed the whole ring on top
+    /// of a grid that already shows it.
+    pub fn restore_received(&self, received: u64) {
+        self.received.store(received, Ordering::SeqCst);
+    }
+
     pub fn received(&self) -> u64 {
         self.received.load(Ordering::SeqCst)
     }
@@ -340,6 +370,100 @@ impl RemoteConn {
 
     pub fn terminate(&self) -> Result<()> {
         self.send_control(&ServerToBrokerMsg::Terminate)
+    }
+
+    /// Hand this pane to another session: tell the broker to let it go, and wait
+    /// until it says it has.
+    ///
+    /// The counterpart of `PtyHostHandle::release()`, and synchronous for the
+    /// same reason. Merely dropping the connection *would* detach the pane —
+    /// the broker notices when its read returns — but not at any moment this
+    /// side can name, and the adopting server's `Resume` is refused outright
+    /// while the pane still looks attached. Waiting for `Released` is what turns
+    /// "it will be free soon" into "it is free now".
+    ///
+    /// Called only after the reader task has been aborted, which is what makes
+    /// reading the ack here safe: the read half was a `try_clone` of this same
+    /// socket, so with the reader gone this is the only thing left looking at
+    /// the connection.
+    ///
+    /// Output frames arriving before the ack are discarded, and nothing is lost
+    /// by that. The broker replays from the byte count *this side reports*, not
+    /// from what it believes it has sent, so anything dropped here comes again
+    /// on the resume — which is precisely why `received` is sampled before this
+    /// is called and not after.
+    pub fn release_for_warp(&self, timeout: Duration) -> Result<()> {
+        let mut out = self
+            .outbound
+            .lock()
+            .to_anyhow()
+            .context("failed to lock a remote pane's outbound queue")?;
+        if out.broken {
+            return Err(anyhow!(
+                "the connection to {} was lost, so this pane cannot be handed over",
+                self.host
+            ));
+        }
+        // Blocking for the rest of this call. The queues are drained by whoever
+        // writes next, and after a release nobody does — a half-written frame
+        // left behind would be a truncated message on a connection the next
+        // owner is about to resume behind.
+        out.socket
+            .set_nonblocking(false)
+            .context("failed to make a remote pane's socket blocking to release it")?;
+        out.socket
+            .set_write_timeout(Some(timeout))
+            .context("failed to bound a remote pane's release write")?;
+        out.socket
+            .set_read_timeout(Some(timeout))
+            .context("failed to bound a remote pane's release reply")?;
+        Self::flush_locked(&mut out);
+
+        let mut framed: Vec<u8> = Vec::new();
+        protocol::write_control(&mut framed, &ServerToBrokerMsg::Release)
+            .context("failed to frame a release for a remote pane")?;
+        out.socket
+            .write_all(&framed)
+            .with_context(|| format!("failed to ask {} to release this pane", self.host))?;
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "{} did not confirm the pane was released within {timeout:?}",
+                    self.host
+                ));
+            }
+            let frame = protocol::read_frame(&mut out.socket)
+                .with_context(|| format!("failed to read {}'s reply to a release", self.host))?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{} closed the connection without confirming the release",
+                        self.host
+                    )
+                })?;
+            let Frame::Control(_) = frame else {
+                // Output the pane produced on its way out, or input echoed back
+                // by a confused peer. Neither answers the question.
+                continue;
+            };
+            match frame.decode_control::<BrokerToServerMsg>() {
+                Ok(BrokerToServerMsg::Released) => return Ok(()),
+                // The child ending is not a refusal, but it does mean there is
+                // nothing left to hand over. Reported as an error so the warp
+                // rolls back rather than moving a dead pane.
+                Ok(BrokerToServerMsg::ChildExited { status }) => {
+                    return Err(anyhow!(
+                        "the pane's process on {} exited ({status:?}) as it was being handed over",
+                        self.host
+                    ));
+                },
+                // Status and git reports keep arriving until the broker reads
+                // the release; they say nothing about it.
+                Ok(_) => continue,
+                Err(e) => return Err(e).context("could not read the reply to a release"),
+            }
+        }
     }
 
     /// Push whatever the socket will take right now. Partial writes and `EAGAIN`

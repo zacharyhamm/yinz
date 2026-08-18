@@ -1,5 +1,6 @@
 use crate::home::default_layout_dir;
 use crate::input::actions::{Action, RunCommandAction};
+use crate::input::command::RunCommand;
 use crate::input::config::{ConversionError, KdlError};
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
@@ -3216,10 +3217,12 @@ pub enum WarpPlacement {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
     /// Identifies the supervisor, for error messages and `pty-host adopt`.
+    /// Empty for a remote pane, whose supervisor is not on this machine.
     pub host_id: String,
     /// Where to attach. A supervisor that failed to bind a socket has no address
     /// to hand out, which is the one way a pane can be detachable but not
     /// transferable — the source refuses the warp rather than sending this empty.
+    /// Empty for a remote pane; `remote` is its address instead.
     pub control_socket: PathBuf,
     /// The pane's title, so it does not arrive renamed.
     pub title: Option<String>,
@@ -3227,6 +3230,35 @@ pub struct WarpedPane {
     /// same way session resurrection restores one.
     pub contents: Option<String>,
     pub borderless: bool,
+    /// `Some` when the pane's process is on another machine, and then the only
+    /// address that means anything: the two fields above name a local
+    /// supervisor socket, and there is none.
+    pub remote: Option<RemotePaneHandoff>,
+}
+
+/// How to pick a remote pane back up from the broker that has been holding it.
+///
+/// The remote counterpart of `WarpedPane`'s `control_socket`, and the reason it
+/// cannot simply *be* one: a broker is reached by ssh, not by a path, and the
+/// adopting server builds its own forward rather than inheriting the releasing
+/// server's.
+///
+/// Carries the command, which the local path does not have to: the adopting
+/// server learns a local pane's command from its supervisor's `AttachAck`, but
+/// the broker's answer to a resume carries none. Without it the pane would
+/// arrive unable to say what it runs, unable to re-run on the right machine when
+/// held, and unable to title itself.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct RemotePaneHandoff {
+    /// The ssh destination the pane was opened against.
+    pub host: String,
+    /// How the broker on that host names this pane. Meaningful only there.
+    pub pane_token: String,
+    /// Output bytes the releasing session took delivery of. The broker replays
+    /// from exactly here, which is what stops the pane's serialized screen and
+    /// the replay from overlapping or leaving a gap between them.
+    pub received: u64,
+    pub cmd: RunCommand,
 }
 
 /// Everything that has to travel with a whole tab moving between sessions.

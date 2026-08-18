@@ -6,13 +6,17 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 
 use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
 use crate::pty_host::remote::{
-    conn::RemoteGitProbe, protocol::ChildSignal, ssh::RemoteHosts, RemoteStatus,
+    conn::{Reconnector, RemoteGitProbe},
+    protocol::ChildSignal,
+    ssh::RemoteHosts,
+    RemoteConn, RemoteStatus,
 };
 // Re-exported: it is what `ServerOsApi::adopt_terminal` returns, so anything
 // implementing that trait outside this crate — the integration tests' fake
 // backend — needs to be able to name it.
 pub use crate::os_input_output_unix::AdoptedTerminal;
-use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::client::ReleasedPane;
+use zellij_utils::data::RemotePaneHandoff;
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -389,6 +393,85 @@ pub struct ServerOsInputOutput {
     remote_hosts: Arc<RemoteHosts>,
 }
 
+#[cfg(not(windows))]
+impl ServerOsInputOutput {
+    /// Resume a warped-in remote pane on the broker holding it, and give this
+    /// session a reader for it.
+    ///
+    /// Split out from `adopt_remote_terminal` so that the id reservation there
+    /// has a single fallible body to clean up after, the way `adopt_terminal`
+    /// and `adopt_into_terminal_id` are split for the local case.
+    fn resume_remote_pane(
+        &self,
+        terminal_id: u32,
+        handoff: &RemotePaneHandoff,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let resumed = self
+            .remote_hosts
+            .reconnect(&handoff.host, &handoff.pane_token, handoff.received)
+            .map_err(|e| pane_start_failed(terminal_id, &handoff.host, e))?;
+
+        let conn = Arc::new(
+            RemoteConn::new(
+                resumed.write_socket,
+                handoff.host.clone(),
+                handoff.pane_token.clone(),
+                handoff.cmd.clone(),
+                Some(self.remote_hosts.clone() as Arc<dyn Reconnector>),
+            )
+            .context("failed to build a connection for an adopted remote pane")?,
+        );
+        // The stream is already this far in. Left at zero, a later reconnect
+        // would ask the broker to replay from the beginning, on top of a grid
+        // that already shows it.
+        conn.restore_received(handoff.received);
+
+        let reader = self
+            .pty_backend
+            .register_remote_terminal(
+                terminal_id,
+                conn,
+                resumed.read_socket,
+                quit_cb,
+                handoff.cmd.clone(),
+            )
+            .context("failed to register an adopted remote pane")?;
+
+        Ok(AdoptedTerminal {
+            terminal_id,
+            reader,
+            // No pid, for the same reason `spawn_terminal` gives none for a
+            // remote pane: a pid from another machine names an unrelated local
+            // process rather than nothing at all.
+            child_pid: None,
+            cmd: handoff.cmd.clone(),
+            // A replay with a hole cannot be spliced silently into the screen
+            // the pane arrives with. Say so where the pane will show it, the way
+            // `RemoteReader::on_reconnected` does for an outage.
+            buffered: warp_replay_notice(resumed.dropped),
+            // The broker reports an exit that happened while nobody was attached
+            // as part of the resume, so it arrives through the reader rather
+            // than being known here.
+            child_exit_status: None,
+        })
+    }
+}
+
+/// What to put on a warped-in pane's screen about output lost in transit.
+///
+/// Empty in the ordinary case: a handoff measured in milliseconds does not
+/// overrun a 4 MiB ring, and a pane that says nothing is the right amount to say
+/// about a move that worked.
+#[cfg(not(windows))]
+fn warp_replay_notice(dropped: u64) -> Vec<u8> {
+    if dropped == 0 {
+        return Vec::new();
+    }
+    format!("\x1b[33m── {dropped} bytes of output were lost moving this pane ──\x1b[0m\r\n")
+        .into_bytes()
+}
+
 /// Turn a failure to open a pane on another machine into one the pty thread can
 /// show the user instead of dying on.
 ///
@@ -551,7 +634,7 @@ pub trait ServerOsApi: Send + Sync {
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
     /// lose the pane.
-    fn release_terminal_for_warp(&self, _terminal_id: u32) -> Result<ReleasedPtyHost> {
+    fn release_terminal_for_warp(&self, _terminal_id: u32) -> Result<ReleasedPane> {
         Err(anyhow!(
             "this backend does not support moving panes between sessions"
         ))
@@ -564,6 +647,17 @@ pub trait ServerOsApi: Send + Sync {
     ) -> Result<AdoptedTerminal> {
         Err(anyhow!(
             "this backend does not support adopting panes from another session"
+        ))
+    }
+    /// Take a released *remote* pane over into this session under a fresh
+    /// terminal id, by resuming it on the broker that has been holding it.
+    fn adopt_remote_terminal(
+        &self,
+        _handoff: &RemotePaneHandoff,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        Err(anyhow!(
+            "this backend does not support adopting remote panes from another session"
         ))
     }
     fn cache_resizes(&mut self) {}
@@ -883,7 +977,7 @@ impl ServerOsApi for ServerOsInputOutput {
         self.remote_hosts.shutdown();
     }
     #[cfg(not(windows))]
-    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
         self.pty_backend.release_terminal_for_warp(terminal_id)
     }
     #[cfg(not(windows))]
@@ -893,6 +987,40 @@ impl ServerOsApi for ServerOsInputOutput {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<AdoptedTerminal> {
         self.pty_backend.adopt_terminal(control_socket, quit_cb)
+    }
+    /// The remote half of `adopt_terminal`, and structurally the same operation:
+    /// pick up a pane whose process someone else let go of.
+    ///
+    /// It lives here rather than on the backend because the reconnect belongs to
+    /// *this server's* `RemoteHosts` — the adopting session builds its own ssh
+    /// forward to the host rather than inheriting the releasing session's, which
+    /// is what makes the two sessions independent afterwards.
+    ///
+    /// `RemoteHosts::reconnect` is the same call the reader makes when a link
+    /// drops. From the broker's point of view a warp and an outage are the same
+    /// event, which is the reason this feature is small.
+    #[cfg(not(windows))]
+    fn adopt_remote_terminal(
+        &self,
+        handoff: &RemotePaneHandoff,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let terminal_id = self
+            .pty_backend
+            .next_terminal_id()
+            .ok_or_else(|| anyhow!("failed to allocate a terminal id"))?;
+        self.pty_backend.reserve_terminal_id(terminal_id);
+        match self.resume_remote_pane(terminal_id, handoff, quit_cb) {
+            Ok(adopted) => Ok(adopted),
+            Err(e) => {
+                // Undo the reservation, but *not* through `clear_terminal_id` —
+                // there is no transport recorded to terminate, and a failed
+                // adoption must leave the pane running for the next caller, or
+                // the rollback has nothing to give back.
+                self.pty_backend.forget_reserved_terminal_id(terminal_id);
+                Err(e)
+            },
+        }
     }
     fn cache_resizes(&mut self) {
         if self.cached_resizes.lock().unwrap().is_none() {

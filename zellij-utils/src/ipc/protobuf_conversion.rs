@@ -1161,6 +1161,7 @@ fn warped_pane_to_protobuf(
         title: pane.title.clone(),
         contents: pane.contents.clone(),
         borderless: pane.borderless,
+        remote: pane.remote.as_ref().map(remote_handoff_to_protobuf),
     }
 }
 
@@ -1173,7 +1174,76 @@ fn warped_pane_from_protobuf(
         title: pane.title,
         contents: pane.contents,
         borderless: pane.borderless,
+        remote: pane.remote.and_then(remote_handoff_from_protobuf),
     }
+}
+
+/// The address of a pane whose process is on another machine.
+///
+/// Free functions for the same reason the pane ones above are: this rides in
+/// both `WarpedPane` and `AdoptPaneAction`, which are the same fields in two
+/// messages.
+fn remote_handoff_to_protobuf(
+    remote: &crate::data::RemotePaneHandoff,
+) -> crate::client_server_contract::client_server_contract::RemotePaneHandoff {
+    crate::client_server_contract::client_server_contract::RemotePaneHandoff {
+        host: remote.host.clone(),
+        pane_token: remote.pane_token.clone(),
+        received: remote.received,
+        cmd: Some(run_command_to_protobuf(&remote.cmd)),
+    }
+}
+
+/// `None` if the command did not survive the wire.
+///
+/// A handoff without one is not a handoff: the adopting session would have a
+/// running process it could not name, re-run, or title. Better to arrive as no
+/// remote pane at all — the adoption then fails with "no supervisor" and the
+/// warp rolls back — than as one that is half there.
+fn remote_handoff_from_protobuf(
+    remote: crate::client_server_contract::client_server_contract::RemotePaneHandoff,
+) -> Option<crate::data::RemotePaneHandoff> {
+    Some(crate::data::RemotePaneHandoff {
+        host: remote.host,
+        pane_token: remote.pane_token,
+        received: remote.received,
+        cmd: remote.cmd.and_then(run_command_from_protobuf)?,
+    })
+}
+
+fn run_command_to_protobuf(
+    cmd: &crate::input::command::RunCommand,
+) -> crate::client_server_contract::client_server_contract::RunCommandAction {
+    crate::client_server_contract::client_server_contract::RunCommandAction {
+        command: cmd.command.to_string_lossy().to_string(),
+        args: cmd.args.clone(),
+        cwd: cmd.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
+        // `RunCommand` has no direction; the field belongs to the action that
+        // creates one, not to the command itself.
+        direction: None,
+        hold_on_close: cmd.hold_on_close,
+        hold_on_start: cmd.hold_on_start,
+        originating_plugin: cmd.originating_plugin.clone().map(|op| op.into()),
+        use_terminal_title: cmd.use_terminal_title,
+        remote_host: cmd.remote_host.clone(),
+        remote_default_shell: cmd.remote_default_shell,
+    }
+}
+
+fn run_command_from_protobuf(
+    cmd: crate::client_server_contract::client_server_contract::RunCommandAction,
+) -> Option<crate::input::command::RunCommand> {
+    Some(crate::input::command::RunCommand {
+        command: std::path::PathBuf::from(cmd.command),
+        args: cmd.args,
+        cwd: cmd.cwd.map(std::path::PathBuf::from),
+        hold_on_close: cmd.hold_on_close,
+        hold_on_start: cmd.hold_on_start,
+        originating_plugin: cmd.originating_plugin.and_then(|op| op.try_into().ok()),
+        use_terminal_title: cmd.use_terminal_title,
+        remote_host: cmd.remote_host,
+        remote_default_shell: cmd.remote_default_shell,
+    })
 }
 
 // Complete Action conversion implementation - all 91 variants
@@ -1777,6 +1847,7 @@ impl TryFrom<crate::input::actions::Action>
                     contents: payload.contents.clone(),
                     borderless: payload.borderless,
                     placement: ProtobufWarpPlacement::from(placement) as i32,
+                    remote: payload.remote.as_ref().map(remote_handoff_to_protobuf),
                 })
             },
             crate::input::actions::Action::WarpTab {
@@ -2769,6 +2840,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         title: adopt_pane_action.title.clone(),
                         contents: adopt_pane_action.contents.clone(),
                         borderless: adopt_pane_action.borderless,
+                        remote: adopt_pane_action
+                            .remote
+                            .clone()
+                            .and_then(remote_handoff_from_protobuf),
                     }),
                 })
             },

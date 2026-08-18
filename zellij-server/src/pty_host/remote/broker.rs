@@ -28,8 +28,8 @@ use zellij_utils::{
 };
 
 use super::protocol::{
-    self, BrokerToServerMsg, ChildSignal, Frame, ServerToBrokerMsg, MAX_STREAM_PAYLOAD,
-    REMOTE_PROTOCOL_VERSION,
+    self, BrokerToServerMsg, ChildSignal, Frame, ResumeRefusal, ServerToBrokerMsg,
+    MAX_STREAM_PAYLOAD, REMOTE_PROTOCOL_VERSION,
 };
 use super::session::{orphan_timeout, PaneRegistry, PaneSession, ResumeStep};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
@@ -90,6 +90,13 @@ fn read_control(reader: &mut UnixStream) -> Result<Option<ServerToBrokerMsg>> {
 enum Outcome {
     /// The server asked for the pane to end.
     Terminated,
+    /// The server handed the pane over: it is detached, still running, and
+    /// waiting for whoever was given its token to `Resume` it.
+    ///
+    /// Distinct from `Disconnected` in exactly one way that matters — the
+    /// detach has already happened by the time this is returned, rather than
+    /// being this function's caller's job. See `release_pane`.
+    Released,
     /// The connection went away without saying why.
     Disconnected,
 }
@@ -122,10 +129,22 @@ pub fn serve_connection(
             pane_token,
             received,
         } => resume_pane(registry, &wire, &pane_token, received)?,
+        // Answered without taking a pane, and then done. The panes worth asking
+        // about are the ones no connection is speaking for, so requiring a pane
+        // first would exclude exactly the case this serves.
+        ServerToBrokerMsg::ListPanes => {
+            send(
+                &wire,
+                &BrokerToServerMsg::PaneList {
+                    entries: registry.entries(),
+                },
+            )?;
+            return Ok(());
+        },
         other => return Err(anyhow!("expected a spawn or a resume, got {other:?}")),
     };
 
-    let outcome = pump_control(&mut reader, session.master_fd(), session.child_pid);
+    let outcome = pump_control(&mut reader, &session, generation, &wire, registry);
     match &outcome {
         // An explicit terminate is the *only* thing that ends a pane — dropping
         // the supervisor handle deliberately does not. Without this every closed
@@ -141,6 +160,13 @@ pub fn serve_connection(
         // Only if this connection is still the one holding the pane. A slow
         // notice of a disconnect that a reconnect has already replaced would
         // otherwise silence the pane and start an orphan clock on it.
+        // Already detached, by `release_pane`, before the server was told. Doing
+        // it again here would be a no-op in the ordinary case and actively wrong
+        // in the one that matters: the resume this handoff exists to allow may
+        // already have landed, and `detach_if` only spares it because the
+        // generation has moved on. Not relying on that is cheaper than
+        // explaining it.
+        Ok(Outcome::Released) => {},
         Ok(Outcome::Disconnected) | Err(_) => session.detach_if(generation),
     }
     outcome.map(|_| ())
@@ -361,8 +387,17 @@ fn start_pane(
         report_exit_if_complete(&session);
     }));
 
+    // Built from the resolved command rather than `cmd.to_string()`: a
+    // default-shell pane still carries the flag that makes `Display` answer
+    // "login shell on <host>", and the whole point of listing panes on a host is
+    // to say which shell that turned out to be.
+    let command = std::iter::once(cmd.command.to_string_lossy().into_owned())
+        .chain(cmd.args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
     let session = Arc::new(PaneSession::new(
         token.clone(),
+        command,
         spawned.handle,
         spawned.master,
         spawned.child_pid,
@@ -433,6 +468,7 @@ fn resume_pane(
             send(
                 wire,
                 &BrokerToServerMsg::ResumeRefused {
+                    kind: ResumeRefusal::Unknown,
                     reason: format!(
                         "this broker no longer holds pane {token}; it was reclaimed or never \
                          existed here"
@@ -446,6 +482,7 @@ fn resume_pane(
         send(
             wire,
             &BrokerToServerMsg::ResumeRefused {
+                kind: ResumeRefusal::AlreadyAttached,
                 reason: format!("pane {token} already has a server attached"),
             },
         )?;
@@ -467,6 +504,32 @@ fn resume_pane(
             Err(e)
         },
     }
+}
+
+/// Let a pane go without ending it, and say so once it is really gone.
+///
+/// The ordering is the entire point, and it is the opposite of the disconnect
+/// path's. There, the detach happens in `serve_connection` *after* this
+/// connection's read has returned, which is the earliest the broker can know the
+/// connection is over. A server handing a pane to another session cannot wait on
+/// "the earliest the broker notices": it has to be able to give the token away
+/// and know the next `Resume` will not be refused as a double attach.
+///
+/// So the detach happens here, before the ack, and `Outcome::Released` tells
+/// `serve_connection` not to do it again — `detach_if` is generation-guarded, so
+/// a second call would be harmless, but a resume that has already landed in
+/// between would have bumped the generation and the guard is the only thing
+/// stopping us from silencing it.
+///
+/// The pane itself is untouched: still in the registry, still running, still
+/// buffering into its ring. The orphan clock starts, which is correct — a
+/// handoff nobody completes is exactly an abandoned pane.
+fn release_pane(session: &Arc<PaneSession>, generation: u64, wire: &Wire) -> Result<()> {
+    session.detach_if(generation);
+    // Sent on the wire this connection still owns, even though the pane no
+    // longer points at it: `send` writes to the socket, and detaching only means
+    // the pumps will not.
+    send(wire, &BrokerToServerMsg::Released).context("failed to acknowledge a released remote pane")
 }
 
 /// Bring a resuming connection up to date and hand it the pane.
@@ -635,9 +698,13 @@ fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
 
 fn pump_control(
     reader: &mut UnixStream,
-    master_fd: std::os::unix::io::RawFd,
-    child_pid: u32,
+    session: &Arc<PaneSession>,
+    generation: u64,
+    wire: &Wire,
+    registry: &Arc<PaneRegistry>,
 ) -> Result<Outcome> {
+    let master_fd = session.master_fd();
+    let child_pid = session.child_pid;
     let mut master_write = borrow_fd(master_fd);
     loop {
         let frame = match protocol::read_frame(reader)? {
@@ -671,6 +738,18 @@ fn pump_control(
                         signal_child(child_pid, signal);
                     },
                     ServerToBrokerMsg::Terminate => return Ok(Outcome::Terminated),
+                    ServerToBrokerMsg::Release => {
+                        release_pane(session, generation, wire)?;
+                        return Ok(Outcome::Released);
+                    },
+                    ServerToBrokerMsg::ListPanes => {
+                        send(
+                            wire,
+                            &BrokerToServerMsg::PaneList {
+                                entries: registry.entries(),
+                            },
+                        )?;
+                    },
                     // A second hello, spawn or resume on a live pane means the
                     // peer is confused, but the pane is fine; say so and carry on.
                     other => {
