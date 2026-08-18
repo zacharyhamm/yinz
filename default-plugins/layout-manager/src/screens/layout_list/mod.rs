@@ -223,13 +223,10 @@ impl LayoutListScreen {
     fn start_new_layout_creation_from_session(&self) -> Screen {
         match dump_session_layout() {
             Ok((session_layout, Some(session_layout_metadata))) => {
-                Screen::NewLayoutFromSession(super::NewLayoutFromCurrentSessionScreen {
-                    name_input: zellij_tile::ui_components::forms::TextInput::empty(),
+                Screen::NewLayoutFromSession(super::NewLayoutFromCurrentSessionScreen::new(
                     session_layout,
-                    current_layout_metadata: session_layout_metadata,
-                    editing_name: false,
-                    save_current_tab_only: false,
-                })
+                    session_layout_metadata,
+                ))
             },
             Ok((_, None)) => Screen::Error(super::ErrorScreen {
                 message: "Failed to retrieve session layout metadata".to_string(),

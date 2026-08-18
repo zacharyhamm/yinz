@@ -272,8 +272,18 @@ impl ZellijPlugin for State {
             // Only the screens built on `Form` have clickable widgets; the rest
             // record no rectangles and so have nothing for a click to land on.
             Event::Mouse(mouse) => {
-                if let Screen::RenameLayout(ref mut rename_screen) = self.screen {
-                    let response = rename_screen.handle_mouse(mouse);
+                // Only the screens built on a form take the mouse; the rest
+                // have no rectangles recorded to hit-test against.
+                let response = match self.screen {
+                    Screen::RenameLayout(ref mut rename_screen) => {
+                        Some(rename_screen.handle_mouse(mouse))
+                    },
+                    Screen::NewLayoutFromSession(ref mut new_layout_screen) => {
+                        Some(new_layout_screen.handle_mouse(mouse))
+                    },
+                    _ => None,
+                };
+                if let Some(response) = response {
                     should_render = self.apply_key_response(response);
                 }
             },
