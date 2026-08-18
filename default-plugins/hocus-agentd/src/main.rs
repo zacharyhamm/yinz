@@ -489,6 +489,11 @@ impl State {
             {
                 self.latched.remove(&pane.pane_id);
                 self.pending_release.remove(&pane.pane_id);
+                // A re-run starts a new process, which has nothing to do with what the old
+                // one was summarised as doing — keeping either would show a stale answer
+                // the moment the new run pauses once. See `waiting_marker`.
+                self.activity.remove(&pane.pane_id);
+                self.summaries.remove(&pane.pane_id);
             }
         }
         // Anything the manifest itself carries is news, and worth taking before
@@ -1704,6 +1709,49 @@ mod tests {
         state.rebuild_panes();
 
         assert!(state.latched.is_empty());
+    }
+
+    /// A re-run pane starts a fresh process with nothing to do with what the old one was
+    /// summarised as doing — keeping the old activity hash or summary around would show a
+    /// stale answer the moment the new run pauses once.
+    #[test]
+    fn a_rerun_pane_drops_its_old_activity_and_summary() {
+        let mut state = ran_codex(7);
+        state.activity.insert(7, (1, 3));
+        state.summaries.insert(
+            7,
+            agents::Summary {
+                text: "did a thing".to_owned(),
+                title: "a thing".to_owned(),
+                awaiting: true,
+                hash: 1,
+            },
+        );
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "shell".to_owned(),
+                exited: true,
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+
+        // Re-run: the same pane id, running again.
+        state.commands.insert(7, "zsh".to_owned());
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "shell".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+
+        assert!(!state.activity.contains_key(&7), "stale hash dropped");
+        assert!(!state.summaries.contains_key(&7), "stale summary dropped");
     }
 
     /// The same sequence the integration test drives, with the manifest events

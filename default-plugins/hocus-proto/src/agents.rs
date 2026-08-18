@@ -521,7 +521,11 @@ pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
 /// agent that is working is not waiting on anybody, whatever it was waiting on before.
 fn waiting_marker(summaries: &Summaries, activity: &Activity, pane_id: u32) -> &'static str {
     let idle = activity.get(&pane_id).is_some_and(|(_, polls)| *polls > 0);
-    match idle && summaries.get(&pane_id).is_some_and(|s| s.awaiting) {
+    let current = activity_hash(activity, pane_id);
+    let fresh = summaries
+        .get(&pane_id)
+        .is_some_and(|s| s.awaiting && Some(s.hash) == current);
+    match idle && fresh {
         true => "! ",
         false => "  ",
     }
@@ -902,6 +906,7 @@ pub fn list_json(
                         && activity
                             .get(&pane.pane_id)
                             .is_some_and(|(_, polls)| *polls > 0)
+                        && Some(summary.hash) == activity_hash(activity, pane.pane_id)
                 );
             }
             Some(item)
@@ -1510,6 +1515,29 @@ mod tests {
         );
     }
 
+    /// A pane that has settled on a screen the stored summary was never made for — the
+    /// hash it was made for belongs to whatever the pane showed before. Showing the marker
+    /// here would tell the user (and the model) the summary describes the current screen
+    /// when it does not.
+    #[test]
+    fn strip_rows_does_not_flag_a_pane_whose_summary_predates_its_current_screen() {
+        let panes = vec![pane(4, "claude", Some("claude"))];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            // Idle on hash 2; the summary below was made for hash 1.
+            &Activity::from([(4, (2, 3))]),
+            &owners(&[]),
+            &branches(&[]),
+            &summaries(&[(4, true)]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![project("no project"), branch("no branch"), agent(4, "  4  claude  idle")],
+        );
+    }
+
     #[test]
     fn list_json_tells_the_model_what_the_strip_draws() {
         let json = list_json(
@@ -1530,6 +1558,27 @@ mod tests {
         // An agent that has never gone idle says nothing rather than saying "false".
         assert!(value[1].get("summary").is_none());
         assert!(value[1].get("awaiting_confirmation").is_none());
+    }
+
+    /// `awaiting_confirmation` must not disagree with `waiting_marker` — a summary made for
+    /// a screen the pane has since moved past does not describe the pane's current state.
+    #[test]
+    fn list_json_does_not_claim_a_stale_summary_is_awaiting_confirmation() {
+        let json = list_json(
+            &[pane(3, "codex", Some("codex"))],
+            &manual(&[]),
+            // Idle on hash 2; the summary below was made for hash 1.
+            &Activity::from([(3, (2, 2))]),
+            &owners(&[]),
+            &branches(&[]),
+            &summaries(&[(3, true)]),
+            |_| String::new(),
+        );
+        let value: Value = serde_json::from_str(&json).unwrap();
+        // The stale text is still surfaced (it is the last thing known), but not as an
+        // answer to the pane's current screen.
+        assert_eq!(value[0]["summary"], "did a thing");
+        assert_eq!(value[0]["awaiting_confirmation"], false);
     }
 
     #[test]
