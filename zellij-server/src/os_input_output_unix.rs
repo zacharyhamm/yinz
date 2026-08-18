@@ -883,6 +883,51 @@ impl UnixPtyBackend {
         Ok(ReleasedPane::Local(released))
     }
 
+    /// Whether [`Self::release_terminal_for_warp`] would work, asked while the
+    /// pane is still whole.
+    ///
+    /// Deliberately every refusal that the release and `Screen::warp_address`
+    /// between them can produce, in the same words, and deliberately nothing
+    /// else: the release aborts the pane's reader task before it gets far enough
+    /// to refuse, so a "no" raised there leaves a pane on screen with no process
+    /// left to talk to. Asked here it costs the user an error message and nothing
+    /// more.
+    ///
+    /// A remote pane can only answer yes. Its supervisor is on the far side of a
+    /// broker reached by ssh and a token, and whether that broker will confirm
+    /// the handoff is not knowable without asking it — which is the release
+    /// itself. That residual case is why callers still have to cope with a
+    /// release that fails.
+    pub fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+        let is_remote = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .and_then(|transport| transport.remote())
+            .is_some();
+        if is_remote {
+            return Ok(());
+        }
+
+        let hosts = self.terminal_id_to_host.lock().to_anyhow()?;
+        let handle = hosts.get(&terminal_id).ok_or_else(|| {
+            anyhow!(
+                "pane {terminal_id} has no pty-host supervisor, so it cannot be moved to \
+                 another session — detachable panes are disabled, or this pane's supervisor \
+                 failed to start and it fell back to an in-process pty"
+            )
+        })?;
+        if handle.control_socket.is_none() {
+            return Err(anyhow!(
+                "the supervisor for this pane ({}) never bound a socket, so no other session \
+                 can reach it — this usually means the runtime directory path is too long",
+                handle.host_id
+            ));
+        }
+        Ok(())
+    }
+
     /// Hand a remote pane back to its broker for someone else to resume.
     ///
     /// `received` is sampled *before* the release rather than after, and that

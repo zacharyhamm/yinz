@@ -281,7 +281,20 @@ impl ServerOsApi for FakeServerOsApi {
     /// has a supervisor process — but the control socket is, because that is the
     /// only thing the receiving session is told and the only thing it can get
     /// wrong.
+    fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+        self.shared_ptys
+            .check_can_be_warped(terminal_id)
+            .map_err(|e| anyhow!("{e}"))
+    }
     fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
+        // A release rigged to fail models the one case the pre-flight check
+        // cannot rule out: a broker that says yes to being asked and then does
+        // not confirm the handoff.
+        if self.shared_ptys.release_is_rigged_to_fail(terminal_id) {
+            return Err(anyhow!(
+                "the supervisor for pane {terminal_id} did not confirm the handoff"
+            ));
+        }
         // A pane whose command names another machine has no local supervisor to
         // hand over, so what it releases is a broker address rather than a
         // socket. Asked before the release, because releasing is what removes

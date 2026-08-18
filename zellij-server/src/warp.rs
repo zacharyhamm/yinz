@@ -5,6 +5,15 @@
 //! releasing the supervisor here and attaching to it there — the child never
 //! learns anything happened.
 //!
+//! Releasing a supervisor is not reversible: it aborts the pane's reader task,
+//! which drops this server's dup of the pty master, and there is no second copy
+//! to reopen. So every question that could make a release fail is asked before
+//! one is attempted — the far session's reachability here, and the pane's own
+//! releasability on the pty thread (`Pty::check_terminal_can_be_warped`). What
+//! survives that is the one case nothing local can answer: a remote broker that
+//! agrees to be asked and then does not confirm. A pane lost that way is held
+//! and told so in its own scrollback rather than left looking live.
+//!
 //! Everything in here returns `Result<String, String>` rather than reporting to
 //! a client. Both halves of that pair are prose meant for whoever asked: the CLI
 //! path writes them to a cli client, the plugin path writes them into a protobuf
@@ -461,19 +470,16 @@ pub fn warp_tab_from_session(
 /// The command that gets a pane back, when both the handoff and the rollback
 /// have failed.
 ///
-/// A pane in that state is running with nothing watching it, and this line is
-/// the only thing standing between the user and losing the work in it — so it
-/// has to be a command that actually applies. A remote pane is not reachable by
-/// `pty-host adopt <id>`: its supervisor is on the other machine, and the id
-/// that names it is a token only the broker there understands.
-fn recovery_command(pane: &WarpedPane) -> String {
-    match &pane.remote {
-        Some(remote) => format!(
-            "zellij pty-host adopt --host {} {}",
-            remote.host, remote.pane_token
-        ),
-        None => format!("zellij pty-host adopt {}", pane.host_id),
-    }
+/// The wording itself lives with the pty-host client, because the release path
+/// has to say the same thing when a pane is stranded without ever reaching a
+/// rollback.
+pub fn recovery_command(pane: &WarpedPane) -> String {
+    crate::pty_host::client::recovery_command(
+        &pane.host_id,
+        pane.remote
+            .as_ref()
+            .map(|remote| (remote.host.as_str(), remote.pane_token.as_str())),
+    )
 }
 
 fn log_if_slow(what: &str, started_at: std::time::Instant) {

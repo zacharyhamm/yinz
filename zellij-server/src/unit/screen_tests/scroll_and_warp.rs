@@ -398,6 +398,34 @@ fn the_visible_half_of_a_scrollback_editor_pair_can_be_warped() {
 }
 
 #[test]
+fn a_release_that_failed_leaves_the_pane_where_it_was() {
+    // Screen is told about a release either way, and a release that did not
+    // happen must not take the pane out of its tab: on the refusal path the pane
+    // is untouched and still working, and on the failure path the pty thread has
+    // already held it and written the reason into it. Either way, taking it out
+    // here would be Screen deciding on its own that the pane is gone.
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let result =
+        screen.take_released_pane_for_warp(1, Err("pane 1 has no pty-host supervisor".to_owned()));
+
+    assert_eq!(
+        result.expect_err("a pane that was not released cannot be serialized"),
+        "pane 1 has no pty-host supervisor",
+        "the reason has to reach the caller unreworded",
+    );
+    assert!(
+        screen
+            .tabs
+            .values()
+            .any(|tab| tab.get_pane_with_id(PaneId::Terminal(1)).is_some()),
+        "the pane was taken out of its tab by a warp that never happened",
+    );
+}
+
+#[test]
 fn the_hidden_half_of_a_scrollback_editor_pair_can_be_warped() {
     // The pane the user actually means when they name terminal 1. It leaves, and
     // the editor goes with it: an editor whose subject is in another session now

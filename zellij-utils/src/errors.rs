@@ -507,6 +507,7 @@ pub enum PtyContext {
     ReleaseTerminalForWarp,
     AdoptTerminal,
     ReleaseTerminalsForWarp,
+    StrandPaneAfterWarp,
     AdoptTab,
     ClaimAdoptedTab,
     ReRunCommandInPane,
