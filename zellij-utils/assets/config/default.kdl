@@ -317,6 +317,15 @@ plugins {
     // started from). See the plugin's own docs for `system_prompt`, `tools`,
     // `max_tool_rounds`, `search_url` and the `dobbs_*` keys.
     //
+    //   reasoning_echo  "false" stops hocus handing a thinking model its own
+    //                   `reasoning_content` back on the tool-calling turns of the
+    //                   transcript. On otherwise, because DeepSeek's thinking mode
+    //                   refuses the request without it and the tool loop cannot
+    //                   finish. Nothing is ever sent that the endpoint did not
+    //                   stream first, so this only matters for an endpoint that
+    //                   emits thinking and then rejects it on input - DeepSeek's
+    //                   own older `deepseek-reasoner` being the one known case.
+    //
     // hocus-agentd reads this same block - not its own - for the idle summaries it
     // makes, so the endpoint is configured once:
     //

@@ -115,6 +115,29 @@ fn resolve_leaves_tools_on_unless_kdl_explicitly_says_false() {
 }
 
 #[test]
+fn resolve_leaves_reasoning_echo_on_unless_kdl_explicitly_says_false() {
+    let env = map(&[("OPENAI_API_KEY", "sk-1")]);
+    assert!(Config::resolve(&map(&[]), &env).unwrap().reasoning_echo);
+    assert!(
+        !Config::resolve(&map(&[("reasoning_echo", "false")]), &env)
+            .unwrap()
+            .reasoning_echo
+    );
+    assert!(
+        !Config::resolve(&map(&[("reasoning_echo", "FALSE")]), &env)
+            .unwrap()
+            .reasoning_echo
+    );
+    // A typo here would break the tool loop against a thinking model rather
+    // than merely degrade it, so it must leave the default alone.
+    assert!(
+        Config::resolve(&map(&[("reasoning_echo", "flase")]), &env)
+            .unwrap()
+            .reasoning_echo
+    );
+}
+
+#[test]
 fn resolve_reads_the_tool_budget_from_kdl_only() {
     let env = map(&[("OPENAI_API_KEY", "sk-1")]);
     assert_eq!(

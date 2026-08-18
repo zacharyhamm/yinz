@@ -18,7 +18,7 @@ use hocus_proto::store::{self, Backend};
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
-use crate::{Message, Role};
+use crate::{Message, Reasoning, ReasoningKey, Role};
 
 /// The directory the archive used to live in. Read once, by the import.
 #[cfg(target_family = "wasm")]
@@ -75,6 +75,28 @@ impl Role {
     }
 }
 
+impl ReasoningKey {
+    /// The spelling stored in the `reasoning_key` column, which is also the
+    /// field name it goes back to the endpoint under. Hand-written for the same
+    /// reason `Role`'s is.
+    fn as_str(self) -> &'static str {
+        match self {
+            ReasoningKey::ReasoningContent => "reasoning_content",
+            ReasoningKey::Reasoning => "reasoning",
+        }
+    }
+
+    /// Unknown spellings — including the empty string a row written before this
+    /// column existed reads back as — fall to `reasoning_content`, which is the
+    /// key the endpoints that require a round-trip at all use.
+    fn from_str(text: &str) -> ReasoningKey {
+        match text {
+            "reasoning" => ReasoningKey::Reasoning,
+            _ => ReasoningKey::ReasoningContent,
+        }
+    }
+}
+
 /// Address of one message. Makes every write of it an upsert.
 fn message_uid(chat_id: u64, seq: usize) -> String {
     format!("{chat_id}:{seq}")
@@ -107,6 +129,20 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
         .set(
             "tool_calls",
             serde_json::to_string(&message.tool_calls).unwrap_or_else(|_| "[]".to_owned()),
+        )
+        // Two plain columns rather than one JSON blob, so the database stays as
+        // readable as it is for `tool_call_id` and `display`. Both absent for a
+        // message from an endpoint that does not think, which is most of them.
+        .set(
+            "reasoning",
+            message.reasoning.as_ref().map(|r| r.text.clone()),
+        )
+        .set(
+            "reasoning_key",
+            message
+                .reasoning
+                .as_ref()
+                .map(|r| r.key.as_str().to_owned()),
         )
         .set("tool_call_id", message.tool_call_id.clone())
         .set("full_output", message.full_output)
@@ -227,6 +263,16 @@ pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
                     tool_calls: text_at(&rows, row, "tool_calls")
                         .and_then(|json| serde_json::from_str::<Vec<ToolCall>>(&json).ok())
                         .unwrap_or_default(),
+                    reasoning: text_at(&rows, row, "reasoning").map(|text| {
+                        Reasoning::new(
+                            text,
+                            ReasoningKey::from_str(
+                                text_at(&rows, row, "reasoning_key")
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                            ),
+                        )
+                    }),
                     tool_call_id: text_at(&rows, row, "tool_call_id"),
                     full_output: matches!(
                         rows.get(row, "full_output"),
@@ -591,15 +637,43 @@ mod tests {
     }
 
     #[test]
+    fn every_reasoning_key_survives_the_column() {
+        for key in [ReasoningKey::ReasoningContent, ReasoningKey::Reasoning] {
+            assert_eq!(ReasoningKey::from_str(key.as_str()), key);
+        }
+    }
+
+    /// Every chat archived before the column existed, and anything a later
+    /// hocus invents. `reasoning_content` is the spelling of the endpoints that
+    /// require a round-trip at all, so it is the one to guess.
+    #[test]
+    fn an_unknown_reasoning_key_reads_as_reasoning_content() {
+        assert_eq!(ReasoningKey::from_str(""), ReasoningKey::ReasoningContent);
+        assert_eq!(
+            ReasoningKey::from_str("thinking"),
+            ReasoningKey::ReasoningContent
+        );
+    }
+
+    #[test]
     fn a_transcript_survives_a_round_trip() {
         let backend = backend();
         let messages = vec![
             Message::user("why did the build fail"),
-            Message::tool_calls(vec![ToolCall {
-                id: "call_1".to_owned(),
-                name: "read_pane".to_owned(),
-                arguments: r#"{"pane_id":3}"#.to_owned(),
-            }]),
+            Message {
+                // A reopened chat that then asks a follow-up sends this turn
+                // back to the endpoint, so losing it here would resurrect the
+                // 400 a day later.
+                reasoning: Some(Reasoning::new(
+                    "read the pane first",
+                    ReasoningKey::ReasoningContent,
+                )),
+                ..Message::tool_calls(vec![ToolCall {
+                    id: "call_1".to_owned(),
+                    name: "read_pane".to_owned(),
+                    arguments: r#"{"pane_id":3}"#.to_owned(),
+                }])
+            },
             Message {
                 role: Role::Tool,
                 content: "the output".to_owned(),
