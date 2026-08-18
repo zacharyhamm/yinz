@@ -14,7 +14,8 @@ mod ui;
 mod worker;
 
 pub use message::{
-    Job, Message, Picker, PickerKind, PickerRow, Role, RowKind, Status, StreamState,
+    Job, Message, Picker, PickerKind, PickerRow, Reasoning, ReasoningKey, Role, RowKind, Status,
+    StreamState,
 };
 use worker::post_log;
 

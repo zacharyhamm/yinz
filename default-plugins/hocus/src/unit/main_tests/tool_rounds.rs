@@ -36,6 +36,46 @@ fn a_model_that_calls_tools_it_was_not_offered_is_stopped() {
     assert!(state.messages.last().unwrap().content.contains("rounds"));
 }
 
+/// The whole of the DeepSeek bug, end to end: a thinking model streams its
+/// chain-of-thought and then the tool call it decided on. The placeholder that
+/// caught the thinking is thrown away when the tool-call message replaces it,
+/// and if the thinking goes with it the *next* request omits
+/// `reasoning_content` and DeepSeek answers 400.
+#[test]
+fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
+    let mut state = ready_state();
+    let thinking = br#"data: {"choices":[{"delta":{"reasoning_content":"htop it is"}}]}
+"#;
+    state.on_chunk("hocus-1", thinking, false, None);
+    let frame = tool_call_frame("call_1", "list_session", "{}");
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    let asked = state
+        .messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .expect("the turn asked for a tool");
+    assert_eq!(
+        asked.reasoning,
+        Some(Reasoning::new("htop it is", ReasoningKey::ReasoningContent))
+    );
+
+    let cfg = state.cfg.as_ref().expect("configured");
+    let body = String::from_utf8(api::request_body_with_project(
+        cfg,
+        &state.messages,
+        true,
+        None,
+    ))
+    .unwrap();
+    assert!(
+        body.contains(r#""reasoning_content":"htop it is""#),
+        "the next round has to hand the thinking back or the endpoint refuses \
+         it: {body}"
+    );
+}
+
 #[test]
 fn a_new_question_resets_the_tool_budget() {
     let mut state = ready_state();

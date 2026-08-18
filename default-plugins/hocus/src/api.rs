@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::tools::{self, ToolCall};
-use crate::{Message, Role};
+use crate::{Message, Reasoning, ReasoningKey, Role};
 
 // Endpoint shaping lives in hocus-proto so hocus-agentd, which calls the same endpoint to
 // summarise an idle agent, cannot disagree with us about where it is. Re-exported rather
@@ -71,6 +71,13 @@ pub struct Config {
     /// withheld. Tunable because how far a turn has to reach varies with the
     /// model and the work.
     pub max_tool_rounds: usize,
+    /// Whether a thinking model's own `reasoning_content` is handed back to it
+    /// on the tool-calling turns of the transcript. On by default, because
+    /// DeepSeek's thinking mode refuses the request outright without it and the
+    /// tool loop cannot complete. Needs an off switch for the inverse case: an
+    /// endpoint that streams reasoning but rejects it on input, as DeepSeek's
+    /// own older `deepseek-reasoner` does.
+    pub reasoning_echo: bool,
 }
 
 /// A config problem, carrying enough context to render a useful banner.
@@ -123,6 +130,11 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|rounds| *rounds > 0)
             .unwrap_or(DEFAULT_MAX_TOOL_ROUNDS);
+        // Same stance again: only a literal "false" turns this off. A typo here
+        // would break the tool loop against a thinking model rather than
+        // merely degrade it, which is the worst thing a typo could do.
+        let reasoning_echo = !non_empty(kdl, "reasoning_echo")
+            .is_some_and(|value| value.eq_ignore_ascii_case("false"));
 
         match non_empty(env, &api_key_env) {
             Some(api_key) => Ok(Config {
@@ -138,6 +150,7 @@ impl Config {
                 system_prompt,
                 tools,
                 max_tool_rounds,
+                reasoning_echo,
             }),
             // The environment we see is the one captured when the *session*
             // started, so "I exported it after launching zellij" is by far the
@@ -253,10 +266,17 @@ enum WireMessage<'a> {
     /// `content` is present-and-null — the unit serializes to `null` — rather
     /// than skipped: ours is a human-readable summary for the transcript, and
     /// the `tool_calls` array is the real payload.
+    ///
+    /// The two reasoning fields are the only place thinking is ever echoed
+    /// back, and at most one of them is ever set — see [`wire_reasoning`].
     Calls {
         role: &'static str,
         content: (),
         tool_calls: Vec<WireToolCall<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning: Option<&'a str>,
     },
     ToolResult {
         role: &'static str,
@@ -331,10 +351,14 @@ pub fn request_body_with_project(
             // human-readable summary for the transcript, so it is deliberately
             // not sent - the tool_calls array is the real payload.
             Role::Assistant if !message.tool_calls.is_empty() => {
+                let (reasoning_content, reasoning) =
+                    wire_reasoning(message.reasoning.as_ref(), cfg.reasoning_echo);
                 messages.push(WireMessage::Calls {
                     role: "assistant",
                     content: (),
                     tool_calls: message.tool_calls.iter().map(wire_tool_call).collect(),
+                    reasoning_content,
+                    reasoning,
                 })
             },
             // An empty assistant message is the streaming placeholder, which has
@@ -363,6 +387,34 @@ pub fn request_body_with_project(
     };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
+}
+
+/// Which reasoning field, if either, this assistant turn goes out with, as
+/// `(reasoning_content, reasoning)`.
+///
+/// Both `None` is the answer for every endpoint that does not think, because
+/// nothing ever put a `Reasoning` on the message — which is what keeps the
+/// request to OpenAI byte-identical to the one it got before any of this
+/// existed. When there is one, it goes back under the same key it arrived
+/// under, never translated into the other family's spelling.
+///
+/// Only reached for a turn that carries tool calls. DeepSeek's rule is scoped
+/// to those: without them "the intermediate assistant's reasoning_content does
+/// not need to participate in the context concatenation" and is ignored, so
+/// sending it would be paying for tokens to be thrown away — and would put the
+/// field in front of endpoints that have no business seeing it.
+fn wire_reasoning(carried: Option<&Reasoning>, echo: bool) -> (Option<&str>, Option<&str>) {
+    let reasoning = match carried
+        .filter(|_| echo)
+        .filter(|carried| !carried.text.is_empty())
+    {
+        Some(reasoning) => reasoning,
+        None => return (None, None),
+    };
+    match reasoning.key {
+        ReasoningKey::ReasoningContent => (Some(&reasoning.text), None),
+        ReasoningKey::Reasoning => (None, Some(&reasoning.text)),
+    }
 }
 
 fn wire_tool_call(call: &ToolCall) -> WireToolCall<'_> {
@@ -538,6 +590,12 @@ pub struct SseParser {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SseItem {
     Delta(String),
+    /// A piece of the model's chain-of-thought, with the field it arrived
+    /// under. Only endpoints that think emit these at all.
+    Reasoning {
+        text: String,
+        key: ReasoningKey,
+    },
     ApiError(String),
     /// A piece of a tool call. Never complete on its own - see
     /// [`ToolCallAccumulator`].
@@ -568,9 +626,7 @@ impl SseParser {
         while let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=newline).collect();
             let line = String::from_utf8_lossy(&line[..newline]);
-            if let Some(item) = parse_line(line.trim_end_matches('\r')) {
-                items.push(item);
-            }
+            items.extend(parse_line(line.trim_end_matches('\r')));
         }
         items
     }
@@ -636,7 +692,7 @@ impl ToolCallAccumulator {
     }
 }
 
-/// One SSE line yields at most one item.
+/// One SSE line yields whatever its delta carried, in order.
 ///
 /// Blank lines are frame separators and `:`-prefixed lines are keep-alive
 /// comments; both are dropped by the `data:` prefix check, as are the `id:`,
@@ -645,35 +701,71 @@ impl ToolCallAccumulator {
 /// ponytail: this is line-based rather than blank-line-frame-based. Multi-line
 /// `data:` fields are legal SSE but nothing in this ecosystem emits them. If one
 /// ever turns up, accumulate `data:` lines until a blank line instead.
-fn parse_line(line: &str) -> Option<SseItem> {
-    let payload = line.strip_prefix("data:")?.trim();
+fn parse_line(line: &str) -> Vec<SseItem> {
+    let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
+        return Vec::new();
+    };
     if payload == "[DONE]" {
-        return Some(SseItem::Done);
+        return vec![SseItem::Done];
     }
 
     // Anything that isn't JSON is proxy noise; drop it rather than surfacing a
     // parse error to the user mid-conversation.
-    let chunk: StreamChunk = serde_json::from_str(payload).ok()?;
+    let Ok(chunk) = serde_json::from_str::<StreamChunk>(payload) else {
+        return Vec::new();
+    };
     if let Some(error) = chunk.error {
-        return Some(SseItem::ApiError(error.message));
+        return vec![SseItem::ApiError(error.message)];
     }
-    let delta = chunk.choices.into_iter().next()?.delta;
+    let Some(mut delta) = chunk.choices.into_iter().next().map(|choice| choice.delta) else {
+        return Vec::new();
+    };
 
-    // A delta carries text or tool-call fragments, never both.
-    if let Some(fragment) = delta.tool_calls.into_iter().next() {
+    // A delta carries tool-call fragments or prose, never both.
+    if let Some(fragment) = std::mem::take(&mut delta.tool_calls).into_iter().next() {
         let function = fragment.function.unwrap_or_default();
-        return Some(SseItem::ToolCallFragment {
+        return vec![SseItem::ToolCallFragment {
             index: fragment.index,
             id: fragment.id,
             name: function.name,
             arguments: function.arguments,
-        });
+        }];
     }
 
+    // Reasoning and content, on the other hand, *can* share a chunk: a thinking
+    // model closes out its chain-of-thought and opens the answer in the same
+    // breath. Dropping that last reasoning fragment would leave us echoing a
+    // truncated `reasoning_content` back on the next request, which DeepSeek
+    // rejects exactly as hard as a missing one. Reasoning goes first, being
+    // what the model wrote first.
+    let mut items = Vec::new();
+    if let Some((text, key)) = reasoning_delta(&delta) {
+        items.push(SseItem::Reasoning {
+            text: text.to_owned(),
+            key,
+        });
+    }
+    if let Some(content) = delta.content.filter(|content| !content.is_empty()) {
+        items.push(SseItem::Delta(content));
+    }
+    items
+}
+
+/// The thinking a delta carried, under whichever key its endpoint uses.
+/// `reasoning_content` wins if a provider somehow sends both, being the
+/// spelling of the endpoint this exists for.
+fn reasoning_delta(delta: &Delta) -> Option<(&str, ReasoningKey)> {
     delta
-        .content
-        .filter(|content| !content.is_empty())
-        .map(SseItem::Delta)
+        .reasoning_content
+        .as_deref()
+        .map(|text| (text, ReasoningKey::ReasoningContent))
+        .or_else(|| {
+            delta
+                .reasoning
+                .as_deref()
+                .map(|text| (text, ReasoningKey::Reasoning))
+        })
+        .filter(|(text, _)| !text.is_empty())
 }
 
 #[derive(Deserialize)]
@@ -697,6 +789,13 @@ struct Choice {
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// DeepSeek, vLLM, SGLang, Qwen.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    /// OpenRouter, Ollama. Two fields rather than a serde `alias`, because
+    /// which one arrived is what decides the key we send back under.
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }
