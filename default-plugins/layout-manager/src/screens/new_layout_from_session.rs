@@ -1,79 +1,75 @@
 use super::{ErrorScreen, KeyResponse, LayoutListScreen, OptimisticUpdate, Screen};
-use crate::ui::{truncate_with_ellipsis_start, LayoutDetail};
+use crate::ui::LayoutDetail;
 use crate::DisplayLayout;
 use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{InputAction, TextInput};
+use zellij_tile::ui_components::forms::{Button, Form, FormEvent, Select, TextInput};
+
+const NAME_FIELD: &str = "name";
+const TARGET_FIELD: &str = "target";
+/// The two things "save the session" can mean, in the order the dropdown shows
+/// them. Index 1 is the current-tab-only one.
+const TARGETS: [&str; 2] = ["All Tabs", "Current Tab Only"];
 
 #[derive(Clone)]
 pub struct NewLayoutFromCurrentSessionScreen {
-    pub name_input: TextInput,
+    pub form: Form,
     pub session_layout: String,
     pub current_layout_metadata: LayoutMetadata,
-    pub editing_name: bool,
-    pub save_current_tab_only: bool,
 }
 
 impl NewLayoutFromCurrentSessionScreen {
+    pub fn new(session_layout: String, current_layout_metadata: LayoutMetadata) -> Self {
+        Self {
+            // "Update Layout" re-reads the session, for changes made to it
+            // since this screen opened. It used to be `<u>`, which a focused
+            // name field now swallows as a typed character.
+            form: Form::new()
+                .field(NAME_FIELD, "Save as", TextInput::empty())
+                .select(TARGET_FIELD, "Save", Select::new(TARGETS))
+                .button("save", Button::new("Save"))
+                .button("update", Button::new("Update Layout"))
+                .button("cancel", Button::new("Cancel")),
+            session_layout,
+            current_layout_metadata,
+        }
+    }
+
+    /// Whether what is being saved is the focused tab rather than the whole
+    /// session — i.e. which option the target select is on.
+    fn save_current_tab_only(&self) -> bool {
+        self.form
+            .select_by_id(TARGET_FIELD)
+            .and_then(|select| select.selected_index())
+            == Some(1)
+    }
+
     pub fn handle_key(&mut self, key: KeyWithModifier) -> KeyResponse {
-        // Special Esc handling based on edit state
-        if key.bare_key == BareKey::Esc && key.has_no_modifiers() {
-            return self.handle_escape_key();
-        }
-
-        if self.editing_name {
-            self.handle_editing_mode_key(key)
-        } else {
-            self.handle_non_editing_mode_key(key)
-        }
-    }
-
-    fn handle_escape_key(&mut self) -> KeyResponse {
-        if self.editing_name {
-            self.editing_name = false;
-            KeyResponse::render()
-        } else {
-            KeyResponse::new_screen(self.cancel_save())
+        match self.form.handle_key(key.clone()) {
+            FormEvent::Submit => self.attempt_save_current_session(),
+            FormEvent::Cancel => KeyResponse::new_screen(self.cancel_save()),
+            // A different target means a different layout to save, so the dump
+            // behind the details block is re-read.
+            FormEvent::FieldChanged(id) if id == TARGET_FIELD => self.handle_update_layout(),
+            FormEvent::FieldChanged(_) | FormEvent::FocusMoved => KeyResponse::render(),
+            FormEvent::ButtonPressed(id) => self.handle_button(&id),
+            FormEvent::Complete(_) | FormEvent::Ignored => KeyResponse::none(),
         }
     }
 
-    fn handle_editing_mode_key(&mut self, key: KeyWithModifier) -> KeyResponse {
-        let action = self.name_input.handle_key(key);
-
-        match action {
-            InputAction::Continue => KeyResponse::render(),
-            InputAction::Submit => self.exit_editing_mode(),
-            InputAction::Cancel => self.exit_editing_mode(),
-            InputAction::Complete => KeyResponse::none(),
-            InputAction::NoAction => KeyResponse::none(),
+    pub fn handle_mouse(&mut self, mouse: Mouse) -> KeyResponse {
+        match self.form.handle_mouse(mouse) {
+            FormEvent::ButtonPressed(id) => self.handle_button(&id),
+            FormEvent::FieldChanged(id) if id == TARGET_FIELD => self.handle_update_layout(),
+            FormEvent::Ignored => KeyResponse::none(),
+            _ => KeyResponse::render(),
         }
     }
 
-    fn handle_non_editing_mode_key(&mut self, key: KeyWithModifier) -> KeyResponse {
-        match key.bare_key {
-            BareKey::Enter if key.has_no_modifiers() => self.attempt_save_current_session(),
-            BareKey::Tab if key.has_no_modifiers() => self.handle_tab_toggle(),
-            BareKey::Char('u') if key.has_no_modifiers() => self.handle_update_layout(),
-            BareKey::Char('r') if key.has_no_modifiers() => self.enter_editing_mode(),
-            _ => KeyResponse::none(),
-        }
-    }
-
-    fn exit_editing_mode(&mut self) -> KeyResponse {
-        self.editing_name = false;
-        KeyResponse::render()
-    }
-
-    fn enter_editing_mode(&mut self) -> KeyResponse {
-        self.editing_name = true;
-        KeyResponse::render()
-    }
-
-    fn handle_tab_toggle(&mut self) -> KeyResponse {
-        self.toggle_tab_target();
-        if let Some(new_screen) = self.update_layout_from_session() {
-            KeyResponse::new_screen(new_screen)
-        } else {
-            KeyResponse::render()
+    fn handle_button(&mut self, id: &str) -> KeyResponse {
+        match id {
+            "save" => self.attempt_save_current_session(),
+            "update" => self.handle_update_layout(),
+            _ => KeyResponse::new_screen(self.cancel_save()),
         }
     }
 
@@ -91,7 +87,7 @@ impl NewLayoutFromCurrentSessionScreen {
             return None;
         };
         let focused_tab_index = focused_pane_info.0;
-        if self.save_current_tab_only {
+        if self.save_current_tab_only() {
             match dump_session_layout_for_tab(focused_tab_index) {
                 Ok((session_layout, Some(session_layout_metadata))) => {
                     self.session_layout = session_layout;
@@ -127,11 +123,8 @@ impl NewLayoutFromCurrentSessionScreen {
     }
 
     fn cancel_save(&self) -> Screen {
+        show_cursor(None);
         Screen::LayoutList(LayoutListScreen::default())
-    }
-
-    fn toggle_tab_target(&mut self) {
-        self.save_current_tab_only = !self.save_current_tab_only;
     }
 
     fn attempt_save_current_session(&self) -> KeyResponse {
@@ -144,8 +137,11 @@ impl NewLayoutFromCurrentSessionScreen {
         };
 
         match self.save_session_layout(&layout_name) {
-            Ok(()) => KeyResponse::new_screen(Screen::LayoutList(LayoutListScreen::default()))
-                .with_optimistic(optimistic),
+            Ok(()) => {
+                show_cursor(None);
+                KeyResponse::new_screen(Screen::LayoutList(LayoutListScreen::default()))
+                    .with_optimistic(optimistic)
+            },
             Err(error_msg) => KeyResponse::new_screen(self.create_error_screen(&error_msg)),
         }
     }
@@ -158,7 +154,7 @@ impl NewLayoutFromCurrentSessionScreen {
     }
 
     fn determine_layout_name(&self) -> String {
-        let input_text = self.name_input.get_text();
+        let input_text = self.form.text(NAME_FIELD);
         if input_text.is_empty() {
             generate_random_name()
         } else {
@@ -177,7 +173,7 @@ impl NewLayoutFromCurrentSessionScreen {
         Ok(())
     }
 
-    pub fn render(&self, rows: usize, cols: usize) {
+    pub fn render(&mut self, rows: usize, cols: usize) {
         let display_layout = DisplayLayout::Valid(LayoutInfo::File(
             "current".to_string(),
             self.current_layout_metadata.clone(),
@@ -200,16 +196,22 @@ impl NewLayoutFromCurrentSessionScreen {
         let base_y = rows.saturating_sub(desired_ui_height) / 2;
         let base_x = cols.saturating_sub(actual_ui_width) / 2;
 
-        let save_as_line_y = base_y + 5;
-        self.update_cursor_position(base_x, save_as_line_y, actual_ui_width); // NOTE: must be before any render
-                                                                              // happens
+        // The form places the cursor itself, and has to do so before anything
+        // is printed, so it goes first and the decorations follow.
+        let form_y = base_y + 5;
+        self.form.render(base_x, form_y, actual_ui_width);
 
         self.render_title(base_x, base_y, actual_ui_width);
         self.render_description(base_x, base_y + 2, actual_ui_width);
-        self.render_save_as_line(base_x, save_as_line_y, actual_ui_width);
-        self.render_tab_toggle(base_x, base_y + 7, actual_ui_width);
 
-        let details_y = base_y + 9;
+        // An open dropdown is drawn over the rows below the form, so the
+        // details block starts below it rather than on top of it.
+        let overlay_bottom = self
+            .form
+            .overlay_rect()
+            .map(|rect| rect.y + rect.rows)
+            .unwrap_or(0);
+        let details_y = std::cmp::max(base_y + 9, overlay_bottom);
 
         let actual_details_height = if rows < desired_ui_height {
             rows.saturating_sub(details_y + 2)
@@ -259,73 +261,16 @@ impl NewLayoutFromCurrentSessionScreen {
         std::cmp::max(line1.chars().count(), line2.chars().count())
     }
 
-    fn save_as_line_text(&self, width: usize) -> (String, usize) {
-        // (text, cursor_position_in_line)
-        let input_text = self.name_input.get_text();
-        let cursor_pos = self.name_input.get_cursor_position();
-
-        let display_name = if input_text.is_empty() && !self.editing_name {
-            "RANDOM"
-        } else {
-            input_text
-        };
-        let mut text = format!("Save as: {} (<r> Rename)", display_name);
-        let mut cursor_position_in_line = 9 + cursor_pos;
-        if text.chars().count() > width {
-            let truncated_display_name = truncate_with_ellipsis_start(
-                display_name,
-                width.saturating_sub(22), // size of text without the display name
-            );
-            text = format!("Save as: {} (<r> Rename)", truncated_display_name);
-            let truncated_len = truncated_display_name.chars().count();
-            cursor_position_in_line = 9 + cursor_pos.min(truncated_len);
-        }
-        (text, cursor_position_in_line)
-    }
-    fn render_save_as_line(&self, x: usize, y: usize, width: usize) {
-        let (text, _) = self.save_as_line_text(width);
-        let colored = Text::new(&text).color_substring(3, "<r>");
-
-        print_text_with_coordinates(colored, x, y, None, None);
-    }
-
-    fn render_tab_toggle(&self, x: usize, y: usize, width: usize) {
-        let text = if self.save_current_tab_only {
-            "<Tab>  All Tabs  | [Current Tab Only]"
-        } else {
-            "<Tab> [All Tabs] |  Current Tab Only"
-        };
-
-        let short_text = if self.save_current_tab_only {
-            "<Tab>  All  | [Current Tab]"
-        } else {
-            "<Tab> [All] |  Current Tab"
-        };
-        let text = if text.chars().count() > width {
-            short_text
-        } else {
-            text
-        };
-        let colored = Text::new(text)
-            .color_substring(3, "<Tab>")
-            .color_substring(0, "[All Tabs]")
-            .color_substring(0, "[All]")
-            .color_substring(0, "[Current Tab Only]")
-            .color_substring(0, "[Current Tab]");
-
-        print_text_with_coordinates(colored, x, y, None, None);
-    }
-
     fn help_text_full(&self) -> (&str, &[&str]) {
         (
-            "<Enter> - Save, <u> - Update Layout, <Esc> - Back",
-            &["<Enter>", "<u>", "<Esc>"],
+            "<Tab> - Move between fields, <Enter> - Save, <Esc> - Back",
+            &["<Tab>", "<Enter>", "<Esc>"],
         )
     }
     fn help_text_short(&self) -> (&str, &[&str]) {
         (
-            "<Enter> - Save, <u> - Update, <Esc> - Back",
-            &["<Enter>", "<u>", "<Esc>"],
+            "<Tab> - Move, <Enter> - Save, <Esc> - Back",
+            &["<Tab>", "<Enter>", "<Esc>"],
         )
     }
     fn render_help_text(&self, x: usize, y: usize, width: usize) {
@@ -339,14 +284,5 @@ impl NewLayoutFromCurrentSessionScreen {
             text = text.color_substring(3, item)
         }
         print_text_with_coordinates(text, x, y, None, None);
-    }
-
-    pub fn update_cursor_position(&self, base_x: usize, cursor_y: usize, max_width: usize) {
-        if self.editing_name {
-            let (_, cursor_position_in_line) = self.save_as_line_text(max_width);
-            show_cursor(Some((base_x + cursor_position_in_line, cursor_y)))
-        } else {
-            show_cursor(None)
-        }
     }
 }

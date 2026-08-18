@@ -5418,6 +5418,7 @@ dependencies = [
 name = "zellij-tile"
 version = "0.45.0"
 dependencies = [
+ "fuzzy-matcher",
  "hegeltest",
  "prost",
  "serde",

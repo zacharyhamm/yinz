@@ -31,43 +31,12 @@ pub fn render_list_tip(y: usize, max_cols: usize) {
     print_text_with_coordinates(tip, 0, y, Some(max_cols), None);
 }
 
-pub fn calculate_list_bounds(
-    result_count: usize,
-    max_result_count: usize,
-    selected_index_in_all_results: Option<usize>,
-) -> (usize, Option<usize>, usize) {
-    match selected_index_in_all_results {
-        Some(selected_index_in_all_results) => {
-            let mut room_in_list = max_result_count;
-            let mut start_index = selected_index_in_all_results;
-            let mut end_index = selected_index_in_all_results + 1;
-            let mut alternate = false;
-            loop {
-                if room_in_list == 0 {
-                    break;
-                }
-                if !alternate && start_index > 0 {
-                    start_index = start_index.saturating_sub(1);
-                    room_in_list = room_in_list.saturating_sub(1);
-                } else if alternate && end_index < result_count {
-                    end_index += 1;
-                    room_in_list = room_in_list.saturating_sub(1);
-                } else if start_index > 0 {
-                    start_index = start_index.saturating_sub(1);
-                    room_in_list = room_in_list.saturating_sub(1);
-                } else if end_index < result_count {
-                    end_index += 1;
-                    room_in_list = room_in_list.saturating_sub(1);
-                } else {
-                    break;
-                }
-                alternate = !alternate;
-            }
-            (start_index, Some(selected_index_in_all_results), end_index)
-        },
-        None => (0, None, max_result_count + 1),
-    }
-}
+/// The rows of a list to draw, given a selection to keep on screen.
+///
+/// This lives in the shared forms library now — it was the only piece of list
+/// windowing in the tree, and the select boxes there need exactly it. Kept
+/// under its old name because six call sites in this plugin use it.
+pub use zellij_tile::ui_components::forms::list_window as calculate_list_bounds;
 
 pub fn render_search_term(search_term: &str) {
     let prompt = "FIND: ";
