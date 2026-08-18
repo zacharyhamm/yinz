@@ -1,11 +1,11 @@
 mod search;
 
 use super::{KeyResponse, OptimisticUpdate, Screen};
-use crate::text_input::InputAction;
 use crate::ui::{Controls, LayoutDetail, LayoutsTable};
 use crate::DisplayLayout;
 use search::SearchState;
 use zellij_tile::prelude::*;
+use zellij_tile::ui_components::forms::InputAction;
 
 #[derive(Clone)]
 pub struct LayoutListScreen {
@@ -224,7 +224,7 @@ impl LayoutListScreen {
         match dump_session_layout() {
             Ok((session_layout, Some(session_layout_metadata))) => {
                 Screen::NewLayoutFromSession(super::NewLayoutFromCurrentSessionScreen {
-                    name_input: crate::text_input::TextInput::empty(),
+                    name_input: zellij_tile::ui_components::forms::TextInput::empty(),
                     session_layout,
                     current_layout_metadata: session_layout_metadata,
                     editing_name: false,

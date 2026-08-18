@@ -41,13 +41,11 @@
 //! or either one's glance at another pane — closes the pane for both. Two
 //! people asking at the same instant is not a case worth engineering for.
 
-mod ui;
-
 use std::collections::BTreeMap;
 
-use hocus_proto::text_input::{InputAction, TextInput};
 use hocus_proto::wire::{self, Ask, AskAck, AskOutcome};
 use zellij_tile::prelude::*;
+use zellij_tile::ui_components::forms::{viewport, InputAction, TextInput};
 
 /// Shown at the head of the input line. Duplicated by the pane title, which is
 /// the point: frames can be turned off, and then this is the only thing saying
@@ -217,7 +215,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        let (line, column) = ui::viewport(
+        let (line, column) = viewport(
             PROMPT,
             self.input.get_text(),
             self.input.get_cursor_position(),
