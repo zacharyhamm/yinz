@@ -1,8 +1,15 @@
-//! Laying out the one-line prompt.
+//! Laying out a one-line prompt: which slice of the text is on screen, and
+//! which column the cursor sits in.
 //!
-//! Pure: no host calls, so the awkward cases — a pane narrower than the prompt,
-//! a cursor sitting past the right edge, a double-width character straddling
-//! the boundary — are testable without a running Zellij.
+//! Promoted from `default-plugins/hocus-ask/src/ui.rs`. Pure: no host calls, so
+//! the awkward cases — a pane narrower than the prompt, a cursor sitting past
+//! the right edge, a double-width character straddling the boundary — are
+//! testable without a running Zellij.
+//!
+//! This is where [`TextInput`](super::TextInput)'s char-indexed cursor becomes a
+//! screen column. The conversion is measured in columns via `unicode-width`
+//! rather than by counting chars, which is why a CJK or emoji character before
+//! the cursor does not shift it off by one.
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -22,15 +29,30 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// wide, and the returned column is inside `0..cols`. A render that breaks
 /// either corrupts the grid rather than merely looking wrong.
 pub fn viewport(prompt: &str, text: &str, cursor: usize, cols: usize) -> (String, usize) {
+    let (line, column, _) = viewport_window(prompt, text, cursor, cols);
+    (line, column)
+}
+
+/// As [`viewport`], plus the char index the visible window starts at.
+///
+/// The extra number is what turns a clicked column back into a cursor position:
+/// without it a caller would have to re-derive the scroll offset, which is the
+/// one part of this that is easy to get subtly wrong.
+pub fn viewport_window(
+    prompt: &str,
+    text: &str,
+    cursor: usize,
+    cols: usize,
+) -> (String, usize, usize) {
     if cols == 0 {
-        return (String::new(), 0);
+        return (String::new(), 0, 0);
     }
     let prompt_width = prompt.width();
     if prompt_width >= cols {
         // Narrower than the prompt itself. Nothing useful to do but show what
         // fits and park the cursor at the edge; the user cannot read their own
         // typing at this width either way.
-        return (take_columns(prompt, cols), cols - 1);
+        return (take_columns(prompt, cols), cols - 1, 0);
     }
 
     let available = cols - prompt_width;
@@ -63,11 +85,51 @@ pub fn viewport(prompt: &str, text: &str, cursor: usize, cols: usize) -> (String
         line.push(display_char(c));
     }
 
-    (line, prompt_width + used)
+    (line, prompt_width + used, start)
+}
+
+/// Which char index a click at `column` lands on, for a row drawn by
+/// [`viewport_window`] with the same arguments.
+///
+/// Clicking left of the text (on the prompt) puts the cursor at the start of
+/// the visible window rather than at the start of the buffer — the buffer may
+/// be scrolled, and jumping somewhere off screen is not what the click looked
+/// like it would do. Clicking past the last character lands after it, which is
+/// how clicking into the empty tail of a field appends.
+pub fn column_to_cursor(
+    prompt: &str,
+    text: &str,
+    cursor: usize,
+    cols: usize,
+    column: usize,
+) -> usize {
+    let (_, _, start) = viewport_window(prompt, text, cursor, cols);
+    let prompt_width = prompt.width();
+    if cols == 0 || prompt_width >= cols || column <= prompt_width {
+        return start;
+    }
+
+    let target = column - prompt_width;
+    let chars: Vec<char> = text.chars().collect();
+    let available = cols - prompt_width;
+
+    let mut index = start;
+    let mut used = 0usize;
+    while index < chars.len() {
+        let width = char_width(chars[index]);
+        // Stop once the next character would start past the click, or past the
+        // row. Half a wide character counts as that character.
+        if used + width > target || used + width > available {
+            break;
+        }
+        used += width;
+        index += 1;
+    }
+    index
 }
 
 /// As much of `text` as fits in `max` columns, never splitting a character.
-fn take_columns(text: &str, max: usize) -> String {
+pub fn take_columns(text: &str, max: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
     for c in text.chars() {
@@ -102,7 +164,7 @@ fn display_char(c: char) -> char {
 /// reports `None` for a control character but counts one column for it inside
 /// a string, and a line built on the first number would overflow a pane sized
 /// by the second.
-fn char_width(c: char) -> usize {
+pub(super) fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(display_char(c)).unwrap_or(0)
 }
 

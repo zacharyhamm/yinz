@@ -1,0 +1,620 @@
+//! The focus container: what turns a pile of widgets into a form.
+//!
+//! A `Form` owns the focus ring, routes keys to whichever widget has focus,
+//! routes clicks to whichever widget's recorded rectangle contains the point,
+//! and places the host cursor. That last one is the reason this exists rather
+//! than each screen wiring its own widgets: `show_cursor` must be called
+//! *before* any `print_*`, because the host reads the cursor position out of
+//! the render. Every hand-rolled screen has had to know that
+//! (see layout-manager's "Update cursor BEFORE rendering (critical!)"), and
+//! every one of them re-derived the cursor column by hand. Here it happens once,
+//! in [`Form::render`].
+//!
+//! ## Tab is not assumed
+//!
+//! `Tab` already means five different things across the builtin plugins: next
+//! screen (session-manager, plugin-manager), toggle save target
+//! (layout-manager), next coordinate (multiple-select), descend into a
+//! directory (strider), and completion inside [`TextInput`] itself. So a form
+//! never insists on it:
+//!
+//! - traversal keys are configurable via [`Form::with_traversal_keys`], and
+//!   default to Tab / Shift-Tab;
+//! - anything the form does not consume comes back as [`FormEvent::Ignored`],
+//!   so the plugin's own bindings still work and the form never silently
+//!   swallows a key.
+//!
+//! Note the ordering consequence: traversal is checked *before* the focused
+//! field sees the key, so with the default keys `Tab` moves focus and a field
+//! never reports [`FormEvent::Complete`]. A form that wants tab-completion
+//! should pick different traversal keys.
+
+use super::button::{Button, Rect};
+use super::label::Label;
+use super::text_input::{InputAction, TextInput};
+use super::viewport::{column_to_cursor, viewport};
+use crate::prelude::*;
+use crate::ui_components::{print_text_with_coordinates, Text};
+
+/// Identifies a field or button within its form.
+pub type FieldId = String;
+
+/// What handling an event did, from the plugin's point of view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormEvent {
+    /// A field's contents changed.
+    FieldChanged(FieldId),
+    /// A field asked for completion (see the note on traversal keys above).
+    Complete(FieldId),
+    /// A button was activated, by key or by click.
+    ButtonPressed(FieldId),
+    /// Focus moved between widgets.
+    FocusMoved,
+    /// The form was submitted — Enter in a field.
+    Submit,
+    /// The form was cancelled — Esc, or Ctrl-c in a field.
+    Cancel,
+    /// The form did not consume this. The plugin's own bindings apply.
+    Ignored,
+}
+
+impl FormEvent {
+    /// Whether this event means the plugin should re-render.
+    pub fn should_render(&self) -> bool {
+        !matches!(self, FormEvent::Ignored)
+    }
+}
+
+/// One labelled text field.
+#[derive(Debug, Clone)]
+pub struct Field {
+    id: FieldId,
+    label: Label,
+    input: TextInput,
+    last_rendered: Option<Rect>,
+}
+
+impl Field {
+    pub fn new<I: ToString, L: ToString>(id: I, label: L, input: TextInput) -> Self {
+        Field {
+            id: id.to_string(),
+            label: Label::new(label),
+            input,
+            last_rendered: None,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn input(&self) -> &TextInput {
+        &self.input
+    }
+
+    pub fn input_mut(&mut self) -> &mut TextInput {
+        &mut self.input
+    }
+
+    pub fn text(&self) -> &str {
+        self.input.get_text()
+    }
+
+    pub fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The prompt drawn to the left of the text, e.g. `"Name: "`.
+    fn prompt(&self) -> String {
+        format!("{}: ", self.label.content())
+    }
+}
+
+/// Which widget in a form has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Field(usize),
+    Button(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct Form {
+    fields: Vec<Field>,
+    buttons: Vec<(FieldId, Button)>,
+    focus: Option<Focus>,
+    next_key: KeyWithModifier,
+    prev_key: KeyWithModifier,
+}
+
+impl Default for Form {
+    fn default() -> Self {
+        Form::new()
+    }
+}
+
+impl Form {
+    pub fn new() -> Self {
+        Form {
+            fields: vec![],
+            buttons: vec![],
+            focus: None,
+            next_key: KeyWithModifier::new(BareKey::Tab),
+            prev_key: KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
+        }
+    }
+
+    /// Add a text field. The first widget added takes focus.
+    pub fn field<I: ToString, L: ToString>(mut self, id: I, label: L, input: TextInput) -> Self {
+        self.fields.push(Field::new(id, label, input));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Field(0));
+        }
+        self
+    }
+
+    /// Add a button. The first widget added takes focus.
+    pub fn button<I: ToString>(mut self, id: I, button: Button) -> Self {
+        self.buttons.push((id.to_string(), button));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Button(0));
+        }
+        self
+    }
+
+    /// Replace the default Tab / Shift-Tab traversal.
+    pub fn with_traversal_keys(mut self, next: KeyWithModifier, prev: KeyWithModifier) -> Self {
+        self.next_key = next;
+        self.prev_key = prev;
+        self
+    }
+
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
+    pub fn field_by_id(&self, id: &str) -> Option<&Field> {
+        self.fields.iter().find(|f| f.id == id)
+    }
+
+    pub fn field_by_id_mut(&mut self, id: &str) -> Option<&mut Field> {
+        self.fields.iter_mut().find(|f| f.id == id)
+    }
+
+    /// The text in a field, or `""` if there is no such field.
+    pub fn text(&self, id: &str) -> &str {
+        self.field_by_id(id).map(|f| f.text()).unwrap_or("")
+    }
+
+    pub fn button_by_id_mut(&mut self, id: &str) -> Option<&mut Button> {
+        self.buttons
+            .iter_mut()
+            .find(|(button_id, _)| button_id == id)
+            .map(|(_, button)| button)
+    }
+
+    /// The id of the focused widget, if the form has any widgets.
+    pub fn focused_id(&self) -> Option<&str> {
+        match self.focus? {
+            Focus::Field(i) => self.fields.get(i).map(|f| f.id.as_str()),
+            Focus::Button(i) => self.buttons.get(i).map(|(id, _)| id.as_str()),
+        }
+    }
+
+    /// Move focus to a widget by id. Returns whether it was found.
+    pub fn focus_on(&mut self, id: &str) -> bool {
+        if let Some(i) = self.fields.iter().position(|f| f.id == id) {
+            self.set_focus(Focus::Field(i));
+            return true;
+        }
+        if let Some(i) = self
+            .buttons
+            .iter()
+            .position(|(button_id, _)| button_id == id)
+        {
+            self.set_focus(Focus::Button(i));
+            return true;
+        }
+        false
+    }
+
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = Some(focus);
+        for (i, (_, button)) in self.buttons.iter_mut().enumerate() {
+            button.set_focused(focus == Focus::Button(i));
+        }
+    }
+
+    fn widget_count(&self) -> usize {
+        self.fields.len() + self.buttons.len()
+    }
+
+    /// Focus as a flat index over fields-then-buttons.
+    fn focus_index(&self) -> Option<usize> {
+        match self.focus? {
+            Focus::Field(i) => Some(i),
+            Focus::Button(i) => Some(self.fields.len() + i),
+        }
+    }
+
+    fn focus_from_index(&self, index: usize) -> Focus {
+        if index < self.fields.len() {
+            Focus::Field(index)
+        } else {
+            Focus::Button(index - self.fields.len())
+        }
+    }
+
+    /// Move focus one widget forward or back, wrapping.
+    ///
+    /// Disabled buttons are skipped: focus that lands somewhere it cannot act
+    /// looks like the form has stopped responding.
+    pub fn move_focus(&mut self, forward: bool) -> FormEvent {
+        let count = self.widget_count();
+        let Some(current) = self.focus_index() else {
+            return FormEvent::Ignored;
+        };
+        if count == 0 {
+            return FormEvent::Ignored;
+        }
+
+        let mut index = current;
+        for _ in 0..count {
+            index = if forward {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            };
+            let candidate = self.focus_from_index(index);
+            let focusable = match candidate {
+                Focus::Field(_) => true,
+                Focus::Button(i) => !self.buttons[i].1.is_disabled(),
+            };
+            if focusable {
+                self.set_focus(candidate);
+                return FormEvent::FocusMoved;
+            }
+        }
+        FormEvent::Ignored
+    }
+
+    pub fn handle_key(&mut self, key: KeyWithModifier) -> FormEvent {
+        // Traversal first — see the module note. A field would otherwise
+        // consume Tab as a completion request.
+        if key == self.next_key {
+            return self.move_focus(true);
+        }
+        if key == self.prev_key {
+            return self.move_focus(false);
+        }
+
+        match self.focus {
+            Some(Focus::Field(i)) => {
+                let Some(field) = self.fields.get_mut(i) else {
+                    return FormEvent::Ignored;
+                };
+                let id = field.id.clone();
+                match field.input.handle_key(key) {
+                    InputAction::Continue => FormEvent::FieldChanged(id),
+                    InputAction::Submit => FormEvent::Submit,
+                    InputAction::Cancel => FormEvent::Cancel,
+                    InputAction::Complete => FormEvent::Complete(id),
+                    InputAction::NoAction => FormEvent::Ignored,
+                }
+            },
+            Some(Focus::Button(i)) => {
+                let Some((id, button)) = self.buttons.get(i) else {
+                    return FormEvent::Ignored;
+                };
+                match key.bare_key {
+                    BareKey::Enter | BareKey::Char(' ') if key.has_no_modifiers() => {
+                        if button.is_disabled() {
+                            FormEvent::Ignored
+                        } else {
+                            FormEvent::ButtonPressed(id.clone())
+                        }
+                    },
+                    BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                    _ => FormEvent::Ignored,
+                }
+            },
+            None => FormEvent::Ignored,
+        }
+    }
+
+    pub fn handle_mouse(&mut self, mouse: Mouse) -> FormEvent {
+        match mouse {
+            Mouse::LeftClick(line, column) => {
+                if line < 0 {
+                    return FormEvent::Ignored;
+                }
+                self.handle_click(column, line as usize)
+            },
+            Mouse::Hover(line, column) => {
+                if line < 0 {
+                    return self.clear_hover();
+                }
+                self.handle_hover(column, line as usize)
+            },
+            _ => FormEvent::Ignored,
+        }
+    }
+
+    fn handle_click(&mut self, x: usize, y: usize) -> FormEvent {
+        for (i, (id, button)) in self.buttons.iter().enumerate() {
+            if button.contains(x, y) {
+                let id = id.clone();
+                self.set_focus(Focus::Button(i));
+                return FormEvent::ButtonPressed(id);
+            }
+        }
+
+        for i in 0..self.fields.len() {
+            let Some(rect) = self.fields[i].last_rendered else {
+                continue;
+            };
+            if !rect.contains(x, y) {
+                continue;
+            }
+            // Put the cursor where the click landed, not just at the end —
+            // clicking into the middle of a word and typing at the end of it
+            // is exactly the sort of thing that makes a field feel broken.
+            let field = &mut self.fields[i];
+            let prompt = field.prompt();
+            let cursor = column_to_cursor(
+                &prompt,
+                field.input.get_text(),
+                field.input.get_cursor_position(),
+                rect.columns,
+                x - rect.x,
+            );
+            field.input.set_cursor_position(cursor);
+            self.set_focus(Focus::Field(i));
+            return FormEvent::FocusMoved;
+        }
+
+        FormEvent::Ignored
+    }
+
+    fn handle_hover(&mut self, x: usize, y: usize) -> FormEvent {
+        let mut changed = false;
+        for (_, button) in self.buttons.iter_mut() {
+            changed |= button.set_hovered(button.contains(x, y));
+        }
+        if changed {
+            FormEvent::FocusMoved
+        } else {
+            FormEvent::Ignored
+        }
+    }
+
+    fn clear_hover(&mut self) -> FormEvent {
+        let mut changed = false;
+        for (_, button) in self.buttons.iter_mut() {
+            changed |= button.set_hovered(false);
+        }
+        if changed {
+            FormEvent::FocusMoved
+        } else {
+            FormEvent::Ignored
+        }
+    }
+
+    /// Rows this form draws in: one per field, plus one for the button row.
+    pub fn height(&self) -> usize {
+        self.fields.len() + if self.buttons.is_empty() { 0 } else { 1 }
+    }
+
+    /// Draw the form at `(x, y)`, `width` columns wide, and place the cursor.
+    ///
+    /// The cursor is placed before anything is printed, which is required: the
+    /// host reads the cursor position out of the render, so a `show_cursor`
+    /// after a `print_*` lands a frame late.
+    pub fn render(&mut self, x: usize, y: usize, width: usize) {
+        // 1. Work out where the cursor goes, printing nothing yet.
+        let cursor = match self.focus {
+            Some(Focus::Field(i)) => self.fields.get(i).map(|field| {
+                let (_, column) = viewport(
+                    &field.prompt(),
+                    field.input.get_text(),
+                    field.input.get_cursor_position(),
+                    width,
+                );
+                (x + column, y + i)
+            }),
+            // Focus is on a button: there is nothing to type into, and a cursor
+            // parked in a field the user is not editing reads as focus being
+            // somewhere it is not.
+            _ => None,
+        };
+        show_cursor(cursor);
+
+        // 2. Now draw.
+        for (i, field) in self.fields.iter_mut().enumerate() {
+            let prompt = field.prompt();
+            let (line, _) = viewport(
+                &prompt,
+                field.input.get_text(),
+                field.input.get_cursor_position(),
+                width,
+            );
+            let prompt_len = prompt.chars().count().min(line.chars().count());
+            let text = Text::new(&line).color_range(2, 0..prompt_len);
+            print_text_with_coordinates(text, x, y + i, Some(width), None);
+            field.last_rendered = Some(Rect::new(x, y + i, width, 1));
+        }
+
+        if !self.buttons.is_empty() {
+            let button_y = y + self.fields.len();
+            let mut button_x = x;
+            for (_, button) in self.buttons.iter_mut() {
+                let room = (x + width).saturating_sub(button_x);
+                if room == 0 {
+                    break;
+                }
+                button_x += button.render(button_x, button_y, Some(room));
+                button_x += 1; // one column between buttons
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_form() -> Form {
+        Form::new()
+            .field("name", "Name", TextInput::empty())
+            .field("path", "Path", TextInput::empty())
+            .button("save", Button::new("Save"))
+            .button("cancel", Button::new("Cancel"))
+    }
+
+    fn key(bare_key: BareKey) -> KeyWithModifier {
+        KeyWithModifier::new(bare_key)
+    }
+
+    #[test]
+    fn the_first_widget_added_takes_focus() {
+        assert_eq!(a_form().focused_id(), Some("name"));
+    }
+
+    #[test]
+    fn typing_goes_to_the_focused_field() {
+        let mut form = a_form();
+        let event = form.handle_key(key(BareKey::Char('a')));
+        assert_eq!(event, FormEvent::FieldChanged("name".to_string()));
+        assert_eq!(form.text("name"), "a");
+        assert_eq!(form.text("path"), "");
+    }
+
+    #[test]
+    fn traversal_wraps_through_fields_then_buttons() {
+        let mut form = a_form();
+        for expected in ["path", "save", "cancel", "name"] {
+            assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
+            assert_eq!(form.focused_id(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn shift_tab_traverses_backwards() {
+        let mut form = a_form();
+        let back = KeyWithModifier::new(BareKey::Tab).with_shift_modifier();
+        assert_eq!(form.handle_key(back), FormEvent::FocusMoved);
+        assert_eq!(form.focused_id(), Some("cancel"));
+    }
+
+    /// Tab reaching the field as a completion request would mean traversal
+    /// silently stopped working, which is the failure this ordering prevents.
+    #[test]
+    fn traversal_beats_the_fields_own_tab_handling() {
+        let mut form = Form::new().field("name", "Name", TextInput::empty());
+        assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
+    }
+
+    #[test]
+    fn a_form_with_other_traversal_keys_lets_tab_reach_the_field() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .with_traversal_keys(
+                KeyWithModifier::new(BareKey::Down),
+                KeyWithModifier::new(BareKey::Up),
+            );
+        assert_eq!(
+            form.handle_key(key(BareKey::Tab)),
+            FormEvent::Complete("name".to_string())
+        );
+    }
+
+    #[test]
+    fn unhandled_keys_come_back_as_ignored() {
+        let mut form = a_form();
+        let event = form.handle_key(KeyWithModifier::new(BareKey::F(5)));
+        assert_eq!(event, FormEvent::Ignored);
+        assert!(!event.should_render());
+    }
+
+    #[test]
+    fn enter_in_a_field_submits_and_esc_cancels() {
+        let mut form = a_form();
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+    }
+
+    #[test]
+    fn enter_on_a_button_presses_it() {
+        let mut form = a_form();
+        form.focus_on("save");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::ButtonPressed("save".to_string())
+        );
+    }
+
+    #[test]
+    fn traversal_skips_a_disabled_button() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .button("save", Button::new("Save").disabled(true))
+            .button("cancel", Button::new("Cancel"));
+        form.handle_key(key(BareKey::Tab));
+        assert_eq!(form.focused_id(), Some("cancel"));
+    }
+
+    #[test]
+    fn a_disabled_button_cannot_be_pressed_by_key() {
+        let mut form = Form::new().button("save", Button::new("Save").disabled(true));
+        form.focus_on("save");
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Ignored);
+    }
+
+    #[test]
+    fn an_empty_form_ignores_everything() {
+        let mut form = Form::new();
+        assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::Ignored);
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Ignored);
+        assert_eq!(form.focused_id(), None);
+    }
+
+    #[test]
+    fn a_click_before_any_render_hits_nothing() {
+        let mut form = a_form();
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(0, 0)),
+            FormEvent::Ignored,
+            "a form that never rendered has no rectangles to hit"
+        );
+    }
+
+    #[test]
+    fn a_negative_click_line_is_ignored() {
+        let mut form = a_form();
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(-1, 0)),
+            FormEvent::Ignored
+        );
+    }
+
+    #[test]
+    fn height_counts_the_button_row_once() {
+        assert_eq!(a_form().height(), 3);
+        assert_eq!(
+            Form::new().field("a", "A", TextInput::empty()).height(),
+            1,
+            "no buttons means no button row"
+        );
+    }
+
+    #[test]
+    fn focus_on_an_unknown_id_reports_failure_and_changes_nothing() {
+        let mut form = a_form();
+        assert!(!form.focus_on("nope"));
+        assert_eq!(form.focused_id(), Some("name"));
+    }
+
+    #[test]
+    fn text_of_an_unknown_field_is_empty() {
+        assert_eq!(a_form().text("nope"), "");
+    }
+}
