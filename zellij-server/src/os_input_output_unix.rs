@@ -40,11 +40,21 @@ use crate::pty_host::remote::{
     conn::RemoteGitProbe, protocol::ChildSignal, RemoteConn, RemoteStatus,
 };
 use crate::pty_host::{
-    client::{self as pty_host_client, PtyHostHandle, ReleasedPtyHost, SpawnParams},
+    client::{
+        self as pty_host_client, PtyHostHandle, ReleasedPane, ReleasedRemotePane, SpawnParams,
+    },
     protocol::{WireTermios, WireWinsize},
 };
 
 pub use async_trait::async_trait;
+
+/// How long to wait for a broker to confirm it has let a pane go.
+///
+/// Shorter than `warp::WARP_TIMEOUT`, and deliberately: this is one leg of a
+/// warp that the pty thread is blocked on, and the leg after it — the far
+/// session attaching — needs budget left over. A broker that has not answered in
+/// this long is not about to.
+const REMOTE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// An `AsyncReader` that wraps a `RawFd` using epoll via `AsyncFd`.
 ///
@@ -785,6 +795,19 @@ impl UnixPtyBackend {
             .insert(terminal_id, PaneTransport::Reserved);
     }
 
+    /// Give a reservation back without terminating anything.
+    ///
+    /// Deliberately not `clear_terminal_id`, which is the teardown funnel and
+    /// would end whatever the id names. This is for an adoption that failed
+    /// before it recorded a transport: the pane it was reaching for is still
+    /// running somewhere, and must stay that way for the caller's rollback.
+    pub fn forget_reserved_terminal_id(&self, terminal_id: u32) {
+        self.terminal_id_to_transport
+            .lock()
+            .unwrap()
+            .remove(&terminal_id);
+    }
+
     pub fn clear_terminal_id(&self, terminal_id: u32) {
         // The single funnel for pane teardown: `Pty::close_pane` calls this, and
         // every path that closes a pane — ClosePane, CloseTab, spawn failures,
@@ -820,7 +843,21 @@ impl UnixPtyBackend {
     /// task's `RawFdAsyncReader`, which closes it when the caller aborts that
     /// task. Closing it here as well would race that drop into a double close of
     /// a descriptor another pane may by then have been given.
-    pub fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+    pub fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
+        // A remote pane is asked about first, because the miss below is not the
+        // truth about one: its supervisor exists, it is simply on the far side
+        // of a broker and was never going to be in this map.
+        if let Some(conn) = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .and_then(|transport| transport.remote())
+            .cloned()
+        {
+            return self.release_remote_terminal_for_warp(terminal_id, conn);
+        }
+
         let handle = self
             .terminal_id_to_host
             .lock()
@@ -838,7 +875,44 @@ impl UnixPtyBackend {
             .lock()
             .to_anyhow()?
             .remove(&terminal_id);
-        Ok(released)
+        Ok(ReleasedPane::Local(released))
+    }
+
+    /// Hand a remote pane back to its broker for someone else to resume.
+    ///
+    /// `received` is sampled *before* the release rather than after, and that
+    /// ordering is load-bearing. The broker replays from this number, and the
+    /// pane's screen is serialized separately from the grid this side already
+    /// filled; a byte has to be in exactly one of the two. The caller has
+    /// already stopped the reader, so nothing can be counted between the sample
+    /// and the release, and everything the pane produces after it is buffered on
+    /// the broker for the replay.
+    ///
+    /// The pane leaves the transport table whether or not the release succeeded.
+    /// A failure here means the broker did not confirm, so the pane may or may
+    /// not be free — but this session has stopped reading it either way, and
+    /// keeping a connection nothing drives would leave a pane that looks live
+    /// and is not.
+    fn release_remote_terminal_for_warp(
+        &self,
+        terminal_id: u32,
+        conn: Arc<RemoteConn>,
+    ) -> Result<ReleasedPane> {
+        let received = conn.received();
+        let released = conn
+            .release_for_warp(REMOTE_RELEASE_TIMEOUT)
+            .with_context(|| format!("failed to hand remote pane {terminal_id} over"));
+        self.terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id);
+        released?;
+        Ok(ReleasedPane::Remote(ReleasedRemotePane {
+            host: conn.host().to_owned(),
+            pane_token: conn.pane_token().to_owned(),
+            received,
+            cmd: conn.cmd().clone(),
+        }))
     }
 
     /// Take a detached supervisor over into this session under a fresh terminal
@@ -896,7 +970,7 @@ impl UnixPtyBackend {
         Ok(AdoptedTerminal {
             terminal_id,
             reader,
-            child_pid: attached.child_pid,
+            child_pid: Some(attached.child_pid),
             cmd: attached.cmd,
             buffered: attached.buffered,
             child_exit_status: attached.status.child_exit_status,
@@ -909,7 +983,10 @@ impl UnixPtyBackend {
 pub struct AdoptedTerminal {
     pub terminal_id: u32,
     pub reader: Box<dyn AsyncReader>,
-    pub child_pid: u32,
+    /// `None` for a pane adopted from another machine. Its child's pid is
+    /// meaningful only there, and recording one here would put it in
+    /// `id_to_child_pid`, where every consumer would act on it locally.
+    pub child_pid: Option<u32>,
     /// The command the supervisor is running, for rebuilding a `quit_cb` that
     /// holds or closes the pane the way the original did.
     pub cmd: RunCommand,

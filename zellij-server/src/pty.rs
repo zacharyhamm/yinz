@@ -21,12 +21,9 @@ use crate::{
     ClientId, ServerInstruction,
 };
 use std::sync::Arc;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, path::PathBuf};
 
-use crate::pty_host::client::ReleasedPtyHost;
+use crate::pty_host::client::ReleasedPane;
 use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
@@ -862,7 +859,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 // Matched rather than mapped so the payload — which carries the
                 // pane's whole scrollback — moves into the Screen instruction
                 // instead of being cloned.
-                let result = match pty.adopt_terminal(&payload.control_socket) {
+                let result = match pty.adopt_terminal(&payload) {
                     Ok(adopted) => {
                         let _ =
                             pty.bus
@@ -2307,8 +2304,23 @@ impl Pty {
     /// `clear_terminal_id`, which would terminate the supervisor. Aborting the
     /// reader task drops its `RawFdAsyncReader`, which closes this server's dup of
     /// the master — the supervisor keeps its own and starts draining into the ring.
-    pub fn release_terminal_for_warp(&mut self, terminal_id: u32) -> Result<ReleasedPtyHost> {
+    ///
+    /// The reader is stopped *before* the release, not after, and for a remote
+    /// pane that ordering is load-bearing rather than tidy. The broker replays
+    /// from the byte count this side reports, and the pane's screen is
+    /// serialized separately by Screen; a byte has to land in exactly one of the
+    /// two. With the reader still running, the count sampled inside the release
+    /// could grow between being read and the screen being dumped, and the
+    /// overlap would be replayed on top of itself.
+    ///
+    /// It costs the local path nothing. There, aborting the task drops the
+    /// `RawFdAsyncReader` and closes this server's dup of the master, which the
+    /// supervisor has been waiting for either way.
+    pub fn release_terminal_for_warp(&mut self, terminal_id: u32) -> Result<ReleasedPane> {
         let err_context = || format!("failed to release pane {terminal_id} for a warp");
+        if let Some(handle) = self.task_handles.remove(&terminal_id) {
+            handle.abort();
+        }
         let released = self
             .bus
             .os_input
@@ -2317,15 +2329,13 @@ impl Pty {
             .and_then(|os_input| os_input.release_terminal_for_warp(terminal_id))
             .with_context(err_context)?;
 
-        if let Some(handle) = self.task_handles.remove(&terminal_id) {
-            handle.abort();
-        }
         // Removed, emphatically not killed: the process is the point.
         let _ = self.id_to_child_pid.remove(&terminal_id);
         self.pane_activity_flags.remove(&terminal_id);
         self.forget_terminal_cwd(terminal_id);
         self.terminal_cmds.remove(&terminal_id);
         self.terminal_foreground_cmds.remove(&terminal_id);
+        self.forget_terminal_host(terminal_id);
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
@@ -2338,12 +2348,22 @@ impl Pty {
     /// Returns the fresh terminal id, the command it is running, whatever the
     /// supervisor buffered while nobody held it, and its exit status if the child
     /// is already gone.
-    pub fn adopt_terminal(&mut self, control_socket: &Path) -> Result<AdoptedPane> {
-        let err_context = || {
-            format!(
+    ///
+    /// Takes the whole `WarpedPane` rather than a socket path because a remote
+    /// pane has no socket path to take: its process is picked up by resuming it
+    /// on the broker that has been holding it. Everything after the two backend
+    /// calls is identical, which is the point — the pane that arrives is an
+    /// ordinary pane either way.
+    pub fn adopt_terminal(&mut self, pane: &WarpedPane) -> Result<AdoptedPane> {
+        let err_context = || match &pane.remote {
+            Some(remote) => format!(
+                "failed to adopt the pane running on {} as {}",
+                remote.host, remote.pane_token
+            ),
+            None => format!(
                 "failed to adopt the pane supervised at {}",
-                control_socket.display()
-            )
+                pane.control_socket.display()
+            ),
         };
 
         // Built before the attach, because `adopt_terminal` hands it to the
@@ -2378,7 +2398,10 @@ impl Pty {
             .os_input
             .as_ref()
             .context("no OS I/O interface found")
-            .and_then(|os_input| os_input.adopt_terminal(control_socket, quit_cb))
+            .and_then(|os_input| match &pane.remote {
+                Some(remote) => os_input.adopt_remote_terminal(remote, quit_cb),
+                None => os_input.adopt_terminal(&pane.control_socket, quit_cb),
+            })
             .with_context(err_context)?;
 
         let terminal_id = adopted.terminal_id;
@@ -2403,10 +2426,18 @@ impl Pty {
         self.task_handles.insert(terminal_id, terminal_bytes);
         self.pane_activity_flags.insert(terminal_id, activity_flag);
         self.report_terminal_host(terminal_id);
-        self.id_to_child_pid.insert(terminal_id, child_pid);
-        // No requested cwd: an adopted pane asked for nothing, and its process
-        // has been running long enough that the OS answers reliably.
-        self.capture_initial_cwd(terminal_id, child_pid, None);
+        // `None` for a pane adopted from another machine, and it must stay out
+        // of both maps rather than be given a placeholder. A pid from there
+        // names an unrelated local process, so `id_to_child_pid` would arm every
+        // signal and `sysinfo` path against it, and `capture_initial_cwd` would
+        // read that process's cwd and call it the pane's. The broker answers
+        // both questions instead, through `remote_pane_status`.
+        if let Some(child_pid) = child_pid {
+            self.id_to_child_pid.insert(terminal_id, child_pid);
+            // No requested cwd: an adopted pane asked for nothing, and its
+            // process has been running long enough that the OS answers reliably.
+            self.capture_initial_cwd(terminal_id, child_pid, None);
+        }
 
         Ok(AdoptedPane {
             terminal_id,
@@ -2443,7 +2474,7 @@ impl Pty {
                 if failed.is_some() {
                     break;
                 }
-                match self.adopt_terminal(&pane.control_socket) {
+                match self.adopt_terminal(pane) {
                     Ok(pane) => adopted.push(pane),
                     Err(e) => failed = Some((pane.host_id.clone(), e)),
                 }

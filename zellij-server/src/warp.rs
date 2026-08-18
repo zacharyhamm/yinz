@@ -216,7 +216,7 @@ pub fn warp_pane_to_session(
     log_if_slow("releasing the pane", started_at);
 
     // From here the pane belongs to nobody until someone adopts it.
-    let host_id = payload.host_id.clone();
+    let recovery = recovery_command(&payload);
     let handed_off_at = std::time::Instant::now();
     match send_pane_to_session(&mut sender, payload.clone(), placement) {
         Ok(()) => {
@@ -234,7 +234,7 @@ pub fn warp_pane_to_session(
                 Err(rollback_error) => format!(
                     "Could not move the pane to '{to_session}' ({e:#}), and could not take \
                      it back either ({rollback_error}). The process is still running — \
-                     recover it with `zellij pty-host adopt {host_id}`"
+                     recover it with `{recovery}`"
                 ),
             })
         },
@@ -353,11 +353,11 @@ pub fn warp_tab_to_session(
     log_if_slow("releasing the tab", started_at);
 
     // From here every pane in the tab belongs to nobody until someone adopts it.
-    let host_ids: Vec<String> = payload
+    let recoveries: Vec<String> = payload
         .tiled_panes
         .iter()
         .chain(payload.floating_panes.iter())
-        .map(|pane| pane.host_id.clone())
+        .map(recovery_command)
         .collect();
     let handed_off_at = std::time::Instant::now();
     match send_tab_to_session(&mut sender, payload.clone()) {
@@ -376,8 +376,8 @@ pub fn warp_tab_to_session(
                 Err(rollback_error) => format!(
                     "Could not move the tab to '{to_session}' ({e:#}), and could not take it \
                      back either ({rollback_error}). The processes are still running — recover \
-                     them with `zellij pty-host adopt <id>`: {}",
-                    host_ids.join(", ")
+                     them with: {}",
+                    recoveries.join("; ")
                 ),
             })
         },
@@ -456,6 +456,24 @@ pub fn warp_tab_from_session(
     };
     log_if_slow("bringing the tab over", started_at);
     brought.map(|_| format!("Brought tab from session '{from_session}'"))
+}
+
+/// The command that gets a pane back, when both the handoff and the rollback
+/// have failed.
+///
+/// A pane in that state is running with nothing watching it, and this line is
+/// the only thing standing between the user and losing the work in it — so it
+/// has to be a command that actually applies. A remote pane is not reachable by
+/// `pty-host adopt <id>`: its supervisor is on the other machine, and the id
+/// that names it is a token only the broker there understands.
+fn recovery_command(pane: &WarpedPane) -> String {
+    match &pane.remote {
+        Some(remote) => format!(
+            "zellij pty-host adopt --host {} {}",
+            remote.host, remote.pane_token
+        ),
+        None => format!("zellij pty-host adopt {}", pane.host_id),
+    }
 }
 
 fn log_if_slow(what: &str, started_at: std::time::Instant) {

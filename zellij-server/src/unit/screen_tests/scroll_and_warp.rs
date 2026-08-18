@@ -558,6 +558,89 @@ fn a_tabs_last_pane_can_still_be_warped() {
 }
 
 // ---------------------------------------------------------------------------
+// Remote panes
+// ---------------------------------------------------------------------------
+//
+// A remote pane's process is on another machine, so there is no local supervisor
+// socket to hand over. What travels instead is the broker's address for it. The
+// point of these is that Screen builds a payload for one at all: before this, a
+// remote pane failed the release with "no pty-host supervisor", which is a true
+// statement about this machine and a misleading one about the pane.
+
+/// A remote pane released for a warp, as the pty thread would report one.
+fn released_remote_pane(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
+    screen
+        .take_released_pane_for_warp(
+            terminal_id,
+            Ok(ReleasedPane::Remote(ReleasedRemotePane {
+                host: "build-box".to_owned(),
+                pane_token: format!("token-{terminal_id}"),
+                received: 4096,
+                cmd: RunCommand {
+                    command: PathBuf::from("/usr/bin/cargo"),
+                    args: vec!["watch".to_owned()],
+                    remote_host: Some("build-box".to_owned()),
+                    ..Default::default()
+                },
+            })),
+        )
+        .expect("a remote pane should have been taken out of its tab")
+}
+
+#[test]
+fn a_remote_pane_travels_as_a_broker_address_rather_than_a_socket() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+
+    let payload = released_remote_pane(&mut screen, 1);
+
+    let remote = payload
+        .remote
+        .as_ref()
+        .expect("a remote pane must carry the broker address that is its only way home");
+    assert_eq!(remote.host, "build-box");
+    assert_eq!(remote.pane_token, "token-1");
+    assert_eq!(
+        remote.received, 4096,
+        "the byte count must survive: the broker replays from exactly here, and the pane's \
+         serialized screen already holds everything before it"
+    );
+    assert_eq!(
+        remote.cmd.remote_host.as_deref(),
+        Some("build-box"),
+        "the command travels with the pane, because a resume carries none — without it the pane \
+         cannot title itself or re-run on the right machine"
+    );
+    assert!(
+        payload.host_id.is_empty() && payload.control_socket.as_os_str().is_empty(),
+        "the local supervisor fields must stay empty rather than plausible: a path here would be \
+         one the adopting session might try to attach to"
+    );
+}
+
+#[test]
+fn a_remote_pane_leaves_its_tab_like_any_other() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let somewhere = |screen: &Screen| {
+        screen
+            .tabs
+            .values()
+            .any(|tab| tab.get_pane_with_id(PaneId::Terminal(1)).is_some())
+    };
+    assert!(somewhere(&screen));
+
+    released_remote_pane(&mut screen, 1);
+
+    assert!(
+        !somewhere(&screen),
+        "a warped remote pane must be taken out of its tab, or it is on screen in two sessions"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tab warp eligibility
 // ---------------------------------------------------------------------------
 //

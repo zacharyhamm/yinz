@@ -246,6 +246,134 @@ fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     drop(travelling);
 }
 
+/// Open a pane whose command names another machine.
+///
+/// The fake runs nothing anywhere, let alone over ssh — what makes this pane
+/// "remote" is the `remote_host` on its `RunCommand`, which is also exactly what
+/// the real backend branches on. So this exercises the whole warp path for a
+/// remote pane without a broker: which address the release builds, that it
+/// survives the protobuf trip between two servers, and that the receiving
+/// session follows it back to the same process.
+fn split_off_a_remote_pane(zellij: &TestSession, says: &str) -> FakePtyHandle {
+    zellij.run_cli_action(CliAction::NewPane {
+        direction: None,
+        command: vec!["cargo".to_string(), "watch".to_string()],
+        remote_host: Some("build-box".to_string()),
+        plugin: None,
+        cwd: None,
+        floating: false,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: None,
+        y: None,
+        width: None,
+        height: None,
+        pinned: None,
+        overlay: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+        edge: None,
+        global: false,
+        size: None,
+    });
+    let pane = zellij.expect_pty_spawn();
+    pane.output(format!("{says}\r\n").as_bytes());
+    zellij.wait_until("the remote pane to show its output", |grid_snapshot| {
+        grid_snapshot.contains(says)
+    });
+    pane
+}
+
+/// The failure this whole change is about: before it, releasing a remote pane
+/// answered "pane N has no pty-host supervisor", which is true of this machine
+/// and misleading about the pane — its supervisor is on the other one.
+#[test]
+fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let travelling = split_off_a_remote_pane(&sender, "running on the far machine");
+
+    // By id rather than by focus: a pane opened through `run_cli_action` does not
+    // take the interactive client's focus, and "the focused pane" is resolved
+    // per client.
+    let (exit_code, reported) = warp_pane_by_id(&sender, &receiver, travelling.terminal_id());
+    assert_eq!(exit_code, 0, "the warp was refused: {reported}");
+
+    let arrived = receiver.expect_adopted_pty();
+    assert!(
+        !arrived.is_exited(),
+        "the remote pane's process was killed rather than handed over",
+    );
+
+    sender.wait_until("the pane to leave the sending session", |grid_snapshot| {
+        !grid_snapshot.contains("running on the far machine")
+    });
+    receiver.wait_until("the pane to arrive with its scrollback", |grid_snapshot| {
+        grid_snapshot.contains("running on the far machine")
+    });
+
+    // The adopted pane is still a remote pane: it knows which machine it is on,
+    // which is what a later re-run and the pane's own title read.
+    let arrived_command = match arrived.terminal_action() {
+        Some(zellij_utils::input::command::TerminalAction::RunCommand(run_command)) => run_command,
+        other => panic!("an adopted remote pane should carry a command, got {other:?}"),
+    };
+    assert_eq!(
+        arrived_command.remote_host.as_deref(),
+        Some("build-box"),
+        "the command travelled without its host, so the pane no longer knows where it runs — a \
+         resume carries no command, so this is the only copy there was"
+    );
+
+    arrived.output(b"still running after the warp\r\n");
+    receiver.wait_until("the pane to go on writing", |grid_snapshot| {
+        grid_snapshot.contains("still running after the warp")
+    });
+    assert!(
+        !sender.snapshot().contains("still running after the warp"),
+        "the sending session is still rendering a pane it gave away",
+    );
+    drop(travelling);
+}
+
+/// A tab is released whole, so one remote pane in it puts both addressing shapes
+/// through the same message — and a mistake in either loses the whole tab.
+#[test]
+fn a_tab_of_local_and_remote_panes_warps_whole() {
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let local = split_off_a_pane(&sender, "local pane");
+    let remote = split_off_a_remote_pane(&sender, "remote pane");
+
+    let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
+        to_session: Some(receiver.session_name().to_owned()),
+        from_session: None,
+        tab_index: None,
+    });
+    assert_eq!(exit_code, 0, "the tab warp was refused: {reported}");
+
+    receiver.wait_until("both panes to arrive", |grid_snapshot| {
+        grid_snapshot.contains("local pane") && grid_snapshot.contains("remote pane")
+    });
+    sender.wait_until("both panes to leave", |grid_snapshot| {
+        !grid_snapshot.contains("local pane") && !grid_snapshot.contains("remote pane")
+    });
+
+    drop((local, remote));
+}
+
 #[test]
 fn a_focused_global_pane_is_refused_and_nothing_moves() {
     // The dangerous case, end to end. Asked for "the focused pane" with a global
