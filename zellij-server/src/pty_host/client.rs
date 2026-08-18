@@ -211,6 +211,34 @@ impl ReleasedPane {
             ReleasedPane::Remote(remote) => format!("{}:{}", remote.host, remote.pane_token),
         }
     }
+
+    /// The command that gets this pane back.
+    pub fn recovery_command(&self) -> String {
+        match self {
+            ReleasedPane::Local(local) => recovery_command(&local.host_id, None),
+            ReleasedPane::Remote(remote) => {
+                recovery_command("", Some((&remote.host, &remote.pane_token)))
+            },
+        }
+    }
+}
+
+/// The command that gets a released pane back, when nobody ended up holding it.
+///
+/// A pane in that state is running with nothing watching it, and this line is
+/// the only thing standing between the user and losing the work in it — so it
+/// has to be a command that actually applies. A remote pane is not reachable by
+/// `pty-host adopt <id>`: its supervisor is on the other machine, and the id
+/// that names it is a token only the broker there understands.
+///
+/// Written once and called from everywhere that has to say it — the release
+/// path, the warp's rollback and the containment when both have failed — because
+/// a second wording of this is a second chance to get it wrong.
+pub fn recovery_command(local_host_id: &str, remote: Option<(&str, &str)>) -> String {
+    match remote {
+        Some((host, pane_token)) => format!("zellij pty-host adopt --host {host} {pane_token}"),
+        None => format!("zellij pty-host adopt {local_host_id}"),
+    }
 }
 
 #[cfg(test)]

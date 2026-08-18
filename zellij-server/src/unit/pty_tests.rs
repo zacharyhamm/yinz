@@ -27,6 +27,18 @@ struct MockOsApi {
     remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
     remote_status: Arc<Mutex<HashMap<u32, RemoteStatus>>>,
     remote_hosts: Arc<Mutex<HashMap<u32, String>>>,
+    /// Panes this backend will refuse to warp, and why.
+    ///
+    /// Absent means yes. A real backend answers out of the maps the release
+    /// would use; this one answers out of what a test put here.
+    warp_refusals: Arc<Mutex<HashMap<u32, String>>>,
+    /// Panes whose release fails *after* the check said yes — the shape of a
+    /// remote broker that will not confirm a handoff, and the only case where a
+    /// pane really is cut loose.
+    unreleasable: Arc<Mutex<std::collections::HashSet<u32>>>,
+    /// Every id the release was actually attempted for, so a test can assert it
+    /// was never attempted at all.
+    release_attempts: Arc<Mutex<Vec<u32>>>,
 }
 
 impl MockOsApi {
@@ -40,7 +52,22 @@ impl MockOsApi {
             remote_signals: Arc::new(Mutex::new(Vec::new())),
             remote_status: Arc::new(Mutex::new(HashMap::new())),
             remote_hosts: Arc::new(Mutex::new(HashMap::new())),
+            warp_refusals: Arc::new(Mutex::new(HashMap::new())),
+            unreleasable: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            release_attempts: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+    fn refuse_to_warp(&self, terminal_id: u32, why: &str) {
+        self.warp_refusals
+            .lock()
+            .unwrap()
+            .insert(terminal_id, why.to_owned());
+    }
+    fn fail_the_release_of(&self, terminal_id: u32) {
+        self.unreleasable.lock().unwrap().insert(terminal_id);
+    }
+    fn release_attempts(&self) -> Vec<u32> {
+        self.release_attempts.lock().unwrap().clone()
     }
     fn set_remote_host(&self, terminal_id: u32, host: &str) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
@@ -208,6 +235,27 @@ impl ServerOsApi for MockOsApi {
     }
     fn clear_terminal_id(&self, _: u32) -> anyhow::Result<()> {
         Ok(())
+    }
+    fn check_terminal_can_be_warped(&self, terminal_id: u32) -> anyhow::Result<()> {
+        match self.warp_refusals.lock().unwrap().get(&terminal_id) {
+            Some(why) => Err(anyhow::anyhow!("{why}")),
+            None => Ok(()),
+        }
+    }
+    fn release_terminal_for_warp(&self, terminal_id: u32) -> anyhow::Result<ReleasedPane> {
+        self.release_attempts.lock().unwrap().push(terminal_id);
+        if self.unreleasable.lock().unwrap().contains(&terminal_id) {
+            return Err(anyhow::anyhow!(
+                "the supervisor did not confirm the handoff"
+            ));
+        }
+        Ok(ReleasedPane::Local(
+            crate::pty_host::client::ReleasedPtyHost {
+                host_id: format!("host-{terminal_id}"),
+                host_pid: 1,
+                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
+            },
+        ))
     }
 }
 
@@ -1120,5 +1168,195 @@ fn a_pane_that_could_not_start_names_its_terminal_and_its_reason() {
     assert!(
         pane_start_failure(&anyhow!("the pty thread has no pane to blame this on")).is_none(),
         "an unrelated failure must stay fatal"
+    );
+}
+
+/// The pane a warp test moves: enough bookkeeping for the release to have
+/// something to take apart, and a reader task standing in for the real one so a
+/// test can see whether it survived.
+fn set_warpable_terminal(pty: &mut Pty, terminal_id: u32) {
+    pty.terminal_cmds
+        .insert(terminal_id, vec!["/bin/sh".to_owned()]);
+    pty.id_to_child_pid.insert(terminal_id, 100 + terminal_id);
+    pty.task_handles
+        .insert(terminal_id, async_runtime().spawn(async {}));
+}
+
+fn drain_screen(
+    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
+) -> Vec<ScreenInstruction> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|(instruction, _)| instruction)
+        .collect()
+}
+
+/// What a pane was told about itself, by terminal id.
+fn pane_messages(instructions: &[ScreenInstruction]) -> HashMap<u32, String> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PtyBytes(terminal_id, bytes) => {
+                Some((*terminal_id, String::from_utf8_lossy(bytes).to_string()))
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
+    // The invariant the whole feature rests on. Aborting the reader closes this
+    // server's dup of the pty master and there is no second copy to reopen, so a
+    // refusal arriving after it would cost the user a working pane. Asked first,
+    // it costs an error message.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    set_warpable_terminal(&mut pty, 3);
+    mock.refuse_to_warp(3, "pane 3 has no pty-host supervisor");
+
+    let error = format!(
+        "{:#}",
+        pty.release_terminal_for_warp(3)
+            .expect_err("an unwarpable pane must be refused")
+    );
+
+    assert!(
+        error.contains("no pty-host supervisor"),
+        "the refusal should reach the caller intact, got: {error}"
+    );
+    assert!(
+        mock.release_attempts().is_empty(),
+        "nothing should have been released"
+    );
+    assert!(
+        pty.task_handles.contains_key(&3),
+        "the pane's reader must still be running — this is the whole point of asking first"
+    );
+    assert!(
+        pty.terminal_cmds.contains_key(&3),
+        "a refused pane keeps its bookkeeping"
+    );
+}
+
+#[test]
+fn a_refused_pane_is_not_told_it_was_cut_loose() {
+    // The other half of the same rule: a refusal costs the user an error and
+    // nothing else, so the pane must not be held and must not have a failure
+    // written into its scrollback.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    set_warpable_terminal(&mut pty, 3);
+    mock.refuse_to_warp(3, "pane 3 has no pty-host supervisor");
+
+    let released = release_pane_for_warp(&mut pty, 3, "elsewhere");
+
+    assert!(released.is_err(), "the warp should have been refused");
+    let instructions = drain_screen(&screen_rx);
+    assert!(
+        !instructions
+            .iter()
+            .any(|instruction| matches!(instruction, ScreenInstruction::HoldPane(..))),
+        "a pane that was never released is still working and must not be held"
+    );
+    assert!(
+        pane_messages(&instructions).is_empty(),
+        "nothing happened to this pane, so nothing should be written into it"
+    );
+}
+
+#[test]
+fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
+    // The residual case: a supervisor that agrees to be asked and then does not
+    // confirm. The pane cannot be put back, so the one thing left to get right
+    // is that it stops looking alive.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    set_warpable_terminal(&mut pty, 3);
+    mock.fail_the_release_of(3);
+
+    let released = release_pane_for_warp(&mut pty, 3, "elsewhere");
+
+    assert!(released.is_err(), "the release should have failed");
+    let instructions = drain_screen(&screen_rx);
+    let message = pane_messages(&instructions)
+        .remove(&3)
+        .expect("the pane should have been told what happened to it");
+    assert!(
+        message.contains("could not move this pane to 'elsewhere'"),
+        "the pane's own account should name the session it was going to, got: {message}"
+    );
+    assert!(
+        instructions.iter().any(|instruction| matches!(
+            instruction,
+            ScreenInstruction::HoldPane(PaneId::Terminal(3), ..)
+        )),
+        "a pane with nothing on the other end must be held rather than left looking live"
+    );
+}
+
+#[test]
+fn one_unwarpable_pane_stops_a_whole_tab_being_released() {
+    // Releasing panes one at a time and stopping at the first refusal would
+    // answer "no" with the panes ahead of it already handed away and nothing to
+    // give them back to.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    for terminal_id in [1, 2, 3] {
+        set_warpable_terminal(&mut pty, terminal_id);
+    }
+    mock.refuse_to_warp(3, "pane 3 has no pty-host supervisor");
+
+    let released = release_tab_for_warp(&mut pty, vec![1, 2, 3]);
+
+    assert!(
+        mock.release_attempts().is_empty(),
+        "not one pane of a tab that cannot be moved should have been released, got: {:?}",
+        mock.release_attempts()
+    );
+    assert_eq!(
+        released.len(),
+        3,
+        "screen hears about every pane it asked about"
+    );
+    assert!(
+        released.iter().all(|(_, result)| result.is_err()),
+        "the whole tab is refused for the one pane that cannot go"
+    );
+    assert!(
+        !drain_screen(&screen_rx)
+            .iter()
+            .any(|instruction| matches!(instruction, ScreenInstruction::HoldPane(..))),
+        "a tab that was never released is still working and must not be held"
+    );
+}
+
+#[test]
+fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
+    // Pane 1 was handed over before pane 3 failed, so it is orphaned and pane 3
+    // is severed. Neither has a process on the other end any more, and both have
+    // to say so — including the one whose own release "worked".
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    for terminal_id in [1, 3] {
+        set_warpable_terminal(&mut pty, terminal_id);
+    }
+    mock.fail_the_release_of(3);
+
+    release_tab_for_warp(&mut pty, vec![1, 3]);
+
+    let messages = pane_messages(&drain_screen(&screen_rx));
+    let orphaned = messages
+        .get(&1)
+        .expect("the pane handed over before the failure must say so");
+    assert!(
+        orphaned.contains("had already been handed over")
+            && orphaned.contains("zellij pty-host adopt host-1"),
+        "an orphaned pane's only way back is the recovery command, got: {orphaned}"
+    );
+    assert!(
+        messages
+            .get(&3)
+            .is_some_and(|message| message.contains("this tab could not be moved")),
+        "the pane whose release failed must say so too, got: {messages:?}"
     );
 }

@@ -271,6 +271,18 @@ pub enum PtyInstruction {
         tab_index: usize,
         terminal_ids: Vec<u32>,
     },
+    /// Say in a pane that its warp cut it loose, and hold it.
+    ///
+    /// For the cases Screen is the one to notice — a tab released for a warp
+    /// nobody was waiting on, most of all. The message has to be written on this
+    /// thread because holding a pane means naming the command it was running,
+    /// and that is one of the things Screen hands *to* the pty thread rather
+    /// than one of the things it keeps.
+    StrandPaneAfterWarp {
+        terminal_id: u32,
+        why: String,
+        recovery: Option<String>,
+    },
     /// Take a whole tab's supervisors over into this session.
     AdoptTab {
         payload: Box<WarpedTab>,
@@ -370,6 +382,7 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::ReleaseTerminalForWarp { .. } => PtyContext::ReleaseTerminalForWarp,
             PtyInstruction::AdoptTerminal { .. } => PtyContext::AdoptTerminal,
             PtyInstruction::ReleaseTerminalsForWarp { .. } => PtyContext::ReleaseTerminalsForWarp,
+            PtyInstruction::StrandPaneAfterWarp { .. } => PtyContext::StrandPaneAfterWarp,
             PtyInstruction::AdoptTab { .. } => PtyContext::AdoptTab,
             PtyInstruction::ClaimAdoptedTab { .. } => PtyContext::ClaimAdoptedTab,
             PtyInstruction::NewTab(..) => PtyContext::NewTab,
@@ -836,9 +849,9 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 placement,
                 client_id,
             } => {
+                let released = release_pane_for_warp(&mut pty, terminal_id, &to_session);
                 // Screen hears about this either way: it has a pane sitting in
                 // limbo and has to either send it on or put it back.
-                let result = pty.release_terminal_for_warp(terminal_id);
                 let _ = pty
                     .bus
                     .senders
@@ -847,7 +860,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         to_session,
                         placement,
                         client_id,
-                        released: result.map_err(|e| format!("{e:#}")),
+                        released,
                     });
             },
             PtyInstruction::AdoptTerminal {
@@ -883,15 +896,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 tab_index,
                 terminal_ids,
             } => {
-                let released = terminal_ids
-                    .into_iter()
-                    .map(|terminal_id| {
-                        let result = pty
-                            .release_terminal_for_warp(terminal_id)
-                            .map_err(|e| format!("{e:#}"));
-                        (terminal_id, result)
-                    })
-                    .collect();
+                let released = release_tab_for_warp(&mut pty, terminal_ids);
                 // Screen hears about this either way: it has a tab full of panes
                 // in limbo and has to either send them on or put them back.
                 let _ = pty
@@ -901,6 +906,13 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         tab_index,
                         released,
                     });
+            },
+            PtyInstruction::StrandPaneAfterWarp {
+                terminal_id,
+                why,
+                recovery,
+            } => {
+                strand_pane_after_warp(&pty, terminal_id, &why, recovery);
             },
             PtyInstruction::AdoptTab {
                 payload,
@@ -2297,6 +2309,19 @@ impl Pty {
         Ok(())
     }
 
+    /// Whether this pane could be released for a warp, without releasing it.
+    ///
+    /// Separate from the release so a whole tab can be asked before any of it is
+    /// let go — the panes ahead of a refusal would otherwise already be gone by
+    /// the time it arrived.
+    pub fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+        self.bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")
+            .and_then(|os_input| os_input.check_terminal_can_be_warped(terminal_id))
+    }
+
     /// Let go of a pane so another session can take it, without killing anything.
     ///
     /// Everything `close_pane` does *except* the two things that end a process:
@@ -2316,8 +2341,22 @@ impl Pty {
     /// It costs the local path nothing. There, aborting the task drops the
     /// `RawFdAsyncReader` and closes this server's dup of the master, which the
     /// supervisor has been waiting for either way.
+    ///
+    /// That drop is also why [`Self::check_terminal_can_be_warped`] runs first
+    /// and is a separate question rather than something the release discovers as
+    /// it goes: once the abort has happened there is no dup left to reopen, so a
+    /// refusal raised after it would leave a pane on screen with no process on
+    /// the other end. Everything knowable is therefore knowable *before*.
     pub fn release_terminal_for_warp(&mut self, terminal_id: u32) -> Result<ReleasedPane> {
         let err_context = || format!("failed to release pane {terminal_id} for a warp");
+        // Asked before the reader is touched, which is the whole point of it
+        // being a separate question: everything the release below can refuse for
+        // is knowable now, and refusing now leaves the pane exactly as it was.
+        // Once the abort has run there is no way back — the `RawFdAsyncReader`
+        // drops with it and takes this server's dup of the master with it — so a
+        // refusal from that side would cost the user a working pane.
+        self.check_terminal_can_be_warped(terminal_id)
+            .with_context(err_context)?;
         if let Some(handle) = self.task_handles.remove(&terminal_id) {
             handle.abort();
         }
@@ -3210,6 +3249,130 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(u32, String)> {
         } => Some((*terminal_id, message.clone())),
         _ => None,
     }
+}
+
+/// Give up one pane's supervisor for a warp, or say why not.
+///
+/// The two failures this can report are not the same failure, and telling them
+/// apart is the whole point of asking before releasing. A refusal from the check
+/// costs nothing: the pane has not been touched, Screen leaves it exactly where
+/// it was, and it goes on working. A failure from the release itself is a pane
+/// already cut loose — the abort inside it has closed this server's dup of the
+/// master — and that one has to be told what happened to it rather than left
+/// looking live.
+fn release_pane_for_warp(
+    pty: &mut Pty,
+    terminal_id: u32,
+    to_session: &str,
+) -> std::result::Result<ReleasedPane, String> {
+    if let Err(e) = pty.check_terminal_can_be_warped(terminal_id) {
+        return Err(format!("{e:#}"));
+    }
+    pty.release_terminal_for_warp(terminal_id).map_err(|e| {
+        let why = format!("could not move this pane to '{to_session}': {e:#}");
+        strand_pane_after_warp(pty, terminal_id, &why, None);
+        format!("{e:#}")
+    })
+}
+
+/// Give up a whole tab's supervisors for a warp, or say why not.
+///
+/// Every pane is asked before any pane is let go. Releasing them one at a time
+/// and stopping at the first refusal would answer "no" with the panes ahead of
+/// it already handed away and nothing to give them back to — so a tab that
+/// cannot go is refused while it is still whole, and every pane in it is
+/// reported with the one reason.
+fn release_tab_for_warp(
+    pty: &mut Pty,
+    terminal_ids: Vec<u32>,
+) -> Vec<(u32, std::result::Result<ReleasedPane, String>)> {
+    let refusal = terminal_ids.iter().find_map(|terminal_id| {
+        pty.check_terminal_can_be_warped(*terminal_id)
+            .err()
+            .map(|e| format!("pane {terminal_id} cannot be moved: {e:#}"))
+    });
+    if let Some(reason) = refusal {
+        return terminal_ids
+            .into_iter()
+            .map(|terminal_id| (terminal_id, Err(reason.clone())))
+            .collect();
+    }
+
+    let released: Vec<_> = terminal_ids
+        .into_iter()
+        .map(|terminal_id| {
+            let result = pty
+                .release_terminal_for_warp(terminal_id)
+                .map_err(|e| format!("{e:#}"));
+            (terminal_id, result)
+        })
+        .collect();
+    // A release that fails *after* every pane passed the check takes the whole
+    // tab down with it: the ones that succeeded are orphaned, the one that
+    // failed is severed, and none of them has a process on the other end any
+    // more. Each says so, and the orphans say how to get theirs back.
+    if released.iter().any(|(_, result)| result.is_err()) {
+        for (terminal_id, result) in &released {
+            match result {
+                Ok(released) => strand_pane_after_warp(
+                    pty,
+                    *terminal_id,
+                    "this tab could not be moved, and this pane had already been handed over",
+                    Some(released.recovery_command()),
+                ),
+                Err(e) => strand_pane_after_warp(
+                    pty,
+                    *terminal_id,
+                    &format!("this tab could not be moved: {e}"),
+                    None,
+                ),
+            }
+        }
+    }
+    released
+}
+
+/// Tell the user, in the pane itself, that a warp cut it loose.
+///
+/// A pane whose release failed part-way through — or one that was released for a
+/// warp nobody ended up taking — cannot be put back: the abort that starts a
+/// release drops this server's dup of the pty master, and there is no second
+/// copy to reopen. What is left to decide is only whether the user finds out.
+/// Left alone the pane sits there looking live, swallowing keystrokes and never
+/// updating, which is the worst of the available outcomes.
+///
+/// So it is held, through the same funnel a pane that failed to start goes
+/// through. That is an honest description of the state — there is no process on
+/// the other end any more — and it comes with the way out already wired up:
+/// `<ENTER>` re-runs, `<Ctrl-c>` closes. `recovery` names the still-running
+/// process for the user who would rather have *that* one back than a fresh one.
+fn strand_pane_after_warp(pty: &Pty, terminal_id: u32, why: &str, recovery: Option<String>) {
+    let mut message = format!("\r\n\u{1b}[31m── {why} ──\u{1b}[0m\r\n");
+    if let Some(recovery) = recovery {
+        message.push_str(&format!(
+            "\u{1b}[33mThe process is still running — recover it with `{recovery}`\u{1b}[0m\r\n"
+        ));
+    }
+    // The pane's own command, so `<ENTER>` on the held pane runs what was in it
+    // rather than something invented here. `hold_on_close` is deliberately left
+    // false: this hold is not the pane's command policy, it is a one-off.
+    let argv = pty
+        .terminal_cmds
+        .get(&terminal_id)
+        .cloned()
+        .unwrap_or_default();
+    let mut argv = argv.into_iter();
+    let run_command = RunCommand {
+        command: argv
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(get_default_shell),
+        args: argv.collect(),
+        cwd: pty.terminal_cwds.get(&terminal_id).cloned(),
+        ..Default::default()
+    };
+    send_pane_error_to_screen(pty.bus.senders.clone(), terminal_id, message, run_command)
+        .non_fatal();
 }
 
 fn send_pane_error_to_screen(
