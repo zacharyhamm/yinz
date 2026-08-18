@@ -88,6 +88,8 @@ pub enum BackgroundJob {
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
     DismissNotification(u64, u64), // notification id, timeout in seconds
+    AnimateNotifications,
+    StopAnimateNotifications,
     RenderToClients,
     QueryZellijWebServerStatus,
     ClearHelpText {
@@ -122,6 +124,10 @@ impl From<&BackgroundJob> for BackgroundJobContext {
                 BackgroundJobContext::HighlightPanesWithMessage
             },
             BackgroundJob::DismissNotification(..) => BackgroundJobContext::DismissNotification,
+            BackgroundJob::AnimateNotifications => BackgroundJobContext::AnimateNotifications,
+            BackgroundJob::StopAnimateNotifications => {
+                BackgroundJobContext::StopAnimateNotifications
+            },
             BackgroundJob::QueryZellijWebServerStatus => {
                 BackgroundJobContext::QueryZellijWebServerStatus
             },
@@ -140,6 +146,10 @@ impl From<&BackgroundJob> for BackgroundJobContext {
 static LONG_FLASH_DURATION_MS: u64 = 1000;
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
 static PLUGIN_ANIMATION_OFFSET_DURATION_MD: u64 = 500;
+/// Toast slide/displacement animation tick - much faster than the loading spinner above, which is
+/// a coarse indicator rather than motion. Still comfortably inside what `REPAINT_DELAY_MS` below
+/// coalesces, so many ticks in a row cost at most one extra repaint.
+static NOTIFICATION_ANIMATION_TICK_MS: u64 = 40;
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
@@ -176,6 +186,7 @@ pub(crate) fn background_jobs_main(
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
     let mut loading_plugins: HashMap<u32, Arc<AtomicBool>> = HashMap::new(); // u32 - plugin_id
+    let mut animating_notifications: Option<Arc<AtomicBool>> = None;
     let current_session_name = Arc::new(Mutex::new(String::default()));
     let current_session_info = Arc::new(Mutex::new(SessionInfo::default()));
     let current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>> =
@@ -311,6 +322,37 @@ pub(crate) fn background_jobs_main(
             BackgroundJob::StopPluginLoadingAnimation(pid) => {
                 if let Some(loading_plugin) = loading_plugins.remove(&pid) {
                     loading_plugin.store(false, Ordering::SeqCst);
+                }
+            },
+            // one shared clock for the whole toast stack rather than one per notification: unlike
+            // the plugin spinner above, every live toast advances on the same tick
+            BackgroundJob::AnimateNotifications => {
+                if animating_notifications
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    continue;
+                }
+                let running = Arc::new(AtomicBool::new(true));
+                runtime.spawn({
+                    let senders = bus.senders.clone();
+                    let running = running.clone();
+                    async move {
+                        while running.load(Ordering::SeqCst) {
+                            let _ = senders
+                                .send_to_screen(ScreenInstruction::TickNotificationAnimations);
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                NOTIFICATION_ANIMATION_TICK_MS,
+                            ))
+                            .await;
+                        }
+                    }
+                });
+                animating_notifications = Some(running);
+            },
+            BackgroundJob::StopAnimateNotifications => {
+                if let Some(running) = animating_notifications.take() {
+                    running.store(false, Ordering::SeqCst);
                 }
             },
             BackgroundJob::ReportSessionInfo(session_name, session_info) => {

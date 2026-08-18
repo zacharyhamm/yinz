@@ -20,30 +20,39 @@ fn toast_border_rows(zellij: &TestSession, what: &str, expected: usize) -> Vec<u
     wait_for_toasts(zellij, what, expected).0
 }
 
+/// How long the slide-in/displacement animation can take end to end - see
+/// `NOTIFICATION_ANIMATION_TICK_MS` and the progress-per-tick constants in `screen.rs`, which
+/// settle within a few hundred milliseconds. Comfortably rounded up for CI jitter.
+const NOTIFICATION_ANIMATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The `(top border rows, bottom border rows)` of the toasts on screen once there are `expected` of
 /// them. Both are top-to-bottom, so a toast's own height is the difference between the two at the
 /// same index - which is only worth asking now that toasts are not all the same height.
+///
+/// Toasts now slide in and displace each other rather than snapping into place, so the frame where
+/// the count first reaches `expected` can still be mid-animation. Rather than polling for the
+/// layout to stop changing - the test harness's `wait_until` can re-run its predicate against an
+/// unchanged snapshot on a spurious wake, which would read as "settled" mid-animation - this just
+/// waits out the animation's known duration before reporting a position.
 fn wait_for_toasts(zellij: &TestSession, what: &str, expected: usize) -> (Vec<usize>, Vec<usize>) {
-    let snapshot = zellij.wait_until(what, |grid_snapshot| {
-        grid_snapshot
-            .lines()
-            .iter()
-            .filter(|line| line.contains(TOAST_TOP_LEFT_CORNER))
-            .count()
-            == expected
+    let rows_with =
+        |grid_snapshot: &zellij_integration_tests::GridSnapshot, marker: &str| -> Vec<usize> {
+            grid_snapshot
+                .lines()
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.contains(marker))
+                .map(|(row, _)| row)
+                .collect()
+        };
+    zellij.wait_until(what, |grid_snapshot| {
+        rows_with(grid_snapshot, TOAST_TOP_LEFT_CORNER).len() == expected
     });
-    let rows_with = |marker: &str| -> Vec<usize> {
-        snapshot
-            .lines()
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| line.contains(marker))
-            .map(|(row, _)| row)
-            .collect()
-    };
+    std::thread::sleep(NOTIFICATION_ANIMATION_SETTLE);
+    let snapshot = zellij.snapshot();
     (
-        rows_with(TOAST_TOP_LEFT_CORNER),
-        rows_with(TOAST_BOTTOM_LEFT_CORNER),
+        rows_with(&snapshot, TOAST_TOP_LEFT_CORNER),
+        rows_with(&snapshot, TOAST_BOTTOM_LEFT_CORNER),
     )
 }
 
