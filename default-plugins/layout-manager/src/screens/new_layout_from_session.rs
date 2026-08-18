@@ -1,8 +1,8 @@
 use super::{ErrorScreen, KeyResponse, LayoutListScreen, OptimisticUpdate, Screen};
-use crate::text_input::{InputAction, TextInput};
 use crate::ui::{truncate_with_ellipsis_start, LayoutDetail};
 use crate::DisplayLayout;
 use zellij_tile::prelude::*;
+use zellij_tile::ui_components::forms::{InputAction, TextInput};
 
 #[derive(Clone)]
 pub struct NewLayoutFromCurrentSessionScreen {

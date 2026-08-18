@@ -19,11 +19,11 @@ pub use message::{
 use worker::post_log;
 
 use hocus_proto::store::{self, Backend};
-/// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
-/// Re-exported under the names the code already used when these were modules.
-use hocus_proto::text_input::{InputAction, TextInput};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects, todos};
+/// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
+/// Re-exported under the names the code already used when these were modules.
+use zellij_tile::ui_components::forms::{InputAction, TextInput};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use zellij_tile::prelude::*;
