@@ -31,6 +31,7 @@
 
 use super::button::{Button, Rect};
 use super::label::Label;
+use super::select::{Select, SelectAction};
 use super::text_input::{InputAction, TextInput};
 use super::viewport::{column_to_cursor, viewport};
 use crate::prelude::*;
@@ -65,12 +66,19 @@ impl FormEvent {
     }
 }
 
-/// One labelled text field.
+/// What a field is: something typed into, or something chosen from.
+#[derive(Debug, Clone)]
+enum Widget {
+    Text(TextInput),
+    Select(Select),
+}
+
+/// One labelled row of a form.
 #[derive(Debug, Clone)]
 pub struct Field {
     id: FieldId,
     label: Label,
-    input: TextInput,
+    widget: Widget,
     last_rendered: Option<Rect>,
 }
 
@@ -79,7 +87,16 @@ impl Field {
         Field {
             id: id.to_string(),
             label: Label::new(label),
-            input,
+            widget: Widget::Text(input),
+            last_rendered: None,
+        }
+    }
+
+    pub fn new_select<I: ToString, L: ToString>(id: I, label: L, select: Select) -> Self {
+        Field {
+            id: id.to_string(),
+            label: Label::new(label),
+            widget: Widget::Select(select),
             last_rendered: None,
         }
     }
@@ -88,23 +105,56 @@ impl Field {
         &self.id
     }
 
-    pub fn input(&self) -> &TextInput {
-        &self.input
+    /// The text editor behind this field, or `None` if it is a select.
+    pub fn input(&self) -> Option<&TextInput> {
+        match &self.widget {
+            Widget::Text(input) => Some(input),
+            Widget::Select(_) => None,
+        }
     }
 
-    pub fn input_mut(&mut self) -> &mut TextInput {
-        &mut self.input
+    pub fn input_mut(&mut self) -> Option<&mut TextInput> {
+        match &mut self.widget {
+            Widget::Text(input) => Some(input),
+            Widget::Select(_) => None,
+        }
     }
 
+    /// The select behind this field, or `None` if it is a text field.
+    pub fn select(&self) -> Option<&Select> {
+        match &self.widget {
+            Widget::Text(_) => None,
+            Widget::Select(select) => Some(select),
+        }
+    }
+
+    pub fn select_mut(&mut self) -> Option<&mut Select> {
+        match &mut self.widget {
+            Widget::Text(_) => None,
+            Widget::Select(select) => Some(select),
+        }
+    }
+
+    pub fn is_select(&self) -> bool {
+        matches!(self.widget, Widget::Select(_))
+    }
+
+    /// What this field currently holds: the typed text, or the chosen option.
+    ///
+    /// A select with nothing chosen reads as `""`, so a caller that only wants
+    /// the value out of a form does not have to know which kind of field it is.
     pub fn text(&self) -> &str {
-        self.input.get_text()
+        match &self.widget {
+            Widget::Text(input) => input.get_text(),
+            Widget::Select(select) => select.selected_option().unwrap_or(""),
+        }
     }
 
     pub fn label(&self) -> &Label {
         &self.label
     }
 
-    /// The prompt drawn to the left of the text, e.g. `"Name: "`.
+    /// The prompt drawn to the left of the value, e.g. `"Name: "`.
     fn prompt(&self) -> String {
         format!("{}: ", self.label.content())
     }
@@ -152,6 +202,15 @@ impl Form {
         self
     }
 
+    /// Add a select field. The first widget added takes focus.
+    pub fn select<I: ToString, L: ToString>(mut self, id: I, label: L, select: Select) -> Self {
+        self.fields.push(Field::new_select(id, label, select));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Field(0));
+        }
+        self
+    }
+
     /// Add a button. The first widget added takes focus.
     pub fn button<I: ToString>(mut self, id: I, button: Button) -> Self {
         self.buttons.push((id.to_string(), button));
@@ -183,6 +242,15 @@ impl Form {
     /// The text in a field, or `""` if there is no such field.
     pub fn text(&self, id: &str) -> &str {
         self.field_by_id(id).map(|f| f.text()).unwrap_or("")
+    }
+
+    pub fn select_by_id(&self, id: &str) -> Option<&Select> {
+        self.field_by_id(id).and_then(|field| field.select())
+    }
+
+    pub fn select_by_id_mut(&mut self, id: &str) -> Option<&mut Select> {
+        self.field_by_id_mut(id)
+            .and_then(|field| field.select_mut())
     }
 
     pub fn button_by_id_mut(&mut self, id: &str) -> Option<&mut Button> {
@@ -218,10 +286,38 @@ impl Form {
     }
 
     fn set_focus(&mut self, focus: Focus) {
+        // A dropdown left open over a field the user has moved away from keeps
+        // taking up the rows below it with a list nothing is pointing at.
+        if self.focus != Some(focus) {
+            self.close_open_select();
+        }
         self.focus = Some(focus);
         for (i, (_, button)) in self.buttons.iter_mut().enumerate() {
             button.set_focused(focus == Focus::Button(i));
         }
+    }
+
+    /// Close whichever select is open, if any. At most one ever is: opening
+    /// one requires focus, and moving focus closes the one being left.
+    fn close_open_select(&mut self) {
+        for field in self.fields.iter_mut() {
+            if let Some(select) = field.select_mut() {
+                if select.is_open() {
+                    select.close();
+                }
+            }
+        }
+    }
+
+    /// The area an open dropdown covers, or `None` if none is open.
+    ///
+    /// A screen that prints its own chrome after [`Form::render`] would paint
+    /// over the list; this is how it knows where not to draw.
+    pub fn overlay_rect(&self) -> Option<Rect> {
+        self.fields
+            .iter()
+            .filter_map(|field| field.select())
+            .find_map(|select| select.overlay_rect())
     }
 
     fn widget_count(&self) -> usize {
@@ -293,12 +389,29 @@ impl Form {
                     return FormEvent::Ignored;
                 };
                 let id = field.id.clone();
-                match field.input.handle_key(key) {
-                    InputAction::Continue => FormEvent::FieldChanged(id),
-                    InputAction::Submit => FormEvent::Submit,
-                    InputAction::Cancel => FormEvent::Cancel,
-                    InputAction::Complete => FormEvent::Complete(id),
-                    InputAction::NoAction => FormEvent::Ignored,
+                match &mut field.widget {
+                    Widget::Text(input) => match input.handle_key(key) {
+                        InputAction::Continue => FormEvent::FieldChanged(id),
+                        InputAction::Submit => FormEvent::Submit,
+                        InputAction::Cancel => FormEvent::Cancel,
+                        InputAction::Complete => FormEvent::Complete(id),
+                        InputAction::NoAction => FormEvent::Ignored,
+                    },
+                    Widget::Select(select) => match select.handle_key(key.clone()) {
+                        SelectAction::Continue | SelectAction::Committed => {
+                            FormEvent::FieldChanged(id)
+                        },
+                        // Esc closed the dropdown. It did not cancel the form:
+                        // one Esc per thing being backed out of.
+                        SelectAction::Cancelled => FormEvent::FocusMoved,
+                        // A closed select does not take Enter or Esc, so the
+                        // form still submits and cancels from one.
+                        SelectAction::NoAction => match key.bare_key {
+                            BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
+                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                            _ => FormEvent::Ignored,
+                        },
+                    },
                 }
             },
             Some(Focus::Button(i)) => {
@@ -340,6 +453,28 @@ impl Form {
     }
 
     fn handle_click(&mut self, x: usize, y: usize) -> FormEvent {
+        // The dropdown is drawn on top, so it is hit-tested first: a click that
+        // lands on it belongs to it whatever is underneath.
+        if let Some(i) = self.open_select_index() {
+            let field = &mut self.fields[i];
+            let id = field.id.clone();
+            let select = field.select_mut().expect("open selects are select fields");
+            if let Some(option) = select.option_at(x, y) {
+                select.commit_option(option);
+                self.set_focus(Focus::Field(i));
+                return FormEvent::FieldChanged(id);
+            }
+            let on_its_own_row = select.row_contains(x, y);
+            select.close();
+            if on_its_own_row {
+                // Clicking the row that opened the list closes it again.
+                self.set_focus(Focus::Field(i));
+                return FormEvent::FocusMoved;
+            }
+            // Anything else dismisses the list, and then lands where it was
+            // aimed — a click on a button should still press it.
+        }
+
         for (i, (id, button)) in self.buttons.iter().enumerate() {
             if button.contains(x, y) {
                 let id = id.clone();
@@ -355,19 +490,27 @@ impl Form {
             if !rect.contains(x, y) {
                 continue;
             }
-            // Put the cursor where the click landed, not just at the end —
-            // clicking into the middle of a word and typing at the end of it
-            // is exactly the sort of thing that makes a field feel broken.
             let field = &mut self.fields[i];
             let prompt = field.prompt();
-            let cursor = column_to_cursor(
-                &prompt,
-                field.input.get_text(),
-                field.input.get_cursor_position(),
-                rect.columns,
-                x - rect.x,
-            );
-            field.input.set_cursor_position(cursor);
+            match &mut field.widget {
+                // Put the cursor where the click landed, not just at the end —
+                // clicking into the middle of a word and typing at the end of
+                // it is exactly the sort of thing that makes a field feel
+                // broken.
+                Widget::Text(input) => {
+                    let cursor = column_to_cursor(
+                        &prompt,
+                        input.get_text(),
+                        input.get_cursor_position(),
+                        rect.columns,
+                        x - rect.x,
+                    );
+                    input.set_cursor_position(cursor);
+                },
+                // Clicking a collapsed select opens it, which is the only thing
+                // there is to do with a row that is a list.
+                Widget::Select(select) => select.open(),
+            }
             self.set_focus(Focus::Field(i));
             return FormEvent::FocusMoved;
         }
@@ -375,8 +518,25 @@ impl Form {
         FormEvent::Ignored
     }
 
+    /// The field index of the select with an open dropdown, if there is one.
+    fn open_select_index(&self) -> Option<usize> {
+        self.fields
+            .iter()
+            .position(|field| field.select().map(|s| s.is_open()).unwrap_or(false))
+    }
+
     fn handle_hover(&mut self, x: usize, y: usize) -> FormEvent {
         let mut changed = false;
+        if let Some(i) = self.open_select_index() {
+            let select = self.fields[i]
+                .select_mut()
+                .expect("open selects are select fields");
+            if let Some(option) = select.option_at(x, y) {
+                // Moving the pointer down the list moves the highlight, so
+                // clicking and pressing Enter pick the same row.
+                changed |= select.highlight_option(option);
+            }
+        }
         for (_, button) in self.buttons.iter_mut() {
             changed |= button.set_hovered(button.contains(x, y));
         }
@@ -412,14 +572,23 @@ impl Form {
     pub fn render(&mut self, x: usize, y: usize, width: usize) {
         // 1. Work out where the cursor goes, printing nothing yet.
         let cursor = match self.focus {
-            Some(Focus::Field(i)) => self.fields.get(i).map(|field| {
-                let (_, column) = viewport(
-                    &field.prompt(),
-                    field.input.get_text(),
-                    field.input.get_cursor_position(),
-                    width,
-                );
-                (x + column, y + i)
+            Some(Focus::Field(i)) => self.fields.get(i).and_then(|field| {
+                let prompt = field.prompt();
+                let column = match &field.widget {
+                    Widget::Text(input) => {
+                        let (_, column) = viewport(
+                            &prompt,
+                            input.get_text(),
+                            input.get_cursor_position(),
+                            width,
+                        );
+                        Some(column)
+                    },
+                    // A collapsed select is not typed into, so it gets no
+                    // cursor; an open one gets it in its filter.
+                    Widget::Select(select) => select.cursor_column(&prompt, width),
+                };
+                column.map(|column| (x + column, y + i))
             }),
             // Focus is on a button: there is nothing to type into, and a cursor
             // parked in a field the user is not editing reads as focus being
@@ -431,15 +600,20 @@ impl Form {
         // 2. Now draw.
         for (i, field) in self.fields.iter_mut().enumerate() {
             let prompt = field.prompt();
-            let (line, _) = viewport(
-                &prompt,
-                field.input.get_text(),
-                field.input.get_cursor_position(),
-                width,
-            );
-            let prompt_len = prompt.chars().count().min(line.chars().count());
-            let text = Text::new(&line).color_range(2, 0..prompt_len);
-            print_text_with_coordinates(text, x, y + i, Some(width), None);
+            match &mut field.widget {
+                Widget::Text(input) => {
+                    let (line, _) = viewport(
+                        &prompt,
+                        input.get_text(),
+                        input.get_cursor_position(),
+                        width,
+                    );
+                    let prompt_len = prompt.chars().count().min(line.chars().count());
+                    let text = Text::new(&line).color_range(2, 0..prompt_len);
+                    print_text_with_coordinates(text, x, y + i, Some(width), None);
+                },
+                Widget::Select(select) => select.render_row(&prompt, x, y + i, width),
+            }
             field.last_rendered = Some(Rect::new(x, y + i, width, 1));
         }
 
@@ -453,6 +627,13 @@ impl Form {
                 }
                 button_x += button.render(button_x, button_y, Some(room));
                 button_x += 1; // one column between buttons
+            }
+        }
+
+        // 3. The dropdown last, so it lands on top of the rows it covers.
+        for field in self.fields.iter_mut() {
+            if let Some(select) = field.select_mut() {
+                select.render_overlay();
             }
         }
     }
@@ -616,5 +797,101 @@ mod tests {
     #[test]
     fn text_of_an_unknown_field_is_empty() {
         assert_eq!(a_form().text("nope"), "");
+    }
+
+    fn a_form_with_a_select() -> Form {
+        Form::new()
+            .field("name", "Name", TextInput::empty())
+            .select(
+                "layout",
+                "Layout",
+                Select::new(["default", "compact", "dev-three-pane"]),
+            )
+            .button("save", Button::new("Save"))
+    }
+
+    #[test]
+    fn a_select_field_reads_back_as_its_chosen_option() {
+        let form = a_form_with_a_select();
+        assert_eq!(form.text("layout"), "default");
+        assert_eq!(
+            form.select_by_id("layout").and_then(|s| s.selected_index()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn typing_into_a_focused_select_opens_and_filters_it() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        let event = form.handle_key(key(BareKey::Char('c')));
+        assert_eq!(event, FormEvent::FieldChanged("layout".to_string()));
+        let select = form.select_by_id("layout").unwrap();
+        assert!(select.is_open());
+        assert_eq!(select.filter_text(), "c");
+    }
+
+    #[test]
+    fn enter_commits_the_dropdown_rather_than_submitting_the_form() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char('c')));
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("layout".to_string())
+        );
+        assert_eq!(form.text("layout"), "compact");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::Submit,
+            "with the dropdown closed, Enter submits again"
+        );
+    }
+
+    /// Esc has two things to back out of here, and the inner one goes first.
+    #[test]
+    fn esc_closes_the_dropdown_before_it_cancels_the_form() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
+        assert!(!form.select_by_id("layout").unwrap().is_open());
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+    }
+
+    #[test]
+    fn traversing_away_closes_an_open_dropdown() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        assert!(form.select_by_id("layout").unwrap().is_open());
+        form.handle_key(key(BareKey::Tab));
+        assert_eq!(form.focused_id(), Some("save"));
+        assert!(
+            !form.select_by_id("layout").unwrap().is_open(),
+            "the dropdown outlived the focus that opened it"
+        );
+    }
+
+    #[test]
+    fn an_open_dropdown_does_not_change_the_forms_height() {
+        let mut form = a_form_with_a_select();
+        let closed_height = form.height();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        assert_eq!(form.height(), closed_height);
+    }
+
+    #[test]
+    fn there_is_no_overlay_until_a_dropdown_has_been_drawn() {
+        let mut form = a_form_with_a_select();
+        assert_eq!(form.overlay_rect(), None);
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        assert_eq!(
+            form.overlay_rect(),
+            None,
+            "a list that has never rendered covers nothing"
+        );
     }
 }

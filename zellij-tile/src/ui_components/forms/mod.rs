@@ -18,6 +18,7 @@
 //!
 //! let mut form = Form::new()
 //!     .field("name", "Name", TextInput::empty())
+//!     .select("layout", "Layout", Select::new(["default", "compact"]))
 //!     .button("save", Button::new("Save"));
 //!
 //! # let key = KeyWithModifier::new(BareKey::Enter);
@@ -30,7 +31,7 @@
 //! form.render(0, 0, 40); // places the cursor too
 //! ```
 //!
-//! The three pieces worth knowing before using this:
+//! The four pieces worth knowing before using this:
 //!
 //! - [`Form::render`] calls `show_cursor` itself, before printing. That
 //!   ordering is required by the host and is easy to get wrong by hand.
@@ -38,15 +39,24 @@
 //!   keeps its own bindings.
 //! - Traversal keys are configurable ([`Form::with_traversal_keys`]) because
 //!   `Tab` is already spoken for in most plugins.
+//! - An open [`Select`] dropdown *overlays* the rows below it, so a screen that
+//!   prints its own chrome after the form should check
+//!   [`Form::overlay_rect`].
 
 mod button;
 mod form;
+mod fuzzy;
 mod label;
+mod list;
+mod select;
 mod text_input;
 mod viewport;
 
 pub use button::{Button, ButtonStyle, Rect};
 pub use form::{Field, FieldId, Form, FormEvent};
+pub use fuzzy::{fuzzy_filter, Match};
 pub use label::{Label, DEFAULT_LABEL_LEVEL};
+pub use list::list_window;
+pub use select::{Select, SelectAction, DEFAULT_MAX_VISIBLE_OPTIONS};
 pub use text_input::{InputAction, TextInput};
 pub use viewport::{column_to_cursor, take_columns, viewport, viewport_window};
