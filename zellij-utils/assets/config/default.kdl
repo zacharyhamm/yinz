@@ -193,6 +193,7 @@ keybinds {
         bind "k" {
             LaunchOrFocusPlugin "hocus-ask" {
                 floating true
+                overlay true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
@@ -232,6 +233,7 @@ keybinds {
         bind "Alt e" {
             LaunchOrFocusPlugin "file-finder" {
                 floating true
+                overlay true
                 move_to_focused_tab true
             }
         }

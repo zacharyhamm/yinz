@@ -1319,7 +1319,11 @@ impl Action {
                     node_children.nodes_mut().push(skip_plugin_cache_node);
                 }
                 append_global_pane_placement(&mut node_children, *global_placement);
-                if let Some(configuration) = run_plugin_or_alias.get_configuration() {
+                let configuration = match run_plugin_or_alias {
+                    RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+                    RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+                };
+                if let Some(configuration) = configuration {
                     for (config_key, config_value) in configuration.inner().iter() {
                         if global_placement.is_some()
                             && matches!(config_key.as_str(), "global" | "edge" | "size")
@@ -1327,7 +1331,11 @@ impl Action {
                             continue;
                         }
                         let mut node = KdlNode::new(config_key.clone());
-                        node.push(config_value.clone());
+                        if config_key == "overlay" && config_value == "true" {
+                            node.push(KdlValue::Bool(true));
+                        } else {
+                            node.push(config_value.clone());
+                        }
                         node_children.nodes_mut().push(node);
                     }
                 }
@@ -2303,6 +2311,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let should_float = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "floating"))
                     .unwrap_or(false);
+                let is_overlay = command_metadata
+                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "overlay"))
+                    .unwrap_or(false);
                 let move_to_focused_tab = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "move_to_focused_tab"))
                     .unwrap_or(false);
@@ -2327,7 +2338,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 }
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
-                let configuration = if global_placement.is_some() {
+                let mut configuration = if global_placement.is_some() {
                     PluginUserConfiguration::new(
                         configuration
                             .inner()
@@ -2339,6 +2350,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 } else {
                     configuration
                 };
+                if is_overlay {
+                    configuration.insert("overlay", "true");
+                }
                 let initial_cwd =
                     kdl_get_string_property_or_child_value!(kdl_action, "cwd").map(PathBuf::from);
                 let run_plugin_or_alias = RunPluginOrAlias::from_url(
