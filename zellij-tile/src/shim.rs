@@ -1731,7 +1731,15 @@ pub fn rename_session(name: &str) {
 /// Show a notification that dismisses itself after a timeout. Its corner and timeout come from the
 /// `notification_position` and `notification_timeout` config options.
 pub fn notify(text: &str) {
-    let plugin_command = PluginCommand::Notify(text.to_owned());
+    let plugin_command = PluginCommand::Notify(text.to_owned(), None);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Show a notification that focuses `pane_id` when clicked.
+pub fn notify_with_pane_id(text: &str, pane_id: PaneId) {
+    let plugin_command = PluginCommand::Notify(text.to_owned(), Some(pane_id));
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
