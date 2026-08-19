@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, start_zellij, TestRunner, TestSession, TERMINAL_SIZE,
+    claim_first_terminal_and_wait_for_prompt, keys, start_zellij, TestRunner, TestSession,
+    TERMINAL_SIZE,
 };
 use zellij_utils::cli::CliAction;
 
@@ -280,6 +281,53 @@ keybinds {
     zellij.send_stdin(&[0x19]); // Ctrl-y
     zellij.wait_until("notification drawn from the keybinding", |grid_snapshot| {
         grid_snapshot.contains("from a keybinding")
+    });
+
+    zellij.quit();
+}
+
+#[test]
+fn notification_browser_keeps_dismissed_session_history() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_timeout 1")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "history first");
+    let newest = format!("{} detail tail", "newest ".repeat(20));
+    notify(&zellij, &newest);
+    zellij.wait_until("notifications dismiss", |grid_snapshot| {
+        !grid_snapshot.contains("history first") && !grid_snapshot.contains("detail tail")
+    });
+
+    zellij.send_stdin(&keys::ctrl('o'));
+    zellij.send_stdin(&keys::key('w'));
+    zellij.wait_until("session manager is ready", |grid_snapshot| {
+        grid_snapshot.contains("Session Manager") && grid_snapshot.contains("Session: _")
+    });
+    zellij.send_stdin(&keys::ctrl('v'));
+    let list = zellij.wait_until("notification history opens", |grid_snapshot| {
+        grid_snapshot.contains("Received") && grid_snapshot.contains("history first")
+    });
+    let newest_row = list
+        .lines()
+        .iter()
+        .position(|line| line.contains("newest"))
+        .expect("newest notification is listed");
+    let oldest_row = list
+        .lines()
+        .iter()
+        .position(|line| line.contains("history first"))
+        .expect("oldest notification is listed");
+    assert!(
+        newest_row < oldest_row,
+        "newest notification should be first"
+    );
+    assert!(list.contains("…"), "the list truncates long notifications");
+
+    zellij.send_stdin(&keys::key('\n'));
+    zellij.wait_until("full notification opens", |grid_snapshot| {
+        grid_snapshot.contains("detail tail")
     });
 
     zellij.quit();

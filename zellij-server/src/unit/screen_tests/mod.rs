@@ -2355,6 +2355,47 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating
         .expect("TEST");
 }
 
+#[test]
+fn notification_history_keeps_dismissed_toasts() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::Notify("first".to_owned(), None))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::Notify("second".to_owned(), None))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::DismissNotification(0))
+        .unwrap();
+
+    let (response_tx, response_rx) = crossbeam::channel::bounded(1);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ListNotifications {
+            response_channel: response_tx,
+        })
+        .unwrap();
+    let history = response_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("screen returns notification history");
+    assert_eq!(
+        history
+            .iter()
+            .map(|notification| (notification.id, notification.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "first"), (1, "second")]
+    );
+    assert!(history
+        .iter()
+        .all(|notification| notification.received_at_unix_ms > 0));
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
 mod break_and_move_panes;
 mod break_panes_to_tab;
 mod capabilities;

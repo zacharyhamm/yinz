@@ -29,9 +29,9 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
     ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-    ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
-    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
+    ProtobufKillSessionsResponse, ProtobufListNotificationsResponse,
+    ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+    ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
     ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
     ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
     ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
@@ -2309,6 +2309,25 @@ pub fn list_recordings() -> Vec<RecordingSummary> {
         .into_iter()
         .map(|r| r.into())
         .collect()
+}
+
+/// List every toast received by the current live session, oldest first.
+///
+/// Requires the `ReadApplicationState` permission.
+pub fn list_notifications() -> Result<Vec<NotificationInfo>, String> {
+    let plugin_command = PluginCommand::ListNotifications;
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let response_bytes = bytes_from_stdin()
+        .map_err(|error| format!("Failed to read ListNotifications response: {error}"))?;
+    let response = ProtobufListNotificationsResponse::decode(response_bytes.as_slice())
+        .map_err(|error| format!("Malformed ListNotifications response: {error}"))?;
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(response.notifications.into_iter().map(Into::into).collect()),
+    }
 }
 
 /// Full-text search the recorded terminal output of all session recordings, returning at most
