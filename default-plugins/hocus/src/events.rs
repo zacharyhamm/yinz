@@ -543,25 +543,28 @@ impl State {
                             }),
                         );
                     } else if !calls.is_empty() {
-                        // The model asked for tools rather than answering; the
-                        // reply placeholder is not the turn's outcome.
-                        // Capture any streamed text before we replace the
-                        // placeholder with the tool_calls summary.
-                        let prior_text = self
+                        // DeepSeek requires the prose, reasoning and tool calls
+                        // from one response to remain one assistant message.
+                        let (prior_text, prior_reasoning) = self
                             .reply()
-                            .map(|message| message.content.clone())
+                            .map(|message| {
+                                (
+                                    std::mem::take(&mut message.content),
+                                    message.reasoning.take(),
+                                )
+                            })
                             .unwrap_or_default();
-                        // The thinking that led to these calls goes with them
-                        // rather than dying with the placeholder: this is the
-                        // one message a thinking endpoint wants it back on, and
-                        // DeepSeek 400s the next round without it.
-                        let prior_reasoning =
-                            self.reply().and_then(|message| message.reasoning.take());
                         self.pop_empty_placeholder();
-                        self.messages.push(Message {
-                            reasoning: prior_reasoning,
-                            ..Message::tool_calls(calls.clone())
-                        });
+                        let mut asked = Message::tool_calls(calls.clone());
+                        if !prior_text.is_empty() {
+                            asked.display = Some(format!(
+                                "{prior_text}\n\n{}",
+                                asked.display.take().unwrap_or_default()
+                            ));
+                        }
+                        asked.content = prior_text.clone();
+                        asked.reasoning = prior_reasoning;
+                        self.messages.push(asked);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
                             .map(|c| {

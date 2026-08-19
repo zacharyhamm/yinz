@@ -148,6 +148,34 @@ fn a_chunk_carrying_thinking_and_text_yields_both_thinking_first() {
 }
 
 #[test]
+fn a_chunk_keeps_reasoning_and_every_parallel_tool_call() {
+    let mut parser = SseParser::default();
+    let frame = br#"data: {"choices":[{"delta":{"reasoning_content":"done","tool_calls":[{"index":0,"id":"a","function":{"name":"list_session","arguments":"{}"}},{"index":1,"id":"b","function":{"name":"list_other_sessions","arguments":"{}"}}]}}]}
+"#;
+    assert_eq!(
+        parser.feed(frame),
+        vec![
+            SseItem::Reasoning {
+                text: "done".to_owned(),
+                key: ReasoningKey::ReasoningContent,
+            },
+            SseItem::ToolCallFragment {
+                index: 0,
+                id: Some("a".to_owned()),
+                name: Some("list_session".to_owned()),
+                arguments: Some("{}".to_owned()),
+            },
+            SseItem::ToolCallFragment {
+                index: 1,
+                id: Some("b".to_owned()),
+                name: Some("list_other_sessions".to_owned()),
+                arguments: Some("{}".to_owned()),
+            },
+        ]
+    );
+}
+
+#[test]
 fn reassembles_reasoning_split_across_chunks() {
     let mut parser = SseParser::default();
     let frame = b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"one two\"}}]}\n\n";

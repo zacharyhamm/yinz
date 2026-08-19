@@ -64,9 +64,9 @@ impl Reasoning {
 pub struct Message {
     pub role: Role,
     pub content: String,
-    /// Assistant only: the tool calls this message requested. When non-empty,
-    /// `content` is our own human-readable summary for the transcript and is
-    /// *not* what gets sent - see `api::request_body`.
+    /// Assistant only: the tool calls this message requested. `content` is the
+    /// prose the model emitted alongside them and `display` includes the
+    /// human-readable call summary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     /// Assistant only: the model's chain-of-thought, as the endpoint sent it,
@@ -85,10 +85,9 @@ pub struct Message {
     /// for, not context for the model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub full_output: bool,
-    /// `Role::Tool` only: markdown to draw *instead of* `content`, for a tool
-    /// the user typed. Display-only — `content` is still exactly what
-    /// `api::request_body` sends, so the model reads the same bytes it always
-    /// did.
+    /// Markdown to draw *instead of* `content`. For a tool result this presents
+    /// raw output; for an assistant tool-call turn it includes the call summary.
+    /// Display-only — `content` is still exactly what `api::request_body` sends.
     ///
     /// `None` means draw `content` as it arrived, which is what every result
     /// the model asked for gets, and what a result we have nothing better to
@@ -119,8 +118,8 @@ impl Message {
         Message::new(Role::Notice, content)
     }
 
-    /// The assistant turn that asked for tools. Its transcript text is a summary
-    /// of the calls; the calls themselves are the payload.
+    /// An assistant tool-call turn with no model prose. The summary is only for
+    /// display; providers such as DeepSeek require non-null wire `content`.
     pub fn tool_calls(calls: Vec<ToolCall>) -> Self {
         let summary = calls
             .iter()
@@ -129,7 +128,7 @@ impl Message {
             .join("\n");
         Message {
             role: Role::Assistant,
-            content: summary,
+            display: Some(summary),
             tool_calls: calls,
             ..Message::default()
         }

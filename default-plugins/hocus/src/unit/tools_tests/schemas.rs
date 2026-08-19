@@ -69,6 +69,11 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         ),
         ("set_global_pane_placement", &["no tab"][..]),
         ("warp_pane_here", &["list_other_sessions"][..]),
+        ("warp_tab", &["current session", "list_session"][..]),
+        (
+            "warp_tab_here",
+            &["another session", "list_other_sessions", "current session"][..],
+        ),
         ("schedule", &["unschedule"][..]),
         ("slack_read", &["backfill"][..]),
         ("slack_post", &["immediately"][..]),
