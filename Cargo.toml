@@ -53,6 +53,7 @@ members = [
     "default-plugins/layout-manager",
     "default-plugins/link",
     "default-plugins/file-finder",
+    "default-plugins/quit-confirmation",
     "default-plugins/shared-test",
     "default-plugins/hocus",
     "default-plugins/hocus-agents",
