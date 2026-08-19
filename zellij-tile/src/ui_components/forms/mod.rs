@@ -1,5 +1,5 @@
-//! Form widgets: labels, text inputs, buttons, and the focus container that
-//! ties them together.
+//! Form widgets: labels, text inputs, choices, buttons, and the focus container
+//! that ties them together.
 //!
 //! The rest of `ui_components` is stateless renderers — [`Text`](super::Text)
 //! and friends take a string, emit an escape sequence, and return nothing. That
@@ -18,6 +18,8 @@
 //!
 //! let mut form = Form::new()
 //!     .field("name", "Name", TextInput::empty())
+//!     .checkbox("frames", "Pane frames", Checkbox::new(true))
+//!     .radio("mode", "Mode", RadioGroup::new(["Normal", "Locked"]))
 //!     .select("layout", "Layout", Select::new(["default", "compact"]))
 //!     .button("save", Button::new("Save"));
 //!
@@ -50,6 +52,7 @@
 //!   [`Form::overlay_rect`].
 
 mod button;
+mod choice;
 mod dialog;
 mod form;
 mod fuzzy;
@@ -60,6 +63,7 @@ mod text_input;
 mod viewport;
 
 pub use button::{Button, ButtonStyle, Rect};
+pub use choice::{Checkbox, RadioGroup};
 pub use dialog::Dialog;
 pub use form::{Field, FieldId, Form, FormEvent};
 pub use fuzzy::{fuzzy_filter, Match};

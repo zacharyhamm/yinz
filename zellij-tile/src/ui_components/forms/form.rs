@@ -30,6 +30,7 @@
 //! should pick different traversal keys.
 
 use super::button::{Button, Rect};
+use super::choice::{Checkbox, RadioGroup};
 use super::label::Label;
 use super::select::{Select, SelectAction};
 use super::text_input::{InputAction, TextInput};
@@ -71,6 +72,8 @@ impl FormEvent {
 enum Widget {
     Text(TextInput),
     Select(Select),
+    Checkbox(Checkbox),
+    Radio(RadioGroup),
 }
 
 /// One labelled row of a form.
@@ -101,37 +104,83 @@ impl Field {
         }
     }
 
+    pub fn new_checkbox<I: ToString, L: ToString>(id: I, label: L, checkbox: Checkbox) -> Self {
+        Field {
+            id: id.to_string(),
+            label: Label::new(label),
+            widget: Widget::Checkbox(checkbox),
+            last_rendered: None,
+        }
+    }
+
+    pub fn new_radio<I: ToString, L: ToString>(id: I, label: L, radio: RadioGroup) -> Self {
+        Field {
+            id: id.to_string(),
+            label: Label::new(label),
+            widget: Widget::Radio(radio),
+            last_rendered: None,
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// The text editor behind this field, or `None` if it is a select.
+    /// The text editor behind this field, or `None` for another widget type.
     pub fn input(&self) -> Option<&TextInput> {
         match &self.widget {
             Widget::Text(input) => Some(input),
-            Widget::Select(_) => None,
+            _ => None,
         }
     }
 
     pub fn input_mut(&mut self) -> Option<&mut TextInput> {
         match &mut self.widget {
             Widget::Text(input) => Some(input),
-            Widget::Select(_) => None,
+            _ => None,
         }
     }
 
-    /// The select behind this field, or `None` if it is a text field.
+    /// The select behind this field, or `None` for another widget type.
     pub fn select(&self) -> Option<&Select> {
         match &self.widget {
-            Widget::Text(_) => None,
             Widget::Select(select) => Some(select),
+            _ => None,
         }
     }
 
     pub fn select_mut(&mut self) -> Option<&mut Select> {
         match &mut self.widget {
-            Widget::Text(_) => None,
             Widget::Select(select) => Some(select),
+            _ => None,
+        }
+    }
+
+    pub fn checkbox(&self) -> Option<&Checkbox> {
+        match &self.widget {
+            Widget::Checkbox(checkbox) => Some(checkbox),
+            _ => None,
+        }
+    }
+
+    pub fn checkbox_mut(&mut self) -> Option<&mut Checkbox> {
+        match &mut self.widget {
+            Widget::Checkbox(checkbox) => Some(checkbox),
+            _ => None,
+        }
+    }
+
+    pub fn radio(&self) -> Option<&RadioGroup> {
+        match &self.widget {
+            Widget::Radio(radio) => Some(radio),
+            _ => None,
+        }
+    }
+
+    pub fn radio_mut(&mut self) -> Option<&mut RadioGroup> {
+        match &mut self.widget {
+            Widget::Radio(radio) => Some(radio),
+            _ => None,
         }
     }
 
@@ -139,14 +188,15 @@ impl Field {
         matches!(self.widget, Widget::Select(_))
     }
 
-    /// What this field currently holds: the typed text, or the chosen option.
+    /// What this field currently holds: typed text or a chosen select/radio option.
     ///
-    /// A select with nothing chosen reads as `""`, so a caller that only wants
-    /// the value out of a form does not have to know which kind of field it is.
+    /// A select or radio group with nothing chosen reads as `""`.
     pub fn text(&self) -> &str {
         match &self.widget {
             Widget::Text(input) => input.get_text(),
             Widget::Select(select) => select.selected_option().unwrap_or(""),
+            Widget::Radio(radio) => radio.selected_option().unwrap_or(""),
+            Widget::Checkbox(_) => "",
         }
     }
 
@@ -211,6 +261,29 @@ impl Form {
         self
     }
 
+    /// Add a checkbox field. The first widget added takes focus.
+    pub fn checkbox<I: ToString, L: ToString>(
+        mut self,
+        id: I,
+        label: L,
+        checkbox: Checkbox,
+    ) -> Self {
+        self.fields.push(Field::new_checkbox(id, label, checkbox));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Field(0));
+        }
+        self
+    }
+
+    /// Add an inline radio group. The first widget added takes focus.
+    pub fn radio<I: ToString, L: ToString>(mut self, id: I, label: L, radio: RadioGroup) -> Self {
+        self.fields.push(Field::new_radio(id, label, radio));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Field(0));
+        }
+        self
+    }
+
     /// Add a button. The first widget added takes focus.
     pub fn button<I: ToString>(mut self, id: I, button: Button) -> Self {
         self.buttons.push((id.to_string(), button));
@@ -251,6 +324,30 @@ impl Form {
     pub fn select_by_id_mut(&mut self, id: &str) -> Option<&mut Select> {
         self.field_by_id_mut(id)
             .and_then(|field| field.select_mut())
+    }
+
+    pub fn checkbox_by_id(&self, id: &str) -> Option<&Checkbox> {
+        self.field_by_id(id).and_then(|field| field.checkbox())
+    }
+
+    pub fn checkbox_by_id_mut(&mut self, id: &str) -> Option<&mut Checkbox> {
+        self.field_by_id_mut(id)
+            .and_then(|field| field.checkbox_mut())
+    }
+
+    pub fn radio_by_id(&self, id: &str) -> Option<&RadioGroup> {
+        self.field_by_id(id).and_then(|field| field.radio())
+    }
+
+    pub fn radio_by_id_mut(&mut self, id: &str) -> Option<&mut RadioGroup> {
+        self.field_by_id_mut(id).and_then(|field| field.radio_mut())
+    }
+
+    /// Whether a checkbox is checked. Unknown and non-checkbox fields are false.
+    pub fn checked(&self, id: &str) -> bool {
+        self.checkbox_by_id(id)
+            .map(Checkbox::is_checked)
+            .unwrap_or(false)
     }
 
     pub fn button_by_id_mut(&mut self, id: &str) -> Option<&mut Button> {
@@ -412,6 +509,26 @@ impl Form {
                             _ => FormEvent::Ignored,
                         },
                     },
+                    Widget::Checkbox(checkbox) => match key.bare_key {
+                        BareKey::Char(' ') if key.has_no_modifiers() => {
+                            checkbox.toggle();
+                            FormEvent::FieldChanged(id)
+                        },
+                        BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
+                        BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                        _ => FormEvent::Ignored,
+                    },
+                    Widget::Radio(radio) => {
+                        if radio.handle_key(key.clone()) {
+                            FormEvent::FieldChanged(id)
+                        } else {
+                            match key.bare_key {
+                                BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
+                                BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                                _ => FormEvent::Ignored,
+                            }
+                        }
+                    },
                 }
             },
             Some(Focus::Button(i)) => {
@@ -492,7 +609,8 @@ impl Form {
             }
             let field = &mut self.fields[i];
             let prompt = field.prompt();
-            match &mut field.widget {
+            let id = field.id.clone();
+            let event = match &mut field.widget {
                 // Put the cursor where the click landed, not just at the end —
                 // clicking into the middle of a word and typing at the end of
                 // it is exactly the sort of thing that makes a field feel
@@ -506,13 +624,25 @@ impl Form {
                         x - rect.x,
                     );
                     input.set_cursor_position(cursor);
+                    FormEvent::FocusMoved
                 },
                 // Clicking a collapsed select opens it, which is the only thing
                 // there is to do with a row that is a list.
-                Widget::Select(select) => select.open(),
-            }
+                Widget::Select(select) => {
+                    select.open();
+                    FormEvent::FocusMoved
+                },
+                Widget::Checkbox(checkbox) => {
+                    checkbox.toggle();
+                    FormEvent::FieldChanged(id)
+                },
+                Widget::Radio(radio) => match radio.option_at(x, y) {
+                    Some(option) if radio.select_index(option) => FormEvent::FieldChanged(id),
+                    _ => FormEvent::FocusMoved,
+                },
+            };
             self.set_focus(Focus::Field(i));
-            return FormEvent::FocusMoved;
+            return event;
         }
 
         FormEvent::Ignored
@@ -598,8 +728,10 @@ impl Form {
 
         for field in &mut self.fields {
             field.last_rendered = None;
-            if let Some(select) = field.select_mut() {
-                select.clear_rendered();
+            match &mut field.widget {
+                Widget::Select(select) => select.clear_rendered(),
+                Widget::Radio(radio) => radio.clear_rendered(),
+                _ => {},
             }
         }
         for (_, button) in &mut self.buttons {
@@ -624,6 +756,7 @@ impl Form {
                         // A collapsed select is not typed into, so it gets no
                         // cursor; an open one gets it in its filter.
                         Widget::Select(select) => select.cursor_column(&prompt, width),
+                        Widget::Checkbox(_) | Widget::Radio(_) => None,
                     };
                     column.map(|column| (x + column, y + i - start))
                 })
@@ -658,6 +791,20 @@ impl Form {
                     print_text_with_coordinates(text, x, row_y, Some(width), None);
                 },
                 Widget::Select(select) => select.render_row(&prompt, x, row_y, width),
+                Widget::Checkbox(checkbox) => checkbox.render_row(
+                    &prompt,
+                    x,
+                    row_y,
+                    width,
+                    self.focus == Some(Focus::Field(i)),
+                ),
+                Widget::Radio(radio) => radio.render_row(
+                    &prompt,
+                    x,
+                    row_y,
+                    width,
+                    self.focus == Some(Focus::Field(i)),
+                ),
             }
             field.last_rendered = Some(Rect::new(x, row_y, width, 1));
         }
@@ -1044,5 +1191,82 @@ mod tests {
         form.handle_key(key(BareKey::Char(' ')));
         form.render(0, 0, 40);
         assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 3)));
+    }
+
+    fn a_form_with_choices() -> Form {
+        Form::new()
+            .checkbox("frames", "Frames", Checkbox::new(false))
+            .radio("mode", "Mode", RadioGroup::new(["One", "Two"]))
+            .button("save", Button::new("Save"))
+    }
+
+    #[test]
+    fn space_toggles_a_checkbox_and_typed_accessors_find_it() {
+        let mut form = a_form_with_choices();
+        assert!(!form.checked("frames"));
+        assert_eq!(
+            form.handle_key(key(BareKey::Char(' '))),
+            FormEvent::FieldChanged("frames".to_string())
+        );
+        assert!(form.checked("frames"));
+        assert!(form.checkbox_by_id_mut("frames").is_some());
+        assert!(!form.checked("missing"));
+    }
+
+    #[test]
+    fn arrows_change_a_radio_and_text_reads_its_option() {
+        let mut form = a_form_with_choices();
+        form.focus_on("mode");
+        assert_eq!(
+            form.handle_key(key(BareKey::Right)),
+            FormEvent::FieldChanged("mode".to_string())
+        );
+        assert_eq!(form.text("mode"), "Two");
+        assert_eq!(
+            form.radio_by_id("mode")
+                .and_then(RadioGroup::selected_index),
+            Some(1)
+        );
+        assert!(form.radio_by_id_mut("mode").is_some());
+    }
+
+    #[test]
+    fn clicking_choices_changes_only_when_the_value_changes() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(0, 0)),
+            FormEvent::FieldChanged("frames".to_string())
+        );
+        assert!(form.checked("frames"));
+
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(1, 14)),
+            FormEvent::FieldChanged("mode".to_string())
+        );
+        assert_eq!(form.text("mode"), "Two");
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(1, 14)),
+            FormEvent::FocusMoved
+        );
+    }
+
+    #[test]
+    fn traversal_includes_choices_before_buttons() {
+        let mut form = a_form_with_choices();
+        assert_eq!(form.focused_id(), Some("frames"));
+        for expected in ["mode", "save", "frames"] {
+            assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
+            assert_eq!(form.focused_id(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn enter_still_submits_from_choice_fields() {
+        let mut form = a_form_with_choices();
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        form.focus_on("mode");
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
     }
 }
