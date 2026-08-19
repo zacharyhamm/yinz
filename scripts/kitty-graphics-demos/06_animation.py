@@ -13,7 +13,7 @@ frame_colors = [(220, 40, 40), (40, 200, 80), (60, 90, 230)]
 
 base = make_png(W, H, solid_rgba(*frame_colors[0]))
 emit(apc(f"a=T,f=100,i={IMAGE_ID},q=2", base))
-emit(apc(f"a=p,i={IMAGE_ID},p=1"))
+emit(apc(f"a=p,i={IMAGE_ID},p=1,q=2"))
 print()
 
 for color in frame_colors[1:]:
@@ -21,5 +21,5 @@ for color in frame_colors[1:]:
     emit(apc(f"a=f,i={IMAGE_ID},f=100,q=2", frame_png))
 
 for n in range(1, len(frame_colors) + 1):
-    emit(apc(f"a=a,i={IMAGE_ID},c={n}"))
+    emit(apc(f"a=a,i={IMAGE_ID},c={n},q=2"))
     time.sleep(0.6)

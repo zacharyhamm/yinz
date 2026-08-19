@@ -20,6 +20,10 @@ Each script writes raw APC sequences to stdout — run it directly in a terminal
 its output anywhere except a real terminal device (`09_query.py` also reads the reply back
 from stdin, so it needs a tty on both ends).
 
+The display demos use `q=2` because they do not read protocol replies. Without it, a terminal's
+`OK` response can be echoed by the cooked tty as visible `^[_G...` text. The query demo instead
+puts stdin in raw mode before sending its request, reads the reply, and restores the tty.
+
 ## What each one exercises
 
 | script | protocol surface |
