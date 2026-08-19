@@ -27,6 +27,23 @@ fn exit_zellij() {
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
     zellij.send_stdin(&keys::ctrl('q'));
+    zellij.wait_until("quit confirmation appeared", |grid_snapshot| {
+        grid_snapshot.contains("Quit Zellij?")
+            && grid_snapshot.contains("Are you sure you want to quit?")
+            && grid_snapshot.contains("Cancel")
+    });
+
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("quit confirmation was cancelled", |grid_snapshot| {
+        grid_snapshot.status_bar_appears() && !grid_snapshot.contains("Quit Zellij?")
+    });
+
+    zellij.send_stdin(&keys::ctrl('q'));
+    zellij.wait_until("quit confirmation reappeared", |grid_snapshot| {
+        grid_snapshot.contains("Quit Zellij?")
+    });
+    zellij.send_stdin(&keys::TAB);
+    zellij.send_stdin(&keys::ENTER);
 
     zellij.wait_until("zellij said goodbye", |grid_snapshot| {
         !grid_snapshot.status_bar_appears() && grid_snapshot.contains("Bye from Zellij!")
