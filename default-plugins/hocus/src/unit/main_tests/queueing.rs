@@ -1,5 +1,81 @@
 use super::*;
 
+#[test]
+fn a_message_submitted_mid_reply_queues_for_the_next_tool_batch() {
+    let mut state = ready_state();
+    state.tool_rounds = 3;
+    state.input.set_text("check that result".to_owned());
+
+    assert!(state.submit());
+    assert!(state.input.get_text().is_empty());
+    assert_eq!(
+        state.asks.front().map(String::as_str),
+        Some("check that result")
+    );
+    assert_eq!(
+        state
+            .messages
+            .last()
+            .map(|message| message.content.as_str()),
+        Some("queued: check that result")
+    );
+
+    let frame = tool_call_frame("call_1", "list_session", "{}");
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    let result = tool_result_index(&state);
+    let question = state
+        .messages
+        .iter()
+        .position(|message| message.role == Role::User && message.content == "check that result")
+        .expect("the queued question entered the conversation");
+    assert!(result < question, "the complete tool batch comes first");
+    assert!(state.asks.is_empty());
+    assert_eq!(state.tool_rounds, 0, "a user message starts a fresh budget");
+    assert!(state.is_receiving(), "the steered follow-up is in flight");
+}
+
+#[test]
+fn a_queued_message_waits_for_a_deferred_tool_result() {
+    let mut state = ready_state();
+    state.input.set_text("use the output".to_owned());
+    state.submit();
+
+    let frame = tool_call_frame("call_1", "slack_read", r##"{"channel":"#general"}"##);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(matches!(state.status, Status::AwaitingCommand));
+    assert_eq!(state.asks.len(), 1, "still queued while the tool runs");
+
+    state.on_command_result(
+        Some(0),
+        b"[workspace]",
+        b"",
+        &BTreeMap::from([("tool_call_id".to_owned(), "call_1".to_owned())]),
+    );
+
+    assert!(state.asks.is_empty());
+    assert!(state.is_receiving(), "the steered follow-up is in flight");
+}
+
+#[test]
+fn a_queued_message_sends_after_a_plain_reply() {
+    let mut state = ready_state();
+    state.input.set_text("one more thing".to_owned());
+    state.submit();
+
+    state.on_chunk("hocus-1", &delta_frame("done"), false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    assert_eq!(state.asks.len(), 1, "the reply ending only makes a slot");
+
+    state.on_timer(FRAME_SECONDS);
+
+    assert!(state.asks.is_empty());
+    assert!(state.is_receiving(), "the queued question started");
+}
+
 // -- alongside a live reply ---------------------------------------------
 
 /// The whole point of the split: a tool the user typed runs while the reply

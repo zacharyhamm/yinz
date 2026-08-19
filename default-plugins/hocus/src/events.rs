@@ -281,15 +281,37 @@ impl State {
             let line = self.drain_input();
             return self.run_manual(&line);
         }
-        // One reply per chat: a second question would have nowhere to stream.
-        // /history opens another chat to ask it in.
-        if self.is_in_flight() {
-            return false;
-        }
         // Cloned rather than borrowed so the transcript can be mutated below.
         let Ok(cfg) = self.cfg.clone() else {
             return false;
         };
+
+        // One stream slot, but no reason to throw away what the user typed.
+        // The oldest queued question joins the exchange after its next complete
+        // tool batch, or starts after a plain reply settles.
+        if self.is_in_flight() {
+            if self.asks.len() >= MAX_QUEUED_ASKS {
+                let notice = "the question queue is full — the input was not sent";
+                self.messages.push(Message::notice(notice));
+                self.log("notice", serde_json::json!({"content": notice}));
+                self.pin_to_bottom();
+                return true;
+            }
+            let text = self.drain_input();
+            if text.trim().is_empty() {
+                return true;
+            }
+            let notice = format!("queued: {text}");
+            self.messages.push(Message::notice(notice.clone()));
+            self.log(
+                "notice",
+                serde_json::json!({"content": log::truncate(&notice)}),
+            );
+            self.asks.push_back(text);
+            self.pin_to_bottom();
+            self.arm_timer(FRAME_SECONDS);
+            return true;
+        }
 
         let mut text = self.drain_input();
         if text.trim().is_empty() {
