@@ -2356,16 +2356,55 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating
 }
 
 #[test]
+fn quit_action_launches_a_new_confirmation_plugin() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    route_arbitrary_action_to_server(&mock_screen.clone_session_metadata(), Action::Quit, 2);
+
+    let screen_receiver = mock_screen.screen_receiver.take().unwrap();
+    let instruction = loop {
+        let (instruction, _) = screen_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("quit confirmation launch instruction");
+        if matches!(instruction, ScreenInstruction::LaunchPlugin(..)) {
+            break instruction;
+        }
+    };
+
+    assert!(matches!(
+        instruction,
+        ScreenInstruction::LaunchPlugin(
+            RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::Zellij(plugin_tag),
+                ..
+            }),
+            true,
+            false,
+            false,
+            None,
+            false,
+            None,
+            2,
+            _,
+            None,
+            false,
+            None,
+        ) if plugin_tag.to_string() == "quit-confirmation"
+    ));
+
+    mock_screen.teardown(vec![]);
+}
+
+#[test]
 fn notification_history_keeps_dismissed_toasts() {
     let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
     let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
     mock_screen
         .to_screen
-        .send(ScreenInstruction::Notify("first".to_owned(), None))
+        .send(ScreenInstruction::Notify("first".to_owned(), None, None))
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::Notify("second".to_owned(), None))
+        .send(ScreenInstruction::Notify("second".to_owned(), None, None))
         .unwrap();
     mock_screen
         .to_screen

@@ -28,14 +28,15 @@ use zellij_utils::{
     channels::SenderWithContext,
     data::{
         BareKey, ConnectToSession, Direction, Event, GlobalPanePlacement, InputMode, KeyModifier,
-        ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy,
-        TabInfo, UnblockCondition,
+        ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneListEntry, PluginTag,
+        ResizeStrategy, TabInfo, UnblockCondition,
     },
     envs,
     errors::prelude::*,
     input::{
         actions::{Action, SearchDirection, SearchOption},
         command::TerminalAction,
+        layout::{RunPlugin, RunPluginLocation, RunPluginOrAlias},
     },
     ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, ServerToClientMsg},
 };
@@ -1205,6 +1206,30 @@ pub(crate) fn route_action(
             };
             senders
                 .send_to_screen(screen_instr)
+                .with_context(err_context)?;
+        },
+        // A keybinding has neither an originating pane nor a CLI client. Direct CLI and plugin
+        // quits stay immediate, and the confirmation plugin's own quit cannot reopen itself.
+        Action::Quit if pane_id.is_none() && cli_client_id.is_none() => {
+            let plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
+                ..Default::default()
+            });
+            senders
+                .send_to_screen(ScreenInstruction::LaunchPlugin(
+                    plugin,
+                    true,
+                    false,
+                    false,
+                    None,
+                    false,
+                    None,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                    None,
+                    false,
+                    None,
+                ))
                 .with_context(err_context)?;
         },
         Action::Quit => {
