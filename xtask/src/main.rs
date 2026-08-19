@@ -93,6 +93,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: true,
             },
             WorkspaceMember {
+                crate_name: "default-plugins/quit-confirmation",
+                build: true,
+            },
+            WorkspaceMember {
                 crate_name: "default-plugins/shared-test",
                 build: true,
             },

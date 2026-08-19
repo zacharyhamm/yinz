@@ -117,6 +117,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "layout-manager",
     "link",
     "file-finder",
+    "quit-confirmation",
     "shared-test",
     "hocus",
     "hocus-agentd",
