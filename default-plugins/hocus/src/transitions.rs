@@ -577,6 +577,12 @@ impl State {
         let Ok(cfg) = self.cfg.clone() else {
             return false;
         };
+        self.start_queued_question(&cfg)
+    }
+
+    /// Send the oldest accepted question. The timer calls this after a plain
+    /// reply; the tool loop calls it after every call in a batch has a result.
+    pub(crate) fn start_queued_question(&mut self, cfg: &Config) -> bool {
         let Some(mut text) = self.asks.pop_front() else {
             return false;
         };
@@ -603,7 +609,7 @@ impl State {
             "user_input",
             serde_json::json!({
                 "content": log::truncate(&content),
-                "via": "ask",
+                "via": "queue",
             }),
         );
         // A fresh tool budget, same as a typed question.

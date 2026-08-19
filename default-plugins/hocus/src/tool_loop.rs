@@ -53,6 +53,16 @@ impl State {
             return;
         }
 
+        let Ok(cfg) = self.cfg.clone() else {
+            self.job_auto_confirm = false;
+            return;
+        };
+        // Tool results make a valid boundary for steering: every call from the
+        // assistant turn is answered, but its follow-up request has not left.
+        if self.start_queued_question(&cfg) {
+            return;
+        }
+
         // Every call answered: hand the results back so the model can use them.
         // The request at exactly the budget goes out without tools (see
         // `start_request`), so getting past it means the model called a tool it
@@ -66,10 +76,6 @@ impl State {
             self.log("error", serde_json::json!({"error": log::truncate(&err)}));
             return;
         }
-        let Ok(cfg) = self.cfg.clone() else {
-            self.job_auto_confirm = false;
-            return;
-        };
         self.start_request(&cfg);
     }
 
