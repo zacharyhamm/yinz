@@ -68,14 +68,19 @@ const SUMMARY_SETTLE_POLLS: u32 = 3;
 ///
 /// The settle window says a screen has stopped moving; it cannot say the agent has stopped
 /// working, because a compile or a long tool call holds a screen still just as well as a
-/// finished turn does, and each of those settles on a *different* screen, so the hash guard
-/// does not catch them either. This is the ceiling that does not depend on telling those
-/// apart: one request per pane per minute, however the screen churns.
+/// finished turn does, and each of those can materially change the screen, so the summary
+/// baseline does not catch them either. This is the ceiling that does not depend on telling
+/// those apart: one request per pane per minute, however the screen churns.
 ///
 /// Equal to `SUMMARY_TICKS` on purpose: the two windows expire within a tick of each
 /// other, so a dropped reply costs the pane about a minute and then lets it ask again,
 /// rather than either guard outliving the other and holding the pane silent for longer.
 const SUMMARY_COOLDOWN_TICKS: u32 = 12;
+
+/// How much of the last summarised pane tail must turn over before another summary is
+/// useful. Terminal output is line-oriented, and comparing its lines avoids paying the
+/// quadratic cost of edit distance for every settled pane.
+const SUMMARY_CHANGE_FACTOR: usize = 5;
 
 /// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
 /// The same scheme the git probes use, for the same reason: results arrive on one event
@@ -133,6 +138,9 @@ struct State {
     env: BTreeMap<String, String>,
     /// What the model last said about each agent's pane.
     summaries: agents::Summaries,
+    /// The pane tail each successful summary described. Small changes accumulate against
+    /// this baseline until at least a fifth of its lines have turned over.
+    summary_baselines: BTreeMap<u32, String>,
     /// Panes with a summary request in flight. One at a time per pane, so a flurry of
     /// idle edges cannot fan out into a flurry of requests.
     summary_requests: BTreeMap<u32, InFlight>,
@@ -148,10 +156,45 @@ struct InFlight {
     /// The pane hash the request was made from, so the answer is stamped with the screen
     /// it actually describes rather than with whatever the pane shows when it lands.
     hash: u64,
+    /// The exact tail sent to the model, promoted to the pane's baseline only if the
+    /// response succeeds while this screen is still current.
+    tail: String,
     /// Heartbeats this has been outstanding. A `WebRequestResult` that never arrives -
     /// a dropped event, a host that gave up - would otherwise leave the pane looking
     /// permanently mid-request and never summarised again for the life of the session.
     ticks: u32,
+}
+
+/// Whether enough nonblank lines have changed since the last successful summary to make
+/// another one useful. Lines are a multiset: scrolling one line preserves every line still
+/// on screen, and repeated output is counted rather than collapsed.
+fn summary_materially_changed(previous: &str, current: &str) -> bool {
+    fn lines(text: &str) -> Vec<&str> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+    }
+    let previous = lines(previous);
+    let current = lines(current);
+    let total = previous.len().max(current.len());
+    if total == 0 {
+        return false;
+    }
+    let mut remaining = BTreeMap::new();
+    for line in previous {
+        *remaining.entry(line).or_insert(0usize) += 1;
+    }
+    let mut shared = 0;
+    for line in current {
+        if let Some(count) = remaining.get_mut(line) {
+            if *count > 0 {
+                *count -= 1;
+                shared += 1;
+            }
+        }
+    }
+    (total - shared) * SUMMARY_CHANGE_FACTOR >= total
 }
 
 #[derive(Default)]
@@ -494,6 +537,7 @@ impl State {
                 // the moment the new run pauses once. See `waiting_marker`.
                 self.activity.remove(&pane.pane_id);
                 self.summaries.remove(&pane.pane_id);
+                self.summary_baselines.remove(&pane.pane_id);
             }
         }
         // Anything the manifest itself carries is news, and worth taking before
@@ -803,6 +847,7 @@ impl State {
             .collect();
         self.activity.retain(|id, _| running.contains(id));
         self.summaries.retain(|id, _| known.contains(id));
+        self.summary_baselines.retain(|id, _| known.contains(id));
         self.summary_requests.retain(|id, request| {
             request.ticks += 1;
             running.contains(id) && request.ticks <= SUMMARY_TICKS
@@ -817,7 +862,7 @@ impl State {
             let text = read(pane_id);
             match agents::observe(&mut self.activity, pane_id, &text) {
                 // `>=`, not equality: what stops a settled pane asking every five seconds is
-                // the cooldown and the hash guard in `summary_due`, not this arm. Equality
+                // the cooldown and the baseline guard in `summary_due`, not this arm. Equality
                 // would drop a settling the cooldown happened to swallow and never come back
                 // to it, losing that pane its summary for the whole stretch.
                 agents::Observed::Idle { polls } if polls >= SUMMARY_SETTLE_POLLS => {
@@ -870,10 +915,8 @@ impl State {
     /// Whether this settling is worth an HTTP request.
     ///
     /// No when the pane asked less than a minute ago, when one is already in flight for it,
-    /// when it holds too little to say anything about, or when it is showing exactly what
-    /// it was showing the last time it was summarised. That last one is what makes an agent
-    /// that goes idle, is nudged, and settles back on the same screen free rather than
-    /// another request.
+    /// when it holds too little to say anything about, or when less than a fifth of the
+    /// last successfully summarised tail has changed.
     fn summary_due(&self, pane_id: u32, text: &str) -> bool {
         // First, because it is the cheapest and the one that fires most: a busy agent
         // settles for fifteen seconds several times a turn, and only the first is paid for.
@@ -883,12 +926,17 @@ impl State {
         if self.summary_requests.contains_key(&pane_id) || !agents::worth_summarizing(text) {
             return false;
         }
-        match agents::activity_hash(&self.activity, pane_id) {
-            Some(hash) => !self.summaries.get(&pane_id).is_some_and(|s| s.hash == hash),
-            // No hash means the poll that would have recorded one has not run, so there is
-            // nothing to stamp an answer with.
-            None => false,
+        if agents::activity_hash(&self.activity, pane_id).is_none() {
+            // The poll that would have recorded one has not run, so there is nothing to
+            // stamp an answer with.
+            return false;
         }
+        self.summary_baselines.get(&pane_id).is_none_or(|previous| {
+            summary_materially_changed(
+                previous,
+                &agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
+            )
+        })
     }
 
     /// Build and send one summary request. `send` is injected because it reaches the host.
@@ -917,12 +965,13 @@ impl State {
             .as_ref()
             .and_then(|cwd| self.repositories.get(cwd))
             .and_then(|repository| repository.branch.clone());
+        let tail = agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         let body = agents::summary_request_body(
             &endpoint.model,
             kind,
             pane.cwd.as_deref(),
             branch.as_deref(),
-            &agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
+            &tail,
         );
 
         // Unwrap-free: `summary_due` is what gates every caller, and it has already
@@ -930,8 +979,15 @@ impl State {
         let hash = agents::activity_hash(&self.activity, pane_id).unwrap_or_default();
         self.summary_seq += 1;
         let id = self.summary_seq;
-        self.summary_requests
-            .insert(pane_id, InFlight { id, hash, ticks: 0 });
+        self.summary_requests.insert(
+            pane_id,
+            InFlight {
+                id,
+                hash,
+                tail,
+                ticks: 0,
+            },
+        );
         // Stamped when the request goes out rather than when its answer lands, so a slow or
         // dropped reply cannot buy the pane a longer window than a fast one.
         self.summary_cooldown
@@ -987,10 +1043,10 @@ impl State {
         }
         // Removed whatever happens next: the request is over either way, and leaving it
         // here would block this pane from ever asking again.
-        let hash = self
+        let (hash, tail) = self
             .summary_requests
             .remove(&pane_id)
-            .map(|request| request.hash)
+            .map(|request| (request.hash, request.tail))
             .unwrap_or_default();
         // The pane has moved on since we asked, so this answer describes a screen that is
         // gone. Compared against the hash the *request* was made from rather than
@@ -1023,6 +1079,7 @@ impl State {
             self.agent_kind(pane_id),
             &summary,
         ));
+        self.summary_baselines.insert(pane_id, tail);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -1718,6 +1775,9 @@ mod tests {
     fn a_rerun_pane_drops_its_old_activity_and_summary() {
         let mut state = ran_codex(7);
         state.activity.insert(7, (1, 3));
+        state
+            .summary_baselines
+            .insert(7, "the old process".to_owned());
         state.summaries.insert(
             7,
             agents::Summary {
@@ -1752,6 +1812,10 @@ mod tests {
 
         assert!(!state.activity.contains_key(&7), "stale hash dropped");
         assert!(!state.summaries.contains_key(&7), "stale summary dropped");
+        assert!(
+            !state.summary_baselines.contains_key(&7),
+            "stale baseline dropped"
+        );
     }
 
     /// The same sequence the integration test drives, with the manifest events
@@ -1961,6 +2025,28 @@ mod tests {
 
     // -- idle summaries -----------------------------------------------------
 
+    #[test]
+    fn summary_change_requires_a_fifth_of_the_lines_to_turn_over() {
+        let baseline = (1..=10)
+            .map(|line| format!("output line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let one_changed = baseline.replace("output line 10", "one new line");
+        let two_changed = one_changed.replace("output line 9", "another new line");
+        let scrolled = (2..=11)
+            .map(|line| format!("output line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!summary_materially_changed(&baseline, &one_changed));
+        assert!(summary_materially_changed(&baseline, &two_changed));
+        assert!(!summary_materially_changed(&baseline, &scrolled));
+        assert!(!summary_materially_changed(
+            &baseline,
+            &baseline.replace("output line 1", "  output line 1  ")
+        ));
+    }
+
     fn endpoint() -> Endpoint {
         Endpoint {
             url: "http://localhost:11434/v1/chat/completions".to_owned(),
@@ -1988,7 +2074,7 @@ mod tests {
 
     /// Poll `text` for a whole cooldown, so a pane that is holding still goes on holding
     /// still while its window runs out. Enough polls to clear the window whichever tick of
-    /// it the caller is on, and showing one screen throughout, so the hash guard sees no
+    /// it the caller is on, and showing one screen throughout, so the baseline sees no
     /// change either — what expires is the cooldown and nothing else.
     fn poll_out_the_cooldown(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
         for _ in 0..=SUMMARY_COOLDOWN_TICKS {
@@ -1997,7 +2083,7 @@ mod tests {
     }
 
     /// One agent, polled until it has settled, and the requests that went out.
-    fn idle_agent(text: &'static str) -> (State, Vec<(u32, Vec<u8>)>) {
+    fn idle_agent(text: &str) -> (State, Vec<(u32, Vec<u8>)>) {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
@@ -2161,7 +2247,7 @@ mod tests {
     /// be re-summarised every five seconds for as long as it sat there.
     ///
     /// Polled well past the cooldown on purpose: the cooldown is what covers the first
-    /// minute, and after it lapses the hash guard is what has to carry this, because the
+    /// minute, and after it lapses the baseline guard is what has to carry this, because the
     /// settle arm goes on matching for as long as the pane sits there.
     #[test]
     fn sitting_idle_does_not_ask_again() {
@@ -2224,7 +2310,7 @@ mod tests {
 
     /// A pause long enough to settle is not the same as a turn ending. A compile or a slow
     /// tool holds a screen still for fifteen seconds just as well as a finished agent does,
-    /// and each such pause leaves the pane on a *different* screen, so the hash guard does
+    /// and each such pause materially changes the screen, so the baseline guard does
     /// not catch it. The cooldown is what does.
     #[test]
     fn a_second_settling_inside_the_cooldown_asks_nothing() {
@@ -2345,28 +2431,35 @@ mod tests {
         );
     }
 
-    /// An agent that goes idle showing exactly what it was showing when it was last
-    /// summarised has nothing new to say, and must not be paid for twice.
+    /// Small pane changes do not make the last summary obsolete. They accumulate against
+    /// the successful summary's tail until a fifth of its lines have turned over.
     #[test]
-    fn an_unchanged_pane_is_not_summarized_again() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
+    fn a_barely_changed_pane_is_not_summarized_again() {
+        let baseline = (1..=10)
+            .map(|line| format!("agent output line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut state, _) = idle_agent(&baseline);
         finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
         // Dropped rather than polled out, so what the assertions below answer for is the
-        // hash guard alone and not the cooldown standing in front of it.
+        // baseline guard alone and not the cooldown standing in front of it.
         state.summary_cooldown.clear();
 
-        // Away and back to the same screen: busy, then idle again on identical text.
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
-        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+        let one_changed = baseline.replace("agent output line 10", "one new status line");
+        state.observe_activity_with(|_| one_changed.clone(), no_ask);
+        state.observe_activity_with(|_| one_changed.clone(), no_ask);
         assert!(
-            !state.summary_due(7, BUSY_PANE),
-            "the stored summary was made from exactly this screen",
+            !state.summary_due(7, &one_changed),
+            "one changed line is still covered by the stored summary",
         );
 
-        // A screen it has not been asked about is due again.
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
-        assert!(state.summary_due(7, OTHER_PANE));
+        let two_changed = one_changed.replace("agent output line 9", "another new line");
+        state.observe_activity_with(|_| two_changed.clone(), no_ask);
+        state.observe_activity_with(|_| two_changed.clone(), no_ask);
+        assert!(
+            state.summary_due(7, &two_changed),
+            "changes accumulate against the successful baseline"
+        );
     }
 
     #[test]
@@ -2472,6 +2565,7 @@ mod tests {
         );
 
         assert!(state.summaries.is_empty());
+        assert!(state.summary_baselines.is_empty());
         assert!(
             finished.toasts.is_empty(),
             "and a toast describing a screen that is gone is worse than none",
@@ -2487,6 +2581,7 @@ mod tests {
         let finished = finish(&mut state, 500, b"upstream is down", &context(7, 1));
 
         assert!(state.summaries.is_empty());
+        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(finished.toasts.is_empty(), "and says nothing to the user");
         // Dropped rather than polled out: a failure is not meant to shorten the window, so
@@ -2507,6 +2602,7 @@ mod tests {
         let finished = finish(&mut state, 200, b"{\"choices\":[]}", &context(7, 1));
 
         assert!(state.summaries.is_empty());
+        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(finished.toasts.is_empty());
     }
@@ -2516,9 +2612,8 @@ mod tests {
     ///
     /// The bug this guards: a pane that moves on while the request is out is still idle
     /// when the answer arrives, so a naive "is it busy?" check lets the stale answer
-    /// through - and stamping it with the *current* hash then makes `summary_due` treat
-    /// the new screen as already summarised, so the screen that is actually owed a
-    /// request never gets one.
+    /// through. The request hash is the exact identity check that rejects it; the summary
+    /// baseline must remain untouched so the new screen can still earn its own request.
     #[test]
     fn an_answer_about_a_screen_the_pane_has_left_is_dropped() {
         let (mut state, _) = idle_agent(BUSY_PANE);
@@ -2538,11 +2633,12 @@ mod tests {
         );
 
         assert!(state.summaries.is_empty());
+        assert!(state.summary_baselines.is_empty());
         assert!(
             finished.renames.is_empty(),
             "and the pane keeps the name it had"
         );
-        // Dropped so the hash guard is what answers below - the cooldown is its own test.
+        // Dropped so the baseline guard is what answers below - the cooldown is its own test.
         state.summary_cooldown.clear();
         assert!(
             state.summary_due(7, OTHER_PANE),
@@ -2575,11 +2671,13 @@ mod tests {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
         assert!(!state.summaries.is_empty());
+        assert!(!state.summary_baselines.is_empty());
 
         state.panes = Some(vec![]);
         state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
 
         assert!(state.summaries.is_empty());
+        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(
             state.activity.is_empty(),
@@ -2596,6 +2694,7 @@ mod tests {
             let (mut state, _) = idle_agent(BUSY_PANE);
             finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
             assert!(!state.summaries.is_empty());
+            assert!(!state.summary_baselines.is_empty());
 
             state.panes.as_mut().unwrap()[0].status = status;
             state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
@@ -2604,6 +2703,7 @@ mod tests {
                 state.summaries.contains_key(&7),
                 "{status:?} is a status change, not the pane closing"
             );
+            assert!(state.summary_baselines.contains_key(&7));
             assert!(
                 state.activity.is_empty(),
                 "activity still resets - only the summary is kept"
