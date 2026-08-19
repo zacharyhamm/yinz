@@ -275,8 +275,8 @@ pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) -> Observed {
 
 /// The content hash the activity map holds for a pane, if it has one.
 ///
-/// What a summary is stamped with, so an agent that goes idle showing exactly what it was
-/// showing when it was last summarised is not summarised again.
+/// What a summary is stamped with, so a stale answer or waiting marker cannot be applied
+/// to a screen the pane has since left.
 pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
     activity.get(&pane_id).map(|(hash, _)| *hash)
 }
@@ -346,10 +346,10 @@ pub struct Summary {
     pub awaiting: bool,
     /// The activity hash the pane held when this was made.
     ///
-    /// An agent that goes idle showing exactly what it showed last time it was summarised
-    /// has nothing new to say, so this is what makes the repeat free rather than another
-    /// request. Not stable across runs, and never persisted — the same contract as the
-    /// hash in [`Activity`], which is where it comes from.
+    /// Used for exact freshness checks on replies and waiting markers. Repeat summary
+    /// suppression uses a line-level baseline in the daemon instead. Not stable across
+    /// runs, and never persisted — the same contract as the hash in [`Activity`], which
+    /// is where it comes from.
     #[serde(default)]
     pub hash: u64,
 }
@@ -1534,7 +1534,11 @@ mod tests {
 
         assert_eq!(
             rows,
-            vec![project("no project"), branch("no branch"), agent(4, "  4  claude  idle")],
+            vec![
+                project("no project"),
+                branch("no branch"),
+                agent(4, "  4  claude  idle")
+            ],
         );
     }
 
