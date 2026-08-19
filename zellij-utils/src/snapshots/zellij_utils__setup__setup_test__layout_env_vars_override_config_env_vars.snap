@@ -142,7 +142,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -652,7 +654,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -1163,7 +1167,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -1888,7 +1894,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -2435,7 +2443,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -2895,7 +2905,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -3343,7 +3355,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -3828,7 +3842,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -4224,7 +4240,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -4702,7 +4720,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -5264,7 +5284,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -5721,7 +5743,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -6248,7 +6272,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -6813,7 +6839,9 @@ Config {
                             name: "file-finder",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -6911,7 +6939,9 @@ Config {
                             name: "hocus-ask",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,

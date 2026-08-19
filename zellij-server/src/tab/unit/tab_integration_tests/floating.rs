@@ -49,8 +49,22 @@ fn overlay_does_not_show_hidden_floating_panes() {
     let floating_pane_id = PaneId::Terminal(2);
     let overlay_pane_id = PaneId::Terminal(3);
 
-    tab.new_floating_pane(floating_pane_id, None, None, false, true, None, None)
-        .unwrap();
+    tab.new_floating_pane(
+        floating_pane_id,
+        None,
+        None,
+        false,
+        true,
+        Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(80)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
+            ..Default::default()
+        }),
+        None,
+    )
+    .unwrap();
     assert!(tab.floating_panes.all_panes_are_visible());
     tab.hide_floating_panes();
     tab.new_pane(
@@ -60,6 +74,10 @@ fn overlay_does_not_show_hidden_floating_panes() {
         false,
         true,
         NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(10)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
             overlay: Some(true),
             ..Default::default()
         })),
@@ -70,10 +88,18 @@ fn overlay_does_not_show_hidden_floating_panes() {
 
     assert!(tab.pane_is_overlay(overlay_pane_id));
     assert!(!tab.floating_panes.all_panes_are_visible());
+    assert!(!tab.floating_panes.panes_are_visible());
     assert_eq!(
         tab.floating_panes.rendered_pane_ids(),
         vec![overlay_pane_id],
         "only the overlay is rendered while floating panes are hidden"
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+    assert!(!tab.move_focus_right(client_id).unwrap());
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(overlay_pane_id),
+        "focus must not move to the hidden floating pane"
     );
 }
 
