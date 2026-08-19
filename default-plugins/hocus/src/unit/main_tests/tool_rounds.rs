@@ -44,7 +44,7 @@ fn a_model_that_calls_tools_it_was_not_offered_is_stopped() {
 #[test]
 fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     let mut state = ready_state();
-    let thinking = br#"data: {"choices":[{"delta":{"reasoning_content":"htop it is"}}]}
+    let thinking = br#"data: {"choices":[{"delta":{"reasoning_content":"htop it is","content":"I'll inspect it."}}]}
 "#;
     state.on_chunk("hocus-1", thinking, false, None);
     let frame = tool_call_frame("call_1", "list_session", "{}");
@@ -60,6 +60,13 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
         asked.reasoning,
         Some(Reasoning::new("htop it is", ReasoningKey::ReasoningContent))
     );
+    assert_eq!(asked.content, "I'll inspect it.");
+    assert!(
+        asked.display.as_deref().is_some_and(|display| {
+            display.contains("I'll inspect it.") && display.contains("list_session")
+        }),
+        "the UI keeps both the prose and the call summary"
+    );
 
     let cfg = state.cfg.as_ref().expect("configured");
     let body = String::from_utf8(api::request_body_with_project(
@@ -73,6 +80,10 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
         body.contains(r#""reasoning_content":"htop it is""#),
         "the next round has to hand the thinking back or the endpoint refuses \
          it: {body}"
+    );
+    assert!(
+        body.contains(r#""content":"I'll inspect it.""#),
+        "DeepSeek requires the response content on the same assistant message: {body}"
     );
 }
 

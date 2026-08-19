@@ -36,7 +36,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together."
+        "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. `warp_tab` and `warp_pane` move items from the current session to another; use `warp_tab_here` and `warp_pane_here` for items listed by `list_other_sessions` that should come into the current session. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together."
     );
 }
 
@@ -155,9 +155,12 @@ fn request_body_omits_the_tools_on_the_final_round() {
 
 #[test]
 fn request_body_sends_tool_calls_rather_than_their_transcript_summary() {
+    // This is the archived shape from before call summaries moved to `display`.
+    let mut asked = Message::tool_calls(vec![call("call_1", "new_pane", r#"{"command":"htop"}"#)]);
+    asked.content = asked.display.take().unwrap();
     let transcript = [
         Message::user("open htop"),
-        Message::tool_calls(vec![call("call_1", "new_pane", r#"{"command":"htop"}"#)]),
+        asked,
         Message::tool_result("call_1", r#"{"opened":true,"pane_id":7}"#),
     ];
     let body = body_value(&test_config(), &transcript);
@@ -167,7 +170,7 @@ fn request_body_sends_tool_calls_rather_than_their_transcript_summary() {
             {"role": "user", "content": "open htop"},
             {
                 "role": "assistant",
-                "content": null,
+                "content": "",
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
@@ -176,6 +179,26 @@ fn request_body_sends_tool_calls_rather_than_their_transcript_summary() {
             },
             {"role": "tool", "tool_call_id": "call_1", "content": r#"{"opened":true,"pane_id":7}"#},
         ])
+    );
+}
+
+#[test]
+fn request_body_keeps_tool_call_prose_on_the_same_assistant_message() {
+    let mut asked = Message::tool_calls(vec![call("call_1", "list_session", "{}")]);
+    asked.content = "I'll inspect the session.".into();
+    let body = body_value(&test_config(), &[asked]);
+
+    assert_eq!(
+        body["messages"][0],
+        json!({
+            "role": "assistant",
+            "content": "I'll inspect the session.",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "list_session", "arguments": "{}"},
+            }],
+        })
     );
 }
 
@@ -283,7 +306,7 @@ fn request_body_writes_each_message_shape_whole() {
             {"role": "assistant", "content": "On it."},
             {
                 "role": "assistant",
-                "content": null,
+                "content": "",
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
@@ -354,7 +377,7 @@ fn a_thinking_tool_call_turn_echoes_the_key_it_arrived_under() {
         body_value(&test_config(), &transcript)["messages"][0],
         json!({
             "role": "assistant",
-            "content": null,
+            "content": "",
             "tool_calls": [{
                 "id": "call_1",
                 "type": "function",

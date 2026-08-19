@@ -31,7 +31,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus in Zellij. Use native tools for Zellij operations. Before an ID-based action, call `list_session` unless the immediately previous result supplied the IDs; use `list_other_sessions` for cross-session IDs. `warp_tab` and `warp_pane` move items from the current session to another; use `warp_tab_here` and `warp_pane_here` for items listed by `list_other_sessions` that should come into the current session. Address tabs only by `tab_id` and panes by `pane_id`; `tab_number` is the tab bar's label, not an ID, so never pass it as one. Do not verify successful mutations or retry failed pane moves with variants. Use `send_input` for an existing program. You cannot run arbitrary commands. Inspect code only with `find_files`, `search_files`, and `read_file` inside the active project. Call `agent_list` before acting on agents. Make independent calls together.";
 /// Sent in place of the tool set on the last round of the tool budget, so the
 /// model answers from what it has instead of insisting it needs another call.
 const BUDGET_SPENT_PROMPT: &str =
@@ -263,15 +263,13 @@ enum WireMessage<'a> {
         role: &'static str,
         content: Cow<'a, str>,
     },
-    /// `content` is present-and-null — the unit serializes to `null` — rather
-    /// than skipped: ours is a human-readable summary for the transcript, and
-    /// the `tool_calls` array is the real payload.
+    /// Providers require `content` beside tool calls even when it is empty.
     ///
     /// The two reasoning fields are the only place thinking is ever echoed
     /// back, and at most one of them is ever set — see [`wire_reasoning`].
     Calls {
         role: &'static str,
-        content: (),
+        content: &'a str,
         tool_calls: Vec<WireToolCall<'a>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<&'a str>,
@@ -347,15 +345,19 @@ pub fn request_body_with_project(
     for message in transcript {
         match message.role {
             Role::User => messages.push(WireMessage::text("user", &message.content)),
-            // The tool call the model asked for. `content` holds our own
-            // human-readable summary for the transcript, so it is deliberately
-            // not sent - the tool_calls array is the real payload.
+            // Preserve the assistant response as one message: DeepSeek requires
+            // its content, reasoning and tool calls to be handed back together.
             Role::Assistant if !message.tool_calls.is_empty() => {
                 let (reasoning_content, reasoning) =
                     wire_reasoning(message.reasoning.as_ref(), cfg.reasoning_echo);
                 messages.push(WireMessage::Calls {
                     role: "assistant",
-                    content: (),
+                    // Old archived calls stored their display summary in
+                    // `content`; new calls always carry a display override.
+                    content: message
+                        .display
+                        .as_ref()
+                        .map_or("", |_| message.content.as_str()),
                     tool_calls: message.tool_calls.iter().map(wire_tool_call).collect(),
                     reasoning_content,
                     reasoning,
@@ -717,32 +719,27 @@ fn parse_line(line: &str) -> Vec<SseItem> {
     if let Some(error) = chunk.error {
         return vec![SseItem::ApiError(error.message)];
     }
-    let Some(mut delta) = chunk.choices.into_iter().next().map(|choice| choice.delta) else {
+    let Some(delta) = chunk.choices.into_iter().next().map(|choice| choice.delta) else {
         return Vec::new();
     };
 
-    // A delta carries tool-call fragments or prose, never both.
-    if let Some(fragment) = std::mem::take(&mut delta.tool_calls).into_iter().next() {
-        let function = fragment.function.unwrap_or_default();
-        return vec![SseItem::ToolCallFragment {
-            index: fragment.index,
-            id: fragment.id,
-            name: function.name,
-            arguments: function.arguments,
-        }];
-    }
-
-    // Reasoning and content, on the other hand, *can* share a chunk: a thinking
-    // model closes out its chain-of-thought and opens the answer in the same
-    // breath. Dropping that last reasoning fragment would leave us echoing a
-    // truncated `reasoning_content` back on the next request, which DeepSeek
-    // rejects exactly as hard as a missing one. Reasoning goes first, being
-    // what the model wrote first.
+    // A provider may put the final reasoning fragment, prose and several
+    // parallel calls in one delta. Keep all of them; dropping any reasoning is
+    // enough for DeepSeek to reject the next request.
     let mut items = Vec::new();
     if let Some((text, key)) = reasoning_delta(&delta) {
         items.push(SseItem::Reasoning {
             text: text.to_owned(),
             key,
+        });
+    }
+    for fragment in delta.tool_calls {
+        let function = fragment.function.unwrap_or_default();
+        items.push(SseItem::ToolCallFragment {
+            index: fragment.index,
+            id: fragment.id,
+            name: function.name,
+            arguments: function.arguments,
         });
     }
     if let Some(content) = delta.content.filter(|content| !content.is_empty()) {

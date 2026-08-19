@@ -432,8 +432,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "warp_tab",
-            "Move a whole tab, all its panes, to another session; defaults to the focused \
-             tab. Can move the session's last tab, ending this session.",
+            "Move a tab from the current session, as listed by list_session, to another \
+             session; defaults to the focused tab. Can move the last tab, ending this session.",
             json!({
                 "type": "object",
                 "properties": {
@@ -445,7 +445,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "warp_tab_here",
-            "Bring in a tab listed by list_other_sessions.",
+            "Bring a tab from another session, as listed by list_other_sessions, into the \
+             current session. Use this for requests phrased from another session or into here.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2317,7 +2318,7 @@ mod host {
                 .find(|tab| tab.tab_id == id)
                 .map(|tab| tab.tab_id)
                 .ok_or_else(|| {
-                    format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids")
+                    format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids, or use warp_tab_here if it came from list_other_sessions")
                 }),
             None => session
                 .tabs
