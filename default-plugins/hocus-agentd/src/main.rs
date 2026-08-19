@@ -1014,7 +1014,7 @@ impl State {
             body,
             context,
             |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
-            notify,
+            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
         );
     }
 
@@ -1026,7 +1026,7 @@ impl State {
         body: &[u8],
         context: &BTreeMap<String, String>,
         rename: impl FnOnce(u32, &str),
-        toast: impl FnOnce(&str),
+        toast: impl FnOnce(u32, &str),
     ) {
         let (Some(pane_id), Some(id)) = (
             context
@@ -1074,11 +1074,10 @@ impl State {
         // none. The snapshot below carries the same summary to whoever is subscribed, but a
         // snapshot only reaches a plugin that is running and only shows in a pane the user
         // is looking at — this is the half that finds them wherever they are.
-        toast(&agents::summary_toast(
+        toast(
             pane_id,
-            self.agent_kind(pane_id),
-            &summary,
-        ));
+            &agents::summary_toast(pane_id, self.agent_kind(pane_id), &summary),
+        );
         self.summary_baselines.insert(pane_id, tail);
         self.summaries.insert(pane_id, summary);
         self.publish();
@@ -2123,7 +2122,7 @@ mod tests {
     #[derive(Default)]
     struct Finished {
         renames: Vec<(u32, String)>,
-        toasts: Vec<String>,
+        toasts: Vec<(u32, String)>,
     }
 
     /// `finish_summary` with the host calls it would have made handed back instead. Every
@@ -2140,7 +2139,7 @@ mod tests {
             body,
             context,
             |pane_id, title| finished.renames.push((pane_id, title.to_owned())),
-            |toast| finished.toasts.push(toast.to_owned()),
+            |pane_id, toast| finished.toasts.push((pane_id, toast.to_owned())),
         );
         finished
     }
@@ -2498,7 +2497,7 @@ mod tests {
 
         assert_eq!(
             finished.toasts,
-            vec!["agent idle · 7 · claude\nRan the tests.".to_owned()],
+            vec![(7, "agent idle · 7 · claude\nRan the tests.".to_owned())],
             "one summary, one toast, naming the pane and its kind",
         );
     }
@@ -2518,7 +2517,7 @@ mod tests {
 
         assert_eq!(
             finished.toasts,
-            vec!["agent waiting · 7 · claude\nShall I push?".to_owned()],
+            vec![(7, "agent waiting · 7 · claude\nShall I push?".to_owned())],
         );
     }
 

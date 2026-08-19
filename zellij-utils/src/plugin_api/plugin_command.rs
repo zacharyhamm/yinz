@@ -87,6 +87,7 @@ pub use super::generated_api::api::{
         NewTabUnfocusedResponse as ProtobufNewTabUnfocusedResponse,
         NewTabsResponse as ProtobufNewTabsResponse, NewTabsWithLayoutInfoPayload,
         NewTiledPaneInTabPayload, NewTiledPaneInTabResponse as ProtobufNewTiledPaneInTabResponse,
+        NotifyWithPanePayload,
         OpenCommandPaneBackgroundResponse as ProtobufOpenCommandPaneBackgroundResponse,
         OpenCommandPaneFloatingNearPluginPayload,
         OpenCommandPaneFloatingNearPluginResponse as ProtobufOpenCommandPaneFloatingNearPluginResponse,
@@ -1471,7 +1472,16 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for RenameSession"),
             },
             Some(CommandName::Notify) => match protobuf_plugin_command.payload {
-                Some(Payload::NotifyPayload(text)) => Ok(PluginCommand::Notify(text)),
+                Some(Payload::NotifyPayload(text)) => Ok(PluginCommand::Notify(text, None)),
+                Some(Payload::NotifyWithPanePayload(payload)) => Ok(PluginCommand::Notify(
+                    payload.text,
+                    Some(
+                        payload
+                            .pane_id
+                            .ok_or("NotifyWithPane must have a pane id")?
+                            .try_into()?,
+                    ),
+                )),
                 _ => Err("Mismatched payload for Notify"),
             },
             Some(CommandName::UnblockCliPipeInput) => match protobuf_plugin_command.payload {
@@ -3625,9 +3635,15 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::RenameSession as i32,
                 payload: Some(Payload::RenameSessionPayload(new_session_name)),
             }),
-            PluginCommand::Notify(text) => Ok(ProtobufPluginCommand {
+            PluginCommand::Notify(text, pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::Notify as i32,
-                payload: Some(Payload::NotifyPayload(text)),
+                payload: Some(match pane_id {
+                    Some(pane_id) => Payload::NotifyWithPanePayload(NotifyWithPanePayload {
+                        text,
+                        pane_id: Some(pane_id.try_into()?),
+                    }),
+                    None => Payload::NotifyPayload(text),
+                }),
             }),
             PluginCommand::UnblockCliPipeInput(pipe_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::UnblockCliPipeInput as i32,
@@ -6001,6 +6017,28 @@ impl From<SearchHit> for ProtobufSearchHit {
 mod tests {
     use super::*;
     use crate::data::{GlobalPaneEdge, GlobalPanePlacement, PluginCommand};
+
+    #[test]
+    fn notifications_with_and_without_panes_survive_the_wire() {
+        for pane_id in [None, Some(PaneId::Terminal(7)), Some(PaneId::Plugin(3))] {
+            let protobuf: ProtobufPluginCommand = PluginCommand::Notify("done".to_owned(), pane_id)
+                .try_into()
+                .expect("encode");
+            assert_eq!(
+                matches!(&protobuf.payload, Some(Payload::NotifyPayload(_))),
+                pane_id.is_none(),
+                "plain notifications keep the legacy string payload",
+            );
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::Notify(text, decoded_pane_id) => {
+                    assert_eq!(text, "done");
+                    assert_eq!(decoded_pane_id, pane_id);
+                },
+                other => panic!("expected Notify, got {:?}", other),
+            }
+        }
+    }
 
     #[test]
     fn set_pane_frame_style_protobuf_round_trip() {
