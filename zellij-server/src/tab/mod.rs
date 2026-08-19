@@ -3889,30 +3889,26 @@ impl Tab {
             })
     }
     pub fn get_active_pane_mut(&mut self, client_id: ClientId) -> Option<&mut Box<dyn Pane>> {
-        self.get_active_pane_id(client_id).and_then(|ap| {
-            if self.floating_panes.panes_are_visible() {
-                self.floating_panes.get_pane_mut(ap)
-            } else {
-                self.tiled_panes.get_pane_mut(ap)
-            }
-        })
+        self.get_active_pane_id(client_id)
+            .and_then(|active_pane_id| {
+                self.floating_panes
+                    .get_pane_mut(active_pane_id)
+                    .or_else(|| self.tiled_panes.get_pane_mut(active_pane_id))
+            })
     }
     pub fn get_active_pane_or_floating_pane_mut(
         &mut self,
         client_id: ClientId,
     ) -> Option<&mut Box<dyn Pane>> {
-        if self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes() {
-            self.floating_panes.get_active_pane_mut(client_id)
-        } else {
-            self.get_active_pane_mut(client_id)
-        }
+        self.get_active_pane_mut(client_id)
     }
     pub fn get_active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.get_active_pane_id(client_id)
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)
-        }
+        self.floating_panes
+            .get_active_pane_id(client_id)
+            .filter(|pane_id| {
+                self.floating_panes.panes_are_visible() || self.pane_is_overlay(*pane_id)
+            })
+            .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }
     pub fn get_active_pane_id_or_first_selectable(&self, client_id: ClientId) -> Option<PaneId> {
         self.get_active_pane_id(client_id)
@@ -4444,21 +4440,10 @@ impl Tab {
 
         self.clear_search(client_id);
         self.mouse_help_text_visible.clear();
-        let pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
-                .ok_or_else(|| {
-                    anyhow!(format!(
-                        "failed to find active pane id for client {client_id}"
-                    ))
-                })
-                .with_context(err_context)?
-        } else {
-            self.tiled_panes
-                .get_active_pane_id(client_id)
-                .with_context(err_context)?
-        };
+        let pane_id = self
+            .get_active_pane_id(client_id)
+            .ok_or_else(|| anyhow!("failed to find active pane id for client {client_id}"))
+            .with_context(err_context)?;
         // Can't use 'err_context' here since it borrows 'raw_input_bytes'
         self.write_to_pane_id(
             key_with_modifier,
@@ -4479,16 +4464,10 @@ impl Tab {
     ) -> Result<()> {
         let err_context = || format!("failed to write to terminal at position {position:?}");
 
-        if self.floating_panes.panes_are_visible() {
-            let pane_id = self
-                .floating_panes
-                .get_pane_id_at(position, false)
+        if let Some(pane_id) = self.floating_panes.visible_pane_id_at(position) {
+            self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
                 .with_context(err_context)?;
-            if let Some(pane_id) = pane_id {
-                self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
-                    .with_context(err_context)?;
-                return Ok(());
-            }
+            return Ok(());
         }
 
         let pane_id = self
@@ -4712,13 +4691,7 @@ impl Tab {
         Ok(should_update_ui)
     }
     pub fn active_terminal_is_mid_frame(&self, client_id: ClientId) -> Option<bool> {
-        let active_pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))?
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)?
-        };
+        let active_pane_id = self.get_active_pane_id(client_id)?;
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)
@@ -4730,13 +4703,7 @@ impl Tab {
         client_id: ClientId,
     ) -> Option<(usize, usize, bool)> {
         // (x, y, is_cursor_visible)
-        let active_pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))?
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)?
-        };
+        let active_pane_id = self.get_active_pane_id(client_id)?;
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)

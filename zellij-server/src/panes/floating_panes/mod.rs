@@ -397,7 +397,7 @@ impl FloatingPanes {
             .and_then(|active_pane_id| self.panes.get_mut(active_pane_id))
     }
     pub fn panes_are_visible(&self) -> bool {
-        self.all_panes_are_visible() || self.has_overlays()
+        self.all_panes_are_visible()
     }
     pub fn all_panes_are_visible(&self) -> bool {
         self.show_panes && !*self.fullscreen_covers_ui.borrow()
@@ -613,7 +613,7 @@ impl FloatingPanes {
         }
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
-        let active_panes = if self.panes_are_visible() {
+        let active_panes = if self.all_panes_are_visible() || self.has_overlays() {
             let mut active_panes = self.active_panes.clone_active_panes();
             active_panes.retain(|client_id, pane_id| {
                 !inactive_clients.contains(client_id)
@@ -949,8 +949,11 @@ impl FloatingPanes {
         let viewport = *self.viewport.borrow();
         let active_pane_id = self.active_panes.get(&client_id).copied();
         let updated_active_pane = if let Some(active_pane_id) = active_pane_id {
+            let rendered_pane_ids = self.rendered_pane_ids();
             let floating_pane_grid = FloatingPaneGrid::new(
-                &mut self.panes,
+                self.panes
+                    .iter_mut()
+                    .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
                 &mut self.desired_pane_positions,
                 display_area,
                 viewport,
@@ -1033,8 +1036,11 @@ impl FloatingPanes {
         }
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
+        let rendered_pane_ids = self.rendered_pane_ids();
         let floating_pane_grid = FloatingPaneGrid::new(
-            &mut self.panes,
+            self.panes
+                .iter_mut()
+                .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
             &mut self.desired_pane_positions,
             display_area,
             viewport,
@@ -1055,8 +1061,11 @@ impl FloatingPanes {
         }
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
+        let rendered_pane_ids = self.rendered_pane_ids();
         let floating_pane_grid = FloatingPaneGrid::new(
-            &mut self.panes,
+            self.panes
+                .iter_mut()
+                .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
             &mut self.desired_pane_positions,
             display_area,
             viewport,
@@ -1089,6 +1098,7 @@ impl FloatingPanes {
             self.reenter_fullscreen_on_active_pane(client_id, covers_ui);
             return;
         }
+        let rendered_pane_ids = self.rendered_pane_ids();
         let currently_active_pane_id = self.active_panes.get(&client_id).copied();
         let last_pane_id = self
             .active_panes
@@ -1096,23 +1106,33 @@ impl FloatingPanes {
             .copied()
             .filter(|last_pane_id| {
                 Some(*last_pane_id) != currently_active_pane_id
+                    && rendered_pane_ids.contains(last_pane_id)
                     && self
                         .panes
                         .get(last_pane_id)
                         .map(|p| p.selectable())
                         .unwrap_or(false)
             });
-        let target_pane_id = last_pane_id
-            .or_else(|| self.most_recently_active_selectable_pane(currently_active_pane_id));
+        let target_pane_id = last_pane_id.or_else(|| {
+            self.most_recently_active_selectable_pane(currently_active_pane_id, &rendered_pane_ids)
+        });
         if let Some(target_pane_id) = target_pane_id {
             self.focus_pane(target_pane_id, client_id);
             self.set_force_render();
         }
     }
-    fn most_recently_active_selectable_pane(&self, exclude: Option<PaneId>) -> Option<PaneId> {
+    fn most_recently_active_selectable_pane(
+        &self,
+        exclude: Option<PaneId>,
+        rendered_pane_ids: &[PaneId],
+    ) -> Option<PaneId> {
         self.panes
             .iter()
-            .filter(|(pane_id, pane)| Some(**pane_id) != exclude && pane.selectable())
+            .filter(|(pane_id, pane)| {
+                Some(**pane_id) != exclude
+                    && rendered_pane_ids.contains(pane_id)
+                    && pane.selectable()
+            })
             .max_by_key(|(_pane_id, pane)| pane.active_at())
             .map(|(pane_id, _pane)| *pane_id)
     }
