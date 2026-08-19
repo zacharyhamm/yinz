@@ -3713,12 +3713,12 @@ pub enum PluginCommand {
         Option<String>,           // stream_id: Some(_) => stream the response body back as
                                   // WebRequestStreamChunk events under this id
     ),
-    CancelWebRequest(String),      // String -> stream_id
-    RenameSession(String),         // String -> new session name
-    Notify(String),                // String -> the notification message to show
-    UnblockCliPipeInput(String),   // String => pipe name
-    BlockCliPipeInput(String),     // String => pipe name
-    CliPipeOutput(String, String), // String => pipe name, String => output
+    CancelWebRequest(String),       // String -> stream_id
+    RenameSession(String),          // String -> new session name
+    Notify(String, Option<PaneId>), // String -> message, Option<PaneId> -> pane to focus on click
+    UnblockCliPipeInput(String),    // String => pipe name
+    BlockCliPipeInput(String),      // String => pipe name
+    CliPipeOutput(String, String),  // String => pipe name, String => output
     MessageToPlugin(MessageToPlugin),
     DisconnectOtherClients,
     KillSessions(Vec<String>), // one or more session names

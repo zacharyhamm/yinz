@@ -1,4 +1,115 @@
 use super::*;
+use crate::screen::Notification;
+use crate::ui::notification::notification_width;
+
+#[test]
+fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(size);
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .handle_pty_bytes(1, b"\x1b[?1002h\x1b[?1006h".to_vec())
+        .unwrap();
+    screen.go_to_tab(2, client_id).expect("TEST");
+
+    let text = "agent idle";
+    let mut notification = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(1)));
+    notification.horizontal_progress = 1.0;
+    screen.notifications.push(notification);
+    screen.notification_displacement_progress = 1.0;
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    assert_eq!(screen.get_active_tab(client_id).unwrap().position, 0);
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(1))
+    );
+    assert!(screen.notifications[0].dismissing);
+    pty_writer_rx.try_iter().for_each(drop);
+
+    let pane_position = Position::new(5, 5);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(pane_position), client_id);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(pane_position), client_id);
+    assert!(pty_writer_rx.try_recv().is_err());
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(pane_position), client_id);
+    assert!(matches!(
+        pty_writer_rx.recv().unwrap().0,
+        PtyWriteInstruction::Write(_, 1, None)
+    ));
+}
+
+#[test]
+fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let focused_before = screen.get_active_pane_id(&client_id);
+
+    let text = "gone";
+    let mut notification = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(99)));
+    notification.horizontal_progress = 1.0;
+    screen.notifications.push(notification);
+    screen.notification_displacement_progress = 1.0;
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    assert_eq!(screen.get_active_pane_id(&client_id), focused_before);
+    assert!(screen.notifications[0].dismissing);
+}
+
+#[test]
+fn clicking_overlapping_pane_notifications_uses_paint_order() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.go_to_tab(2, client_id).expect("TEST");
+
+    let text = "agent idle";
+    let mut older = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(1)));
+    older.horizontal_progress = 1.0;
+    let mut newer = Notification::new(1, text.to_owned(), Some(PaneId::Terminal(2)));
+    newer.horizontal_progress = 1.0;
+    screen.notification_stack_before_change.push(older.clone());
+    screen.notifications.extend([newer, older]);
+    screen.notification_displacement_progress = 0.0;
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(1))
+    );
+    assert!(!screen.notifications[0].dismissing);
+    assert!(screen.notifications[1].dismissing);
+}
 
 #[test]
 pub fn mouse_hover_effect() {
