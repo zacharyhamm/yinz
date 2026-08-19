@@ -1049,29 +1049,26 @@ pub fn render_screen_toggle(
     background: &PaletteColor,
 ) {
     let key_indication_text = "<TAB>";
-    let (new_session_text, running_sessions_text, exited_sessions_text, recordings_text) =
-        if max_cols > 66 {
-            (
-                "New Session",
-                "Attach to Session",
-                "Resurrect Session",
-                "Recordings",
-            )
-        } else {
-            ("New", "Attach", "Resurrect", "Recordings")
-        };
-    let key_indication_len = key_indication_text.chars().count() + 1;
-    let first_ribbon_length = new_session_text.chars().count() + 4;
-    let second_ribbon_length = running_sessions_text.chars().count() + 4;
+    let Some(
+        [new_session_text, running_sessions_text, exited_sessions_text, recordings_text, notifications_text],
+    ) = screen_toggle_labels(max_cols)
+    else {
+        return;
+    };
+    let key_indication_len = key_indication_text.width() + 1;
+    let first_ribbon_length = new_session_text.width() + 4;
+    let second_ribbon_length = running_sessions_text.width() + 4;
     let key_indication_x = x;
     let first_ribbon_x = key_indication_x + key_indication_len;
     let second_ribbon_x = first_ribbon_x + first_ribbon_length;
     let third_ribbon_x = second_ribbon_x + second_ribbon_length;
-    let fourth_ribbon_x = third_ribbon_x + exited_sessions_text.chars().count() + 4;
+    let fourth_ribbon_x = third_ribbon_x + exited_sessions_text.width() + 4;
+    let fifth_ribbon_x = fourth_ribbon_x + recordings_text.width() + 4;
     let mut new_session_text = Text::new(new_session_text);
     let mut running_sessions_text = Text::new(running_sessions_text);
     let mut exited_sessions_text = Text::new(exited_sessions_text);
     let mut recordings_text = Text::new(recordings_text);
+    let mut notifications_text = Text::new(notifications_text);
     match active_screen {
         ActiveScreen::NewSession => {
             new_session_text = new_session_text.selected();
@@ -1084,6 +1081,9 @@ pub fn render_screen_toggle(
         },
         ActiveScreen::Recordings => {
             recordings_text = recordings_text.selected();
+        },
+        ActiveScreen::Notifications => {
+            notifications_text = notifications_text.selected();
         },
         ActiveScreen::SingleScreen => {
             // SingleScreen does not use the tab toggle; this arm exists for exhaustiveness
@@ -1106,6 +1106,26 @@ pub fn render_screen_toggle(
     print_ribbon_with_coordinates(running_sessions_text, second_ribbon_x, y, None, None);
     print_ribbon_with_coordinates(exited_sessions_text, third_ribbon_x, y, None, None);
     print_ribbon_with_coordinates(recordings_text, fourth_ribbon_x, y, None, None);
+    print_ribbon_with_coordinates(notifications_text, fifth_ribbon_x, y, None, None);
+}
+
+fn screen_toggle_labels(max_cols: usize) -> Option<[&'static str; 5]> {
+    const FULL: [&str; 5] = [
+        "New Session",
+        "Attach to Session",
+        "Resurrect Session",
+        "Recordings",
+        "Notifications",
+    ];
+    const COMPACT: [&str; 5] = ["New", "Attach", "Resurrect", "Rec", "Notif"];
+
+    [FULL, COMPACT]
+        .into_iter()
+        .find(|labels| screen_toggle_width(labels) <= max_cols)
+}
+
+fn screen_toggle_width(labels: &[&str; 5]) -> usize {
+    "<TAB>".width() + 1 + labels.iter().map(|label| label.width() + 4).sum::<usize>()
 }
 
 fn render_new_session_folder_prompt(
@@ -1539,6 +1559,25 @@ pub fn render_controls_line(
                 false
             }
         },
+        ActiveScreen::Notifications => {
+            let arrows = colors.shortcuts("<↓↑/PgUp/PgDn>");
+            let navigate = colors.bold("Navigate");
+            let enter = colors.shortcuts("<ENTER>");
+            let detail = colors.bold("View");
+            let back = colors.shortcuts("<ESC>");
+            let back_text = colors.bold("Back");
+            if max_cols > 70 {
+                print!(
+                    "\u{1b}[m\u{1b}[{y};{x}HHelp: {arrows} - {navigate}, {enter} - {detail}, {back} - {back_text}"
+                );
+                true
+            } else if max_cols >= 24 {
+                print!("\u{1b}[m\u{1b}[{y};{x}H{arrows}/{enter}/{back}");
+                false
+            } else {
+                false
+            }
+        },
         ActiveScreen::SingleScreen => {
             let rename = colors.shortcuts("<Ctrl r>");
             let rename_text = colors.bold("Rename");
@@ -1549,11 +1588,17 @@ pub fn render_controls_line(
             let kill_text = colors.bold("Kill/Delete");
             let recordings = colors.shortcuts("<Ctrl l>");
             let recordings_text = colors.bold("Recordings");
+            let notifications = colors.shortcuts("<Ctrl v>");
+            let notifications_text = colors.bold("Notifications");
 
-            // Full: "Help: <Ctrl r> - Rename, <Ctrl x> - Disconnect others, <Del> - Kill/Delete, <Ctrl l> - Recordings" = 98 chars
-            if max_cols > 98 {
+            if max_cols > 126 {
                 print!(
-                    "\u{1b}[m\u{1b}[{y};{x}HHelp: {rename} - {rename_text}, {disconnect} - {disconnect_full_text}, {kill} - {kill_text}, {recordings} - {recordings_text}"
+                    "\u{1b}[m\u{1b}[{y};{x}HHelp: {rename} - {rename_text}, {disconnect} - {disconnect_full_text}, {kill} - {kill_text}, {recordings} - {recordings_text}, {notifications} - {notifications_text}"
+                );
+                true
+            } else if max_cols > 98 {
+                print!(
+                    "\u{1b}[m\u{1b}[{y};{x}HHelp: {rename} - {rename_text}, {disconnect} - {disconnect_full_text}, {kill} - {kill_text}, {notifications} - {notifications_text}"
                 );
                 true
             // Full: "Help: <Ctrl r> - Rename, <Ctrl x> - Disconnect others, <Del> - Kill/Delete" = 76 chars
@@ -1817,6 +1862,29 @@ fn truncate_path(path: PathBuf, mut char_count_to_remove: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_toggle_labels_only_render_when_they_fit() {
+        assert_eq!(screen_toggle_labels(51), None);
+        assert_eq!(
+            screen_toggle_labels(52),
+            Some(["New", "Attach", "Resurrect", "Rec", "Notif"])
+        );
+        assert_eq!(
+            screen_toggle_labels(93),
+            Some(["New", "Attach", "Resurrect", "Rec", "Notif"])
+        );
+        assert_eq!(
+            screen_toggle_labels(94),
+            Some([
+                "New Session",
+                "Attach to Session",
+                "Resurrect Session",
+                "Recordings",
+                "Notifications",
+            ])
+        );
+    }
 
     // ---------------------------------------------------------------
     // Section 8: Width Responsiveness (compute_reduction_tier)

@@ -110,9 +110,9 @@ use zellij_utils::{
             ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
             ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufListOrphanedPanesResponse,
-            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
-            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufKillSessionsResponse, ProtobufListNotificationsResponse,
+            ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse,
+            ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse,
@@ -218,6 +218,7 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
                     PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
                     PluginCommand::ListRecordings => list_recordings(env),
+                    PluginCommand::ListNotifications => list_notifications(env),
                     PluginCommand::SearchRecordings { query, limit } => {
                         search_recordings(env, query, limit)
                     },
@@ -4464,6 +4465,41 @@ fn list_recordings(env: &PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
+fn list_notifications(env: &PluginEnv) {
+    let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
+    let notifications = if env
+        .senders
+        .send_to_screen(ScreenInstruction::ListNotifications {
+            response_channel: response_sender,
+        })
+        .is_ok()
+    {
+        response_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .map_err(|error| match error {
+                crossbeam::channel::RecvTimeoutError::Timeout => {
+                    "Timed out listing notifications".to_owned()
+                },
+                crossbeam::channel::RecvTimeoutError::Disconnected => {
+                    "Screen channel disconnected while listing notifications".to_owned()
+                },
+            })
+    } else {
+        Err("Failed to request notifications from screen".to_owned())
+    };
+    let response = match notifications {
+        Ok(notifications) => ProtobufListNotificationsResponse {
+            notifications: notifications.into_iter().map(Into::into).collect(),
+            error: None,
+        },
+        Err(error) => ProtobufListNotificationsResponse {
+            notifications: vec![],
+            error: Some(error),
+        },
+    };
+    let _ = wasi_write_object(env, &response.encode_to_vec());
+}
+
 // ponytail: search indexes FTS inline on the plugin thread; move to a worker if large recordings
 // stall plugin calls
 fn search_recordings(env: &PluginEnv, query: String, limit: usize) {
@@ -6198,6 +6234,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::GetPaneInfo(..)
         | PluginCommand::GetTabInfo(..)
         | PluginCommand::GetSessionList
+        | PluginCommand::ListNotifications
         | PluginCommand::ListOrphanedPanes => PermissionType::ReadApplicationState,
         // One permission covers reading and writing the plugin's *own* namespace. Reaching a
         // `shared:` namespace additionally needs `SharedPluginData`, which is checked in the

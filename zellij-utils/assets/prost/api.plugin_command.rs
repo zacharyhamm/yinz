@@ -1907,6 +1907,24 @@ pub struct ListRecordingsResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotificationInfo {
+    #[prost(uint64, tag="1")]
+    pub id: u64,
+    #[prost(string, tag="2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(uint64, tag="3")]
+    pub received_at_unix_ms: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListNotificationsResponse {
+    #[prost(message, repeated, tag="1")]
+    pub notifications: ::prost::alloc::vec::Vec<NotificationInfo>,
+    #[prost(string, optional, tag="2")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SearchRecordingsResponse {
     #[prost(message, repeated, tag="1")]
     pub hits: ::prost::alloc::vec::Vec<SearchHit>,
@@ -2676,6 +2694,7 @@ pub enum CommandName {
     DataCount = 241,
     DataWatch = 242,
     DataUnwatch = 243,
+    ListNotifications = 250,
     WarpTabToSession = 244,
     WarpTabFromSession = 245,
     LaunchOrFocusGlobalPaneSplit = 246,
@@ -2907,6 +2926,7 @@ impl CommandName {
             CommandName::DataCount => "DataCount",
             CommandName::DataWatch => "DataWatch",
             CommandName::DataUnwatch => "DataUnwatch",
+            CommandName::ListNotifications => "ListNotifications",
             CommandName::WarpTabToSession => "WarpTabToSession",
             CommandName::WarpTabFromSession => "WarpTabFromSession",
             CommandName::LaunchOrFocusGlobalPaneSplit => "LaunchOrFocusGlobalPaneSplit",
@@ -3135,6 +3155,7 @@ impl CommandName {
             "DataCount" => Some(Self::DataCount),
             "DataWatch" => Some(Self::DataWatch),
             "DataUnwatch" => Some(Self::DataUnwatch),
+            "ListNotifications" => Some(Self::ListNotifications),
             "WarpTabToSession" => Some(Self::WarpTabToSession),
             "WarpTabFromSession" => Some(Self::WarpTabFromSession),
             "LaunchOrFocusGlobalPaneSplit" => Some(Self::LaunchOrFocusGlobalPaneSplit),
