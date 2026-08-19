@@ -79,6 +79,7 @@ pub use super::generated_api::api::{
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
         KillSessionsResponse as ProtobufKillSessionsResponse, LaunchOrFocusGlobalPaneSplitPayload,
+        ListNotificationsResponse as ProtobufListNotificationsResponse,
         ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
         ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
         LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
@@ -87,6 +88,7 @@ pub use super::generated_api::api::{
         NewTabUnfocusedResponse as ProtobufNewTabUnfocusedResponse,
         NewTabsResponse as ProtobufNewTabsResponse, NewTabsWithLayoutInfoPayload,
         NewTiledPaneInTabPayload, NewTiledPaneInTabResponse as ProtobufNewTiledPaneInTabResponse,
+        NotificationInfo as ProtobufNotificationInfo,
         OpenCommandPaneBackgroundResponse as ProtobufOpenCommandPaneBackgroundResponse,
         OpenCommandPaneFloatingNearPluginPayload,
         OpenCommandPaneFloatingNearPluginResponse as ProtobufOpenCommandPaneFloatingNearPluginResponse,
@@ -171,9 +173,10 @@ use crate::data::{
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
     GetPaneRunningCommandResponse, GetSessionListResponse, HighlightLayer, HighlightStyle,
     HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse, ListOrphanedPanesResponse,
-    MessageToPlugin, Mutation, NewPluginArgs, OrphanedPane, PaneId, PermissionType, PluginCommand,
-    RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit,
-    SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
+    MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo, OrphanedPane, PaneId,
+    PermissionType, PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse,
+    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
+    WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -1149,6 +1152,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     return Err("ListRecordings should not have a payload");
                 }
                 Ok(PluginCommand::ListRecordings)
+            },
+            Some(CommandName::ListNotifications) => {
+                if protobuf_plugin_command.payload.is_some() {
+                    return Err("ListNotifications should not have a payload");
+                }
+                Ok(PluginCommand::ListNotifications)
             },
             Some(CommandName::SearchRecordings) => match protobuf_plugin_command.payload {
                 Some(Payload::SearchRecordingsPayload(payload)) => {
@@ -3374,6 +3383,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::ListRecordings => Ok(ProtobufPluginCommand {
                 name: CommandName::ListRecordings as i32,
+                payload: None,
+            }),
+            PluginCommand::ListNotifications => Ok(ProtobufPluginCommand {
+                name: CommandName::ListNotifications as i32,
                 payload: None,
             }),
             PluginCommand::SearchRecordings { query, limit } => Ok(ProtobufPluginCommand {
@@ -5952,6 +5965,26 @@ impl From<ProtobufRecordingSummary> for RecordingSummary {
     }
 }
 
+impl From<ProtobufNotificationInfo> for NotificationInfo {
+    fn from(notification: ProtobufNotificationInfo) -> Self {
+        NotificationInfo {
+            id: notification.id,
+            message: notification.message,
+            received_at_unix_ms: notification.received_at_unix_ms,
+        }
+    }
+}
+
+impl From<NotificationInfo> for ProtobufNotificationInfo {
+    fn from(notification: NotificationInfo) -> Self {
+        ProtobufNotificationInfo {
+            id: notification.id,
+            message: notification.message,
+            received_at_unix_ms: notification.received_at_unix_ms,
+        }
+    }
+}
+
 impl From<RecordingSummary> for ProtobufRecordingSummary {
     fn from(summary: RecordingSummary) -> Self {
         ProtobufRecordingSummary {
@@ -6184,6 +6217,22 @@ mod tests {
         };
         let protobuf: ProtobufSearchHit = hit.clone().into();
         assert_eq!(SearchHit::from(protobuf), hit);
+    }
+
+    #[test]
+    fn list_notifications_protobuf_round_trip() {
+        let protobuf: ProtobufPluginCommand =
+            PluginCommand::ListNotifications.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        assert!(matches!(decoded, PluginCommand::ListNotifications));
+
+        let notification = NotificationInfo {
+            id: 7,
+            message: "build finished".to_owned(),
+            received_at_unix_ms: 42,
+        };
+        let protobuf: ProtobufNotificationInfo = notification.clone().into();
+        assert_eq!(NotificationInfo::from(protobuf), notification);
     }
 
     #[test]

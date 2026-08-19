@@ -2423,6 +2423,14 @@ pub struct PaneListEntry {
 pub type ListPanesResponse = Vec<PaneListEntry>;
 pub type ListTabsResponse = Vec<TabInfo>;
 
+/// A toast notification received by the current live session.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NotificationInfo {
+    pub id: u64,
+    pub message: String,
+    pub received_at_unix_ms: u64,
+}
+
 /// A recorded pane, as listed by `zellij_utils::session_recording::list_recordings`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RecordingSummary {
@@ -3925,6 +3933,7 @@ pub enum PluginCommand {
     SetSoftKeyboard(bool),
     FocusHostSession,
     ListRecordings,
+    ListNotifications,
     SearchRecordings {
         query: String,
         limit: usize,

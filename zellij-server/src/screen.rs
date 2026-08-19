@@ -75,10 +75,10 @@ use log::{debug, warn};
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
     GlobalPaneEdge, GlobalPanePlacement, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
-    LayoutWithError, ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneContents, PaneInfo,
-    PaneListEntry, PaneManifest, PaneRenderReport, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo,
-    ThemeHue, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    LayoutWithError, ListPanesResponse, ListTabsResponse, NewPanePlacement, NotificationInfo,
+    PaneContents, PaneInfo, PaneListEntry, PaneManifest, PaneRenderReport, PaneScrollbackResponse,
+    PluginPermission, RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, SessionInfo,
+    Styling, TabInfo, ThemeHue, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
@@ -920,6 +920,9 @@ pub enum ScreenInstruction {
         show_all: bool,
         response_channel: crossbeam::channel::Sender<ListPanesResponse>,
     },
+    ListNotifications {
+        response_channel: crossbeam::channel::Sender<Vec<NotificationInfo>>,
+    },
     ListTabs {
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<ListTabsResponse>,
@@ -1347,6 +1350,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             },
             ScreenInstruction::ListClientsMetadata(..) => ScreenContext::ListClientsMetadata,
             ScreenInstruction::ListPanes { .. } => ScreenContext::ListPanes,
+            ScreenInstruction::ListNotifications { .. } => ScreenContext::ListNotifications,
             ScreenInstruction::ListTabs { .. } => ScreenContext::ListTabs,
             ScreenInstruction::GetCurrentTabInfo { .. } => ScreenContext::GetCurrentTabInfo,
             ScreenInstruction::Reconfigure { .. } => ScreenContext::Reconfigure,
@@ -1804,6 +1808,10 @@ pub(crate) struct Screen {
     pane_frame_style: PaneFrameStyle,
     /// Live toast notifications, newest first (index 0 sits in the configured corner).
     notifications: Vec<Notification>,
+    /// Every toast received by this live session. Dismissal only affects `notifications` above.
+    /// ponytail: intentionally unbounded because the feature promises "all" notifications;
+    /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
+    notification_history: Vec<NotificationInfo>,
     next_notification_id: u64,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
@@ -2079,6 +2087,7 @@ impl Screen {
             default_mode_info: mode_info,
             pane_frame_style,
             notifications: vec![],
+            notification_history: vec![],
             next_notification_id: 0,
             notification_position,
             notification_timeout_secs,
@@ -12558,6 +12567,9 @@ pub(crate) fn screen_thread_main(
                     .with_context(err_context)?;
                 let _ = response_channel.send(pane_entries);
             },
+            ScreenInstruction::ListNotifications { response_channel } => {
+                let _ = response_channel.send(screen.notification_history.clone());
+            },
             ScreenInstruction::ListTabs {
                 client_id,
                 response_channel,
@@ -15414,6 +15426,15 @@ pub(crate) fn screen_thread_main(
                 screen.notification_displacement_progress = 0.0;
                 let id = screen.next_notification_id;
                 screen.next_notification_id += 1;
+                let received_at_unix_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                screen.notification_history.push(NotificationInfo {
+                    id,
+                    message: text.clone(),
+                    received_at_unix_ms,
+                });
                 screen.notifications.insert(0, Notification::new(id, text));
                 screen
                     .bus

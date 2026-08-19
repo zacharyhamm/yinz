@@ -1,4 +1,5 @@
 mod new_session_info;
+mod notifications;
 mod recordings;
 mod resurrectable_sessions;
 mod session_list;
@@ -9,6 +10,7 @@ use uuid::Uuid;
 use zellij_tile::prelude::*;
 
 use new_session_info::NewSessionInfo;
+use notifications::Notifications;
 use single_screen::{DeleteTarget, SingleScreenMode, SingleScreenState, UnifiedSearchResult};
 use ui::{
     components::{
@@ -31,6 +33,7 @@ enum ActiveScreen {
     AttachToSession,
     ResurrectSession,
     Recordings,
+    Notifications,
     SingleScreen,
 }
 
@@ -40,7 +43,8 @@ pub(crate) struct State {
     pub(crate) sessions: SessionList,
     pub(crate) resurrectable_sessions: ResurrectableSessions,
     pub(crate) recordings: Recordings,
-    /// the screen to go back to when leaving the recordings screen
+    pub(crate) notifications: Notifications,
+    /// The screen to go back to when leaving an auxiliary browser.
     previous_screen: Option<ActiveScreen>,
     search_term: String,
     new_session_info: NewSessionInfo,
@@ -133,6 +137,10 @@ impl ZellijPlugin for State {
                     should_render = true;
                 }
                 if self.refresh_session_list() {
+                    should_render = true;
+                }
+                if self.active_screen == ActiveScreen::Notifications && self.notifications.refresh()
+                {
                     should_render = true;
                 }
                 self.arm_refresh_timer();
@@ -251,6 +259,9 @@ impl ZellijPlugin for State {
             },
             ActiveScreen::Recordings => {
                 self.recordings.render(height, width, x, y);
+            },
+            ActiveScreen::Notifications => {
+                self.notifications.render(height, width, x, y);
             },
             ActiveScreen::SingleScreen => {
                 match self.single_screen_state.mode {
@@ -451,6 +462,7 @@ impl State {
             ActiveScreen::AttachToSession => self.handle_attach_to_session(key),
             ActiveScreen::ResurrectSession => self.handle_resurrect_session_key(key),
             ActiveScreen::Recordings => self.handle_recordings_key(key),
+            ActiveScreen::Notifications => self.handle_notifications_key(key),
             ActiveScreen::SingleScreen => self.handle_single_screen_key(key),
         }
     }
@@ -617,6 +629,10 @@ impl State {
                 },
                 BareKey::Char('r') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
                     self.renaming_session_name = Some(String::new());
+                    should_render = true;
+                },
+                BareKey::Char('v') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                    self.enter_notifications_screen();
                     should_render = true;
                 },
                 BareKey::Delete if key.has_no_modifiers() => {
@@ -801,6 +817,42 @@ impl State {
             None => {},
         }
     }
+    fn enter_notifications_screen(&mut self) {
+        self.previous_screen = Some(self.active_screen);
+        self.active_screen = ActiveScreen::Notifications;
+        self.notifications.refresh();
+    }
+    fn handle_notifications_key(&mut self, key: KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Down if key.has_no_modifiers() => self.notifications.move_down(),
+            BareKey::Up if key.has_no_modifiers() => self.notifications.move_up(),
+            BareKey::PageDown if key.has_no_modifiers() => self.notifications.page_down(),
+            BareKey::PageUp if key.has_no_modifiers() => self.notifications.page_up(),
+            BareKey::Enter if key.has_no_modifiers() => self.notifications.open_detail(),
+            BareKey::Tab if key.has_no_modifiers() && self.previous_screen.is_none() => {
+                self.toggle_active_screen()
+            },
+            BareKey::Esc if key.has_no_modifiers() => {
+                if !self.notifications.close_detail() {
+                    self.leave_notifications_screen();
+                }
+            },
+            BareKey::Char('c') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                if !self.notifications.close_detail() {
+                    self.leave_notifications_screen();
+                }
+            },
+            _ => return false,
+        }
+        true
+    }
+    fn leave_notifications_screen(&mut self) {
+        match self.previous_screen.take() {
+            Some(previous_screen) => self.active_screen = previous_screen,
+            None if !self.is_welcome_screen => close_self(),
+            None => {},
+        }
+    }
     fn handle_single_screen_key(&mut self, key: KeyWithModifier) -> bool {
         match self.single_screen_state.mode {
             SingleScreenMode::SearchAndSelect => self.handle_single_screen_search_key(key),
@@ -928,6 +980,10 @@ impl State {
             },
             BareKey::Char('l') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
                 self.enter_recordings_screen();
+                should_render = true;
+            },
+            BareKey::Char('v') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                self.enter_notifications_screen();
                 should_render = true;
             },
             BareKey::Delete if key.has_no_modifiers() => {
@@ -1077,6 +1133,7 @@ impl State {
         match self.active_screen {
             // ponytail: nothing to select until replay lands
             ActiveScreen::Recordings => {},
+            ActiveScreen::Notifications => {},
             ActiveScreen::NewSession => {
                 if self.new_session_info.name().len() >= 108 {
                     // this is due to socket path limitations
@@ -1315,7 +1372,11 @@ impl State {
                 self.recordings.refresh();
                 ActiveScreen::Recordings
             },
-            ActiveScreen::Recordings => ActiveScreen::NewSession,
+            ActiveScreen::Recordings => {
+                self.notifications.refresh();
+                ActiveScreen::Notifications
+            },
+            ActiveScreen::Notifications => ActiveScreen::NewSession,
             ActiveScreen::SingleScreen => ActiveScreen::SingleScreen, // no-op
         };
     }
