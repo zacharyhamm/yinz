@@ -591,7 +591,9 @@ impl Form {
         rows: usize,
         overlay_bottom: Option<usize>,
     ) {
-        let start = self.viewport_start(rows);
+        let start = overlay_bottom
+            .map(|_| self.viewport_start(rows))
+            .unwrap_or(0);
         let end = start.saturating_add(rows).min(self.height());
 
         for field in &mut self.fields {
@@ -712,7 +714,7 @@ impl Form {
             _ => false,
         };
         if focused_select_is_open {
-            focused_row.min(max_start)
+            focused_row.min(self.height().saturating_sub(rows - 1))
         } else {
             focused_row
                 .saturating_add(1)
@@ -1014,6 +1016,25 @@ mod tests {
 
         form.render_in_viewport(0, 0, 40, 1);
         assert_eq!(form.overlay_rect(), None);
+    }
+
+    #[test]
+    fn a_bottom_row_dropdown_reserves_space_in_the_viewport() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .select("layout", "Layout", Select::new(["default", "compact"]));
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        form.handle_key(key(BareKey::Down));
+
+        form.render_in_viewport(0, 0, 40, 2);
+
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 1, 40, 1)));
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(1, 0)),
+            FormEvent::FieldChanged("layout".to_string())
+        );
+        assert_eq!(form.text("layout"), "compact");
     }
 
     #[test]
