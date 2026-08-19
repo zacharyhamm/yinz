@@ -565,6 +565,8 @@ impl State {
                         asked.content = prior_text.clone();
                         asked.reasoning = prior_reasoning;
                         self.messages.push(asked);
+                        self.transcript_cache = None;
+                        self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
                             .map(|c| {
