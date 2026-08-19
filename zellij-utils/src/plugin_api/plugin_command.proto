@@ -233,6 +233,7 @@ enum CommandName {
   DataCount = 241;
   DataWatch = 242;
   DataUnwatch = 243;
+  ListNotifications = 250;
   WarpTabToSession = 244;
   WarpTabFromSession = 245;
   LaunchOrFocusGlobalPaneSplit = 246;
@@ -1339,6 +1340,17 @@ message SearchHit {
 
 message ListRecordingsResponse {
   repeated RecordingSummary recordings = 1;
+}
+
+message NotificationInfo {
+  uint64 id = 1;
+  string message = 2;
+  uint64 received_at_unix_ms = 3;
+}
+
+message ListNotificationsResponse {
+  repeated NotificationInfo notifications = 1;
+  optional string error = 2;
 }
 
 message SearchRecordingsResponse {
