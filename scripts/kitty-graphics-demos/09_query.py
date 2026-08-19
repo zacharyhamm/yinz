@@ -7,12 +7,11 @@ import tty
 from kittygfx import apc, emit, make_png, solid_rgba
 
 tiny = make_png(1, 1, solid_rgba(255, 255, 255))
-emit(apc("a=q,i=1,f=100", tiny))
-
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 try:
     tty.setraw(fd)
+    emit(apc("a=q,i=1,f=100", tiny))
     reply = b""
     while not reply.endswith(b"\x1b\\"):
         reply += sys.stdin.buffer.read(1)

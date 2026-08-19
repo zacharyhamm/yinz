@@ -3,5 +3,5 @@
 from kittygfx import apc, emit, make_png, checkerboard
 
 png = make_png(32, 32, checkerboard(size=4))
-emit(apc("a=T,f=100,i=1", png))
+emit(apc("a=T,f=100,i=1,q=2", png))
 print()
