@@ -47,9 +47,19 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     let thinking = br#"data: {"choices":[{"delta":{"reasoning_content":"htop it is","content":"I'll inspect it."}}]}
 "#;
     state.on_chunk("hocus-1", thinking, false, None);
-    let frame = tool_call_frame("call_1", "list_session", "{}");
+    ui::render(&mut state, 24, 80);
+    assert!(state.transcript_cache.is_some());
+    state.save_now(true);
+    let chat_id = state.chat_id.expect("the partial reply was archived");
+
+    let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
     state.on_chunk("hocus-1", &frame, false, None);
     state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(state.transcript_cache.is_none(), "the prose cache is stale");
+    assert_ne!(state.saved, state.fingerprint(), "the archive row is dirty");
+    state.status = Status::Idle;
+    state.autosave();
 
     let asked = state
         .messages
@@ -63,10 +73,12 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     assert_eq!(asked.content, "I'll inspect it.");
     assert!(
         asked.display.as_deref().is_some_and(|display| {
-            display.contains("I'll inspect it.") && display.contains("list_session")
+            display.contains("I'll inspect it.") && display.contains("clear_pane")
         }),
         "the UI keeps both the prose and the call summary"
     );
+    let archived = history::load(&state.private_store(), chat_id).expect("the chat was archived");
+    assert_eq!(archived[1], *asked, "autosave rewrote the partial row");
 
     let cfg = state.cfg.as_ref().expect("configured");
     let body = String::from_utf8(api::request_body_with_project(
