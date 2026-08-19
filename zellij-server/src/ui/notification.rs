@@ -365,14 +365,8 @@ pub fn notification_reveal(
     position: NotificationPosition,
     progress: f32,
 ) -> (Vec<CharacterChunk>, usize) {
-    let visible_cols = ((width as f32) * ease(progress)).round() as usize;
-    let visible_cols = visible_cols.min(width);
+    let (revealed_x, visible_cols) = notification_reveal_bounds(x, width, position, progress);
     let hidden_cols = width - visible_cols;
-    let revealed_x = if position.is_left() {
-        x
-    } else {
-        x + hidden_cols
-    };
 
     let trimmed = chunks
         .iter()
@@ -386,6 +380,22 @@ pub fn notification_reveal(
         })
         .collect();
     (trimmed, revealed_x)
+}
+
+/// The horizontal bounds painted by [`notification_reveal`].
+pub fn notification_reveal_bounds(
+    x: usize,
+    width: usize,
+    position: NotificationPosition,
+    progress: f32,
+) -> (usize, usize) {
+    let visible_cols = (((width as f32) * ease(progress)).round() as usize).min(width);
+    let revealed_x = if position.is_left() {
+        x
+    } else {
+        x + width - visible_cols
+    };
+    (revealed_x, visible_cols)
 }
 
 /// The leading `keep_cols` display columns of `characters`. Walks by [`TerminalCharacter::width`]

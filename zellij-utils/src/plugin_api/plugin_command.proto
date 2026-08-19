@@ -418,7 +418,13 @@ message PluginCommand {
     GetPluginAliasConfigurationPayload get_plugin_alias_configuration_payload = 188;
     SetTabProjectsPayload set_tab_projects_payload = 189;
     RevealPaneWithIdPayload reveal_pane_with_id_payload = 190;
+    NotifyWithPanePayload notify_with_pane_payload = 191;
   }
+}
+
+message NotifyWithPanePayload {
+  string text = 1;
+  PaneId pane_id = 2;
 }
 
 message RevealPaneWithIdPayload {

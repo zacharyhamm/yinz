@@ -462,7 +462,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::RenameSession(new_session_name) => {
                         rename_session(env, new_session_name)
                     },
-                    PluginCommand::Notify(text) => notify(env, text),
+                    PluginCommand::Notify(text, pane_id) => {
+                        notify(env, text, pane_id.map(Into::into))
+                    },
                     PluginCommand::UnblockCliPipeInput(pipe_name) => {
                         unblock_cli_pipe_input(env, pipe_name)
                     },
@@ -3611,10 +3613,17 @@ fn rename_session(env: &PluginEnv, new_session_name: String) {
     }
 }
 
-fn notify(env: &PluginEnv, text: String) {
+fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>) {
     let error_msg = || format!("failed to show notification from plugin {}", env.name());
-    let action = Action::Notify(text);
-    apply_action!(action, error_msg, env);
+    let Some(pane_id) = pane_id else {
+        let action = Action::Notify(text);
+        apply_action!(action, error_msg, env);
+        return;
+    };
+    env.senders
+        .send_to_screen(ScreenInstruction::Notify(text, Some(pane_id), None))
+        .with_context(error_msg)
+        .non_fatal();
 }
 
 fn disconnect_other_clients(env: &PluginEnv) {
