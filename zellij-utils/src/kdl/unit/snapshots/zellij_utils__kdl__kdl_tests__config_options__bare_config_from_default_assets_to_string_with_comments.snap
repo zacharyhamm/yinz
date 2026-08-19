@@ -170,6 +170,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-ask" {
                 floating true
                 move_to_focused_tab true
+                overlay true
             }
             SwitchToMode "normal"
         }
@@ -191,6 +192,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "file-finder" {
                 floating true
                 move_to_focused_tab true
+                overlay true
             }
         }
         bind "Alt f" { ToggleFloatingPanes; }

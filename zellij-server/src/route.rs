@@ -1211,10 +1211,13 @@ pub(crate) fn route_action(
         // A keybinding has neither an originating pane nor a CLI client. Direct CLI and plugin
         // quits stay immediate, and the confirmation plugin's own quit cannot reopen itself.
         Action::Quit if pane_id.is_none() && cli_client_id.is_none() => {
-            let plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
-                location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
-                ..Default::default()
-            });
+            let plugin = RunPluginOrAlias::RunPlugin(
+                RunPlugin {
+                    location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
+                    ..Default::default()
+                }
+                .with_configuration(BTreeMap::from([("modal".to_owned(), "true".to_owned())])),
+            );
             senders
                 .send_to_screen(ScreenInstruction::LaunchPlugin(
                     plugin,

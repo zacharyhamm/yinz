@@ -2375,6 +2375,7 @@ fn quit_action_launches_a_new_confirmation_plugin() {
         ScreenInstruction::LaunchPlugin(
             RunPluginOrAlias::RunPlugin(RunPlugin {
                 location: RunPluginLocation::Zellij(plugin_tag),
+                configuration,
                 ..
             }),
             true,
@@ -2389,6 +2390,7 @@ fn quit_action_launches_a_new_confirmation_plugin() {
             false,
             None,
         ) if plugin_tag.to_string() == "quit-confirmation"
+            && configuration.inner().get("modal").is_some_and(|modal| modal == "true")
     ));
 
     mock_screen.teardown(vec![]);

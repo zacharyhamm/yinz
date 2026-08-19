@@ -14517,21 +14517,12 @@ pub(crate) fn screen_thread_main(
                 let should_be_tiled = maybe_should_float.map(|f| !f).unwrap_or(false);
                 let should_float = maybe_should_float.unwrap_or(false);
                 let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
-                    let configuration = match &run_plugin_or_alias {
-                        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
-                        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
-                    };
-                    configuration
-                        .is_some_and(|configuration| {
-                            configuration
-                                .inner()
-                                .get("overlay")
-                                .is_some_and(|overlay| overlay == "true")
-                        })
-                        .then_some(FloatingPaneCoordinates {
+                    plugin_requests_overlay(&run_plugin_or_alias).then_some(
+                        FloatingPaneCoordinates {
                             overlay: Some(true),
                             ..Default::default()
-                        })
+                        },
+                    )
                 });
                 if floating_pane_coordinates.is_some() || should_float {
                     new_pane_placement = NewPanePlacement::with_floating_pane_coordinates(
@@ -17195,6 +17186,21 @@ pub(crate) fn screen_thread_main(
         }
     }
     Ok(())
+}
+
+fn plugin_requests_overlay(run_plugin_or_alias: &RunPluginOrAlias) -> bool {
+    let configuration = match run_plugin_or_alias {
+        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+    };
+    configuration.is_some_and(|configuration| {
+        ["overlay", "modal"].into_iter().any(|key| {
+            configuration
+                .inner()
+                .get(key)
+                .is_some_and(|value| value == "true")
+        })
+    })
 }
 
 #[path = "./unit/screen_tests/mod.rs"]

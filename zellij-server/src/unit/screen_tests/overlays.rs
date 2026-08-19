@@ -1,4 +1,17 @@
 use super::*;
+use crate::screen::plugin_requests_overlay;
+
+#[test]
+fn modal_plugin_configuration_requests_overlay() {
+    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    modal.configuration.insert("modal", "true");
+    assert!(plugin_requests_overlay(&RunPluginOrAlias::RunPlugin(modal)));
+
+    let plain = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    assert!(!plugin_requests_overlay(&RunPluginOrAlias::RunPlugin(
+        plain
+    )));
+}
 
 #[test]
 fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
