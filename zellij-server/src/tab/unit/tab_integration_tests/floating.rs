@@ -39,6 +39,45 @@ fn new_floating_pane() {
 }
 
 #[test]
+fn overlay_does_not_show_hidden_floating_panes() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let floating_pane_id = PaneId::Terminal(2);
+    let overlay_pane_id = PaneId::Terminal(3);
+
+    tab.new_floating_pane(floating_pane_id, None, None, false, true, None, None)
+        .unwrap();
+    assert!(tab.floating_panes.all_panes_are_visible());
+    tab.hide_floating_panes();
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            overlay: Some(true),
+            ..Default::default()
+        })),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    assert!(tab.pane_is_overlay(overlay_pane_id));
+    assert!(!tab.floating_panes.all_panes_are_visible());
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![overlay_pane_id],
+        "only the overlay is rendered while floating panes are hidden"
+    );
+}
+
+#[test]
 fn new_stacked_pane() {
     let size = Size {
         cols: 121,

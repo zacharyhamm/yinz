@@ -158,19 +158,20 @@ impl FloatingPanes {
                 .then_some(vec![fullscreen_pane_id])
                 .unwrap_or_default();
         }
-        if self.panes_are_visible() {
+        if self.all_panes_are_visible() {
             self.z_indices
                 .iter()
                 .filter(|pane_id| self.panes.contains_key(pane_id))
                 .copied()
                 .collect()
-        } else if self.has_pinned_panes() {
+        } else if self.has_pinned_panes() || self.has_overlays() {
             self.z_indices
                 .iter()
                 .filter(|pane_id| {
-                    self.panes
-                        .get(pane_id)
-                        .is_some_and(|p| p.position_and_size().is_pinned)
+                    self.panes.get(pane_id).is_some_and(|p| {
+                        p.position_and_size().is_pinned
+                            || self.overlay_coordinates.contains_key(pane_id)
+                    })
                 })
                 .copied()
                 .collect()
@@ -285,12 +286,15 @@ impl FloatingPanes {
         self.panes.keys()
     }
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
-        if self.panes_are_visible() {
+        if self.all_panes_are_visible() {
             self.panes.keys().copied().collect()
         } else {
             self.panes
                 .iter()
-                .filter(|(_, pane)| pane.position_and_size().is_pinned)
+                .filter(|(pane_id, pane)| {
+                    pane.position_and_size().is_pinned
+                        || self.overlay_coordinates.contains_key(pane_id)
+                })
                 .map(|(pane_id, _)| *pane_id)
                 .collect()
         }
@@ -393,6 +397,9 @@ impl FloatingPanes {
             .and_then(|active_pane_id| self.panes.get_mut(active_pane_id))
     }
     pub fn panes_are_visible(&self) -> bool {
+        self.all_panes_are_visible() || self.has_overlays()
+    }
+    pub fn all_panes_are_visible(&self) -> bool {
         self.show_panes && !*self.fullscreen_covers_ui.borrow()
     }
     pub fn has_active_panes(&self) -> bool {
@@ -608,7 +615,11 @@ impl FloatingPanes {
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let active_panes = if self.panes_are_visible() {
             let mut active_panes = self.active_panes.clone_active_panes();
-            active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
+            active_panes.retain(|client_id, pane_id| {
+                !inactive_clients.contains(client_id)
+                    && (self.all_panes_are_visible()
+                        || self.overlay_coordinates.contains_key(pane_id))
+            });
             active_panes
         } else {
             Default::default()
@@ -668,12 +679,15 @@ impl FloatingPanes {
                 .iter_mut()
                 .filter(|(id, _)| **id == fullscreen_pane_id)
                 .collect()
-        } else if self.panes_are_visible() {
+        } else if self.all_panes_are_visible() {
             self.panes.iter_mut().collect()
-        } else if self.has_pinned_panes() {
+        } else if self.has_pinned_panes() || self.has_overlays() {
             self.panes
                 .iter_mut()
-                .filter(|(_id, p)| p.position_and_size().is_pinned)
+                .filter(|(pane_id, pane)| {
+                    pane.position_and_size().is_pinned
+                        || self.overlay_coordinates.contains_key(pane_id)
+                })
                 .collect()
         } else {
             vec![]

@@ -7993,7 +7993,12 @@ impl Screen {
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
             if should_float {
-                new_active_tab.show_floating_panes();
+                if !overlay_coordinates
+                    .as_ref()
+                    .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false))
+                {
+                    new_active_tab.show_floating_panes();
+                }
                 new_active_tab.add_floating_pane(
                     plugin_pane_to_move_to_active_tab,
                     pane_id,
@@ -14511,6 +14516,23 @@ pub(crate) fn screen_thread_main(
                 let maybe_should_float = should_float;
                 let should_be_tiled = maybe_should_float.map(|f| !f).unwrap_or(false);
                 let should_float = maybe_should_float.unwrap_or(false);
+                let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
+                    let configuration = match &run_plugin_or_alias {
+                        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+                        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+                    };
+                    configuration
+                        .is_some_and(|configuration| {
+                            configuration
+                                .inner()
+                                .get("overlay")
+                                .is_some_and(|overlay| overlay == "true")
+                        })
+                        .then_some(FloatingPaneCoordinates {
+                            overlay: Some(true),
+                            ..Default::default()
+                        })
+                });
                 if floating_pane_coordinates.is_some() || should_float {
                     new_pane_placement = NewPanePlacement::with_floating_pane_coordinates(
                         floating_pane_coordinates.clone(),

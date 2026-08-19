@@ -81,6 +81,60 @@ fn global_plugin_placement_rejects_move_to_focused_tab() {
 }
 
 #[test]
+fn launch_or_focus_plugin_preserves_overlay_configuration() {
+    let source = r#"
+        keybinds {
+            normal {
+                bind "Ctrl o" {
+                    LaunchOrFocusPlugin "hocus-ask" {
+                        floating true
+                        overlay true
+                    }
+                }
+            }
+        }
+    "#;
+    let document: KdlDocument = source.parse().unwrap();
+    let keybinds = Keybinds::from_kdl(
+        document.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let key = KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier();
+    let Some(Action::LaunchOrFocusPlugin { plugin, .. }) = keybinds
+        .get_actions_for_key_in_mode(&InputMode::Normal, &key)
+        .and_then(|actions| actions.first())
+    else {
+        panic!("expected LaunchOrFocusPlugin");
+    };
+
+    let configuration = match plugin {
+        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+    };
+    assert!(configuration.is_some_and(|configuration| {
+        configuration
+            .inner()
+            .get("overlay")
+            .is_some_and(|overlay| overlay == "true")
+    }));
+    let serialized = Keybinds::to_kdl(&keybinds, true).to_string();
+    assert!(serialized.contains("overlay true"));
+    let reparsed = Keybinds::from_kdl(
+        serialized
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("keybinds")
+            .unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(keybinds, reparsed);
+}
+
+#[test]
 fn non_global_plugin_placement_named_configuration_round_trips() {
     let source = r#"
         keybinds {

@@ -2546,7 +2546,7 @@ impl Tab {
         default_shell: Option<TerminalAction>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        if self.floating_panes.panes_are_visible() {
+        if self.floating_panes.all_panes_are_visible() {
             self.hide_floating_panes();
             self.set_force_render();
         } else {
@@ -2957,7 +2957,10 @@ impl Tab {
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
-        if should_focus_pane {
+        let is_overlay = floating_pane_coordinates
+            .as_ref()
+            .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false));
+        if should_focus_pane && !is_overlay {
             self.show_floating_panes();
         }
         self.close_down_to_max_terminals()
@@ -4837,7 +4840,7 @@ impl Tab {
             .or_else(|| self.floating_panes.fullscreen_pane_id())
     }
     pub fn are_floating_panes_visible(&self) -> bool {
-        self.floating_panes.panes_are_visible()
+        self.floating_panes.all_panes_are_visible()
     }
     pub fn focus_pane_left_fullscreen(&mut self, client_id: ClientId) -> bool {
         if !self.is_fullscreen_active() {
@@ -5117,7 +5120,8 @@ impl Tab {
     pub fn has_floating_panes_to_render(&self) -> bool {
         !self.tiled_panes.fullscreen_covers_ui()
             && ((self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
-                || self.floating_panes.has_pinned_panes())
+                || self.floating_panes.has_pinned_panes()
+                || self.floating_panes.has_overlays())
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
@@ -7265,7 +7269,7 @@ impl Tab {
     }
 
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
-        if self.floating_panes.panes_are_visible() {
+        if self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
                 c.set_exit_status(2);
             }
@@ -7291,7 +7295,7 @@ impl Tab {
     }
 
     pub fn hide_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
-        if !self.floating_panes.panes_are_visible() {
+        if !self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
                 c.set_exit_status(2);
             }
@@ -7335,7 +7339,7 @@ impl Tab {
             .or_else(|_| {
                 let focused_floating_pane =
                     self.floating_panes.focus_pane_if_exists(pane_id, client_id);
-                if focused_floating_pane.is_ok() {
+                if focused_floating_pane.is_ok() && !self.pane_is_overlay(pane_id) {
                     self.show_floating_panes()
                 };
                 focused_floating_pane
