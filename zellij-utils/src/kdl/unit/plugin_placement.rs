@@ -81,7 +81,7 @@ fn global_plugin_placement_rejects_move_to_focused_tab() {
 }
 
 #[test]
-fn launch_or_focus_plugin_preserves_overlay_configuration() {
+fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
     let source = r#"
         keybinds {
             normal {
@@ -89,6 +89,7 @@ fn launch_or_focus_plugin_preserves_overlay_configuration() {
                     LaunchOrFocusPlugin "hocus-ask" {
                         floating true
                         overlay true
+                        modal true
                     }
                 }
             }
@@ -114,13 +115,16 @@ fn launch_or_focus_plugin_preserves_overlay_configuration() {
         RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
     };
     assert!(configuration.is_some_and(|configuration| {
-        configuration
-            .inner()
-            .get("overlay")
-            .is_some_and(|overlay| overlay == "true")
+        ["overlay", "modal"].into_iter().all(|key| {
+            configuration
+                .inner()
+                .get(key)
+                .is_some_and(|value| value == "true")
+        })
     }));
     let serialized = Keybinds::to_kdl(&keybinds, true).to_string();
     assert!(serialized.contains("overlay true"));
+    assert!(serialized.contains("modal true"));
     let reparsed = Keybinds::from_kdl(
         serialized
             .parse::<KdlDocument>()

@@ -4,6 +4,8 @@
 //! is active and what its [`FormEvent`](super::FormEvent)s mean. Unhandled keys
 //! stay unhandled, so a plugin can either swallow them for strict modality or
 //! keep its own shortcuts.
+//! Launch a dialog plugin with `modal true` so it opens as an overlay without
+//! revealing ordinary floating panes.
 
 use super::{Form, FormEvent, Rect};
 use crate::prelude::*;
