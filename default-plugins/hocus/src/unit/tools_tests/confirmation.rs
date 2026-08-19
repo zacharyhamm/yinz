@@ -65,6 +65,9 @@ fn confirmation_policy_lists_tools_correctly() {
         "find_files",
         "search_files",
         "read_file",
+        "git_log",
+        "git_show",
+        "github_read",
     ] {
         assert!(!needs_confirmation(name), "{name} should not be confirmed");
     }
@@ -81,7 +84,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 54);
+    assert_eq!(names.len(), 57);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 13);
 }
