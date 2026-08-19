@@ -29,12 +29,18 @@
 //! }
 //!
 //! form.render(0, 0, 40); // places the cursor too
+//!
+//! let mut dialog = Dialog::new(Text::new("Rename"), form)
+//!     .help(Text::new("<Enter> Save, <Esc> Cancel"));
+//! dialog.render(Rect::new(0, 0, 40, 10));
 //! ```
 //!
-//! The four pieces worth knowing before using this:
+//! The five pieces worth knowing before using this:
 //!
 //! - [`Form::render`] calls `show_cursor` itself, before printing. That
 //!   ordering is required by the host and is easy to get wrong by hand.
+//! - [`Form::render_in_viewport`] keeps the focused widget visible when a form
+//!   has fewer rows than fields.
 //! - [`FormEvent::Ignored`] means the form did not consume the key, so a plugin
 //!   keeps its own bindings.
 //! - Traversal keys are configurable ([`Form::with_traversal_keys`]) because
@@ -44,6 +50,7 @@
 //!   [`Form::overlay_rect`].
 
 mod button;
+mod dialog;
 mod form;
 mod fuzzy;
 mod label;
@@ -53,6 +60,7 @@ mod text_input;
 mod viewport;
 
 pub use button::{Button, ButtonStyle, Rect};
+pub use dialog::Dialog;
 pub use form::{Field, FieldId, Form, FormEvent};
 pub use fuzzy::{fuzzy_filter, Match};
 pub use label::{Label, DEFAULT_LABEL_LEVEL};

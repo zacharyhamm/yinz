@@ -570,26 +570,62 @@ impl Form {
     /// host reads the cursor position out of the render, so a `show_cursor`
     /// after a `print_*` lands a frame late.
     pub fn render(&mut self, x: usize, y: usize, width: usize) {
+        self.render_rows(x, y, width, self.height(), None);
+    }
+
+    /// Draw the form inside a bounded-height viewport.
+    ///
+    /// When the form is taller than `rows`, the focused widget is kept on
+    /// screen. Moving focus with the form's traversal keys is therefore enough
+    /// to reach every field and the button row without a second set of scroll
+    /// controls.
+    pub fn render_in_viewport(&mut self, x: usize, y: usize, width: usize, rows: usize) {
+        self.render_rows(x, y, width, rows, Some(y.saturating_add(rows)));
+    }
+
+    fn render_rows(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        rows: usize,
+        overlay_bottom: Option<usize>,
+    ) {
+        let start = self.viewport_start(rows);
+        let end = start.saturating_add(rows).min(self.height());
+
+        for field in &mut self.fields {
+            field.last_rendered = None;
+            if let Some(select) = field.select_mut() {
+                select.clear_rendered();
+            }
+        }
+        for (_, button) in &mut self.buttons {
+            button.clear_rendered();
+        }
+
         // 1. Work out where the cursor goes, printing nothing yet.
         let cursor = match self.focus {
-            Some(Focus::Field(i)) => self.fields.get(i).and_then(|field| {
-                let prompt = field.prompt();
-                let column = match &field.widget {
-                    Widget::Text(input) => {
-                        let (_, column) = viewport(
-                            &prompt,
-                            input.get_text(),
-                            input.get_cursor_position(),
-                            width,
-                        );
-                        Some(column)
-                    },
-                    // A collapsed select is not typed into, so it gets no
-                    // cursor; an open one gets it in its filter.
-                    Widget::Select(select) => select.cursor_column(&prompt, width),
-                };
-                column.map(|column| (x + column, y + i))
-            }),
+            Some(Focus::Field(i)) if i >= start && i < end => {
+                self.fields.get(i).and_then(|field| {
+                    let prompt = field.prompt();
+                    let column = match &field.widget {
+                        Widget::Text(input) => {
+                            let (_, column) = viewport(
+                                &prompt,
+                                input.get_text(),
+                                input.get_cursor_position(),
+                                width,
+                            );
+                            Some(column)
+                        },
+                        // A collapsed select is not typed into, so it gets no
+                        // cursor; an open one gets it in its filter.
+                        Widget::Select(select) => select.cursor_column(&prompt, width),
+                    };
+                    column.map(|column| (x + column, y + i - start))
+                })
+            },
             // Focus is on a button: there is nothing to type into, and a cursor
             // parked in a field the user is not editing reads as focus being
             // somewhere it is not.
@@ -598,7 +634,14 @@ impl Form {
         show_cursor(cursor);
 
         // 2. Now draw.
-        for (i, field) in self.fields.iter_mut().enumerate() {
+        for (i, field) in self
+            .fields
+            .iter_mut()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
+            let row_y = y + i - start;
             let prompt = field.prompt();
             match &mut field.widget {
                 Widget::Text(input) => {
@@ -610,15 +653,22 @@ impl Form {
                     );
                     let prompt_len = prompt.chars().count().min(line.chars().count());
                     let text = Text::new(&line).color_range(2, 0..prompt_len);
-                    print_text_with_coordinates(text, x, y + i, Some(width), None);
+                    print_text_with_coordinates(text, x, row_y, Some(width), None);
                 },
-                Widget::Select(select) => select.render_row(&prompt, x, y + i, width),
+                Widget::Select(select) => select.render_row(&prompt, x, row_y, width),
             }
-            field.last_rendered = Some(Rect::new(x, y + i, width, 1));
+            field.last_rendered = Some(Rect::new(x, row_y, width, 1));
         }
 
-        if !self.buttons.is_empty() {
-            let button_y = y + self.fields.len();
+        let button_row = self.fields.len();
+        let buttons_are_visible = button_row >= start && button_row < end;
+        if !buttons_are_visible {
+            for (_, button) in &mut self.buttons {
+                button.set_hovered(false);
+            }
+        }
+        if !self.buttons.is_empty() && buttons_are_visible {
+            let button_y = y + button_row - start;
             let mut button_x = x;
             for (_, button) in self.buttons.iter_mut() {
                 let room = (x + width).saturating_sub(button_x);
@@ -633,8 +683,41 @@ impl Form {
         // 3. The dropdown last, so it lands on top of the rows it covers.
         for field in self.fields.iter_mut() {
             if let Some(select) = field.select_mut() {
-                select.render_overlay();
+                let max_rows = select
+                    .row_rect()
+                    .map(|row| {
+                        overlay_bottom
+                            .map(|bottom| bottom.saturating_sub(row.y + 1))
+                            .unwrap_or(usize::MAX)
+                    })
+                    .unwrap_or(0);
+                select.render_overlay(max_rows);
             }
+        }
+    }
+
+    fn viewport_start(&self, rows: usize) -> usize {
+        if rows == 0 {
+            return 0;
+        }
+        let max_start = self.height().saturating_sub(rows);
+        let Some(focused_row) = self.focus_index() else {
+            return 0;
+        };
+        let focused_select_is_open = match self.focus {
+            Some(Focus::Field(i)) => self.fields[i]
+                .select()
+                .map(|select| select.is_open())
+                .unwrap_or(false),
+            _ => false,
+        };
+        if focused_select_is_open {
+            focused_row.min(max_start)
+        } else {
+            focused_row
+                .saturating_add(1)
+                .saturating_sub(rows)
+                .min(max_start)
         }
     }
 }
@@ -788,6 +871,32 @@ mod tests {
     }
 
     #[test]
+    fn a_bounded_form_follows_the_focused_row() {
+        let mut form = a_form();
+        assert_eq!(form.viewport_start(2), 0);
+        form.focus_on("save");
+        assert_eq!(form.viewport_start(2), 1);
+        form.focus_on("cancel");
+        assert_eq!(form.viewport_start(2), 1, "buttons share one row");
+        form.focus_on("name");
+        assert_eq!(form.viewport_start(2), 0);
+    }
+
+    #[test]
+    fn widgets_outside_the_viewport_lose_their_hit_targets() {
+        let mut form = a_form();
+        form.render(0, 0, 40);
+        assert!(form.fields[0].last_rendered.is_some());
+        assert!(form.buttons[0].1.last_rendered().is_some());
+
+        form.focus_on("path");
+        form.render_in_viewport(0, 0, 40, 1);
+        assert_eq!(form.fields[0].last_rendered, None);
+        assert!(form.fields[1].last_rendered.is_some());
+        assert_eq!(form.buttons[0].1.last_rendered(), None);
+    }
+
+    #[test]
     fn focus_on_an_unknown_id_reports_failure_and_changes_nothing() {
         let mut form = a_form();
         assert!(!form.focus_on("nope"));
@@ -893,5 +1002,26 @@ mod tests {
             None,
             "a list that has never rendered covers nothing"
         );
+    }
+
+    #[test]
+    fn a_dropdown_is_clipped_to_the_form_viewport() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        form.render_in_viewport(0, 0, 40, 2);
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 1, 40, 1)));
+
+        form.render_in_viewport(0, 0, 40, 1);
+        assert_eq!(form.overlay_rect(), None);
+    }
+
+    #[test]
+    fn the_original_render_keeps_dropdowns_unbounded() {
+        let mut form = a_form_with_a_select();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Char(' ')));
+        form.render(0, 0, 40);
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 3)));
     }
 }

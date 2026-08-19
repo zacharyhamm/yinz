@@ -308,16 +308,13 @@ impl Select {
         if !self.open {
             return None;
         }
-        let row = self.last_rendered?;
-        let rows = self.visible_option_count();
-        if rows == 0 {
-            return None;
-        }
-        Some(Rect::new(row.x, row.y + 1, row.columns, rows))
-    }
-
-    fn visible_option_count(&self) -> usize {
-        self.matches.len().min(self.max_visible_options)
+        let (_, first) = self.last_option_rects.first()?;
+        Some(Rect::new(
+            first.x,
+            first.y,
+            first.columns,
+            self.last_option_rects.len(),
+        ))
     }
 
     /// The line the collapsed row draws, e.g. `"Layout: default ▾"`.
@@ -375,17 +372,18 @@ impl Select {
     }
 
     /// Draw the dropdown, if it is open, over whatever is already there.
-    pub(super) fn render_overlay(&mut self) {
+    pub(super) fn render_overlay(&mut self, max_rows: usize) {
         self.last_option_rects.clear();
-        if !self.open {
+        if !self.open || max_rows == 0 {
             return;
         }
         let Some(row) = self.last_rendered else {
             return;
         };
+        let visible_rows = self.max_visible_options.min(max_rows);
         let (start, _, end) = list_window(
             self.matches.len(),
-            self.max_visible_options,
+            visible_rows,
             if self.matches.is_empty() {
                 None
             } else {
@@ -423,6 +421,15 @@ impl Select {
             self.last_option_rects
                 .push((matched.index, Rect::new(row.x, y, row.columns, 1)));
         }
+    }
+
+    pub(super) fn clear_rendered(&mut self) {
+        self.last_rendered = None;
+        self.last_option_rects.clear();
+    }
+
+    pub(super) fn row_rect(&self) -> Option<Rect> {
+        self.last_rendered
     }
 
     /// Whether a click at `(x, y)` lands on the collapsed row.

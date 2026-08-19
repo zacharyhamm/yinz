@@ -131,6 +131,10 @@ impl Button {
         self.last_rendered
     }
 
+    pub(super) fn clear_rendered(&mut self) {
+        self.last_rendered = None;
+    }
+
     /// Whether a click at `(x, y)` lands on this button.
     ///
     /// False for a disabled button: a disabled control that still swallows
