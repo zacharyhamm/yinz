@@ -290,19 +290,18 @@ fn hidden_panes_do_not_inflate_overlay_cursor_z_index() {
     )
     .unwrap();
     tab.hide_floating_panes();
-    tab.floating_panes
-        .set_active_pane_for_client(overlay_pane_id, client_id);
 
+    // the hidden pane is in neither occlusion stack, so it cannot push anything drawn above it
+    // further down the flat list `Output` clips against
     assert_eq!(
         tab.floating_panes.rendered_pane_ids(),
-        vec![overlay_pane_id, pinned_pane_id]
+        vec![pinned_pane_id],
+        "a hidden floating pane is not drawn; the pinned one still is"
     );
     assert_eq!(tab.floating_panes.get_pane_z_index(hidden_pane_id), None);
-    assert_eq!(
-        tab.floating_panes.get_pane_z_index(overlay_pane_id),
-        Some(0)
-    );
-    assert_eq!(tab.floating_panes.get_pane_z_index(pinned_pane_id), Some(1));
+    assert_eq!(tab.floating_panes.get_pane_z_index(pinned_pane_id), Some(0));
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
+    assert_eq!(tab.overlay_panes.get_pane_z_index(overlay_pane_id), Some(0));
 
     tab.render(&mut output, None).unwrap();
     let (_, cursor_coordinates) = take_snapshot_and_cursor_position(
@@ -311,7 +310,10 @@ fn hidden_panes_do_not_inflate_overlay_cursor_z_index() {
         size.cols,
         Palette::default(),
     );
-    assert_eq!(cursor_coordinates, None);
+    assert!(
+        cursor_coordinates.is_some(),
+        "the overlay is drawn above the pinned pane that covers it, so its cursor is visible"
+    );
 }
 
 #[test]
