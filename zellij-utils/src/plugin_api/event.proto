@@ -583,6 +583,8 @@ message PaneContents {
   repeated string lines_above_viewport = 3;
   repeated string lines_below_viewport = 4;
   optional action.Position cursor = 5;
+  optional uint64 last_output_ms_ago = 6;
+  bool is_scrolled = 7;
 }
 
 message PaneScrollbackResponse {

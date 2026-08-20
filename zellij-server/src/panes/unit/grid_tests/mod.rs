@@ -130,6 +130,27 @@ fn create_grid_with_scrollback() -> Grid {
     grid
 }
 
+/// What a plugin reading a pane needs in order to tell "the process wrote something" from
+/// "the user is looking at what it wrote earlier".
+#[test]
+fn pane_contents_says_whether_the_viewport_is_scrolled_back() {
+    let mut grid = create_grid_with_scrollback();
+    assert!(
+        !grid.pane_contents(false, None).is_scrolled,
+        "sitting on the live tail"
+    );
+
+    grid.move_viewport_up(3);
+    assert!(grid.pane_contents(false, None).is_scrolled);
+    assert!(
+        grid.pane_contents_with_ansi(false, None).is_scrolled,
+        "and the same either way it is read"
+    );
+
+    grid.reset_viewport();
+    assert!(!grid.pane_contents(false, None).is_scrolled);
+}
+
 // =====================================================================
 // pane_contents_with_ansi Tests
 // =====================================================================

@@ -79,6 +79,24 @@ pub fn manifest_pane_ids(manifest: &PaneManifest) -> BTreeSet<u32> {
         .collect()
 }
 
+/// The pty size of every terminal pane the manifest carries: pane id → (rows, columns).
+///
+/// The *content* rows and columns, which is what the pty is sized to and therefore what
+/// the process behind it repaints when it changes. A change here is the daemon's only
+/// warning that the picture in a pane is about to move for a reason that is not work:
+/// resizing a pane, resizing the terminal, and attaching or detaching a client all
+/// resize the pty, and the SIGWINCH that follows makes every agent redraw itself.
+pub fn pane_geometry(manifest: &PaneManifest) -> BTreeMap<u32, (usize, usize)> {
+    manifest
+        .panes
+        .values()
+        .flatten()
+        .chain(manifest.global_panes.iter())
+        .filter(|pane| !pane.is_plugin)
+        .map(|pane| (pane.id, (pane.pane_content_rows, pane.pane_content_columns)))
+        .collect()
+}
+
 /// The terminal pane the user is looking at, if it is one.
 ///
 /// `PaneInfo::is_focused` is "focused in its layer", so a manifest flags one pane per

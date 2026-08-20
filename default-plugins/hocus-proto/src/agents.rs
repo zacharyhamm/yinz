@@ -248,19 +248,72 @@ pub enum Observed {
     Idle { polls: u32 },
 }
 
-/// Fold one poll's pane content into the activity map, and say what that did.
+/// One poll's reading of a pane, qualified by whether it says anything about the agent.
 ///
-/// The hash is `DefaultHasher` over the raw text: not stable across runs, never
+/// A pane's picture moves for reasons that have nothing to do with the process behind it:
+/// scrolling back shows old output, and a resize rewraps every line. Sampling the text
+/// alone cannot tell those apart from work, so the caller — which can see the scroll flag
+/// and the pty's own output clock — says which kind of reading this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sample<'a> {
+    /// The pane is showing its live tail, and this text is worth comparing.
+    Text(&'a str),
+    /// The reading says nothing: the pane is scrolled back, or the picture moved with
+    /// nobody writing to the pty. The stretch of stillness continues either way.
+    Unusable,
+}
+
+/// The comparison key for a pane's content: its words, in order, with everything else
+/// dropped.
+///
+/// Line breaks are not content. A pane rewrapped to a new width holds exactly the words it
+/// held before, so hashing the raw text would call a resize a whole new screen; hashing the
+/// word sequence calls it what it is. Tokens with no alphanumeric character go too — box
+/// drawing, rules and spinner frames redraw constantly without the session changing.
+pub fn fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for token in tokens(text) {
+        token.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The words of a pane, in order: whitespace-separated runs that hold at least one
+/// alphanumeric character.
+fn tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace()
+        .filter(|token| token.chars().any(char::is_alphanumeric))
+}
+
+/// Fold one poll's reading into the activity map, and say what that did.
+///
+/// The hash is `DefaultHasher` over the pane's word sequence: not stable across runs, never
 /// persisted, only ever compared with the previous poll's.
+///
+/// An [`Sample::Unusable`] reading leaves the stored hash alone and counts the poll as more
+/// stillness. That is deliberate: a pane the user scrolled back through must neither look
+/// like it started working nor lose the hash an in-flight summary is stamped against.
 ///
 /// The first poll of a pane is [`Observed::Busy`] whatever it is showing — one reading
 /// cannot tell "working" from "sitting still", and claiming an edge here would summarise
 /// every agent the instant the daemon noticed it.
-pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) -> Observed {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    let hash = hasher.finish();
+pub fn observe(activity: &mut Activity, pane_id: u32, sample: Sample) -> Observed {
+    let text = match sample {
+        Sample::Text(text) => text,
+        Sample::Unusable => {
+            return match activity.get_mut(&pane_id) {
+                Some((_, polls)) => {
+                    *polls += 1;
+                    Observed::Idle { polls: *polls }
+                },
+                // Nothing to compare against yet, and this reading cannot start the
+                // record - the next usable one will.
+                None => Observed::Busy,
+            };
+        },
+    };
+    let hash = fingerprint(text);
     match activity.get_mut(&pane_id) {
         Some((last, polls)) if *last == hash => {
             *polls += 1;
@@ -271,6 +324,31 @@ pub fn observe(activity: &mut Activity, pane_id: u32, text: &str) -> Observed {
             Observed::Busy
         },
     }
+}
+
+/// Whether a pane has turned over enough of its words since `previous` to be worth asking
+/// about again — at least one word in `factor`.
+///
+/// Words rather than lines: the same output rewrapped at a new width is not new work, and a
+/// line-wise comparison would call every resize a fresh screen.
+pub fn changed_materially(previous: &str, current: &str, factor: usize) -> bool {
+    let mut before: BTreeMap<&str, usize> = BTreeMap::new();
+    for token in tokens(previous) {
+        *before.entry(token).or_default() += 1;
+    }
+    let mut total = 0usize;
+    let mut shared = 0usize;
+    for token in tokens(current) {
+        total += 1;
+        if let Some(count) = before.get_mut(token).filter(|count| **count > 0) {
+            *count -= 1;
+            shared += 1;
+        }
+    }
+    if total == 0 {
+        return false;
+    }
+    (total - shared) * factor >= total
 }
 
 /// The content hash the activity map holds for a pane, if it has one.
@@ -1197,12 +1275,12 @@ mod tests {
     #[test]
     fn observe_counts_unchanged_polls_and_resets_on_new_content() {
         let mut activity = Activity::new();
-        observe(&mut activity, 3, "working");
+        observe(&mut activity, 3, Sample::Text("working"));
         assert_eq!(activity[&3].1, 0);
-        observe(&mut activity, 3, "working");
-        observe(&mut activity, 3, "working");
+        observe(&mut activity, 3, Sample::Text("working"));
+        observe(&mut activity, 3, Sample::Text("working"));
         assert_eq!(activity[&3].1, 2);
-        observe(&mut activity, 3, "done");
+        observe(&mut activity, 3, Sample::Text("done"));
         assert_eq!(activity[&3].1, 0);
     }
 
@@ -1213,19 +1291,119 @@ mod tests {
     fn observe_counts_the_polls_of_each_stretch_of_stillness() {
         let mut activity = Activity::new();
         // A first sighting cannot tell "working" from "sitting still", so it is not idle.
-        assert_eq!(observe(&mut activity, 3, "working"), Observed::Busy);
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Text("working")),
+            Observed::Busy
+        );
         for polls in 1..=4 {
             assert_eq!(
-                observe(&mut activity, 3, "working"),
+                observe(&mut activity, 3, Sample::Text("working")),
                 Observed::Idle { polls }
             );
         }
 
         // Back to work, then still again: a second stretch counts from the start.
-        assert_eq!(observe(&mut activity, 3, "more"), Observed::Busy);
         assert_eq!(
-            observe(&mut activity, 3, "more"),
+            observe(&mut activity, 3, Sample::Text("more")),
+            Observed::Busy
+        );
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Text("more")),
             Observed::Idle { polls: 1 }
+        );
+    }
+
+    /// The whole point of hashing words rather than text: a pane resized to a new width
+    /// holds the same session, and used to look like a screenful of new work.
+    #[test]
+    fn rewrapping_the_same_output_is_not_a_change() {
+        let narrow = "the agent finished\nthe refactor and is\nwaiting for you";
+        let wide = "the agent finished the refactor\nand is waiting for you";
+        assert_eq!(fingerprint(narrow), fingerprint(wide));
+
+        let mut activity = Activity::new();
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Text(narrow)),
+            Observed::Busy
+        );
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Text(wide)),
+            Observed::Idle { polls: 1 },
+            "a rewrap is not the agent doing something"
+        );
+    }
+
+    /// The other side of it: normalising must not go so far that a working agent looks
+    /// still. Anything with a digit or a letter in it counts.
+    #[test]
+    fn a_ticking_counter_is_still_a_change() {
+        let mut activity = Activity::new();
+        observe(&mut activity, 3, Sample::Text("thinking (12s)"));
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Text("thinking (13s)")),
+            Observed::Busy
+        );
+    }
+
+    /// Spinner frames and rules are not the session changing.
+    #[test]
+    fn punctuation_only_tokens_are_not_content() {
+        assert_eq!(
+            fingerprint("* working on it\n----------"),
+            fingerprint("- working on it\n===")
+        );
+    }
+
+    /// A reading that says nothing must neither restart the stretch of stillness nor
+    /// disturb the hash an in-flight summary is stamped against.
+    #[test]
+    fn a_sample_we_cannot_use_keeps_the_hash_and_counts_the_pause() {
+        let mut activity = Activity::new();
+        observe(&mut activity, 3, Sample::Text("waiting for you"));
+        let hash = activity_hash(&activity, 3).expect("recorded");
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Unusable),
+            Observed::Idle { polls: 1 }
+        );
+        assert_eq!(
+            observe(&mut activity, 3, Sample::Unusable),
+            Observed::Idle { polls: 2 }
+        );
+        assert_eq!(activity_hash(&activity, 3), Some(hash));
+    }
+
+    /// Before any usable reading there is nothing to be still about.
+    #[test]
+    fn the_first_reading_of_a_pane_cannot_be_an_unusable_one() {
+        let mut activity = Activity::new();
+        assert_eq!(observe(&mut activity, 3, Sample::Unusable), Observed::Busy);
+        assert_eq!(activity_hash(&activity, 3), None);
+    }
+
+    #[test]
+    fn changed_materially_wants_a_fifth_of_the_words_turned_over() {
+        let before = (1..=20).fold(String::new(), |mut all, line| {
+            all.push_str(&format!("line {line}\n"));
+            all
+        });
+        let scrolled = format!("{before}line 21\n");
+        assert!(
+            !changed_materially(&before, &scrolled, 5),
+            "one new line in twenty is not a new screen"
+        );
+        let rewrapped = before.replace('\n', " ");
+        assert!(
+            !changed_materially(&before, &rewrapped, 5),
+            "a rewrap turns over nothing"
+        );
+        let after = (1..=20).fold(String::new(), |mut all, line| {
+            all.push_str(&format!("other {line}\n"));
+            all
+        });
+        assert!(changed_materially(&before, &after, 5));
+        assert!(
+            !changed_materially(&before, "", 5),
+            "an empty screen is not news"
         );
     }
 
@@ -1233,15 +1411,15 @@ mod tests {
     fn activity_hash_is_the_hash_the_poll_recorded() {
         let mut activity = Activity::new();
         assert_eq!(activity_hash(&activity, 3), None);
-        observe(&mut activity, 3, "working");
+        observe(&mut activity, 3, Sample::Text("working"));
         let first = activity_hash(&activity, 3).expect("recorded");
-        observe(&mut activity, 3, "working");
+        observe(&mut activity, 3, Sample::Text("working"));
         assert_eq!(
             activity_hash(&activity, 3),
             Some(first),
             "same text, same hash"
         );
-        observe(&mut activity, 3, "done");
+        observe(&mut activity, 3, Sample::Text("done"));
         assert_ne!(activity_hash(&activity, 3), Some(first));
     }
 

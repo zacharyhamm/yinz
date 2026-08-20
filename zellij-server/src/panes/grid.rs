@@ -4280,6 +4280,9 @@ impl Grid {
             PaneContents::new(viewport, self.selection.start, self.selection.end)
         };
         contents.cursor = self.visible_cursor_in_viewport();
+        // `lines_below` is the scroll offset: it is only non-empty once the viewport has been
+        // moved up off the live tail.
+        contents.is_scrolled = !self.lines_below.is_empty();
         contents
     }
     pub fn pane_contents_with_ansi(
@@ -4348,6 +4351,9 @@ impl Grid {
             PaneContents::new(viewport, self.selection.start, self.selection.end)
         };
         contents.cursor = self.visible_cursor_in_viewport();
+        // `lines_below` is the scroll offset: it is only non-empty once the viewport has been
+        // moved up off the live tail.
+        contents.is_scrolled = !self.lines_below.is_empty();
         contents
     }
 

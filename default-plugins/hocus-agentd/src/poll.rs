@@ -37,24 +37,61 @@ pub fn pane_cwd(pane_id: u32) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// One poll's reading of a pane: what it shows, and what that reading is worth.
+///
+/// The text alone cannot say whether an agent is working. A pane repaints when the user
+/// scrolls it, when it is resized, and when a client attaches — so the two host flags
+/// travel with the text they qualify, sampled in the same call rather than looked up
+/// afterwards against a manifest that may already have moved on.
+pub struct PaneSample {
+    pub text: String,
+    /// The user has scrolled this pane back off its live tail, so what it shows is old
+    /// output rather than anything the process just did.
+    pub is_scrolled: bool,
+    /// Milliseconds since the pane's process last wrote to its pty, if it ever has.
+    /// `None` means it never wrote anything this session.
+    pub last_output_ms_ago: Option<u64>,
+}
+
+impl PaneSample {
+    /// A reading we could not take, dressed as the reading that says the least: the host
+    /// refused, so this text is an error message rather than anything the agent wrote, and
+    /// it must neither look like work nor be summarised. `is_scrolled` is what the daemon
+    /// reads as "this says nothing" — see `State::qualify`.
+    fn unreadable(reason: String) -> Self {
+        PaneSample {
+            text: reason,
+            is_scrolled: true,
+            last_output_ms_ago: None,
+        }
+    }
+}
+
 /// What a pane is showing. Only hashed for activity; trailing empty rows are not
 /// content and must not reset the idle counter when the pane is resized.
-pub fn read_pane_text(pane_id: u32) -> String {
+pub fn read_pane(pane_id: u32) -> PaneSample {
     match get_pane_scrollback(PaneId::Terminal(pane_id), false) {
         Ok(contents) => {
+            let is_scrolled = contents.is_scrolled;
+            let last_output_ms_ago = contents.last_output_ms_ago;
             let mut lines = contents.lines_above_viewport;
             lines.extend(contents.viewport);
             lines.extend(contents.lines_below_viewport);
             while lines.last().is_some_and(|line| line.trim().is_empty()) {
                 lines.pop();
             }
-            if lines.is_empty() {
+            let text = if lines.is_empty() {
                 "(pane is empty)".to_owned()
             } else {
                 lines.join("\n")
+            };
+            PaneSample {
+                text,
+                is_scrolled,
+                last_output_ms_ago,
             }
         },
-        Err(error) => format!("could not read pane: {error}"),
+        Err(error) => PaneSample::unreadable(format!("could not read pane: {error}")),
     }
 }
 

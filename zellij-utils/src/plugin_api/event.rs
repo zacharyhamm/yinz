@@ -3266,6 +3266,8 @@ impl TryFrom<ProtobufPaneContents> for PaneContents {
             lines_above_viewport: protobuf_contents.lines_above_viewport,
             lines_below_viewport: protobuf_contents.lines_below_viewport,
             cursor,
+            last_output_ms_ago: protobuf_contents.last_output_ms_ago,
+            is_scrolled: protobuf_contents.is_scrolled,
         })
     }
 }
@@ -3288,6 +3290,8 @@ impl TryFrom<PaneContents> for ProtobufPaneContents {
             lines_above_viewport: pane_contents.lines_above_viewport,
             lines_below_viewport: pane_contents.lines_below_viewport,
             cursor,
+            last_output_ms_ago: pane_contents.last_output_ms_ago,
+            is_scrolled: pane_contents.is_scrolled,
         })
     }
 }
@@ -3381,6 +3385,31 @@ mod tests {
         ] {
             let protobuf: ProtobufEvent = original.clone().try_into().expect("encode");
             let decoded: Event = protobuf.try_into().expect("decode");
+            assert_eq!(decoded, original);
+        }
+    }
+
+    /// The two flags that qualify a reading of a pane: whether the user has scrolled it
+    /// back, and how long ago its process last wrote anything. A plugin cannot tell work
+    /// from a repaint without them, so they have to survive the wasm boundary.
+    #[test]
+    fn pane_contents_carries_scroll_and_output_age_across_protobuf() {
+        for original in [
+            PaneContents {
+                viewport: vec!["waiting for you".to_owned()],
+                last_output_ms_ago: Some(4_200),
+                is_scrolled: true,
+                ..Default::default()
+            },
+            PaneContents {
+                viewport: vec!["nothing written yet".to_owned()],
+                last_output_ms_ago: None,
+                is_scrolled: false,
+                ..Default::default()
+            },
+        ] {
+            let protobuf: ProtobufPaneContents = original.clone().try_into().expect("encode");
+            let decoded: PaneContents = protobuf.try_into().expect("decode");
             assert_eq!(decoded, original);
         }
     }

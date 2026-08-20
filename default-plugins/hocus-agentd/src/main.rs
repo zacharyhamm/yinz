@@ -8,7 +8,9 @@
 mod poll;
 
 use hocus_proto::llm::Endpoint;
-use hocus_proto::panes::{focused_pane, focused_plugin_pane, manifest_pane_ids, terminal_panes};
+use hocus_proto::panes::{
+    focused_pane, focused_plugin_pane, manifest_pane_ids, pane_geometry, terminal_panes,
+};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,6 +84,20 @@ const SUMMARY_COOLDOWN_TICKS: u32 = 12;
 /// quadratic cost of edit distance for every settled pane.
 const SUMMARY_CHANGE_FACTOR: usize = 5;
 
+/// How many heartbeats a pane is left alone after its pty was resized, so a repaint the
+/// resize itself provoked cannot be mistaken for a finished turn.
+///
+/// Resizing a pane, resizing the terminal, and attaching or detaching a client all resize
+/// the pty, and the SIGWINCH that follows makes an agent redraw itself: real output, arriving
+/// for a reason that has nothing to do with the agent's work. The word-wise fingerprint
+/// already hides a plain rewrap, but a TUI that redraws differently at a new width would
+/// still cross an edge, so the edge is consumed outright for this window.
+///
+/// Two ticks longer than the settle window rather than one: the poll that first sees the
+/// repaint spends a tick of the window before the stillness it starts is counted, so a
+/// shorter window would lapse on the very poll the edge lands on.
+const GEOMETRY_GRACE_TICKS: u32 = SUMMARY_SETTLE_POLLS + 2;
+
 /// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
 /// The same scheme the git probes use, for the same reason: results arrive on one event
 /// for the whole plugin.
@@ -148,6 +164,40 @@ struct State {
     /// An absent pane is free to ask — see `SUMMARY_COOLDOWN_TICKS`.
     summary_cooldown: BTreeMap<u32, u32>,
     summary_seq: u64,
+    /// The pty size each pane was last seen at, so a change can be noticed. See
+    /// `GEOMETRY_GRACE_TICKS`.
+    geometry: BTreeMap<u32, (usize, usize)>,
+    /// Heartbeats left in which a pane's settling is consumed silently, counted down by
+    /// every poll. An absent pane is in no grace window.
+    geometry_grace: BTreeMap<u32, u32>,
+    /// Where each pane is in the work cycle. The ask hangs off the transition into
+    /// `Waiting`, not off the pane being settled — see `Phase`.
+    phase: BTreeMap<u32, Phase>,
+    /// How long one poll interval is, in milliseconds, with slack: how recently a pane must
+    /// have written to its pty for this poll's picture to be explained by output. Taken from
+    /// the timer's own reported elapsed time because plugin timers drift.
+    poll_window_ms: u64,
+}
+
+/// Where a pane is in one cycle of work.
+///
+/// The point of the phase is that a summary hangs off a *transition*, not off a pane
+/// being settled: a pane that has been sitting still for an hour is as settled as one that
+/// stopped a moment ago, and only the second has anything new to say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// The pane is showing new words — the agent is doing something.
+    Working,
+    /// The pane has stopped. `owed` is whether this stop still has a summary coming: true
+    /// from the moment it settles until a request goes out, false once one has (or if the
+    /// stop landed inside a grace window, where the stillness is not the agent's).
+    ///
+    /// `owed` is what separates *deferring* an ask from *suppressing* one. The cooldown and
+    /// the in-flight guard defer: the pane keeps asking on later polls until one gets
+    /// through, so a settling that arrives a few seconds into a cooldown is not lost. A
+    /// grace window suppresses: the ask is dropped and never retried, because there was no
+    /// work behind it.
+    Waiting { owed: bool },
 }
 
 /// A summary request that has gone out and not yet come back.
@@ -165,36 +215,14 @@ struct InFlight {
     ticks: u32,
 }
 
-/// Whether enough nonblank lines have changed since the last successful summary to make
-/// another one useful. Lines are a multiset: scrolling one line preserves every line still
-/// on screen, and repeated output is counted rather than collapsed.
+/// Whether enough of the last successful summary's tail has turned over to make another one
+/// useful. Words are a multiset: scrolling one line preserves every word still on screen, and
+/// repeated output is counted rather than collapsed.
+///
+/// Words rather than lines because a pane rewrapped to a new width holds exactly the words it
+/// held before: a line-wise comparison read every resize as a screen of new work.
 fn summary_materially_changed(previous: &str, current: &str) -> bool {
-    fn lines(text: &str) -> Vec<&str> {
-        text.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-    }
-    let previous = lines(previous);
-    let current = lines(current);
-    let total = previous.len().max(current.len());
-    if total == 0 {
-        return false;
-    }
-    let mut remaining = BTreeMap::new();
-    for line in previous {
-        *remaining.entry(line).or_insert(0usize) += 1;
-    }
-    let mut shared = 0;
-    for line in current {
-        if let Some(count) = remaining.get_mut(line) {
-            if *count > 0 {
-                *count -= 1;
-                shared += 1;
-            }
-        }
-    }
-    (total - shared) * SUMMARY_CHANGE_FACTOR >= total
+    agents::changed_materially(previous, current, SUMMARY_CHANGE_FACTOR)
 }
 
 #[derive(Default)]
@@ -276,6 +304,10 @@ impl ZellijPlugin for State {
                 if self.needs_bootstrap() {
                     self.bootstrap();
                 }
+                // What "wrote to its pty since the last poll" means for this poll,
+                // measured rather than assumed: a timer that fired late would otherwise
+                // read a pane's real output as too old to explain what it shows.
+                self.poll_window_ms = (elapsed.max(ACTIVITY_SECONDS) * 1500.0) as u64;
                 self.observe_activity();
                 self.repair_commands();
                 self.repair_cwds();
@@ -475,7 +507,32 @@ impl State {
         }
     }
 
+    /// Notice panes whose pty has been resized, and leave them alone for a while.
+    ///
+    /// A resize is the one thing that makes an agent produce real output for a reason that
+    /// is not work: the pane rewraps, the process is sent SIGWINCH, and a full-screen agent
+    /// redraws itself. Attaching or detaching a client does it to every pane at once, which
+    /// is why re-attaching to a session used to arrive with a fistful of toasts.
+    ///
+    /// The pane's summary baseline goes with it: it described the same words at a different
+    /// width, and comparing across that would read a rewrap as a screenful of new work.
+    fn watch_geometry(&mut self) {
+        let geometry = pane_geometry(&self.manifest);
+        for (pane_id, size) in &geometry {
+            if self
+                .geometry
+                .get(pane_id)
+                .is_some_and(|previous| previous != size)
+            {
+                self.geometry_grace.insert(*pane_id, GEOMETRY_GRACE_TICKS);
+                self.summary_baselines.remove(pane_id);
+            }
+        }
+        self.geometry = geometry;
+    }
+
     fn rebuild_panes(&mut self) {
+        self.watch_geometry();
         self.focused = focused_pane(&self.manifest, &self.tabs);
         self.focused_plugin = focused_plugin_pane(&self.manifest, &self.tabs);
         // Read before `self.panes` is replaced below — it is what tells a re-run
@@ -536,6 +593,7 @@ impl State {
                 // one was summarised as doing — keeping either would show a stale answer
                 // the moment the new run pauses once. See `waiting_marker`.
                 self.activity.remove(&pane.pane_id);
+                self.phase.remove(&pane.pane_id);
                 self.summaries.remove(&pane.pane_id);
                 self.summary_baselines.remove(&pane.pane_id);
             }
@@ -812,17 +870,18 @@ impl State {
     }
 
     fn observe_activity(&mut self) {
-        self.observe_activity_with(poll::read_pane_text, Self::start_summary);
+        self.observe_activity_with(poll::read_pane, Self::start_summary);
     }
 
     /// Sample every agent pane, and act on the ones that just stopped working.
     ///
     /// `read` and `ask` are injected for the same reason: both reach the host, and this
-    /// has to stay testable on the host triple.
+    /// has to stay testable on the host triple. `ask` answers whether a request actually
+    /// went out, which is what tells a pane its debt is paid.
     fn observe_activity_with(
         &mut self,
-        mut read: impl FnMut(u32) -> String,
-        mut ask: impl FnMut(&mut Self, u32, &str),
+        mut read: impl FnMut(u32) -> poll::PaneSample,
+        mut ask: impl FnMut(&mut Self, u32, &str) -> bool,
     ) {
         let running: BTreeSet<u32> = self
             .panes
@@ -846,36 +905,126 @@ impl State {
             .map(|pane| pane.pane_id)
             .collect();
         self.activity.retain(|id, _| running.contains(id));
+        self.phase.retain(|id, _| running.contains(id));
         self.summaries.retain(|id, _| known.contains(id));
         self.summary_baselines.retain(|id, _| known.contains(id));
+        // A request that ages out never had an answer, so the settling that bought it is
+        // owed again: a reply the host dropped must not cost the pane its summary.
+        let mut dropped: Vec<u32> = Vec::new();
         self.summary_requests.retain(|id, request| {
             request.ticks += 1;
-            running.contains(id) && request.ticks <= SUMMARY_TICKS
+            let answered_in_time = request.ticks <= SUMMARY_TICKS;
+            if !answered_in_time && running.contains(id) {
+                dropped.push(*id);
+            }
+            answered_in_time && running.contains(id)
         });
+        for pane_id in dropped {
+            if let Some(Phase::Waiting { owed }) = self.phase.get_mut(&pane_id) {
+                *owed = true;
+            }
+        }
         // The same shape one line up, and pruned by the same rule: a pane that stops being
         // a running agent starts clean if it comes back.
         self.summary_cooldown.retain(|id, ticks| {
             *ticks = ticks.saturating_sub(1);
             running.contains(id) && *ticks > 0
         });
+        // Aged on the same beat, and kept for panes that are merely held rather than
+        // running: a resize does not stop mattering because the agent paused.
+        self.geometry_grace.retain(|id, ticks| {
+            *ticks = ticks.saturating_sub(1);
+            known.contains(id) && *ticks > 0
+        });
         for pane_id in running {
-            let text = read(pane_id);
-            match agents::observe(&mut self.activity, pane_id, &text) {
-                // `>=`, not equality: what stops a settled pane asking every five seconds is
-                // the cooldown and the baseline guard in `summary_due`, not this arm. Equality
-                // would drop a settling the cooldown happened to swallow and never come back
-                // to it, losing that pane its summary for the whole stretch.
-                agents::Observed::Idle { polls } if polls >= SUMMARY_SETTLE_POLLS => {
-                    ask(self, pane_id, &text)
+            let reading = read(pane_id);
+            let sample = self.qualify(pane_id, &reading);
+            // Nothing is ever asked about a reading that says nothing: a scrolled pane, or
+            // one we could not read at all, has no screen worth describing. The debt stays
+            // owed, so the next usable reading pays it.
+            let usable = matches!(sample, agents::Sample::Text(_));
+            let observed = agents::observe(&mut self.activity, pane_id, sample);
+            let phase = self.phase.get(&pane_id).copied();
+            match (phase, observed) {
+                // The very first reading of a pane is `Busy` whatever it shows, because one
+                // reading cannot be compared with anything - so it says nothing about work:
+                // a session left alone overnight looks exactly like an agent mid-turn. The
+                // pane starts out settled and owing nothing, and earns `Working` on the next
+                // poll if it really is doing something.
+                (None, agents::Observed::Busy) => {
+                    self.phase.insert(pane_id, Phase::Waiting { owed: false });
                 },
-                // Busy, or still settling. Note that a pane going busy keeps the summary it
-                // already has rather than dropping it: the marker is gated on the pane
-                // being idle (`agents::waiting_marker`), so a working agent already shows
-                // nothing - and keeping the answer, stamped with the screen it was made
-                // from, is what lets an agent that comes back to that same screen be free
-                // rather than another request.
+                // New words, and the reading was worth believing: the agent is working, and
+                // whatever it settles on next is worth asking about.
+                //
+                // Note that a pane going busy keeps the summary it already has rather than
+                // dropping it: the marker is gated on the pane being idle
+                // (`agents::waiting_marker`), so a working agent already shows nothing - and
+                // keeping the answer, stamped with the screen it was made from, is what lets
+                // an agent that comes back to that same screen be free rather than another
+                // request.
+                (_, agents::Observed::Busy) => {
+                    self.phase.insert(pane_id, Phase::Working);
+                },
+                // The edge, and the only place a debt is taken on. Equality, not `>=`: a
+                // pane that has been settled for an hour crosses no edge, and the retry
+                // below is what carries a settling the cooldown swallowed. Only a pane that
+                // was working owes anything, and only outside a grace window - a screen that
+                // moved because the pty was resized stopped nothing.
+                (phase, agents::Observed::Idle { polls }) if polls == SUMMARY_SETTLE_POLLS => {
+                    let owed = phase == Some(Phase::Working)
+                        && !self.geometry_grace.contains_key(&pane_id);
+                    let paid = owed && usable && ask(self, pane_id, &reading.text);
+                    self.phase.insert(
+                        pane_id,
+                        Phase::Waiting {
+                            owed: owed && !paid,
+                        },
+                    );
+                },
+                // Still owed: the cooldown, an in-flight request or a baseline that has not
+                // moved refused this settling, and none of those mean it was not real. Keep
+                // offering it until one of them lets it through.
+                (Some(Phase::Waiting { owed: true }), agents::Observed::Idle { .. }) => {
+                    if usable && ask(self, pane_id, &reading.text) {
+                        self.phase.insert(pane_id, Phase::Waiting { owed: false });
+                    }
+                },
+                // Settling, or settled and paid for.
                 _ => {},
             }
+        }
+    }
+
+    /// What one poll's reading is worth as evidence about the agent behind the pane.
+    ///
+    /// Two readings say nothing. A pane the user has scrolled back shows old output, so its
+    /// text is not about now at all. And a pane whose picture moved while its pty stayed
+    /// silent moved for some reason other than the process — a reflow after a resize, most
+    /// often — which is not work either. Both keep the stretch of stillness going rather
+    /// than restarting it: see `agents::Sample`.
+    fn qualify<'a>(&self, pane_id: u32, reading: &'a poll::PaneSample) -> agents::Sample<'a> {
+        if reading.is_scrolled {
+            return agents::Sample::Unusable;
+        }
+        let wrote_recently = reading
+            .last_output_ms_ago
+            .is_some_and(|ms| ms <= self.poll_window());
+        let moved = agents::activity_hash(&self.activity, pane_id)
+            .is_some_and(|hash| hash != agents::fingerprint(&reading.text));
+        if moved && !wrote_recently {
+            return agents::Sample::Unusable;
+        }
+        agents::Sample::Text(&reading.text)
+    }
+
+    /// How recently a pane must have written to its pty for this poll's picture to be its
+    /// doing: one poll interval with half again as much slack, since plugin timers drift.
+    fn poll_window(&self) -> u64 {
+        if self.poll_window_ms == 0 {
+            (ACTIVITY_SECONDS * 1500.0) as u64
+        } else {
+            self.poll_window_ms
         }
     }
 
@@ -894,12 +1043,15 @@ impl State {
     ///
     /// The cheap local guards run *before* the endpoint is resolved, so an edge that was
     /// never going to produce a request does not pay for a host round-trip either.
-    fn start_summary(&mut self, pane_id: u32, text: &str) {
+    ///
+    /// Answers whether a request went out, which is what tells the pane whether its
+    /// settling has been paid for or is still owed — see `Phase::Waiting`.
+    fn start_summary(&mut self, pane_id: u32, text: &str) -> bool {
         if !self.summary_due(pane_id, text) {
-            return;
+            return false;
         }
         let Some(endpoint) = self.summary_endpoint() else {
-            return;
+            return false;
         };
         // Wrapped rather than passed by name: `web_request` is generic over its url type,
         // and inference pins that to one lifetime, which will not satisfy the for-any-
@@ -910,6 +1062,7 @@ impl State {
             &endpoint,
             |url, verb, headers, body, context| web_request(url, verb, headers, body, context),
         );
+        true
     }
 
     /// Whether this settling is worth an HTTP request.
@@ -1074,10 +1227,15 @@ impl State {
         // none. The snapshot below carries the same summary to whoever is subscribed, but a
         // snapshot only reaches a plugin that is running and only shows in a pane the user
         // is looking at — this is the half that finds them wherever they are.
-        toast(
-            pane_id,
-            &agents::summary_toast(pane_id, self.agent_kind(pane_id), &summary),
-        );
+        // Not while the user is looking at the pane: a toast over the very screen it
+        // describes tells them what they can already see, and the summary still reaches
+        // them through the snapshot below and the pane's new name.
+        if self.focused != Some(pane_id) {
+            toast(
+                pane_id,
+                &agents::summary_toast(pane_id, self.agent_kind(pane_id), &summary),
+            );
+        }
         self.summary_baselines.insert(pane_id, tail);
         self.summaries.insert(pane_id, summary);
         self.publish();
@@ -1236,7 +1394,9 @@ mod tests {
     /// The summariser, for tests about everything else. `start_summary` reaches the host
     /// twice - the alias configuration and the request itself - so no test that is not
     /// about summaries may run it.
-    fn no_ask(_: &mut State, _: u32, _: &str) {}
+    fn no_ask(_: &mut State, _: u32, _: &str) -> bool {
+        false
+    }
 
     #[test]
     fn command_and_cwd_events_survive_the_next_pane_snapshot() {
@@ -1272,13 +1432,13 @@ mod tests {
             ..State::default()
         };
 
-        state.observe_activity_with(|_| "working".to_owned(), no_ask);
-        state.observe_activity_with(|_| "working".to_owned(), no_ask);
+        state.observe_activity_with(|_| sample("working"), no_ask);
+        state.observe_activity_with(|_| sample("working"), no_ask);
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
         assert_eq!(state.activity.len(), 1);
 
         state.panes.as_mut().unwrap()[0].status = agents::AgentStatus::Held;
-        state.observe_activity_with(|_| "ignored".to_owned(), no_ask);
+        state.observe_activity_with(|_| sample("ignored"), no_ask);
         assert!(state.activity.is_empty());
     }
 
@@ -1583,12 +1743,12 @@ mod tests {
     #[test]
     fn a_shell_out_does_not_reset_the_idle_count() {
         let mut state = ran_codex(7);
-        state.observe_activity_with(|_| "same".to_owned(), no_ask);
-        state.observe_activity_with(|_| "same".to_owned(), no_ask);
+        state.observe_activity_with(|_| sample("same"), no_ask);
+        state.observe_activity_with(|_| sample("same"), no_ask);
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
 
         state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
-        state.observe_activity_with(|_| "same".to_owned(), no_ask);
+        state.observe_activity_with(|_| sample("same"), no_ask);
 
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(2));
     }
@@ -2025,24 +2185,26 @@ mod tests {
     // -- idle summaries -----------------------------------------------------
 
     #[test]
-    fn summary_change_requires_a_fifth_of_the_lines_to_turn_over() {
-        let baseline = (1..=10)
-            .map(|line| format!("output line {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let one_changed = baseline.replace("output line 10", "one new line");
-        let two_changed = one_changed.replace("output line 9", "another new line");
-        let scrolled = (2..=11)
-            .map(|line| format!("output line {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn summary_change_requires_a_fifth_of_the_words_to_turn_over() {
+        // Three words a line, none of them shared, so the arithmetic below is the ratio
+        // the constant names and nothing else.
+        let line = |n: usize| format!("output{n} of{n} ten{n}");
+        let baseline = (1..=10).map(line).collect::<Vec<_>>().join("\n");
+        let one_changed = baseline.replace(&line(10), "one new line");
+        let two_changed = one_changed.replace(&line(9), "another different line");
+        let scrolled = (2..=11).map(line).collect::<Vec<_>>().join("\n");
 
         assert!(!summary_materially_changed(&baseline, &one_changed));
         assert!(summary_materially_changed(&baseline, &two_changed));
         assert!(!summary_materially_changed(&baseline, &scrolled));
         assert!(!summary_materially_changed(
             &baseline,
-            &baseline.replace("output line 1", "  output line 1  ")
+            &baseline.replace(&line(1), &format!("  {}  ", line(1)))
+        ));
+        // The whole reason words replaced lines: the same output at a new width.
+        assert!(!summary_materially_changed(
+            &baseline,
+            &baseline.replace('\n', " ")
         ));
     }
 
@@ -2059,14 +2221,23 @@ mod tests {
     /// `observe_activity_with` is driven rather than `start_summary` called directly, so
     /// what is under test is the whole path from "the pane held still" to "a request left".
     fn poll_showing(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
+        poll_reading(state, sample(text), sent)
+    }
+
+    /// One poll of every pane from an arbitrary reading, for the tests about readings that
+    /// are worth nothing — a scrolled pane, or a picture that moved with the pty silent.
+    fn poll_reading(state: &mut State, reading: poll::PaneSample, sent: &mut Vec<(u32, Vec<u8>)>) {
+        let mut reading = Some(reading);
         state.observe_activity_with(
-            |_| text.to_owned(),
+            |_| reading.take().expect("one pane per poll in these tests"),
             |state, pane_id, text| {
                 if state.summary_due(pane_id, text) {
                     state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, context| {
                         sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
                     });
+                    return true;
                 }
+                false
             },
         );
     }
@@ -2088,17 +2259,64 @@ mod tests {
             ..State::default()
         };
         let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        // The first poll is `Busy` - a single reading cannot tell working from finished -
-        // and the settle window is counted from the one after it.
+        // A pane the daemon has only ever seen still is not one that just stopped working,
+        // so the agent is shown working first: one screen, then the screen it settles on.
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
         for _ in 0..=SUMMARY_SETTLE_POLLS {
             poll_showing(&mut state, text, &mut sent);
         }
         (state, sent)
     }
 
+    /// A reading of a pane showing its live tail, with the process having just written to
+    /// it: the ordinary case, and what every test means unless it says otherwise.
+    fn sample(text: &str) -> poll::PaneSample {
+        poll::PaneSample {
+            text: text.to_owned(),
+            is_scrolled: false,
+            last_output_ms_ago: Some(0),
+        }
+    }
+
+    /// A reading of a pane nothing has written to for a long while — what a resize's reflow
+    /// or a viewport that moved on its own looks like.
+    fn quiet(text: &str) -> poll::PaneSample {
+        poll::PaneSample {
+            last_output_ms_ago: Some(600_000),
+            ..sample(text)
+        }
+    }
+
+    /// A reading of a pane the user has scrolled back off its tail.
+    fn scrolled(text: &str) -> poll::PaneSample {
+        poll::PaneSample {
+            is_scrolled: true,
+            ..sample(text)
+        }
+    }
+
+    /// One manifest for one pane at one size, for the tests about resizing.
+    fn sized_manifest(pane_id: u32, rows: usize, columns: usize) -> PaneManifest {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: pane_id,
+                title: "claude".to_owned(),
+                pane_content_rows: rows,
+                pane_content_columns: columns,
+                ..PaneInfo::default()
+            }],
+        );
+        manifest
+    }
+
     /// The pane text a test agent shows - long enough to clear `worth_summarizing`.
     const BUSY_PANE: &str = "Running the test suite and waiting for it to finish now...";
     const OTHER_PANE: &str = "Something else entirely happened on this pane instead...";
+    /// What an agent was showing before the screen a test settles on, so the pane is seen
+    /// working at least once - see `idle_agent`.
+    const EARLIER_PANE: &str = "Reading the files it was asked about, one after another...";
 
     /// A model's answer, carrying the title every real answer is asked for.
     fn reply(summary: &str, awaiting: bool) -> Vec<u8> {
@@ -2212,6 +2430,7 @@ mod tests {
             ..State::default()
         };
         let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
         for _ in 0..=SUMMARY_SETTLE_POLLS {
             poll_showing(&mut state, BUSY_PANE, &mut sent);
         }
@@ -2234,6 +2453,7 @@ mod tests {
             ..State::default()
         };
         let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
         for _ in 0..=SUMMARY_SETTLE_POLLS {
             poll_showing(&mut state, BUSY_PANE, &mut sent);
         }
@@ -2418,7 +2638,7 @@ mod tests {
         };
         assert!(waiting(&state), "idle and blocked: the marker is up");
 
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
 
         assert!(
             !waiting(&state),
@@ -2434,27 +2654,25 @@ mod tests {
     /// the successful summary's tail until a fifth of its lines have turned over.
     #[test]
     fn a_barely_changed_pane_is_not_summarized_again() {
-        let baseline = (1..=10)
-            .map(|line| format!("agent output line {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let line = |n: usize| format!("agent{n} output{n} line{n}");
+        let baseline = (1..=10).map(line).collect::<Vec<_>>().join("\n");
         let (mut state, _) = idle_agent(&baseline);
         finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
         // Dropped rather than polled out, so what the assertions below answer for is the
         // baseline guard alone and not the cooldown standing in front of it.
         state.summary_cooldown.clear();
 
-        let one_changed = baseline.replace("agent output line 10", "one new status line");
-        state.observe_activity_with(|_| one_changed.clone(), no_ask);
-        state.observe_activity_with(|_| one_changed.clone(), no_ask);
+        let one_changed = baseline.replace(&line(10), "one new status");
+        state.observe_activity_with(|_| sample(&one_changed), no_ask);
+        state.observe_activity_with(|_| sample(&one_changed), no_ask);
         assert!(
             !state.summary_due(7, &one_changed),
             "one changed line is still covered by the stored summary",
         );
 
-        let two_changed = one_changed.replace("agent output line 9", "another new line");
-        state.observe_activity_with(|_| two_changed.clone(), no_ask);
-        state.observe_activity_with(|_| two_changed.clone(), no_ask);
+        let two_changed = one_changed.replace(&line(9), "another different note");
+        state.observe_activity_with(|_| sample(&two_changed), no_ask);
+        state.observe_activity_with(|_| sample(&two_changed), no_ask);
         assert!(
             state.summary_due(7, &two_changed),
             "changes accumulate against the successful baseline"
@@ -2500,6 +2718,251 @@ mod tests {
             vec![(7, "agent idle · 7 · claude\nRan the tests.".to_owned())],
             "one summary, one toast, naming the pane and its kind",
         );
+    }
+
+    /// The user is looking at the very pane the summary describes: they can see what it
+    /// says, and a toast over it is an interruption that tells them nothing.
+    #[test]
+    fn a_summary_for_the_pane_the_user_is_watching_renames_but_does_not_toast() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.focused = Some(7);
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Ran the tests.", false),
+            &context(7, 1),
+        );
+
+        assert!(finished.toasts.is_empty(), "no toast over the pane itself");
+        assert_eq!(
+            finished.renames,
+            vec![(7, TITLE.to_owned())],
+            "but the pane is still named after what it did"
+        );
+        assert!(state.summaries.contains_key(&7), "and the answer is kept");
+    }
+
+    // -----------------------------------------------------------------------
+    // Readings that are not work: scrolling, resizing, attaching
+    // -----------------------------------------------------------------------
+
+    /// Scrolling a pane back shows old output. It is not the agent doing anything, and the
+    /// pane is not working again because the user looked at what it already wrote.
+    #[test]
+    fn a_scrolled_pane_is_not_mistaken_for_a_working_one() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        assert_eq!(sent.len(), 1, "the settling itself");
+        let hash = agents::activity_hash(&state.activity, 7);
+        state.summary_cooldown.clear();
+
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1, "scrolling bought no second request");
+        assert_eq!(
+            agents::activity_hash(&state.activity, 7),
+            hash,
+            "and the reply already in flight can still land"
+        );
+    }
+
+    /// Coming back down to the tail is not a fresh settling either — the screen the pane
+    /// ends on is the one it was already summarised for.
+    #[test]
+    fn scrolling_back_down_does_not_buy_a_second_summary() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        state.summary_cooldown.clear();
+
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
+        }
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// A resize rewraps every line without the agent doing a thing. The words are the same
+    /// words, so the pane never left the screen it settled on.
+    #[test]
+    fn a_repaint_at_a_new_width_is_not_work() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        state.summary_cooldown.clear();
+        let rewrapped = BUSY_PANE.replace(' ', "\n");
+
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, &rewrapped, &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1, "the same words at a new width are not news");
+    }
+
+    /// A pane whose picture moved while nothing was written to its pty moved for some
+    /// reason other than the agent — a reflow, most often. It is not work, and it does not
+    /// restart the count.
+    #[test]
+    fn a_screen_that_moved_with_the_pty_silent_is_not_work() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        state.summary_cooldown.clear();
+
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_reading(&mut state, quiet(OTHER_PANE), &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// A pane whose pty was resized is left alone for a while: the SIGWINCH that follows
+    /// makes a full-screen agent redraw itself, which is real output for a reason that has
+    /// nothing to do with the user's work.
+    #[test]
+    fn a_pane_that_changed_size_is_left_alone_until_it_settles() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            manifest: sized_manifest(7, 40, 80),
+            ..State::default()
+        };
+        state.watch_geometry();
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+
+        // The resize, and the redraw it provokes.
+        state.manifest = sized_manifest(7, 40, 100);
+        state.rebuild_panes();
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        assert!(sent.is_empty(), "the redraw was not a finished turn");
+
+        // And the suppression does not outlive the grace window: it is a window, not a
+        // ban on ever summarising this pane again.
+        for _ in 0..GEOMETRY_GRACE_TICKS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+        assert!(sent.is_empty(), "still nothing new to say afterwards");
+    }
+
+    /// Attaching to a session resizes every pane in it at once. Whatever the agents were
+    /// doing, none of them just finished doing it.
+    #[test]
+    fn attaching_to_a_settled_session_says_nothing() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            manifest: sized_manifest(7, 40, 80),
+            ..State::default()
+        };
+        state.watch_geometry();
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1, "the agent really did finish, once");
+        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
+        state.summary_cooldown.clear();
+
+        // The attach: a narrower client, so every pane is resized and repaints.
+        state.manifest = sized_manifest(7, 30, 60);
+        state.rebuild_panes();
+        let rewrapped = BUSY_PANE.replace(' ', "\n");
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, &rewrapped, &mut sent);
+        }
+
+        assert_eq!(sent.len(), 1, "attaching told the user nothing new");
+    }
+
+    /// The other half of the grace window: work that lands after it is still work.
+    #[test]
+    fn work_that_lands_after_a_resize_is_still_asked_about() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            manifest: sized_manifest(7, 40, 80),
+            ..State::default()
+        };
+        state.watch_geometry();
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+
+        state.manifest = sized_manifest(7, 40, 100);
+        state.rebuild_panes();
+        for _ in 0..GEOMETRY_GRACE_TICKS {
+            poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        }
+        assert!(sent.is_empty());
+
+        // The window has lapsed, and now the agent actually does something and stops.
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, OTHER_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// A session left alone overnight is full of settled agents. Noticing them is not the
+    /// same as watching one stop, and starting the daemon must not toast every one of them.
+    #[test]
+    fn a_pane_that_was_already_still_when_we_first_saw_it_is_not_asked_about() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent = Vec::new();
+        for _ in 0..SUMMARY_COOLDOWN_TICKS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        assert!(sent.is_empty(), "nothing here ever stopped working");
+
+        // But it is not written off: the next thing it does is asked about.
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, OTHER_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// A settling that lands while the pane is unreadable — scrolled back, or a host call
+    /// that failed — is not lost: it is asked about as soon as there is a screen worth
+    /// describing again.
+    #[test]
+    fn a_settling_nobody_could_read_is_asked_about_once_it_can_be() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        // The user scrolls back just as the agent stops.
+        for _ in 0..SUMMARY_SETTLE_POLLS {
+            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
+        }
+        assert!(sent.is_empty(), "nothing worth describing was on screen");
+
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        assert_eq!(sent.len(), 1, "and the settling was not thrown away");
+    }
+
+    /// A settling the cooldown swallowed is deferred, not dropped — the opposite of one a
+    /// grace window suppresses.
+    #[test]
+    fn an_edge_the_cooldown_swallowed_is_asked_about_when_it_expires() {
+        let (mut state, mut sent) = idle_agent(BUSY_PANE);
+        assert_eq!(sent.len(), 1);
+
+        // A second stretch of work, finished well inside the cooldown.
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, OTHER_PANE, &mut sent);
+        }
+        assert_eq!(sent.len(), 1, "refused for now");
+
+        poll_out_the_cooldown(&mut state, OTHER_PANE, &mut sent);
+        assert_eq!(sent.len(), 2, "and asked once it lapsed");
     }
 
     /// The state the toast is worth interrupting for: the agent is not finished, it is
@@ -2554,7 +3017,7 @@ mod tests {
     #[test]
     fn a_reply_for_a_pane_that_went_busy_again_is_dropped() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
 
         let finished = finish(
             &mut state,
@@ -2617,8 +3080,8 @@ mod tests {
     fn an_answer_about_a_screen_the_pane_has_left_is_dropped() {
         let (mut state, _) = idle_agent(BUSY_PANE);
         // The pane moves on and settles somewhere else, all while the request is out.
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
-        state.observe_activity_with(|_| OTHER_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
+        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
         assert!(
             state.activity[&7].1 > 0,
             "idle again, so idleness alone cannot tell this answer is stale",
@@ -2654,10 +3117,10 @@ mod tests {
 
         // It survives exactly `SUMMARY_TICKS` heartbeats and goes on the next.
         for _ in 0..SUMMARY_TICKS {
-            state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+            state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
         }
         assert!(!state.summary_requests.is_empty(), "still within its grace");
-        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
 
         assert!(state.summary_requests.is_empty(), "aged out");
         assert!(state.summary_due(7, BUSY_PANE));
@@ -2673,7 +3136,7 @@ mod tests {
         assert!(!state.summary_baselines.is_empty());
 
         state.panes = Some(vec![]);
-        state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+        state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
 
         assert!(state.summaries.is_empty());
         assert!(state.summary_baselines.is_empty());
@@ -2696,7 +3159,7 @@ mod tests {
             assert!(!state.summary_baselines.is_empty());
 
             state.panes.as_mut().unwrap()[0].status = status;
-            state.observe_activity_with(|_| BUSY_PANE.to_owned(), no_ask);
+            state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
 
             assert!(
                 state.summaries.contains_key(&7),
