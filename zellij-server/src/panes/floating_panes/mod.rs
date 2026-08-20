@@ -444,6 +444,15 @@ impl FloatingPanes {
         self.active_panes
             .unfocus_all_panes_except(&overlays, &self.panes);
     }
+    /// Which clients have this pane focused. Needed when a pane leaves this collection for
+    /// another one while keeping its focus.
+    pub fn clients_focused_on(&self, pane_id: &PaneId) -> Vec<ClientId> {
+        self.active_panes
+            .iter()
+            .filter(|(_, p_id)| *p_id == pane_id)
+            .map(|(c_id, _)| *c_id)
+            .collect()
+    }
     pub fn pane_is_focused(&self, pane_id: &PaneId) -> bool {
         self.active_panes.pane_id_is_focused(pane_id)
     }

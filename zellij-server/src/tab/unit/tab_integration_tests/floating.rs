@@ -88,16 +88,25 @@ fn overlay_does_not_show_hidden_floating_panes() {
         None,
     )
     .unwrap();
+    // the other client is looking at the hidden floating pane rather than at the overlay. Taking
+    // it off the overlay is now a separate step: an overlay masks every client's focus while it is
+    // up (see `an_overlay_masks_each_client_s_tiled_focus_until_it_closes`), and that record lives
+    // in its own collection rather than in the same map this line writes to.
+    tab.overlay_panes.defocus_pane(other_client_id);
     tab.floating_panes
         .set_active_pane_for_client(floating_pane_id, other_client_id);
 
     assert!(tab.pane_is_overlay(overlay_pane_id));
     assert!(!tab.floating_panes.all_panes_are_visible());
     assert!(!tab.floating_panes.panes_are_visible());
+    assert!(
+        tab.floating_panes.rendered_pane_ids().is_empty(),
+        "nothing on the floating layer is rendered while it is hidden"
+    );
     assert_eq!(
-        tab.floating_panes.rendered_pane_ids(),
+        tab.overlay_panes.rendered_pane_ids(),
         vec![overlay_pane_id],
-        "only the overlay is rendered while floating panes are hidden"
+        "and the overlay, which is not on that layer, is rendered regardless"
     );
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
     assert_eq!(
@@ -109,30 +118,28 @@ fn overlay_does_not_show_hidden_floating_panes() {
         .unwrap();
     assert_eq!(
         tab.floating_panes.rendered_pane_ids(),
-        vec![floating_pane_id, overlay_pane_id]
+        vec![floating_pane_id]
     );
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
-    assert_eq!(
-        tab.floating_panes.rendered_pane_ids(),
-        vec![overlay_pane_id]
-    );
+    assert!(tab.floating_panes.rendered_pane_ids().is_empty());
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 
     tab.show_floating_panes();
     assert_eq!(
         tab.floating_panes.rendered_pane_ids(),
-        vec![floating_pane_id, overlay_pane_id]
+        vec![floating_pane_id]
     );
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 
     tab.hide_floating_panes();
-    assert_eq!(
-        tab.floating_panes.rendered_pane_ids(),
-        vec![overlay_pane_id]
-    );
+    assert!(tab.floating_panes.rendered_pane_ids().is_empty());
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 
     assert_eq!(
@@ -235,7 +242,7 @@ fn default_new_pane_from_overlay_is_tiled_and_visible() {
     assert!(tab.tiled_panes.panes_contain(&new_pane_id));
     assert!(!tab.floating_panes.panes_contain(&new_pane_id));
     assert!(
-        tab.floating_panes
+        tab.overlay_panes
             .rendered_pane_ids()
             .contains(&overlay_pane_id),
         "the overlay is still drawn over it"
@@ -275,16 +282,14 @@ fn overlay_focus_tracks_whether_the_overlay_is_rendered() {
     .unwrap();
 
     assert!(tab.fullscreen_covers_ui());
-    assert!(tab.floating_panes.rendered_pane_ids().is_empty());
+    assert!(!tab.overlays_are_rendered());
     assert_eq!(tab.get_active_pane_id(client_id), Some(tiled_pane_id));
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
 
     assert!(!tab.fullscreen_covers_ui());
-    assert_eq!(
-        tab.floating_panes.rendered_pane_ids(),
-        vec![overlay_pane_id]
-    );
+    assert!(tab.overlays_are_rendered());
+    assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 }
 

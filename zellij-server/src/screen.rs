@@ -7972,17 +7972,16 @@ impl Screen {
         let err_context = || "failed to focus_plugin_pane".to_string();
         let mut tab_index_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
-        // an overlay is only an overlay by virtue of the coordinates it was placed with, and the
-        // tab it leaves forgets them - carry them over, or the pane lands in the new tab sized
-        // against its viewport and painted under the global panes
-        let mut overlay_coordinates = None;
+        // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
+        // pane lands in the new tab sized against its viewport and painted under the global panes
+        let mut overlay_placement = None;
         let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
         let all_tabs = self.get_tabs_mut();
         for (tab_index, tab) in all_tabs.iter_mut() {
             if let Some(plugin_pane_id) = tab.find_plugin(&run_plugin) {
                 tab_index_and_plugin_pane_id = Some((*tab_index, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_index != *tab_index {
-                    overlay_coordinates = tab.overlay_coordinates_for(plugin_pane_id);
+                    overlay_placement = tab.overlay_placement_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
 
@@ -7993,21 +7992,22 @@ impl Screen {
             let pane_id = plugin_pane_to_move_to_active_tab.pid();
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
-            if should_float || overlay_coordinates.is_some() {
-                // an overlay is not on the floating layer, so moving one here must not raise it -
-                // and `run_plugin` is asked as well as the coordinates, because a keybinding
-                // written before `overlay`/`modal` existed carries neither of them
-                let is_overlay = overlay_coordinates
-                    .as_ref()
-                    .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false))
-                    || run_plugin.requests_overlay();
-                if !is_overlay {
-                    new_active_tab.show_floating_panes();
-                }
+            if let Some(placement) = overlay_placement {
+                // an overlay is not on the floating layer, so moving one here must not raise it
+                new_active_tab.add_overlay_pane(
+                    plugin_pane_to_move_to_active_tab,
+                    pane_id,
+                    placement.kind,
+                    placement.coordinates.unwrap_or_default(),
+                    true,
+                    Some(client_id),
+                )?;
+            } else if should_float {
+                new_active_tab.show_floating_panes();
                 new_active_tab.add_floating_pane(
                     plugin_pane_to_move_to_active_tab,
                     pane_id,
-                    overlay_coordinates,
+                    None,
                     true,
                     Some(client_id),
                 )?;

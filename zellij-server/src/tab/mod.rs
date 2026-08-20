@@ -29,8 +29,9 @@ use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
-    Direction, KeyWithModifier, NewPanePlacement, PaneInfo, PermissionStatus, PermissionType,
-    PluginPermission, RegexHighlight, ResizeStrategy, Style, StyledText, WebSharing,
+    Direction, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo,
+    PermissionStatus, PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, Style,
+    StyledText, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
@@ -918,6 +919,47 @@ fn run_requests_overlay(run: &Option<Run>) -> bool {
     matches!(run, Some(Run::Plugin(run_plugin)) if run_plugin.requests_overlay())
 }
 
+/// The placement a pane launched with this `Run` asked for by its own configuration, if any.
+///
+/// Kept separate from `run_requests_overlay` because the *kind* matters: a modal is an overlay
+/// that must not have focus taken from it, and until overlays had a collection to store that in,
+/// modal-ness was re-read from this configuration at every decision point.
+fn run_overlay_placement(run: &Option<Run>) -> Option<OverlayPlacement> {
+    match run {
+        Some(Run::Plugin(run_plugin)) => run_plugin.overlay_placement(),
+        _ => None,
+    }
+}
+
+/// Resolve the two surviving spellings of "this pane is an overlay" into one placement.
+///
+/// The `overlay` flag on `FloatingPaneCoordinates` is still a valid *input* - it is what a
+/// keybinding written before `OverlayPlacement` existed carries, and what
+/// `zellij action change-floating-pane-coordinates --overlay` sends. It stops being *storage*: the
+/// pane's kind and coordinates live in `OverlayPanes` from here on. Phase 4 removes the flag once
+/// the in-repo plugins are off it.
+fn overlay_placement_for(
+    coordinates: &Option<FloatingPaneCoordinates>,
+    invoked_with: &Option<Run>,
+) -> Option<OverlayPlacement> {
+    let from_configuration = run_overlay_placement(invoked_with);
+    let coordinates_say_overlay = coordinates
+        .as_ref()
+        .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false));
+    if from_configuration.is_none() && !coordinates_say_overlay {
+        return None;
+    }
+    // the plugin's configuration is what knows whether this is a modal; the coordinates only ever
+    // said "somewhere on the surface"
+    let kind = from_configuration
+        .map(|placement| placement.kind)
+        .unwrap_or_default();
+    Some(OverlayPlacement {
+        kind,
+        coordinates: coordinates.clone(),
+    })
+}
+
 pub fn get_next_terminal_position(
     tiled_panes: &TiledPanes,
     floating_panes: &FloatingPanes,
@@ -1172,6 +1214,7 @@ impl Tab {
         }
         self.tiled_panes.set_client_dimmed(client_id, dimmed);
         self.floating_panes.set_client_dimmed(client_id, dimmed);
+        self.overlay_panes.set_client_dimmed(client_id, dimmed);
     }
 
     pub fn stacked_pane_list_is_active(&self) -> bool {
@@ -1315,6 +1358,7 @@ impl Tab {
     fn stands_in_for_a_pane(&self, stand_in: PaneId) -> Option<PaneId> {
         if !self.tiled_panes.panes_contain(&stand_in)
             && !self.floating_panes.panes_contain(&stand_in)
+            && !self.overlay_panes.panes_contain(&stand_in)
         {
             return None;
         }
@@ -2582,7 +2626,7 @@ impl Tab {
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         let last_selectable_floating_pane_id =
-            self.floating_panes.last_selectable_non_overlay_pane_id();
+            self.floating_panes.last_selectable_floating_pane_id();
         if last_selectable_floating_pane_id.is_some() && self.floating_panes.all_panes_are_visible()
         {
             self.hide_floating_panes();
@@ -2737,18 +2781,17 @@ impl Tab {
                 floating_pane_coordinates,
                 blocking_notification,
             ),
-            // Until overlays have a collection of their own, an overlay is still carried as a
-            // floating pane whose coordinates say `overlay: true`. `new_floating_pane` already
-            // declines to raise the layer for one, so this is the same path the `overlay`
-            // coordinates flag has always taken - just reached by an explicit placement that no
-            // caller can drop on the way through.
-            NewPanePlacement::Overlay(overlay) => self.new_floating_pane(
+            // The kind travels with the placement all the way into `OverlayPanes`. It used to be
+            // flattened to `overlay: true` here and then re-derived from the plugin's own
+            // configuration wherever it was needed - which is why a `--modal` *terminal* pane got
+            // overlay geometry but no modal focus semantics.
+            NewPanePlacement::Overlay(overlay) => self.new_overlay_pane(
                 pid,
                 initial_pane_title,
                 invoked_with,
                 start_suppressed,
                 should_focus_pane,
-                Some(overlay.as_floating_pane_coordinates()),
+                overlay,
                 blocking_notification,
             ),
             NewPanePlacement::InPlace {
@@ -2879,16 +2922,12 @@ impl Tab {
             self.park_pane(new_pane);
             Ok(())
         } else {
-            // an overlay is the client's active pane while the floating layer is down (see
-            // `get_active_pane_id`) - it must not be read as "the floating layer is where this
-            // client is working", or opening a pane over a modal reveals every hidden floating
-            // pane and puts the new one among them
+            // no overlay exclusion needed here any more: an overlay is not in `floating_panes`,
+            // so "the client's active pane is a floating pane" can no longer accidentally mean
+            // "the client is looking at a modal drawn over a hidden layer"
             let active_pane_is_floating = client_id
                 .and_then(|client_id| self.get_active_pane_id(client_id))
-                .is_some_and(|pane_id| {
-                    self.floating_panes.panes_contain(&pane_id)
-                        && !self.floating_panes.is_overlay(pane_id)
-                });
+                .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
             if active_pane_is_floating && !self.floating_panes.panes_are_visible() {
                 self.show_floating_panes();
             }
@@ -2906,15 +2945,12 @@ impl Tab {
                 // no way to learn it lost focus, so stealing it would leave the modal stuck on
                 // screen while input goes to the pane underneath - it keeps focus instead, and the
                 // new pane opens tiled but unfocused behind it.
-                let active_overlay = client_id
-                    .and_then(|client_id| self.floating_panes.active_pane_id(client_id))
-                    .filter(|pane_id| self.floating_panes.is_overlay(*pane_id));
-                match active_overlay {
-                    Some(pane_id) if self.floating_panes.pane_is_modal(pane_id) => {
-                        self.add_tiled_pane(new_pane, pid, false, None)
-                    },
-                    Some(_) => {
-                        self.floating_panes
+                let active_overlay =
+                    client_id.and_then(|client_id| self.overlay_panes.active_pane_id(client_id));
+                match active_overlay.map(|pane_id| self.overlay_panes.is_modal(&pane_id)) {
+                    Some(true) => self.add_tiled_pane(new_pane, pid, false, None),
+                    Some(false) => {
+                        self.overlay_panes
                             .defocus_pane(client_id.expect("active_overlay implies client_id"));
                         self.add_tiled_pane(new_pane, pid, false, client_id)
                     },
@@ -3033,35 +3069,20 @@ impl Tab {
         }
     }
     #[allow(clippy::too_many_arguments)]
-    pub fn new_floating_pane(
+    /// Build the pane a `new_*_pane` path is about to place, without deciding where it goes.
+    ///
+    /// Extracted so that the floating and overlay paths share one construction: they differ only
+    /// in which collection takes the pane, and a second copy of this would be a second place for
+    /// the two to drift.
+    fn build_pane(
         &mut self,
         pid: PaneId,
         initial_pane_title: Option<String>,
         invoked_with: Option<Run>,
-        start_suppressed: bool,
-        should_focus_pane: bool,
-        floating_pane_coordinates: Option<FloatingPaneCoordinates>,
         blocking_notification: Option<NotificationEnd>,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn Pane>> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
-        // A modal is an overlay because of what it is, not because of the coordinates whichever
-        // caller happened to pass: `ScreenInstruction::AddPlugin` only synthesizes overlay
-        // coordinates when nobody passed any, and a keybinding written before `overlay`/`modal`
-        // existed passes none of it at all. Asking the plugin's own configuration catches both.
-        let is_overlay = floating_pane_coordinates
-            .as_ref()
-            .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false))
-            || run_requests_overlay(&invoked_with);
-        // Sampled before the reveal below, so that a pane which turns itself into an overlay once
-        // it is running can put the layer back the way it found it - see
-        // `change_floating_pane_coordinates`.
-        let layer_was_visible = self.floating_panes.panes_are_visible();
-        if should_focus_pane && !is_overlay {
-            self.show_floating_panes();
-        }
-        self.close_down_to_max_terminals()
-            .with_context(err_context)?;
-        let mut new_pane = match pid {
+        Ok(match pid {
             PaneId::Terminal(term_pid) => {
                 let next_terminal_position = self.get_next_terminal_position();
                 Box::new(TerminalPane::new(
@@ -3115,30 +3136,74 @@ impl Tab {
                     self.styled_underlines,
                 )) as Box<dyn Pane>
             },
-        };
+        })
+    }
+
+    /// Park a pane in the suppressed panes rather than placing it, giving it a plausible geometry
+    /// so that it looks right the moment something takes it back out.
+    fn park_new_pane(&mut self, mut new_pane: Box<dyn Pane>) -> Result<()> {
+        let err_context = || "failed to park new pane".to_string();
+        let viewport = { *self.viewport.borrow() };
+        let new_pane_geom = half_size_middle_geom(&viewport, 0);
+        new_pane.set_active_at(Instant::now());
+        new_pane.set_geom(new_pane_geom);
+        new_pane.set_content_offset(Offset::frame(1));
+        resize_pty!(
+            new_pane,
+            self.os_api,
+            self.senders,
+            self.character_cell_size
+        )
+        .with_context(err_context)?;
+        self.park_pane(new_pane);
+        Ok(())
+    }
+
+    pub fn new_floating_pane(
+        &mut self,
+        pid: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        start_suppressed: bool,
+        should_focus_pane: bool,
+        floating_pane_coordinates: Option<FloatingPaneCoordinates>,
+        blocking_notification: Option<NotificationEnd>,
+    ) -> Result<()> {
+        // A modal is an overlay because of what it is, not because of the coordinates whichever
+        // caller happened to pass: `ScreenInstruction::AddPlugin` only synthesizes overlay
+        // coordinates when nobody passed any, and a keybinding written before `overlay`/`modal`
+        // existed passes none of it at all. Asking the plugin's own configuration catches both.
+        //
+        // Both spellings are still *inputs* - what they no longer do is decide where the pane is
+        // stored. An overlay goes to `overlay_panes` and never touches the floating layer.
+        if let Some(placement) = overlay_placement_for(&floating_pane_coordinates, &invoked_with) {
+            return self.new_overlay_pane(
+                pid,
+                initial_pane_title,
+                invoked_with,
+                start_suppressed,
+                should_focus_pane,
+                placement,
+                blocking_notification,
+            );
+        }
+        // Sampled before the reveal below. The in-repo popup plugins are still born as ordinary
+        // floating panes and promote themselves once they are running, and opening an ordinary
+        // floating pane raises the layer - so the promotion has to be able to put the layer back
+        // the way this pane found it. Phase 4 makes those plugins open as overlays directly, and
+        // then this goes.
+        let layer_was_visible = self.floating_panes.panes_are_visible();
+        if should_focus_pane {
+            self.show_floating_panes();
+        }
+        self.close_down_to_max_terminals()?;
+        let new_pane =
+            self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
         if start_suppressed {
-            // this pane needs to start in the background (suppressed), only accessible if a plugin takes it out
-            // of there in one way or another
-            // we need to do some bookkeeping for this pane, namely setting its geom and
-            // content_offset so that things will appear properly in the terminal - we set it to
-            // the default geom of the first floating pane - this is just in order to give it some
-            // reasonable size, when it is shown - if needed - it will be given the proper geom as if it were
-            // resized
-            let viewport = { *self.viewport.borrow() };
-            let new_pane_geom = half_size_middle_geom(&viewport, 0);
-            new_pane.set_active_at(Instant::now());
-            new_pane.set_geom(new_pane_geom);
-            new_pane.set_content_offset(Offset::frame(1));
-            resize_pty!(
-                new_pane,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .with_context(err_context)?;
-            self.park_pane(new_pane);
-            Ok(())
+            // this pane needs to start in the background (suppressed), only accessible if a plugin
+            // takes it out of there in one way or another
+            self.park_new_pane(new_pane)
         } else {
             let added = self.add_floating_pane(
                 new_pane,
@@ -3154,6 +3219,40 @@ impl Tab {
             added
         }
     }
+
+    /// Create a pane directly onto the session surface as an overlay.
+    ///
+    /// The floating path's compensations are absent rather than skipped: nothing raises the
+    /// floating layer here, so nothing has to remember its state in order to put it back. That
+    /// bookkeeping - `layer_visible_when_added`, `hide_floating_panes_under_overlay` - existed
+    /// only to undo a reveal an overlay never earned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_overlay_pane(
+        &mut self,
+        pid: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        start_suppressed: bool,
+        should_focus_pane: bool,
+        placement: OverlayPlacement,
+        blocking_notification: Option<NotificationEnd>,
+    ) -> Result<()> {
+        self.close_down_to_max_terminals()?;
+        let new_pane =
+            self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
+        if start_suppressed {
+            return self.park_new_pane(new_pane);
+        }
+        self.add_overlay_pane(
+            new_pane,
+            pid,
+            placement.kind,
+            placement.coordinates.unwrap_or_default(),
+            should_focus_pane,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new_in_place_pane(
         &mut self,
@@ -3390,6 +3489,10 @@ impl Tab {
                     self.floating_panes
                         .replace_pane(pane_id_to_replace, Box::new(new_pane))
                         .ok()
+                } else if self.overlay_panes.panes_contain(&pane_id_to_replace) {
+                    self.overlay_panes
+                        .replace_pane(pane_id_to_replace, Box::new(new_pane))
+                        .ok()
                 } else if self.tiled_panes.panes_contain(&pane_id_to_replace) {
                     self.tiled_panes
                         .replace_pane(pane_id_to_replace, Box::new(new_pane))
@@ -3479,6 +3582,10 @@ impl Tab {
                     self.floating_panes
                         .replace_pane(old_pane_id, Box::new(new_pane))
                         .ok()
+                } else if self.overlay_panes.panes_contain(&old_pane_id) {
+                    self.overlay_panes
+                        .replace_pane(old_pane_id, Box::new(new_pane))
+                        .ok()
                 } else {
                     self.tiled_panes
                         .replace_pane(old_pane_id, Box::new(new_pane))
@@ -3557,6 +3664,10 @@ impl Tab {
                     self.floating_panes
                         .replace_pane(old_pane_id, Box::new(new_pane))
                         .ok()
+                } else if self.overlay_panes.panes_contain(&old_pane_id) {
+                    self.overlay_panes
+                        .replace_pane(old_pane_id, Box::new(new_pane))
+                        .ok()
                 } else {
                     self.tiled_panes
                         .replace_pane(old_pane_id, Box::new(new_pane))
@@ -3606,6 +3717,10 @@ impl Tab {
             self.floating_panes
                 .replace_pane(pane_id_to_replace, pane_to_replace_with)
                 .ok()
+        } else if self.overlay_panes.panes_contain(&pane_id_to_replace) {
+            self.overlay_panes
+                .replace_pane(pane_id_to_replace, pane_to_replace_with)
+                .ok()
         } else {
             self.tiled_panes
                 .replace_pane(pane_id_to_replace, pane_to_replace_with)
@@ -3639,6 +3754,10 @@ impl Tab {
     ) {
         let mut replaced_pane = if self.floating_panes.panes_contain(&pane_id_to_replace) {
             self.floating_panes
+                .replace_pane(pane_id_to_replace, pane_to_replace_with)
+                .ok()
+        } else if self.overlay_panes.panes_contain(&pane_id_to_replace) {
+            self.overlay_panes
                 .replace_pane(pane_id_to_replace, pane_to_replace_with)
                 .ok()
         } else {
@@ -3974,12 +4093,14 @@ impl Tab {
         self.floating_panes
             .get_pane(pane_id)
             .map(Box::as_ref)
+            .or_else(|| self.overlay_panes.get_pane(pane_id).map(Box::as_ref))
             .or_else(|| self.tiled_panes.get_pane(pane_id).map(Box::as_ref))
             .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &*p.pane))
     }
     pub fn get_pane_with_id_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
         self.floating_panes
             .get_pane_mut(pane_id)
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
@@ -3992,6 +4113,7 @@ impl Tab {
             .and_then(|active_pane_id| {
                 self.floating_panes
                     .get_pane_mut(active_pane_id)
+                    .or_else(|| self.overlay_panes.get_pane_mut(active_pane_id))
                     .or_else(|| self.tiled_panes.get_pane_mut(active_pane_id))
             })
     }
@@ -4001,13 +4123,21 @@ impl Tab {
     ) -> Option<&mut Box<dyn Pane>> {
         self.get_active_pane_mut(client_id)
     }
+    /// Where this client's keyboard goes.
+    ///
+    /// An overlay comes first, and the only thing that can take focus from it is not being drawn
+    /// at all - a tiled pane fullscreened over the whole UI covers it, and focus follows what the
+    /// user can see. There is deliberately no layer-visibility test: an overlay is not on the
+    /// floating layer, and it was the exception carved into that test - and every path that forgot
+    /// the exception - that this collection exists to remove.
     pub fn get_active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
-        self.floating_panes
-            .get_active_pane_id(client_id)
-            .filter(|pane_id| {
-                self.floating_panes.panes_are_visible()
-                    || (self.pane_is_overlay(*pane_id)
-                        && self.floating_panes.get_pane_z_index(*pane_id).is_some())
+        self.overlay_panes
+            .active_pane_id(client_id)
+            .filter(|_| self.overlays_are_rendered())
+            .or_else(|| {
+                self.floating_panes
+                    .get_active_pane_id(client_id)
+                    .filter(|_| self.floating_panes.panes_are_visible())
             })
             .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }
@@ -4041,6 +4171,7 @@ impl Tab {
             .tiled_panes
             .get_panes()
             .chain(self.floating_panes.get_panes())
+            .chain(self.overlay_panes.get_panes())
             .chain(self.suppressed_stack_list_members())
             .filter(|(_, pane)| pane.has_bell())
             .map(|(pane_id, _)| *pane_id)
@@ -4106,6 +4237,7 @@ impl Tab {
     pub fn has_terminal_pid(&self, pid: u32) -> bool {
         self.tiled_panes.panes_contain(&PaneId::Terminal(pid))
             || self.floating_panes.panes_contain(&PaneId::Terminal(pid))
+            || self.overlay_panes.panes_contain(&PaneId::Terminal(pid))
             || self.suppressed_panes.contains_key(&PaneId::Terminal(pid))
     }
     pub fn has_plugin(&self, plugin_id: u32) -> bool {
@@ -4136,16 +4268,20 @@ impl Tab {
     pub fn has_pane_with_pid(&self, pid: &PaneId) -> bool {
         self.tiled_panes.panes_contain(pid)
             || self.floating_panes.panes_contain(pid)
+            || self.overlay_panes.panes_contain(pid)
             || self.suppressed_panes.contains_key(&*pid)
     }
     pub fn has_non_suppressed_pane_with_pid(&self, pid: &PaneId) -> bool {
-        self.tiled_panes.panes_contain(pid) || self.floating_panes.panes_contain(pid)
+        self.tiled_panes.panes_contain(pid)
+            || self.floating_panes.panes_contain(pid)
+            || self.overlay_panes.panes_contain(pid)
     }
     pub fn set_pane_is_nested_guest(&mut self, pane_id: PaneId, is_nested_guest: bool) {
         if let Some(pane) = self
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4160,6 +4296,7 @@ impl Tab {
             .tiled_panes
             .get_pane(pane_id)
             .or_else(|| self.floating_panes.get_pane(pane_id))
+            .or_else(|| self.overlay_panes.get_pane(pane_id))
             .or_else(|| self.suppressed_panes.get(&pane_id).map(|s_p| &s_p.pane))
         {
             pane.is_nested_guest()
@@ -4178,6 +4315,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4192,6 +4330,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4206,6 +4345,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4225,6 +4365,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4239,6 +4380,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4253,6 +4395,7 @@ impl Tab {
             .tiled_panes
             .get_pane(pane_id)
             .or_else(|| self.floating_panes.get_pane(pane_id))
+            .or_else(|| self.overlay_panes.get_pane(pane_id))
             .or_else(|| self.suppressed_panes.get(&pane_id).map(|s_p| &s_p.pane))
         {
             pane.guest_modal_selection(client_id).is_some()
@@ -4279,6 +4422,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4297,6 +4441,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -4317,6 +4462,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Terminal(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Terminal(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Terminal(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Terminal(pid))
@@ -4349,6 +4495,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Plugin(pid))
@@ -4393,6 +4540,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Terminal(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Terminal(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Terminal(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Terminal(pid))
@@ -4417,6 +4565,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Terminal(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Terminal(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Terminal(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Terminal(pid))
@@ -4975,7 +5124,7 @@ impl Tab {
         }
         *own_strips = global_pane_strips.to_vec();
         drop(own_strips);
-        self.floating_panes.reapply_overlay_coordinates();
+        self.overlay_panes.reapply_coordinates();
         true
     }
     /// The colour each global pane wants for the boundary it shares with this tab.
@@ -4990,18 +5139,23 @@ impl Tab {
         }
     }
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
-        self.floating_panes.is_overlay(pane_id)
+        self.overlay_panes.panes_contain(&pane_id)
     }
     /// Whether this tab is painting a floating pane outside its own viewport - onto the global
     /// panes or the chrome beside them. The one thing a tab draws that the tab cannot clean up
     /// after by repainting itself.
     pub fn has_floating_panes_outside_viewport(&self) -> bool {
         self.floating_panes.has_panes_outside_viewport()
+            || (self.overlays_are_rendered() && self.overlay_panes.has_panes_outside_viewport())
     }
-    /// Whether a floating pane is being painted at `position` - and so owns the mouse there, ahead
-    /// of anything drawn behind it.
+    /// Whether anything this tab draws over its tiled panes is being painted at `position` - and
+    /// so owns the mouse there, ahead of anything drawn behind it. Overlays first, because they
+    /// are painted over the floating layer.
     pub fn visible_floating_pane_at(&self, position: &Position) -> Option<PaneId> {
-        self.floating_panes.visible_pane_id_at(position)
+        self.overlay_panes
+            .visible_pane_id_at(position)
+            .filter(|_| self.overlays_are_rendered())
+            .or_else(|| self.floating_panes.visible_pane_id_at(position))
     }
     pub fn floating_pane_is_being_moved_with_mouse(&self) -> bool {
         self.floating_panes.pane_is_being_moved_with_mouse()
@@ -5010,13 +5164,51 @@ impl Tab {
     /// for callers outside the tab's own render (eg. the global panes, which paint after every
     /// tab has had its turn).
     pub fn floating_panes_stack(&self) -> Option<FloatingPanesStack> {
-        self.floating_panes.stack()
+        self.occlusion_stack()
     }
-    /// The coordinates a floating pane was placed with, if it was placed as an overlay. Moving a
-    /// pane between tabs has to carry these along: they are what makes it an overlay in the tab
-    /// it lands in, and what sizes it against the whole surface rather than the tab's viewport.
-    pub fn overlay_coordinates_for(&self, pane_id: PaneId) -> Option<FloatingPaneCoordinates> {
-        self.floating_panes.overlay_coordinates_for(pane_id)
+    /// Everything this tab draws over its own tiled panes, bottom-most first: the floating layer,
+    /// then the overlays on top of it.
+    ///
+    /// One flat list, because that is what `Output` clips against - a pane's z-index is its
+    /// absolute position here and `visible_character_chunks` does `layers.iter().skip(z_index)`.
+    /// The concatenation order is what puts an overlay above every floating pane, pinned ones
+    /// included; while overlays lived among the floating panes a pinned pane outranked them,
+    /// because `make_sure_pinned_panes_are_on_top` had already lifted it.
+    ///
+    /// `render` must gate on exactly the same conditions this does, or a pane is handed an index
+    /// that is not its own, is clipped against its own geometry, and erases itself.
+    fn occlusion_stack(&self) -> Option<FloatingPanesStack> {
+        let mut layers: Vec<PaneGeom> = self
+            .floating_panes
+            .stack()
+            .map(|stack| stack.layers)
+            .unwrap_or_default();
+        if self.overlays_are_rendered() {
+            layers.extend(self.overlay_panes.layers());
+        }
+        if layers.is_empty() {
+            None
+        } else {
+            Some(FloatingPanesStack { layers })
+        }
+    }
+    /// How many layers the floating panes occupy in `occlusion_stack`, which is the offset every
+    /// overlay's z-index has to be shifted by.
+    fn floating_layer_count(&self) -> usize {
+        self.floating_panes
+            .stack()
+            .map(|stack| stack.layers.len())
+            .unwrap_or(0)
+    }
+    /// How this pane is placed on the surface, if it is an overlay. Moving a pane between tabs has
+    /// to carry this along: the tab it leaves forgets it, and without it the pane lands in the new
+    /// tab sized against that tab's viewport and painted under the global panes.
+    ///
+    /// The whole placement rather than just the coordinates, so that a modal arrives as a modal -
+    /// the kind used to be re-derived from the plugin's configuration on the far side, which is
+    /// why a modal *terminal* pane could not survive the trip.
+    pub fn overlay_placement_for(&self, pane_id: PaneId) -> Option<OverlayPlacement> {
+        self.overlay_panes.placement_of(&pane_id)
     }
     /// Recompute the tiled panes' content offsets (and the pty sizes that follow from them) against
     /// the current boundary viewport — needed when the global pane strips change without the tab's
@@ -5112,7 +5304,7 @@ impl Tab {
         if connected_clients.is_empty() {
             return Ok(());
         }
-        let floating_panes_stack = self.floating_panes.stack();
+        let floating_panes_stack = self.occlusion_stack();
         output.add_clients(
             &connected_clients,
             self.link_handler.clone(),
@@ -5159,37 +5351,65 @@ impl Tab {
         Ok(())
     }
 
-    /// Draw this tab's floating panes. They render here rather than inside `render` because the
-    /// global panes paint after every tab has had its turn: a floating pane drawn with the rest of
-    /// the tab would be painted over by any global pane it overlaps. Floating panes float above
-    /// the global panes for the same reason they float above the tiled ones - being floating is
-    /// enough, no `overlay` bookkeeping required.
+    /// Draw this tab's floating panes and then its overlays. They render here rather than inside
+    /// `render` because the global panes paint after every tab has had its turn: a floating pane
+    /// drawn with the rest of the tab would be painted over by any global pane it overlaps.
+    ///
+    /// The overlays go last, and with a z-index offset of the floating layer count, because
+    /// `occlusion_stack` concatenates the two in that order and a pane's z-index is its absolute
+    /// position in that one flat list.
     pub fn render_floating_panes_after_global_panes(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
         inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
-        if !self.has_floating_panes_to_render() {
-            return Ok(());
+        if self.has_floating_panes_to_render() {
+            self.floating_panes.render(
+                output,
+                &self.mouse_hover_pane_id,
+                self.current_pane_group.borrow().clone_inner(),
+                client_id_override,
+                inactive_clients,
+                &self.mouse_help_text_visible,
+                self.mouse_scroll_resize,
+            )?;
         }
-        self.floating_panes.render(
-            output,
-            &self.mouse_hover_pane_id,
-            self.current_pane_group.borrow().clone_inner(),
-            client_id_override,
-            inactive_clients,
-            &self.mouse_help_text_visible,
-            self.mouse_scroll_resize,
-        )
+        if self.overlays_are_rendered() {
+            let z_index_offset = self.floating_layer_count();
+            self.overlay_panes.render(
+                output,
+                &self.mouse_hover_pane_id,
+                self.current_pane_group.borrow().clone_inner(),
+                client_id_override,
+                inactive_clients,
+                &self.mouse_help_text_visible,
+                self.mouse_scroll_resize,
+                z_index_offset,
+            )?;
+        }
+        Ok(())
     }
 
     /// The condition `render` used to apply before drawing the floating panes inline.
     pub fn has_floating_panes_to_render(&self) -> bool {
         !self.tiled_panes.fullscreen_covers_ui()
             && ((self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
-                || self.floating_panes.has_pinned_panes()
-                || self.floating_panes.has_overlays())
+                || self.floating_panes.has_pinned_panes())
+    }
+
+    /// Whether the overlays contribute to this frame at all.
+    ///
+    /// An overlay is drawn for as long as it exists - there is no layer to raise and no visibility
+    /// to check. The one thing that still hides it is a tiled pane fullscreened over the whole UI,
+    /// which today paints over the floating layer too. That is arguably wrong for a *modal* (it is
+    /// focused and invisible), but it is what the code does now and changing it is not this move;
+    /// see the Phase 4 notes in `docs/MODAL_OVERLAY_REFACTOR.md`.
+    ///
+    /// `occlusion_stack` and `render_floating_panes_after_global_panes` both gate on this, and
+    /// must keep doing so together.
+    pub fn overlays_are_rendered(&self) -> bool {
+        !self.tiled_panes.fullscreen_covers_ui() && self.overlay_panes.has_panes()
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
@@ -5207,7 +5427,7 @@ impl Tab {
             return;
         }
         // each tab's render pointed the output at its own stack, so point it back at ours
-        output.set_floating_panes_stack(self.floating_panes.stack());
+        output.set_floating_panes_stack(self.occlusion_stack());
         if output.has_rendered_assets() {
             output.hide_cursor_for_clients(connected_clients.iter().copied());
         }
@@ -5464,6 +5684,11 @@ impl Tab {
             .resize_pty_all_panes(&mut self.os_api)
             .with_context(err_context)?;
         self.tiled_panes.resize(new_screen_size);
+        // after `tiled_panes.resize`, which is what updates the shared `display_area` cell the
+        // surface is computed from. `FloatingPanes::reapply_overlay_coordinates` used to run from
+        // inside `floating_panes.resize` above, and so re-resolved every overlay against the
+        // surface as it was *before* the resize - a 60%-wide overlay kept its old width.
+        self.overlay_panes.reapply_coordinates();
         if self.auto_layout && !self.swap_layouts.is_floating_damaged() {
             // we do this only for floating panes, because the constraint system takes care of the
             // tiled panes
@@ -5970,6 +6195,7 @@ impl Tab {
         self.tiled_panes
             .pane_ids()
             .chain(self.floating_panes.pane_ids())
+            .chain(self.overlay_panes.pane_ids())
             .copied()
             .collect()
     }
@@ -6040,6 +6266,11 @@ impl Tab {
                     self.hide_floating_panes();
                 }
             }
+        } else if let Some(pane) = self.overlay_panes.get_mut(&id) {
+            pane.set_selectable(selectable);
+            if !selectable {
+                self.overlay_panes.move_clients_out_of_pane(id);
+            }
         }
         // we do this here because if there is a non-selectable pane on the edge, we consider it
         // outside the viewport (a ui-pane, eg. the status-bar and tab-bar) and need to adjust for it
@@ -6093,7 +6324,14 @@ impl Tab {
         if !ignore_suppressed_panes && self.suppressed_panes.remove(&id).is_some() {
             return;
         }
-        let closed_pane = if self.floating_panes.panes_contain(&id) {
+        let closed_pane = if self.overlay_panes.panes_contain(&id) {
+            // nothing to unset, hide or relayout: an overlay is not on a layer and does not tile
+            self.overlay_panes.move_clients_out_of_pane(id);
+            let closed_pane = self.overlay_panes.remove_pane(id);
+            self.set_force_render();
+            self.overlay_panes.set_force_render();
+            closed_pane
+        } else if self.floating_panes.panes_contain(&id) {
             if self.floating_panes.fullscreen_pane_id() == Some(id) {
                 self.floating_panes.unset_fullscreen();
             }
@@ -6182,7 +6420,18 @@ impl Tab {
                 },
             };
         }
-        if self.floating_panes.panes_contain(&id) {
+        if self.overlay_panes.panes_contain(&id) {
+            // nothing to unset, hide or relayout: an overlay is not on a layer and does not tile
+            self.overlay_panes.move_clients_out_of_pane(id);
+            let mut closed_pane = self.overlay_panes.remove_pane(id);
+            self.set_force_render();
+            self.overlay_panes.set_force_render();
+            // we do this so that the logical index will not affect ordering in the target tab
+            if let Some(closed_pane) = closed_pane.as_mut() {
+                closed_pane.reset_logical_position();
+            }
+            closed_pane
+        } else if self.floating_panes.panes_contain(&id) {
             if self.floating_panes.fullscreen_pane_id() == Some(id) {
                 self.floating_panes.unset_fullscreen();
             }
@@ -6254,6 +6503,8 @@ impl Tab {
         if self.floating_panes.panes_contain(&id) {
             self.floating_panes
                 .hold_pane(id, exit_status, is_first_run, run_command);
+        } else if let Some(pane) = self.overlay_panes.get_mut(&id) {
+            pane.hold(exit_status, is_first_run, run_command);
         } else if self.tiled_panes.panes_contain(&id) {
             self.tiled_panes
                 .hold_pane(id, exit_status, is_first_run, run_command);
@@ -6281,6 +6532,8 @@ impl Tab {
                 // process left with nothing that could ever close it.
                 let replaced_pane = if self.floating_panes.panes_contain(&pane_id) {
                     Some(self.floating_panes.replace_pane(pane_id, suppressed_pane)).transpose()?
+                } else if self.overlay_panes.panes_contain(&pane_id) {
+                    Some(self.overlay_panes.replace_pane(pane_id, suppressed_pane)).transpose()?
                 } else {
                     self.tiled_panes.replace_pane(pane_id, suppressed_pane)
                 };
@@ -6290,6 +6543,7 @@ impl Tab {
                 if let Some(suppressed_pane) = self
                     .floating_panes
                     .get_pane(suppressed_pane_id)
+                    .or_else(|| self.overlay_panes.get_pane(suppressed_pane_id))
                     .or_else(|| self.tiled_panes.get_pane(suppressed_pane_id))
                 {
                     // You may be thinking: why aren't we using the original "suppressed_pane" here,
@@ -6989,6 +7243,7 @@ impl Tab {
             .tiled_panes
             .pane_ids()
             .chain(self.floating_panes.pane_ids())
+            .chain(self.overlay_panes.pane_ids())
             .filter_map(|p| match p {
                 PaneId::Plugin(pid) => Some(pid),
                 _ => None,
@@ -7096,6 +7351,7 @@ impl Tab {
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
         self.tiled_panes.set_pane_frames(pane_frame_style);
         self.floating_panes.set_pane_frame_style(pane_frame_style);
+        self.overlay_panes.set_pane_frame_style(pane_frame_style);
         self.pane_frame_style = pane_frame_style;
         self.set_should_clear_display_before_rendering();
         self.set_force_render();
@@ -7172,6 +7428,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -7191,6 +7448,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -7209,6 +7467,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&pane_id)
@@ -7249,6 +7508,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Plugin(pid))
@@ -7268,6 +7528,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Plugin(pid))
@@ -7286,6 +7547,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Plugin(pid))
@@ -7300,6 +7562,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 self.suppressed_panes
                     .get_mut(&PaneId::Plugin(pid))
@@ -7314,17 +7577,6 @@ impl Tab {
         self.floating_panes.toggle_show_panes(true);
         self.tiled_panes.unfocus_all_panes();
         self.set_force_render();
-    }
-
-    /// Show the floating layer because a pane on it is being opened or focused - unless that pane
-    /// is an overlay, which is not on the layer in the first place and must never drag it up.
-    fn show_floating_panes_for(&mut self, pane_id: PaneId) {
-        if self.floating_panes.is_overlay(pane_id)
-            || self.floating_panes.pane_requests_overlay(pane_id)
-        {
-            return;
-        }
-        self.show_floating_panes();
     }
 
     pub fn hide_floating_panes(&mut self) {
@@ -7396,6 +7648,7 @@ impl Tab {
         self.tiled_panes
             .get_plugin_pane_id(run_plugin_or_alias)
             .or_else(|| self.floating_panes.get_plugin_pane_id(run_plugin_or_alias))
+            .or_else(|| self.overlay_panes.get_plugin_pane_id(run_plugin_or_alias))
             .or_else(|| {
                 self.suppressed_panes
                     .iter()
@@ -7420,11 +7673,12 @@ impl Tab {
         self.tiled_panes
             .focus_pane_if_exists(pane_id, client_id)
             .map(|_| self.hide_floating_panes())
+            .or_else(|_| self.overlay_panes.focus_pane_if_exists(pane_id, client_id))
             .or_else(|_| {
                 let focused_floating_pane =
                     self.floating_panes.focus_pane_if_exists(pane_id, client_id);
                 if focused_floating_pane.is_ok() {
-                    self.show_floating_panes_for(pane_id)
+                    self.show_floating_panes();
                 };
                 focused_floating_pane
             })
@@ -7439,16 +7693,11 @@ impl Tab {
                     Some(mut pane) => {
                         pane.set_selectable(true);
                         if should_float {
-                            // A modal parked in the suppressed panes comes back out as one: it
-                            // keeps whatever overlay coordinates it had (`add_floating_pane`
-                            // re-derives them from the plugin itself if it has none), and it
-                            // does not bring the floating layer up with it.
-                            let is_overlay = run_requests_overlay(pane.invoked_with())
-                                || self
-                                    .floating_panes
-                                    .overlay_coordinates_for(pane_id)
-                                    .is_some();
-                            if !is_overlay {
+                            // A modal parked in the suppressed panes comes back out as one:
+                            // `add_floating_pane` reads the placement off the pane itself and
+                            // sends it to the overlay collection, so it does not bring the
+                            // floating layer up with it.
+                            if !run_requests_overlay(pane.invoked_with()) {
                                 self.show_floating_panes();
                             }
                             self.add_floating_pane(pane, pane_id, None, true, Some(client_id))
@@ -7623,8 +7872,10 @@ impl Tab {
         let current_pane_group = { self.current_pane_group.borrow().clone_inner() };
         let mut tiled_pane_info = self.tiled_panes.pane_info(&current_pane_group);
         let mut floating_pane_info = self.floating_panes.pane_info(&current_pane_group);
+        let mut overlay_pane_info = self.overlay_panes.pane_info(&current_pane_group);
         pane_info.append(&mut tiled_pane_info);
         pane_info.append(&mut floating_pane_info);
+        pane_info.append(&mut overlay_pane_info);
         for (_suppressed_pane_id, SuppressedPane { pane, .. }) in self.suppressed_panes.iter() {
             let mut pane_info_for_suppressed_pane =
                 pane_info_for_pane(&pane.pid(), pane.as_ref(), &current_pane_group);
@@ -7635,6 +7886,48 @@ impl Tab {
             pane_info.push(pane_info_for_suppressed_pane);
         }
         pane_info
+    }
+    /// Place `pane` on the session surface as an overlay of `kind`.
+    ///
+    /// Unlike `add_floating_pane` this does no geometry: an overlay's geometry is entirely a
+    /// function of its coordinates and the surface, and `OverlayPanes::add_pane` resolves it. It
+    /// is also the reason there is no `find_room_for_new_pane` here - overlays do not tile
+    /// themselves out of each other's way, they stack.
+    pub fn add_overlay_pane(
+        &mut self,
+        mut pane: Box<dyn Pane>,
+        pane_id: PaneId,
+        kind: OverlayKind,
+        coordinates: FloatingPaneCoordinates,
+        should_focus_new_pane: bool,
+        client_id: Option<ClientId>,
+    ) -> Result<()> {
+        let err_context = || "failed to add overlay pane".to_string();
+        if let Some(pinned) = coordinates.pinned {
+            // an overlay is above every floating pane already, so pinning it means nothing - but
+            // honour the flag rather than silently dropping what the caller asked for
+            pane.set_pinned(pinned);
+        }
+        pane.set_active_at(Instant::now());
+        self.overlay_panes
+            .add_pane(pane_id, pane, kind, coordinates);
+        resize_pty!(
+            self.overlay_panes
+                .get_mut(&pane_id)
+                .with_context(err_context)?,
+            self.os_api,
+            self.senders,
+            self.character_cell_size
+        )
+        .with_context(err_context)?;
+        if should_focus_new_pane {
+            match client_id {
+                Some(client_id) => self.overlay_panes.focus_pane(pane_id, client_id),
+                None => self.overlay_panes.focus_pane_for_all_clients(pane_id),
+            }
+        }
+        self.set_force_render();
+        Ok(())
     }
     pub fn add_floating_pane(
         &mut self,
@@ -7647,18 +7940,21 @@ impl Tab {
         let err_context = || "failed to add floating pane".to_string();
         // A pane that is an overlay by configuration is one wherever it came from, including the
         // paths that pass no coordinates at all (`focus_pane_with_id` taking a modal back out of
-        // the suppressed panes) or their own (`pane_groups`). Placing it as anything else would
-        // size it against the tab's viewport and draw it under the global panes.
-        let floating_pane_coordinates = if run_requests_overlay(pane.invoked_with()) {
-            Some(
-                floating_pane_coordinates
-                    .or_else(|| self.floating_panes.overlay_coordinates_for(pane_id))
-                    .unwrap_or_default()
-                    .as_overlay(),
-            )
-        } else {
-            floating_pane_coordinates
-        };
+        // the suppressed panes) or their own (`pane_groups`). Placing it as a floating pane would
+        // size it against the tab's viewport, draw it under the global panes, and raise the
+        // floating layer under it.
+        if let Some(placement) =
+            overlay_placement_for(&floating_pane_coordinates, pane.invoked_with())
+        {
+            return self.add_overlay_pane(
+                pane,
+                pane_id,
+                placement.kind,
+                placement.coordinates.unwrap_or_default(),
+                should_focus_new_pane,
+                client_id,
+            );
+        }
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
         }
@@ -7874,6 +8170,7 @@ impl Tab {
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
             .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
+            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
             .or_else(|| {
                 let mut suppressed_pane = self
                     .suppressed_panes
@@ -7987,6 +8284,7 @@ impl Tab {
         // style and skip their re-render.
         self.default_mode_info.update_theme(theme);
         self.floating_panes.update_pane_themes(theme);
+        self.overlay_panes.update_pane_themes(theme);
         self.tiled_panes.update_pane_themes(theme);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
             pane.update_theme(theme);
@@ -8176,11 +8474,33 @@ impl Tab {
             }
         }
     }
+    /// Move or resize a pane on the surface, and - if the new coordinates say so - make it an
+    /// overlay.
+    ///
+    /// The promotion is a *migration* now: the pane leaves `floating_panes` and joins
+    /// `overlay_panes`. It used to be a flag set on a pane that stayed where it was, which is why
+    /// there was a block here restoring the floating layer's visibility afterwards - opening an
+    /// ordinary floating pane raises the layer, and a pane that became an overlay a moment later
+    /// had to put back what its own birth had revealed. A pane that is never on the layer reveals
+    /// nothing, so there is nothing to undo.
+    ///
+    /// The in-repo popup plugins still arrive this way (they open floating and call
+    /// `change_floating_panes_coordinates(..).as_overlay()` from `load()`), and `hocus-new-agent`
+    /// re-asserts it on every resize - so an overlay changing its coordinates has to stay an
+    /// overlay of the same kind. That now holds by construction: `OverlayPanes` keeps the kind
+    /// beside the pane and simply leaves it alone.
     pub fn change_floating_pane_coordinates(
         &mut self,
         pane_id: &PaneId,
         floating_pane_coordinates: FloatingPaneCoordinates,
     ) -> Result<()> {
+        // already an overlay: coordinates change, overlay-ness does not
+        if self.overlay_panes.panes_contain(pane_id) {
+            self.overlay_panes
+                .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+            self.set_force_render();
+            return Ok(());
+        }
         if !self.floating_panes.panes_contain(pane_id) {
             // if these panes are not floating, we make them floating (assuming doing so wouldn't
             // be removing the last selectable tiled pane in the tab, which would close it)
@@ -8191,38 +8511,62 @@ impl Tab {
                 if let Some(pane) = self.extract_pane(*pane_id, true) {
                     self.add_floating_pane(pane, *pane_id, None, false, None)?;
                 }
+                // `add_floating_pane` sends an overlay-by-configuration pane straight to the
+                // overlay collection, so it may already have landed there
+                if self.overlay_panes.panes_contain(pane_id) {
+                    self.overlay_panes
+                        .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+                    self.set_force_render();
+                    return Ok(());
+                }
             }
         }
-        let was_overlay = self.floating_panes.is_overlay(*pane_id);
-        self.floating_panes
-            .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
-        let is_overlay = self.floating_panes.is_overlay(*pane_id);
-        if is_overlay && !was_overlay {
-            // A pane that turns itself into an overlay after the fact was, a moment ago, an
-            // ordinary floating pane - and opening one of those shows the floating layer. Left
-            // set, that reads as "floating panes are visible": it lights the status bar's <f>,
-            // sends the next new pane to the floating layer, swallows splits and focus moves,
-            // and - the reason this matters most - every floating pane the user had hidden is
-            // now on screen under the modal.
-            //
-            // So put the layer back where this pane found it. Asking instead whether anything
-            // else is on the layer (which is what this used to do) gets the answer wrong in
-            // exactly the case that hurts: a tab with hidden floating panes in it, where the
-            // reveal is visible and the corrective declines to fire. Where nothing was noted -
-            // a pane that arrived by some route other than being opened, and only later became
-            // an overlay - fall back to the old reading rather than guess at intent.
-            let restore_hidden = match self.floating_panes.take_layer_state_before_adding(*pane_id)
-            {
+        // becoming an overlay: leave the floating layer rather than being flagged on it
+        if floating_pane_coordinates.overlay.unwrap_or(false)
+            && self.floating_panes.panes_contain(pane_id)
+        {
+            let kind = run_overlay_placement(
+                self.floating_panes
+                    .get_pane(*pane_id)
+                    .map(|pane| pane.invoked_with())
+                    .unwrap_or(&None),
+            )
+            .map(|placement| placement.kind)
+            .unwrap_or_default();
+            // carried across the move rather than re-applied: the pane keeps the focus it already
+            // had, and must not be told it gained anything
+            let focused_clients = self.floating_panes.clients_focused_on(pane_id);
+            // Whether this pane's own birth is what raised the layer. If it was, the layer goes
+            // back down behind the overlay - otherwise every floating pane the user had hidden is
+            // now on screen under a modal. Nothing was noted for a pane that arrived by some other
+            // route and only later became an overlay; there, fall back to asking whether anything
+            // is left on the layer at all.
+            let layer_was_visible = self.floating_panes.take_layer_state_before_adding(*pane_id);
+            if let Some(pane) = self.extract_pane(*pane_id, true) {
+                self.add_overlay_pane(
+                    pane,
+                    *pane_id,
+                    kind,
+                    floating_pane_coordinates,
+                    false,
+                    None,
+                )?;
+                self.overlay_panes.adopt_focus(*pane_id, &focused_clients);
+            }
+            let restore_hidden = match layer_was_visible {
                 Some(layer_was_visible) => !layer_was_visible,
-                None => self
-                    .floating_panes
-                    .last_selectable_non_overlay_pane_id()
-                    .is_none(),
+                None => !self.floating_panes.has_selectable_panes(),
             };
             if restore_hidden && self.floating_panes.all_panes_are_visible() {
-                self.hide_floating_panes_under_overlay();
+                // the plain one: the overlay has already left the layer, so there is no longer a
+                // focused pane down there for this to lie to
+                self.hide_floating_panes();
             }
+            self.swap_layouts.set_is_floating_damaged();
+            return Ok(());
         }
+        self.floating_panes
+            .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
         self.set_force_render();
         self.swap_layouts.set_is_floating_damaged();
         Ok(())

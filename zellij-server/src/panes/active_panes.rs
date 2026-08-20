@@ -59,6 +59,14 @@ impl ActivePanes {
         self.active_panes.insert(client_id, pane_id);
         self.focus_pane(pane_id, panes);
     }
+    /// Record this client's focus without telling either pane about it.
+    ///
+    /// For a pane that is moving between collections while keeping focus: it did not gain focus,
+    /// it already had it, and the pane it is "replacing" is itself. Sending a focus-in here would
+    /// be as much of a lie as the focus-out that `unfocus_all_panes_except` used to suppress.
+    pub fn insert_silently(&mut self, client_id: ClientId, pane_id: PaneId) {
+        self.active_panes.insert(client_id, pane_id);
+    }
     pub fn set_last_pane(&mut self, client_id: ClientId, pane_id: PaneId) {
         self.last_panes.insert(client_id, pane_id);
     }
