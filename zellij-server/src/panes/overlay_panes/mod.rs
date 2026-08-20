@@ -35,15 +35,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use zellij_utils::{
-    data::{FloatingPaneCoordinates, ModeInfo, OverlayKind, Style},
+    data::{
+        FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, Style, Styling,
+    },
     errors::prelude::*,
+    input::layout::RunPluginOrAlias,
     input::options::PaneFrameStyle,
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
     position::Position,
 };
 
 use crate::resize_pty;
-use crate::tab::Pane;
+use crate::tab::{pane_info_for_pane, Pane};
 use crate::{
     global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
@@ -247,12 +250,81 @@ impl OverlayPanes {
     pub fn get_mut(&mut self, pane_id: &PaneId) -> Option<&mut Box<dyn Pane>> {
         self.panes.get_mut(pane_id).map(|overlay| &mut overlay.pane)
     }
+    /// By-value twins of `get`/`get_mut`, so that the `.or_else(..)` chains in `Tab` that walk the
+    /// collections in turn read the same for each one - `FloatingPanes::get_pane` takes a `PaneId`.
+    pub fn get_pane(&self, pane_id: PaneId) -> Option<&Box<dyn Pane>> {
+        self.get(&pane_id)
+    }
+    pub fn get_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
+        self.get_mut(&pane_id)
+    }
+    pub fn get_panes(&self) -> impl Iterator<Item = (&PaneId, &Box<dyn Pane>)> {
+        self.panes
+            .iter()
+            .map(|(pane_id, overlay)| (pane_id, &overlay.pane))
+    }
+    pub fn get_panes_mut(&mut self) -> impl Iterator<Item = (&PaneId, &mut Box<dyn Pane>)> {
+        self.panes
+            .iter_mut()
+            .map(|(pane_id, overlay)| (pane_id, &mut overlay.pane))
+    }
+    pub fn get_plugin_pane_id(&self, run_plugin_or_alias: &RunPluginOrAlias) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find(|(_, overlay)| {
+                run_plugin_or_alias.is_equivalent_to_run(overlay.pane.invoked_with())
+            })
+            .map(|(pane_id, _)| *pane_id)
+    }
+    /// How this overlay is placed - its kind and the coordinates it resolves against - or `None`
+    /// if it is not an overlay at all. This is what has to travel when a pane moves between tabs.
+    pub fn placement_of(&self, pane_id: &PaneId) -> Option<OverlayPlacement> {
+        self.panes.get(pane_id).map(|overlay| OverlayPlacement {
+            kind: overlay.kind,
+            coordinates: Some(overlay.coordinates.clone()),
+        })
+    }
     /// What this overlay does when focus moves away, or `None` if it is not an overlay at all.
     pub fn kind_of(&self, pane_id: &PaneId) -> Option<OverlayKind> {
         self.panes.get(pane_id).map(|overlay| overlay.kind)
     }
     pub fn is_modal(&self, pane_id: &PaneId) -> bool {
         self.kind_of(pane_id).is_some_and(|kind| kind.is_modal())
+    }
+    /// The last overlay a client could be sent to, bottom-of-stack-last. Used when focus has to
+    /// land somewhere in this collection and nobody said where.
+    pub fn last_selectable_pane_id(&self) -> Option<PaneId> {
+        self.stack_layer_ids()
+            .into_iter()
+            .rev()
+            .find(|pane_id| self.get(pane_id).is_some_and(|pane| pane.selectable()))
+    }
+    pub fn has_selectable_panes(&self) -> bool {
+        self.last_selectable_pane_id().is_some()
+    }
+    pub fn active_panes_contain(&self, client_id: &ClientId) -> bool {
+        self.active_panes.contains_key(client_id)
+    }
+
+    /// How each overlay reports itself to plugins and to the CLI.
+    ///
+    /// `is_floating` stays true: an overlay is not on the floating layer, but every consumer of
+    /// `PaneInfo` reads that field as "not tiled", and a pane drawn over the session is certainly
+    /// that. Changing the contract is a separate question from moving the pane.
+    pub fn pane_info(&self, current_pane_group: &HashMap<ClientId, Vec<PaneId>>) -> Vec<PaneInfo> {
+        self.panes
+            .iter()
+            .map(|(pane_id, overlay)| {
+                let mut pane_info_for_pane =
+                    pane_info_for_pane(pane_id, overlay.pane.as_ref(), current_pane_group);
+                pane_info_for_pane.is_floating = true;
+                pane_info_for_pane.is_suppressed = false;
+                pane_info_for_pane.is_focused = self.active_panes.pane_id_is_focused(pane_id);
+                // an overlay cannot go fullscreen - there is no `fullscreen_pane_id` here
+                pane_info_for_pane.is_fullscreen = false;
+                pane_info_for_pane
+            })
+            .collect()
     }
 
     // ---- z-order and occlusion ------------------------------------------------------------
@@ -320,12 +392,47 @@ impl OverlayPanes {
         self.z_indices.push(pane_id);
         self.set_force_render();
     }
+    /// Take over the focus of a pane that has just moved into this collection from another one,
+    /// without telling it anything: it kept its focus across the move, so it neither gained nor
+    /// lost it. Used by the promotion path in `Tab::change_floating_pane_coordinates`.
+    pub fn adopt_focus(&mut self, pane_id: PaneId, client_ids: &[ClientId]) {
+        for client_id in client_ids {
+            self.active_panes.insert_silently(*client_id, pane_id);
+        }
+        self.z_indices.retain(|p_id| *p_id != pane_id);
+        self.z_indices.push(pane_id);
+        self.set_force_render();
+    }
+    /// Focus this overlay for one client, leaving every other client where it was.
+    ///
+    /// An overlay is drawn for everybody, but it is not focused for everybody: a second client
+    /// looking at a tiled pane keeps looking at it. Raising the pane in the occlusion stack *is*
+    /// shared, because the stack is.
     pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
         if let Some(previously_active) = self.active_pane_id(client_id) {
             self.active_panes
                 .set_last_pane(client_id, previously_active);
         }
-        self.focus_pane_for_all_clients(pane_id);
+        self.active_panes.insert(client_id, pane_id, &self.panes);
+        self.set_pane_active_at(pane_id);
+        self.z_indices.retain(|p_id| *p_id != pane_id);
+        self.z_indices.push(pane_id);
+        self.set_force_render();
+    }
+    pub fn focus_pane_if_exists(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
+        if self.panes.contains_key(&pane_id) {
+            self.focus_pane(pane_id, client_id);
+            Ok(())
+        } else {
+            Err(anyhow!("Pane not found"))
+        }
+    }
+    /// Give up this client's overlay focus, so that focus falls through to whatever is underneath.
+    /// Only a dismissible overlay is ever asked to do this - a modal has no way to learn it
+    /// happened.
+    pub fn defocus_pane(&mut self, client_id: ClientId) {
+        self.active_panes.remove(&client_id, &self.panes);
+        self.set_force_render();
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.active_panes.remove(&client_id, &self.panes);
@@ -444,6 +551,17 @@ impl OverlayPanes {
             .any(|overlay| geom_is_outside_viewport(&overlay.pane.position_and_size(), &viewport))
     }
 
+    pub fn update_pane_themes(&mut self, theme: Styling) {
+        self.style.colors = theme;
+        for overlay in self.panes.values_mut() {
+            overlay.pane.update_theme(theme);
+        }
+    }
+    pub fn update_pane_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
+        for overlay in self.panes.values_mut() {
+            overlay.pane.update_arrow_fonts(should_support_arrow_fonts);
+        }
+    }
     pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) {
         self.pane_frame_style = pane_frame_style;
     }

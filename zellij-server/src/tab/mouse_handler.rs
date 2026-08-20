@@ -786,7 +786,7 @@ impl MouseHandler {
                 event: click_event,
             } => Self::execute_focus_pane_and_click_through(tab, position, click_event, client_id),
             MouseAction::ShowFloatingPanesAndFocus { pane_id } => {
-                tab.show_floating_panes_for(pane_id);
+                tab.show_floating_panes();
                 tab.floating_panes.focus_pane(pane_id, client_id);
                 Ok(MouseEffect::state_changed())
             },
@@ -1612,6 +1612,21 @@ impl MouseHandler {
         let err_context =
             || format!("failed to focus pane at position {point:?} for client {client_id}");
 
+        // an overlay is painted over everything and takes the mouse wherever it is painted, with
+        // no layer-visibility precondition - which is the whole reason it is not a floating pane
+        if let Some(clicked_pane) = tab.overlay_panes.visible_pane_id_at(point) {
+            if tab
+                .overlay_panes
+                .get(&clicked_pane)
+                .is_some_and(|pane| pane.selectable())
+            {
+                tab.overlay_panes.focus_pane(clicked_pane, client_id);
+                tab.set_pane_active_at(clicked_pane);
+            }
+            // swallowed even when the overlay is not selectable: the click landed on it, not on
+            // whatever it is covering
+            return Ok(());
+        }
         if tab.floating_panes.panes_are_visible() {
             if let Some(clicked_pane) = tab
                 .floating_panes
@@ -1620,18 +1635,6 @@ impl MouseHandler {
             {
                 tab.floating_panes.focus_pane(clicked_pane, client_id);
                 tab.set_pane_active_at(clicked_pane);
-                return Ok(());
-            }
-        } else if let Some(clicked_pane) = tab.visible_floating_pane_at(point) {
-            if tab.pane_is_overlay(clicked_pane) {
-                if tab
-                    .floating_panes
-                    .get_pane(clicked_pane)
-                    .is_some_and(|pane| pane.selectable())
-                {
-                    tab.floating_panes.focus_pane(clicked_pane, client_id);
-                    tab.set_pane_active_at(clicked_pane);
-                }
                 return Ok(());
             }
         }
@@ -1644,7 +1647,7 @@ impl MouseHandler {
             {
                 tab.floating_panes.focus_pane(pane_id, client_id);
                 tab.set_pane_active_at(pane_id);
-                tab.show_floating_panes_for(pane_id);
+                tab.show_floating_panes();
                 return Ok(());
             }
         }
@@ -1828,6 +1831,13 @@ impl MouseHandler {
     ) -> Result<Option<&'a mut Box<dyn Pane>>> {
         let err_context = || format!("failed to get pane at position {point:?}");
 
+        if let Some(pane_id) = tab.overlay_panes.visible_pane_id_at(point) {
+            let pane = tab.overlay_panes.get_mut(&pane_id);
+            if !search_selectable || pane.as_ref().is_some_and(|pane| pane.selectable()) {
+                return Ok(pane);
+            }
+            return Ok(None);
+        }
         if tab.floating_panes.panes_are_visible() {
             if let Some(pane_id) = tab
                 .floating_panes
@@ -1837,15 +1847,6 @@ impl MouseHandler {
                 return Ok(tab.floating_panes.get_pane_mut(pane_id));
             }
         } else {
-            if let Some(pane_id) = tab.visible_floating_pane_at(point) {
-                if tab.pane_is_overlay(pane_id) {
-                    let pane = tab.floating_panes.get_pane_mut(pane_id);
-                    if !search_selectable || pane.as_ref().is_some_and(|pane| pane.selectable()) {
-                        return Ok(pane);
-                    }
-                    return Ok(None);
-                }
-            }
             if tab.floating_panes.has_pinned_panes() {
                 if let Some(pane_id) = tab
                     .floating_panes
