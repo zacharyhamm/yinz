@@ -44,8 +44,8 @@ pub struct PluginMap {
 
 /// Configuration match used when looking up running plugins to reload.
 ///
-/// Deliberately looser than plain equality: `caller_cwd` is injected into an alias's
-/// configuration per-launch (`Pty::spawn_plugin`), so it is never part of a plugin's identity -
+/// Deliberately looser than plain equality: caller context is injected into an alias's
+/// configuration per-launch (`Pty::spawn_plugin`), so it is never part of a plugin's identity.
 /// `RunPluginOrAlias::is_equivalent_to_run` ignores it for the same reason. And an empty request
 /// (eg. `zellij action start-or-reload-plugin zellij:hocus`, which carries none of the alias'
 /// configuration) means "whatever is running at this location", otherwise reloading a
@@ -54,13 +54,14 @@ fn configuration_matches_for_reload(
     running: &PluginUserConfiguration,
     requested: &PluginUserConfiguration,
 ) -> bool {
-    let without_caller_cwd = |configuration: &PluginUserConfiguration| {
+    let without_caller_context = |configuration: &PluginUserConfiguration| {
         let mut configuration = configuration.inner().clone();
         configuration.remove("caller_cwd");
+        configuration.remove("caller_terminal_pane_id");
         configuration
     };
-    let requested = without_caller_cwd(requested);
-    requested.is_empty() || without_caller_cwd(running) == requested
+    let requested = without_caller_context(requested);
+    requested.is_empty() || without_caller_context(running) == requested
 }
 
 impl PluginMap {
@@ -492,6 +493,7 @@ mod tests {
             ("dobbs_path", "/home/bob/dobbs"),
             ("shared", "true"),
             ("caller_cwd", "/home/bob"),
+            ("caller_terminal_pane_id", "7"),
         ]);
 
         // no configuration at all: "reload whatever runs at this location"
@@ -506,6 +508,7 @@ mod tests {
                 ("dobbs_path", "/home/bob/dobbs"),
                 ("shared", "true"),
                 ("caller_cwd", "/tmp"),
+                ("caller_terminal_pane_id", "9"),
             ])
         ));
         // an explicit, differing configuration is still a different plugin

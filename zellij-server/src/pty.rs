@@ -2754,6 +2754,14 @@ impl Pty {
         if let RunPluginOrAlias::Alias(alias) = &mut run {
             let cwd = get_focused_cwd();
             alias.set_caller_cwd_if_not_set(cwd);
+            let pane_id = self
+                .active_panes
+                .get(&client_id)
+                .and_then(|pane| match pane {
+                    PaneId::Terminal(id) => Some(*id),
+                    PaneId::Plugin(_) => None,
+                });
+            alias.set_caller_terminal_pane_id_if_not_set(pane_id);
         }
         self.bus.senders.send_to_plugin(PluginInstruction::Load(
             should_float,

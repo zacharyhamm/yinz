@@ -6815,6 +6815,37 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'd',
+                ),
+                key_modifiers: {},
+            }: [
+                LaunchOrFocusPlugin {
+                    plugin: Alias(
+                        PluginAlias {
+                            name: "hocus-duplicate-agent",
+                            configuration: Some(
+                                PluginUserConfiguration(
+                                    {},
+                                ),
+                            ),
+                            initial_cwd: None,
+                            run_plugin: None,
+                        },
+                    ),
+                    should_float: true,
+                    move_to_focused_tab: true,
+                    should_open_in_place: false,
+                    close_replaced_pane: false,
+                    skip_cache: false,
+                    tab_id: None,
+                    global_placement: None,
+                },
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'e',
                 ),
                 key_modifiers: {
@@ -7330,6 +7361,20 @@ Config {
                 ),
                 configuration: PluginUserConfiguration(
                     {},
+                ),
+                initial_cwd: None,
+            },
+            "hocus-duplicate-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "duplicate_focused": "true",
+                    },
                 ),
                 initial_cwd: None,
             },

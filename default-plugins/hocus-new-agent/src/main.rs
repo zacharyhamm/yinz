@@ -1,5 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
+use hocus_proto::{
+    agents::{self, AgentPane},
+    wire::{self, PollReply},
+};
 use zellij_tile::prelude::*;
 use zellij_tile::ui_components::forms::{
     Button, Checkbox, Dialog, Form, FormEvent, Rect, Select, TextInput,
@@ -12,11 +16,14 @@ const BASE: &str = "base";
 const BRANCH: &str = "branch";
 const WORKTREE: &str = "worktree";
 const PATH: &str = "path";
+const DUPLICATE_FOCUSED: &str = "duplicate_focused";
+const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
 struct State {
     dialog: Dialog,
     source_directory: PathBuf,
     plugin_id: u32,
+    duplicate_pane_id: Option<u32>,
     path_edited: bool,
     error: Option<String>,
 }
@@ -45,6 +52,7 @@ impl Default for State {
                 .help(Text::new("<Tab> next  <Enter> create  <Esc> cancel")),
             source_directory: PathBuf::from("."),
             plugin_id: 0,
+            duplicate_pane_id: None,
             path_edited: false,
             error: None,
         }
@@ -60,6 +68,14 @@ impl ZellijPlugin for State {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         self.plugin_id = get_plugin_ids().plugin_id;
+        if configuration.get(DUPLICATE_FOCUSED).map(String::as_str) == Some("true") {
+            self.duplicate_pane_id = configuration
+                .get(CALLER_TERMINAL_PANE_ID)
+                .and_then(|pane_id| pane_id.parse().ok());
+            if self.duplicate_pane_id.is_some() {
+                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
+            }
+        }
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
@@ -124,6 +140,57 @@ impl ZellijPlugin for State {
         );
         self.dialog.render(Rect::new(0, 0, cols, rows));
     }
+
+    fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_HELLO && self.duplicate_pane_id.is_some() {
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
+            return false;
+        }
+        if pipe_message.name != wire::AGENT_SNAPSHOT {
+            return false;
+        }
+        let Some(reply) = pipe_message
+            .payload
+            .as_deref()
+            .and_then(|payload| serde_json::from_str::<PollReply>(payload).ok())
+        else {
+            return false;
+        };
+        let Some(pane_id) = self.duplicate_pane_id.take() else {
+            return false;
+        };
+        let command = reply
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
+        if command.is_some_and(|command| {
+            open_command_pane_near_plugin(command, BTreeMap::new()).is_some()
+        }) {
+            close_self();
+        }
+        false
+    }
+}
+
+fn duplicate_command(
+    pane: &AgentPane,
+    manual_kinds: &BTreeMap<u32, String>,
+) -> Option<CommandToRun> {
+    let (kind, _) = agents::classify(pane, manual_kinds)?;
+    Some(CommandToRun {
+        path: if kind == "cursor" {
+            "cursor-agent".into()
+        } else {
+            kind.into()
+        },
+        // `/host` is translated to the plugin's launch-time caller CWD, without
+        // reinterpreting a real `/tmp`, `/host`, `/data` or `/cache` path.
+        cwd: Some("/host".into()),
+        remote_host: pane.host.clone(),
+        ..Default::default()
+    })
 }
 
 impl State {
@@ -289,5 +356,32 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("claude"));
         assert_eq!(command.args, ["--model", "opus"]);
         assert_eq!(checkout, GitCheckout::Current);
+    }
+
+    #[test]
+    fn duplicate_uses_the_agent_kind_and_exact_location_without_old_args() {
+        let pane = AgentPane {
+            pane_id: 7,
+            title: "agent".to_owned(),
+            command: Some("git status".to_owned()),
+            cwd: Some("/tmp/repo".to_owned()),
+            host: Some("builder".to_owned()),
+            status: agents::AgentStatus::Running,
+            tab: Some((1, "work".to_owned())),
+            detected: Some("cursor".to_owned()),
+        };
+        let command = duplicate_command(&pane, &BTreeMap::new()).unwrap();
+
+        assert_eq!(command.path, PathBuf::from("cursor-agent"));
+        assert!(command.args.is_empty());
+        assert_eq!(command.cwd, Some("/host".into()));
+        assert_eq!(command.remote_host.as_deref(), Some("builder"));
+
+        let ordinary_pane = AgentPane {
+            command: Some("bash".to_owned()),
+            detected: None,
+            ..pane
+        };
+        assert!(duplicate_command(&ordinary_pane, &BTreeMap::new()).is_none());
     }
 }

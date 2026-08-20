@@ -171,6 +171,13 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
+        bind "d" {
+            LaunchOrFocusPlugin "hocus-duplicate-agent" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
         // Land on the agent list, the top pane of the hocus sidebar, without
         // going through the conversation first. Reveals the strip if it was
         // hidden, and starts one from scratch — chat pane included — if hocus
@@ -357,6 +364,9 @@ plugins {
     // `height` size it.
     hocus-ask location="zellij:hocus-ask"
     hocus-new-agent location="zellij:hocus-new-agent"
+    hocus-duplicate-agent location="zellij:hocus-new-agent" {
+        duplicate_focused true
+    }
     // Shared for the same reason hocus is: one instance owns the event-fed
     // agent snapshot for the whole session.
     hocus-agentd location="zellij:hocus-agentd" {
