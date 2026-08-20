@@ -952,3 +952,249 @@ fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
         "the overlay is still the active pane"
     );
 }
+
+/// Open a floating pane and then have it turn itself into an overlay, which is how every popup
+/// plugin in this fork arrives: `hocus-new-agent`, `hocus-ask` and `quit-confirmation` all call
+/// `change_floating_panes_coordinates(.. .as_overlay())` from their `load()`, after the server
+/// has already placed them as ordinary floating panes.
+fn open_pane_that_becomes_an_overlay(screen: &mut Screen, pane_id: u32, contents: &str) {
+    open_floating_pane(screen, 0, pane_id, contents, false);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .change_floating_pane_coordinates(&PaneId::Terminal(pane_id), overlay_coordinates())
+        .expect("TEST");
+}
+
+/// What the frame actually shows, which is the only thing the user can see. `are_floating_panes_visible`
+/// is the flag; this is the consequence.
+fn rendered_frame(screen: &mut Screen, size: Size) -> String {
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let mut grid = grid_for_render_snapshot(size);
+    render_frame_into(screen, &server_receiver, 1, &mut grid)
+}
+
+/// The reported bug. A modal is not a floating pane, so putting one on screen must not put the
+/// user's hidden floating panes on screen with it.
+///
+/// This used to turn on the whole floating layer: the modal was opened as an ordinary floating
+/// pane (which reveals the layer), and the corrective that ran when it became an overlay only
+/// fired when nothing else was on the layer. One hidden floating pane was enough to defeat it.
+#[test]
+fn a_modal_opened_onto_a_hidden_layer_does_not_reveal_hidden_floating_panes() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+    assert!(!screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .are_floating_panes_visible());
+
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(tab.pane_is_overlay(PaneId::Terminal(3)));
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "showing a modal must not show the floating layer"
+    );
+
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("MODAL"),
+        "the modal itself is on screen, got:\n{frame}"
+    );
+    assert!(
+        !frame.contains("HIDDENFLOATING"),
+        "the pane the user hid is still hidden, got:\n{frame}"
+    );
+}
+
+/// The same, with more than one pane behind it - "if any exist" was the shape of the bug, and one
+/// pane is the case the old corrective happened to get right.
+#[test]
+fn a_modal_opened_onto_a_hidden_layer_with_several_floating_panes_behind_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FIRSTHIDDEN", false);
+    open_floating_pane(&mut screen, 0, 3, "SECONDHIDDEN", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+
+    open_pane_that_becomes_an_overlay(&mut screen, 4, "MODAL");
+
+    assert!(!screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .are_floating_panes_visible());
+    let frame = rendered_frame(&mut screen, size);
+    for hidden in ["FIRSTHIDDEN", "SECONDHIDDEN"] {
+        assert!(
+            !frame.contains(hidden),
+            "{hidden} was hidden and must stay hidden, got:\n{frame}"
+        );
+    }
+}
+
+/// The other direction of "the layer is whatever the user left it as": a layer the user had up
+/// stays up, and the floating pane on it stays on screen next to the modal.
+#[test]
+fn a_modal_opened_onto_a_visible_layer_leaves_it_up() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "VISIBLEFLOATING", false);
+
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+
+    assert!(
+        screen
+            .get_active_tab_mut(1)
+            .unwrap()
+            .are_floating_panes_visible(),
+        "the floating pane the user had up is still the user's floating pane"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("VISIBLEFLOATING"),
+        "the visible floating pane is still visible, got:\n{frame}"
+    );
+}
+
+/// Closing the modal gives back the tab it found, not one with the floating layer switched on.
+#[test]
+fn closing_a_modal_leaves_the_floating_layer_as_it_found_it() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.close_pane(PaneId::Terminal(3), false, None);
+
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "the layer was down before the modal and is down after it"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("HIDDENFLOATING"),
+        "the hidden floating pane is still hidden once the modal is gone, got:\n{frame}"
+    );
+}
+
+/// `create_non_mirrored_screen` leaves `to_plugin` unset, and a tab cannot build a `PluginPane`
+/// without it. The receiver comes back so the channel outlives the screen.
+fn screen_with_plugin_sender(
+    size: Size,
+) -> (
+    Screen,
+    channels::Receiver<(PluginInstruction, ErrorContext)>,
+) {
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let mut screen = create_non_mirrored_screen(size);
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    (screen, plugin_rx)
+}
+
+/// A plugin launched with `modal true` and nothing else - no coordinates, the way a keybinding
+/// written before the flags existed reaches the tab.
+fn modal_plugin_run() -> Run {
+    let mut configuration = BTreeMap::new();
+    configuration.insert("modal".to_owned(), "true".to_owned());
+    Run::Plugin(
+        RunPluginOrAlias::from_url("file:/path/to/fake/modal", &Some(configuration), None, None)
+            .unwrap(),
+    )
+}
+
+/// A modal plugin opened with no coordinates at all. `ScreenInstruction::AddPlugin` synthesizes
+/// overlay coordinates from the plugin's configuration only when nobody passed any, so a caller
+/// that passes its own (`pane_groups`) or a path that passes none reaches the tab with the
+/// `modal` flag stripped. The pane itself still knows what it is, and must be placed as an
+/// overlay on that basis - born one, never an ordinary floating pane even for a frame.
+#[test]
+fn a_modal_plugin_opened_without_overlay_coordinates_is_still_born_an_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.new_pane(
+        PaneId::Plugin(7),
+        Some("modal".to_owned()),
+        Some(modal_plugin_run()),
+        false,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+
+    assert!(
+        tab.pane_is_overlay(PaneId::Plugin(7)),
+        "the plugin's own configuration says it is an overlay"
+    );
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "and an overlay never raises the floating layer, not even for a frame"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("HIDDENFLOATING"),
+        "the pane the user hid is still hidden, got:\n{frame}"
+    );
+}
+
+/// A modal that was parked in the suppressed panes and is asked for again comes back as a modal.
+/// This path passed no coordinates and unconditionally raised the layer, so it both lost the
+/// overlay placement and revealed everything the user had hidden.
+#[test]
+fn refocusing_a_suppressed_modal_does_not_reveal_the_floating_layer() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    let start_suppressed = true;
+    tab.new_pane(
+        PaneId::Plugin(7),
+        Some("modal".to_owned()),
+        Some(modal_plugin_run()),
+        start_suppressed,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+
+    let should_float = true;
+    let should_be_in_place = false;
+    tab.focus_pane_with_id(PaneId::Plugin(7), should_float, should_be_in_place, 1)
+        .expect("TEST");
+
+    assert!(
+        tab.pane_is_overlay(PaneId::Plugin(7)),
+        "a modal taken back out of the suppressed panes is still a modal"
+    );
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "and still does not raise the floating layer"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("HIDDENFLOATING"),
+        "the pane the user hid is still hidden, got:\n{frame}"
+    );
+}

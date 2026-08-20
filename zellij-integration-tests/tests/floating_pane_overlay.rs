@@ -235,3 +235,88 @@ fn a_plain_floating_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
 
     zellij.quit();
 }
+
+/// Open `quit-confirmation` as a plain floating *plugin* pane - no `--overlay`, no `modal`
+/// configuration. Like every popup plugin in this fork it turns itself into an overlay from its
+/// own `load()`, which is the two-stage birth the reveal bug lives in.
+fn open_self_upgrading_popup(zellij: &TestSession) {
+    zellij.run_cli_action(CliAction::NewPane {
+        direction: None,
+        command: vec![],
+        remote_host: None,
+        plugin: Some("zellij:quit-confirmation".to_string()),
+        cwd: None,
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: None,
+        y: None,
+        width: None,
+        height: None,
+        pinned: None,
+        overlay: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
+    });
+}
+
+/// An overlay is not a floating pane, so putting one on screen must not put the user's hidden
+/// floating panes on screen with it. This is the end-to-end shape of the "new agent" modal
+/// revealing whatever was behind it.
+///
+/// The popup is launched here the way a config written before `overlay`/`modal` existed launches
+/// one - as an ordinary floating pane, which reveals the layer - and only becomes an overlay once
+/// the plugin is running. The layer has to go back down with it, however many panes are on it.
+#[test]
+fn a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"tiled shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the shell loads", |snapshot| {
+        snapshot.contains("tiled shell")
+    });
+
+    let floating = open_plain_floating_pane(&zellij);
+    floating.output(b"HIDDEN-FLOATING");
+    zellij.wait_until("the floating pane is up", |snapshot| {
+        snapshot.contains("HIDDEN-FLOATING")
+    });
+
+    zellij.run_cli_action(CliAction::ToggleFloatingPanes { tab_id: None });
+    zellij.wait_until("the floating layer is down", |snapshot| {
+        !snapshot.contains("HIDDEN-FLOATING")
+    });
+
+    open_self_upgrading_popup(&zellij);
+    zellij.wait_until("the popup is up", |snapshot| {
+        snapshot.contains("Quit Zellij?")
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        !snapshot.contains("HIDDEN-FLOATING"),
+        "the floating pane the user hid must stay hidden under the popup, got:\n{snapshot}"
+    );
+
+    zellij.quit();
+}
