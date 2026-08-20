@@ -8586,6 +8586,70 @@ pub fn pane_info_for_pane(
     pane_info
 }
 
+/// Structural invariants that must hold after every operation on a `Tab`.
+///
+/// Written for the modals/overlays refactor: the property test in
+/// `unit/screen_tests/overlays.rs` drives a random sequence of operations and calls this after
+/// each one, and the characterization tests call it at their assertion points. Invariants that
+/// only become true once overlays have their own collection are noted and added there.
+#[cfg(test)]
+impl Tab {
+    pub fn assert_invariants(&self) {
+        // 1. A pane lives in exactly one collection.
+        let mut seen: std::collections::HashMap<PaneId, &'static str> =
+            std::collections::HashMap::new();
+        let mut claim = |pane_id: PaneId, collection: &'static str| {
+            if let Some(previous) = seen.insert(pane_id, collection) {
+                panic!("{pane_id:?} is in both {previous} and {collection}");
+            }
+        };
+        for pane_id in self.tiled_panes.pane_ids() {
+            claim(*pane_id, "tiled_panes");
+        }
+        for pane_id in self.floating_panes.pane_ids() {
+            claim(*pane_id, "floating_panes");
+        }
+        for pane_id in self.suppressed_panes.keys() {
+            claim(*pane_id, "suppressed_panes");
+        }
+
+        // 2. (after the refactor) no overlay pane id appears in `floating_panes`.
+        // 3. (after the refactor) floating-layer visibility is independent of overlay focus.
+
+        // 4. The occlusion stack names only live panes, and a pane's z-index is its position in
+        //    that stack - `FloatingPanes::stack_layer_ids` and `render` must agree, or a pane is
+        //    clipped against its own geometry and erases itself.
+        let stack = self.floating_panes.rendered_pane_ids();
+        for (index, pane_id) in stack.iter().enumerate() {
+            assert!(
+                self.floating_panes.panes_contain(pane_id),
+                "{pane_id:?} is in the occlusion stack but not in the floating panes"
+            );
+            assert_eq!(
+                self.floating_panes.get_pane_z_index(*pane_id),
+                Some(index),
+                "{pane_id:?} is at position {index} of the occlusion stack but reports a \
+                 different z-index"
+            );
+        }
+
+        // 5. Every client's active pane exists and is selectable.
+        let connected_clients: Vec<ClientId> =
+            self.connected_clients.borrow().iter().copied().collect();
+        for client_id in connected_clients {
+            if let Some(pane_id) = self.get_active_pane_id(client_id) {
+                let pane = self.get_pane_with_id(pane_id).unwrap_or_else(|| {
+                    panic!("client {client_id} is focused on {pane_id:?}, which does not exist")
+                });
+                assert!(
+                    pane.selectable(),
+                    "client {client_id} is focused on {pane_id:?}, which is not selectable"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "./unit/tab_tests/mod.rs"]
 mod tab_tests;

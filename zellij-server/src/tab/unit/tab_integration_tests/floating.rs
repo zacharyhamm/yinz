@@ -2394,3 +2394,103 @@ fn floating_fullscreen_hides_other_floating_and_pinned_panes() {
     );
     assert_snapshot!(snapshot);
 }
+
+// ---------------------------------------------------------------------------
+// Characterization tests added ahead of the modals/overlays refactor.
+//
+// These reach into `tab.floating_panes` directly, which the screen-level tests
+// in `unit/screen_tests/overlays.rs` cannot do. They pin the places where the
+// floating collection currently counts overlays as its own - the latent form of
+// the same bug the refactor exists to make unrepresentable.
+// ---------------------------------------------------------------------------
+
+/// An overlay lives in the floating collection today, so every count taken off that collection
+/// includes it. `visible_panes_count` is one of them, and it gates the auto-relayout in
+/// `Tab::extract_pane`: with only an overlay left, the count is 1 and a relayout runs over a
+/// layer that has nothing on it.
+///
+/// This asserts today's (wrong) reading. The refactor makes the count exclude overlays by
+/// construction, at which point this test flips to `0` - see the commit that moves it.
+#[test]
+fn an_overlay_is_counted_by_the_floating_collection_today() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.new_floating_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(10)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
+            overlay: Some(true),
+            ..Default::default()
+        }),
+        None,
+    )
+    .unwrap();
+
+    assert!(tab.pane_is_overlay(overlay_pane_id));
+    assert_eq!(
+        tab.floating_panes.visible_panes_count(),
+        1,
+        "today the overlay is counted as a floating pane; after the refactor this is 0"
+    );
+    assert!(
+        tab.floating_panes.has_panes(),
+        "and it makes the floating collection look non-empty"
+    );
+}
+
+/// Closing the last *real* floating pane while an overlay is up should take the floating layer
+/// down - there is nothing on it any more. `Tab::extract_pane` only does that when
+/// `floating_panes.has_panes()` is false, and the overlay keeps it true, so the layer is left
+/// flagged visible with nothing to show.
+///
+/// This asserts today's (wrong) behavior so the refactor's fix is visible as a deliberate flip.
+#[test]
+fn closing_the_last_floating_pane_under_an_overlay_leaves_the_layer_up_today() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let floating_pane_id = PaneId::Terminal(2);
+    let overlay_pane_id = PaneId::Terminal(3);
+
+    tab.new_floating_pane(floating_pane_id, None, None, false, true, None, None)
+        .unwrap();
+    tab.new_floating_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(10)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
+            overlay: Some(true),
+            ..Default::default()
+        }),
+        None,
+    )
+    .unwrap();
+    assert!(tab.floating_panes.panes_are_visible());
+
+    tab.close_pane(floating_pane_id, false, None);
+
+    assert!(
+        tab.floating_panes.panes_are_visible(),
+        "today the overlay keeps the layer flagged visible; after the refactor this is false"
+    );
+}
