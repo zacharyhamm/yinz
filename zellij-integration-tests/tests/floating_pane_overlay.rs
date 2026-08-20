@@ -320,3 +320,98 @@ fn a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane() {
 
     zellij.quit();
 }
+
+/// The other half of `a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane`: closing the
+/// popup has to put the floating layer back the way it found it. Opening the popup took the layer
+/// down (it was already down here, but the popup's own arrival raised and re-hid it), so a close
+/// that restores the layer would put the user's hidden pane back on screen without being asked.
+#[test]
+fn closing_a_popup_leaves_the_hidden_floating_layer_hidden() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"tiled shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the shell loads", |snapshot| {
+        snapshot.contains("tiled shell")
+    });
+
+    let floating = open_plain_floating_pane(&zellij);
+    floating.output(b"HIDDEN-FLOATING");
+    zellij.wait_until("the floating pane is up", |snapshot| {
+        snapshot.contains("HIDDEN-FLOATING")
+    });
+
+    zellij.run_cli_action(CliAction::ToggleFloatingPanes { tab_id: None });
+    zellij.wait_until("the floating layer is down", |snapshot| {
+        !snapshot.contains("HIDDEN-FLOATING")
+    });
+
+    open_self_upgrading_popup(&zellij);
+    zellij.wait_until("the popup is up", |snapshot| {
+        snapshot.contains("Quit Zellij?")
+    });
+
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("the popup is gone", |snapshot| {
+        !snapshot.contains("Quit Zellij?")
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        !snapshot.contains("HIDDEN-FLOATING"),
+        "closing the popup must leave the floating layer as it found it, got:\n{snapshot}"
+    );
+    assert!(
+        snapshot.contains("tiled shell"),
+        "and the tiled pane underneath is back, got:\n{snapshot}"
+    );
+
+    zellij.quit();
+}
+
+/// An overlay covers the global panes as well as the tab, so while one is up the client's focus
+/// is taken off whichever global pane held it and parked (`Screen::activate_overlay`). Closing the
+/// overlay has to hand that focus back, or the user is left on a tab pane they never asked for.
+#[test]
+fn closing_a_popup_hands_focus_back_to_the_global_pane_that_had_it() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_string()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    let shell = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL-PANE");
+    global.output(PROMPT);
+    shell.output(b"tiled shell");
+    shell.output(PROMPT);
+    zellij.wait_until("both panes load", |snapshot| {
+        snapshot.contains("GLOBAL-PANE") && snapshot.contains("tiled shell")
+    });
+
+    // the layout focuses the global pane; prove it owns the keyboard before the popup opens
+    global.output(b"before-popup");
+    zellij.wait_until("the global pane has focus", |snapshot| {
+        snapshot.contains("before-popup")
+    });
+
+    open_self_upgrading_popup(&zellij);
+    zellij.wait_until("the popup is up", |snapshot| {
+        snapshot.contains("Quit Zellij?")
+    });
+
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("the popup is gone", |snapshot| {
+        !snapshot.contains("Quit Zellij?")
+    });
+
+    // typing now must reach the global pane again, not the tab
+    zellij.send_stdin(&keys::key('x'));
+    global.wait_for_stdin(
+        "the global pane has the keyboard back after the popup closes",
+        |bytes| bytes.contains(&b'x'),
+    );
+
+    zellij.quit();
+}

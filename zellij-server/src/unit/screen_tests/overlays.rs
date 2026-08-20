@@ -1198,3 +1198,382 @@ fn refocusing_a_suppressed_modal_does_not_reveal_the_floating_layer() {
         "the pane the user hid is still hidden, got:\n{frame}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Characterization tests added ahead of the modals/overlays refactor.
+//
+// These pin behavior that the move to a dedicated overlay collection must
+// preserve. They assert what the code does *today*, so that the refactor is
+// provably behavior-preserving; where today's behavior is itself wrong, that is
+// called out in the test's doc comment and fixed in a later commit rather than
+// baked in here.
+// ---------------------------------------------------------------------------
+
+/// An overlay is positioned against the whole session surface and `reapply_overlay_coordinates`
+/// re-resolves it whenever that surface changes, so a resize should leave it proportional to the
+/// new surface.
+///
+/// It does not. `reapply_overlay_coordinates` reads `display_area`, and inside
+/// `Tab::resize_whole_tab_locally` that shared cell is only updated by `tiled_panes.resize()` -
+/// which runs *after* `floating_panes.resize()`. The overlay is therefore re-resolved against the
+/// surface size the terminal had before the resize, and keeps its old width.
+///
+/// This pins the current (wrong) behavior so the refactor's fix shows up as a deliberate flip:
+/// with its own collection, an overlay reapplies once the surface is known.
+#[test]
+fn an_overlay_is_re_resolved_against_the_stale_surface_on_resize_today() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    // `open_floating_pane`'s overlay coordinates ask for 60% of the surface
+    assert_eq!(before.cols.as_usize(), 48);
+
+    screen
+        .resize_to_screen(Size {
+            cols: 120,
+            rows: 20,
+        })
+        .expect("TEST");
+
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        after.cols.as_usize(),
+        48,
+        "today the overlay is re-resolved against the pre-resize surface; after the refactor \
+         this is 72 (60% of the new 120 columns)"
+    );
+    assert!(
+        screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)),
+        "and it is still an overlay afterwards"
+    );
+}
+
+/// An overlay renders and owns the mouse while the floating layer is down - that is the whole
+/// point of it. `visible_pane_id_at` answers from the occlusion stack rather than from the pane
+/// map, so the overlay is hit-tested even though no floating pane is visible.
+#[test]
+fn an_overlay_owns_the_mouse_where_it_is_painted_while_the_layer_is_hidden() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(!tab.are_floating_panes_visible());
+
+    // `overlay_coordinates()` puts the overlay at (2, 2), 60% wide and 4 rows tall
+    assert_eq!(
+        tab.visible_floating_pane_at(&Position::new(3, 4)),
+        Some(PaneId::Terminal(3)),
+        "the overlay is hit-tested inside its own geometry with the layer down"
+    );
+    assert_eq!(
+        tab.visible_floating_pane_at(&Position::new(15, 70)),
+        None,
+        "and owns nothing outside it"
+    );
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(3, 4)), 1);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "clicking it focuses it"
+    );
+    assert!(
+        !screen.tabs[&0].are_floating_panes_visible(),
+        "and does not raise the floating layer"
+    );
+}
+
+/// While an overlay exists it masks whatever else a client is focused on: `get_active_pane_id`
+/// prefers the overlay over the tiled pane for as long as the overlay is in the occlusion stack.
+/// That is deliberate for a modal, which must never silently lose the keyboard - and it is what
+/// happens for every overlay today.
+///
+/// The tiled focus underneath is still recorded, which is what lets
+/// `a_modal_overlay_hands_focus_to_the_pane_it_opened_when_it_closes` work: it surfaces again the
+/// moment the overlay goes away. This pins both halves, for both clients of a non-mirrored
+/// session.
+#[test]
+fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2, false).expect("TEST");
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.focus_pane_with_id(PaneId::Terminal(2), false, false, 2)
+        .expect("TEST");
+
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "client 1 is on the overlay"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(PaneId::Terminal(3)),
+        "and so is client 2 - the overlay masks the tiled pane it just focused"
+    );
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "and neither client's focus raises the floating layer"
+    );
+
+    tab.close_pane(PaneId::Terminal(3), false, None);
+
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(PaneId::Terminal(2)),
+        "once the overlay is gone, the tiled focus recorded underneath surfaces again"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Render snapshots.
+//
+// Every other rendering claim in this file is a `.contains()` on
+// `rendered_frame`, which says a pane is somewhere on screen but nothing about
+// what is drawn over what. Occlusion is exactly what a z-order refactor breaks,
+// so these pin whole frames.
+// ---------------------------------------------------------------------------
+
+/// The frame that exercises the overlay coordinate space, the occlusion stack and the global-pane
+/// surface expansion at once: an overlay drawn over a *hidden* floating layer, with a global pane
+/// docked to the left. The hidden pane must not appear, the overlay must sit on the surface
+/// (crossing over the global pane rather than being bounded by the tab viewport), and the global
+/// pane must not paint over it.
+#[test]
+fn frame_of_an_overlay_over_a_hidden_layer_beside_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
+    // allocates the global pane strips onto the tab, which is what expands the overlay surface
+    screen.render_to_clients().expect("TEST");
+    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("HIDDENFLOATING"),
+        "the hidden floating pane must stay hidden, got:\n{frame}"
+    );
+    assert_snapshot!(frame);
+}
+
+/// Relative z-order between the three things that can be on top of the tiled panes while the
+/// floating layer is up: a plain floating pane, a pinned floating pane, and an overlay.
+///
+/// A pinned pane paints *above* the overlay - `stack_layer_ids` returns the plain `z_indices`
+/// when the layer is visible, and `make_sure_pinned_panes_are_on_top` has already lifted the
+/// pinned pane to the end of it. Whether that is right is a separate question (a modal arguably
+/// belongs above everything); this pins what the code does so the refactor does not change it by
+/// accident.
+///
+/// The frame also shows the one place overlay-ness reaches the pane frame today: the two plain
+/// floating panes carry a `PIN` toggle and the overlay does not.
+#[test]
+fn frame_of_an_overlay_with_a_pinned_and_a_plain_floating_pane() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "PLAINFLOATING", false);
+    open_floating_pane(&mut screen, 0, 3, "PINNEDFLOATING", false);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .change_floating_pane_coordinates(
+            &PaneId::Terminal(3),
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(4)),
+                y: Some(PercentOrFixed::Fixed(3)),
+                width: Some(PercentOrFixed::Fixed(30)),
+                height: Some(PercentOrFixed::Fixed(5)),
+                pinned: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("TEST");
+    open_pane_that_becomes_an_overlay(&mut screen, 4, "OVERLAY");
+
+    assert_snapshot!(rendered_frame(&mut screen, size));
+}
+
+// ---------------------------------------------------------------------------
+// Structural invariants.
+//
+// The characterization tests above each pin one path. This drives a random
+// sequence of operations instead and asserts `Tab::assert_invariants` after
+// every step, so a path nobody thought to write a test for still has to hold
+// the line. The two invariants that only become true once overlays have their
+// own collection are listed in that helper and switched on with the refactor.
+// ---------------------------------------------------------------------------
+
+mod invariant_props {
+    use super::*;
+    use hegel::generators;
+
+    /// One thing a user (or a plugin) can do to a tab. Deliberately includes the operations that
+    /// the overlay special-casing threads through - opening onto a hidden layer, promoting a pane
+    /// to an overlay, toggling the layer underneath one - because those are where the collections
+    /// have historically fallen out of step.
+    #[derive(Debug, Clone)]
+    enum Op {
+        NewTiledPane,
+        NewFloatingPane,
+        NewOverlay,
+        NewModalPlugin,
+        PromoteToOverlay,
+        ClosePane,
+        ShowFloatingLayer,
+        HideFloatingLayer,
+        FocusFirstTiledPane,
+        Resize(u16),
+    }
+
+    #[hegel::composite]
+    fn op(tc: &hegel::TestCase) -> Op {
+        match tc.draw(generators::integers::<u8>().max_value(9)) {
+            0 => Op::NewTiledPane,
+            1 => Op::NewFloatingPane,
+            2 => Op::NewOverlay,
+            3 => Op::NewModalPlugin,
+            4 => Op::PromoteToOverlay,
+            5 => Op::ClosePane,
+            6 => Op::ShowFloatingLayer,
+            7 => Op::HideFloatingLayer,
+            8 => Op::FocusFirstTiledPane,
+            _ => Op::Resize(tc.draw(generators::integers::<u16>().min_value(40).max_value(160))),
+        }
+    }
+
+    #[hegel::test]
+    fn a_tab_holds_its_invariants_under_any_sequence_of_pane_operations(tc: hegel::TestCase) {
+        let op_count = tc.draw(generators::integers::<usize>().max_value(12));
+        let ops: Vec<Op> = (0..op_count).map(|_| tc.draw(op())).collect();
+
+        let size = Size { cols: 80, rows: 20 };
+        let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+        new_tab(&mut screen, 1, 0);
+        screen.get_active_tab_mut(1).unwrap().assert_invariants();
+
+        // pane ids have to be unique across the whole run, including the plugin ones
+        let mut next_id = 2u32;
+        // the ids we opened, so `ClosePane` and `PromoteToOverlay` pick a real one
+        let mut opened: Vec<PaneId> = vec![];
+
+        for (index, op) in ops.iter().enumerate() {
+            match op {
+                Op::NewTiledPane | Op::NewFloatingPane | Op::NewOverlay => {
+                    let pane_id = PaneId::Terminal(next_id);
+                    next_id += 1;
+                    let placement = match op {
+                        Op::NewTiledPane => NewPanePlacement::default(),
+                        Op::NewFloatingPane => NewPanePlacement::Floating(None),
+                        _ => NewPanePlacement::Floating(Some(overlay_coordinates())),
+                    };
+                    screen
+                        .get_active_tab_mut(1)
+                        .unwrap()
+                        .new_pane(pane_id, None, None, false, true, placement, Some(1), None)
+                        .expect("TEST");
+                    opened.push(pane_id);
+                },
+                Op::NewModalPlugin => {
+                    let pane_id = PaneId::Plugin(next_id);
+                    next_id += 1;
+                    screen
+                        .get_active_tab_mut(1)
+                        .unwrap()
+                        .new_pane(
+                            pane_id,
+                            Some("modal".to_owned()),
+                            Some(modal_plugin_run()),
+                            false,
+                            true,
+                            NewPanePlacement::Floating(None),
+                            Some(1),
+                            None,
+                        )
+                        .expect("TEST");
+                    opened.push(pane_id);
+                },
+                Op::PromoteToOverlay => {
+                    // the self-upgrade every popup plugin in this fork performs today
+                    if let Some(pane_id) = opened.last().copied() {
+                        let _ = screen
+                            .get_active_tab_mut(1)
+                            .unwrap()
+                            .change_floating_pane_coordinates(&pane_id, overlay_coordinates());
+                    }
+                },
+                Op::ClosePane => {
+                    if !opened.is_empty() {
+                        let pane_id = opened.remove(0);
+                        screen
+                            .get_active_tab_mut(1)
+                            .unwrap()
+                            .close_pane(pane_id, false, None);
+                    }
+                },
+                Op::ShowFloatingLayer => {
+                    screen.get_active_tab_mut(1).unwrap().show_floating_panes();
+                },
+                Op::HideFloatingLayer => {
+                    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+                },
+                Op::FocusFirstTiledPane => {
+                    let _ = screen.get_active_tab_mut(1).unwrap().focus_pane_with_id(
+                        PaneId::Terminal(1),
+                        false,
+                        false,
+                        1,
+                    );
+                },
+                Op::Resize(cols) => {
+                    screen
+                        .resize_to_screen(Size {
+                            cols: *cols as usize,
+                            rows: 20,
+                        })
+                        .expect("TEST");
+                },
+            }
+
+            let tab = screen
+                .get_active_tab_mut(1)
+                .unwrap_or_else(|_| panic!("the tab is gone after {op:?} (step {index})"));
+            tab.assert_invariants();
+        }
+    }
+}

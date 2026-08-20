@@ -1,0 +1,17 @@
+---
+source: zellij-server/src/./unit/screen_tests/overlays.rs
+assertion_line: 1388
+expression: frame
+---
+00 (C):                    │                                                            
+01 (C):                    │                                                            
+02 (C):   ┌ Pane #3 ─────────────────────────────────────┐                              
+03 (C):   │OVERLAY                                       │                              
+04 (C):   │                                              │                              
+05 (C):   └──────────────────────────────────────────────┘                              
+06 (C):                    │                                                            
+07 (C):                    │                                                            
+08 (C):                    │                                                            
+09 (C):                    │                                                            
+10 (C):                    │                                                            
+11 (C):                    │
