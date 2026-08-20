@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
+assertion_line: 177
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -169,6 +170,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-duplicate-agent" {
                 floating true
                 move_to_focused_tab true
+                overlay true
             }
             SwitchToMode "normal"
         }
@@ -185,6 +187,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
                 move_to_focused_tab true
+                overlay true
             }
             SwitchToMode "normal"
         }
