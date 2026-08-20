@@ -286,18 +286,7 @@ impl FloatingPanes {
         self.panes.keys()
     }
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
-        if self.all_panes_are_visible() {
-            self.panes.keys().copied().collect()
-        } else {
-            self.panes
-                .iter()
-                .filter(|(pane_id, pane)| {
-                    pane.position_and_size().is_pinned
-                        || self.overlay_coordinates.contains_key(pane_id)
-                })
-                .map(|(pane_id, _)| *pane_id)
-                .collect()
-        }
+        self.stack_layer_ids()
     }
     pub fn add_pane(&mut self, pane_id: PaneId, pane: Box<dyn Pane>) {
         self.desired_pane_positions
@@ -412,7 +401,7 @@ impl FloatingPanes {
         self.active_panes.get(&client_id).copied()
     }
     pub fn get_pane_z_index(&self, pane_id: PaneId) -> Option<usize> {
-        self.z_indices.iter().position(|id| id == &pane_id)
+        self.stack_layer_ids().iter().position(|id| id == &pane_id)
     }
     pub fn active_pane_id_or_focused_pane_id(&self, client_id: Option<ClientId>) -> Option<PaneId> {
         // returns the focused pane of any client_id - should be safe because the way things are

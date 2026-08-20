@@ -381,6 +381,11 @@ fn create_plugin_thread(
         "fixture_plugin_for_tests".to_owned(),
         RunPlugin::from_url(&format!("file:{}", &*PLUGIN_FIXTURE)).unwrap(),
     );
+    let mut modal_fixture = RunPlugin::from_url(&format!("file:{}", &*PLUGIN_FIXTURE)).unwrap();
+    modal_fixture.configuration.insert("modal", "true");
+    plugin_aliases
+        .aliases
+        .insert("modal_fixture_plugin_for_tests".to_owned(), modal_fixture);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {

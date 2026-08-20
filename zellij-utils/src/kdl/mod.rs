@@ -2316,9 +2316,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let is_overlay = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "overlay"))
                     .unwrap_or(false);
-                let is_modal = command_metadata
-                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "modal"))
-                    .unwrap_or(false);
                 let move_to_focused_tab = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "move_to_focused_tab"))
                     .unwrap_or(false);
@@ -2333,18 +2330,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .unwrap_or(false);
                 let global_placement =
                     parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
-                if global_placement.is_some()
-                    && (should_float
-                        || is_overlay
-                        || is_modal
-                        || should_open_in_place
-                        || move_to_focused_tab)
-                {
-                    return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating, overlays, modal, in-place or moved to the focused tab",
-                        kdl_action,
-                    ));
-                }
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 let mut configuration = if global_placement.is_some() {
@@ -2378,6 +2363,17 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     )
                 })?
                 .with_initial_cwd(initial_cwd);
+                if global_placement.is_some()
+                    && (should_float
+                        || run_plugin_or_alias.requests_overlay()
+                        || should_open_in_place
+                        || move_to_focused_tab)
+                {
+                    return Err(global_pane_kdl_error(
+                        "Global plugin panes cannot be floating, overlays, modal, in-place or moved to the focused tab",
+                        kdl_action,
+                    ));
+                }
                 Ok(Action::LaunchOrFocusPlugin {
                     plugin: run_plugin_or_alias,
                     should_float,
@@ -2405,12 +2401,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let should_float = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "floating"))
                     .unwrap_or(false);
-                let is_overlay = command_metadata
-                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "overlay"))
-                    .unwrap_or(false);
-                let is_modal = command_metadata
-                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "modal"))
-                    .unwrap_or(false);
                 let should_open_in_place = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "in_place"))
                     .unwrap_or(false);
@@ -2422,14 +2412,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .unwrap_or(false);
                 let global_placement =
                     parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
-                if global_placement.is_some()
-                    && (should_float || is_overlay || is_modal || should_open_in_place)
-                {
-                    return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating, overlays, modal or in-place",
-                        kdl_action,
-                    ));
-                }
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 let configuration = if global_placement.is_some() {
@@ -2457,6 +2439,16 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         kdl_action.span().len(),
                     )
                 })?;
+                if global_placement.is_some()
+                    && (should_float
+                        || run_plugin_or_alias.requests_overlay()
+                        || should_open_in_place)
+                {
+                    return Err(global_pane_kdl_error(
+                        "Global plugin panes cannot be floating, overlays, modal or in-place",
+                        kdl_action,
+                    ));
+                }
                 Ok(Action::LaunchPlugin {
                     plugin: run_plugin_or_alias,
                     should_float,

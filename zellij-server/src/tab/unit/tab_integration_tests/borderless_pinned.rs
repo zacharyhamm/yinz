@@ -233,6 +233,88 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
 }
 
 #[test]
+fn hidden_panes_do_not_inflate_overlay_cursor_z_index() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let mut output = Output::default();
+    let hidden_pane_id = PaneId::Terminal(2);
+    let overlay_pane_id = PaneId::Terminal(3);
+    let pinned_pane_id = PaneId::Terminal(4);
+    let coordinates = FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(10)),
+        y: Some(PercentOrFixed::Fixed(5)),
+        width: Some(PercentOrFixed::Fixed(30)),
+        height: Some(PercentOrFixed::Fixed(8)),
+        ..Default::default()
+    };
+
+    tab.new_floating_pane(
+        hidden_pane_id,
+        None,
+        None,
+        false,
+        true,
+        Some(coordinates.clone()),
+        None,
+    )
+    .unwrap();
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            overlay: Some(true),
+            ..coordinates.clone()
+        })),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.new_floating_pane(
+        pinned_pane_id,
+        None,
+        None,
+        false,
+        true,
+        Some(FloatingPaneCoordinates {
+            pinned: Some(true),
+            ..coordinates
+        }),
+        None,
+    )
+    .unwrap();
+    tab.hide_floating_panes();
+    tab.floating_panes
+        .set_active_pane_for_client(overlay_pane_id, client_id);
+
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![overlay_pane_id, pinned_pane_id]
+    );
+    assert_eq!(tab.floating_panes.get_pane_z_index(hidden_pane_id), None);
+    assert_eq!(
+        tab.floating_panes.get_pane_z_index(overlay_pane_id),
+        Some(0)
+    );
+    assert_eq!(tab.floating_panes.get_pane_z_index(pinned_pane_id), Some(1));
+
+    tab.render(&mut output, None).unwrap();
+    let (_, cursor_coordinates) = take_snapshot_and_cursor_position(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert_eq!(cursor_coordinates, None);
+}
+
+#[test]
 fn cursor_visible_when_pinned_pane_is_focused() {
     // Test that cursor is visible when focused on a pinned pane that's on top
     let size = Size {

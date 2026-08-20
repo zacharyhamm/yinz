@@ -3910,7 +3910,9 @@ impl Tab {
         self.floating_panes
             .get_active_pane_id(client_id)
             .filter(|pane_id| {
-                self.floating_panes.panes_are_visible() || self.pane_is_overlay(*pane_id)
+                self.floating_panes.panes_are_visible()
+                    || (self.pane_is_overlay(*pane_id)
+                        && self.floating_panes.get_pane_z_index(*pane_id).is_some())
             })
             .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }

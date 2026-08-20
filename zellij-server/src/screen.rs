@@ -14516,12 +14516,12 @@ pub(crate) fn screen_thread_main(
                 let maybe_should_float = should_float;
                 let should_float = maybe_should_float.unwrap_or(false);
                 let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
-                    plugin_requests_overlay(&run_plugin_or_alias).then_some(
-                        FloatingPaneCoordinates {
+                    run_plugin_or_alias
+                        .requests_overlay()
+                        .then_some(FloatingPaneCoordinates {
                             overlay: Some(true),
                             ..Default::default()
-                        },
-                    )
+                        })
                 });
                 let should_be_tiled = maybe_should_float.map(|f| !f).unwrap_or(false)
                     && floating_pane_coordinates.is_none();
@@ -17187,18 +17187,6 @@ pub(crate) fn screen_thread_main(
         }
     }
     Ok(())
-}
-
-fn plugin_requests_overlay(run_plugin_or_alias: &RunPluginOrAlias) -> bool {
-    let configuration = run_plugin_or_alias.get_configuration();
-    configuration.is_some_and(|configuration| {
-        ["overlay", "modal"].into_iter().any(|key| {
-            configuration
-                .inner()
-                .get(key)
-                .is_some_and(|value| value == "true")
-        })
-    })
 }
 
 #[path = "./unit/screen_tests/mod.rs"]

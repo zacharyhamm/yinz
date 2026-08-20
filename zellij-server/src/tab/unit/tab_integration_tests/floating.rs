@@ -200,6 +200,47 @@ fn default_new_pane_from_overlay_is_visible() {
 }
 
 #[test]
+fn overlay_focus_tracks_whether_the_overlay_is_rendered() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let tiled_pane_id = PaneId::Terminal(1);
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            overlay: Some(true),
+            ..Default::default()
+        })),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    assert!(tab.fullscreen_covers_ui());
+    assert!(tab.floating_panes.rendered_pane_ids().is_empty());
+    assert_eq!(tab.get_active_pane_id(client_id), Some(tiled_pane_id));
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+
+    assert!(!tab.fullscreen_covers_ui());
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![overlay_pane_id]
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+}
+
+#[test]
 fn new_stacked_pane() {
     let size = Size {
         cols: 121,
