@@ -159,14 +159,13 @@ impl ZellijPlugin for State {
             .flatten()
             .find(|pane| pane.pane_id == pane_id)
             .and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
-        if command.is_some_and(|command| {
+        if let Some(new_pane_id) = command.and_then(|command| {
             open_command_pane_near_plugin(
                 command,
                 BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
             )
-            .is_some()
         }) {
-            close_self();
+            hand_over_focus(new_pane_id);
         }
         false
     }
@@ -275,8 +274,8 @@ impl State {
             self.source_directory.clone(),
             checkout,
         ) {
-            Ok(_) => {
-                close_self();
+            Ok(pane_id) => {
+                hand_over_focus(pane_id);
                 false
             },
             Err(error) => {
@@ -285,6 +284,28 @@ impl State {
             },
         }
     }
+}
+
+/// Close the modal onto the pane it just created, keyboard and all.
+///
+/// Neither half of this happens on its own. A pane opened near a plugin is
+/// anchored to a pane rather than to a client, so the host has no client to
+/// focus it for and does not try (`ScreenInstruction::NewPane`, the
+/// `ClientTabIndexOrPaneId::PaneId` arm). And a modal overlay is never robbed
+/// of focus by a pane opening behind it, because it has no way to learn it lost
+/// it and would sit there taking no input while the user typed underneath. Both
+/// are right; what neither can do is decide that *this* submit is over. Only
+/// the modal knows that, so handing the keyboard on is its job.
+///
+/// Focus first, then close. While this pane is still up it goes on reading as
+/// the focused one whatever the tiled layer says, so the focus call moves the
+/// tiled focus *underneath* - and closing the last floating pane hands that
+/// tiled focus back out. The other order has nothing left to focus from: the
+/// close would restore whichever pane the user came from, and this plugin is
+/// gone by then.
+fn hand_over_focus(pane_id: PaneId) {
+    focus_pane_with_id(pane_id, false, false);
+    close_self();
 }
 
 fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
