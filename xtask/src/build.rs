@@ -19,7 +19,6 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
 ];
 
 const PLUGIN_INPUT_FILES: &[&str] = &[
-    ".cargo/config.toml",
     "Cargo.lock",
     "Cargo.toml",
     "rust-toolchain.toml",
@@ -138,6 +137,7 @@ fn plugin_asset_path(plugin_name: &str) -> PathBuf {
 fn hash_plugin_inputs() -> Option<String> {
     let root = crate::project_root();
     let mut hasher = hash_plugin_files(&root)?;
+    hash_cargo_configs(&root, cargo_home(&root).as_deref(), &mut hasher)?;
 
     let cargo = crate::cargo().ok()?;
     for program in [cargo, PathBuf::from("rustc")] {
@@ -149,15 +149,7 @@ fn hash_plugin_inputs() -> Option<String> {
     }
 
     let mut environment: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| {
-            let key = key.to_string_lossy();
-            key.starts_with("RUST")
-                || key.starts_with("CARGO_BUILD_")
-                || key.starts_with("CARGO_PROFILE_")
-                || key.starts_with("CARGO_TARGET_WASM32_WASIP1_")
-                || key == "CARGO"
-                || key == "CARGO_ENCODED_RUSTFLAGS"
-        })
+        .filter(|(key, _)| plugin_build_environment_variable(key))
         .collect();
     environment.sort();
     for (key, value) in environment {
@@ -174,6 +166,69 @@ fn hash_plugin_inputs() -> Option<String> {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     )
+}
+
+fn cargo_home(root: &Path) -> Option<PathBuf> {
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
+    Some(if cargo_home.is_absolute() {
+        cargo_home
+    } else {
+        root.join(cargo_home)
+    })
+}
+
+fn hash_cargo_configs(root: &Path, cargo_home: Option<&Path>, hasher: &mut Sha256) -> Option<()> {
+    for path in cargo_config_files(root, cargo_home) {
+        let identity = path.strip_prefix(root).unwrap_or(&path);
+        hasher.update(identity.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(std::fs::read(path).ok()?);
+        hasher.update([0]);
+    }
+    Some(())
+}
+
+fn cargo_config_files(root: &Path, cargo_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut config_dirs: Vec<_> = root
+        .ancestors()
+        .map(|ancestor| ancestor.join(".cargo"))
+        .collect();
+    config_dirs.extend(cargo_home.map(Path::to_path_buf));
+
+    let mut configs = vec![];
+    for dir in config_dirs {
+        let legacy = dir.join("config");
+        let config = if legacy.is_file() {
+            Some(legacy)
+        } else {
+            let toml = dir.join("config.toml");
+            toml.is_file().then_some(toml)
+        };
+        if let Some(config) = config {
+            if !configs.contains(&config) {
+                configs.push(config);
+            }
+        }
+    }
+    configs
+}
+
+fn plugin_build_environment_variable(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy();
+    matches!(
+        key.as_ref(),
+        "CARGO"
+            | "CARGO_ENCODED_RUSTFLAGS"
+            | "RUSTC"
+            | "RUSTC_BOOTSTRAP"
+            | "RUSTC_WORKSPACE_WRAPPER"
+            | "RUSTC_WRAPPER"
+            | "RUSTFLAGS"
+    ) || key.starts_with("CARGO_BUILD_")
+        || key.starts_with("CARGO_PROFILE_")
+        || key.starts_with("CARGO_TARGET_WASM32_WASIP1_")
 }
 
 fn hash_plugin_files(root: &Path) -> Option<Sha256> {
@@ -436,6 +491,7 @@ fn move_plugin_to_assets(plugin_name: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::fs::{self, FileTimes, OpenOptions};
     use std::time::{Duration, SystemTime};
 
@@ -486,5 +542,93 @@ mod tests {
         assert_ne!(original, hash_plugin_files(&root).unwrap().finalize());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_hash_tracks_effective_external_cargo_config() {
+        let base = std::env::temp_dir().join(format!(
+            "zellij-xtask-cargo-config-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("workspace");
+        let cargo_home = base.join("cargo-home");
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::create_dir_all(base.join(".cargo")).unwrap();
+        fs::create_dir_all(&cargo_home).unwrap();
+        fs::write(
+            root.join(".cargo/config"),
+            "[build]\nrustflags = ['legacy']\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".cargo/config.toml"),
+            "[build]\nrustflags = ['ignored']\n",
+        )
+        .unwrap();
+        fs::write(base.join(".cargo/config.toml"), "[build]\njobs = 1\n").unwrap();
+        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n").unwrap();
+
+        assert_eq!(
+            cargo_config_files(&root, Some(&cargo_home)),
+            vec![
+                root.join(".cargo/config"),
+                base.join(".cargo/config.toml"),
+                cargo_home.join("config.toml"),
+            ]
+        );
+
+        let hash = |root: &Path, cargo_home: &Path| {
+            let mut hasher = Sha256::new();
+            hash_cargo_configs(root, Some(cargo_home), &mut hasher).unwrap();
+            hasher.finalize()
+        };
+        let original = hash(&root, &cargo_home);
+        fs::write(
+            root.join(".cargo/config.toml"),
+            "[build]\nrustflags = ['still ignored']\n",
+        )
+        .unwrap();
+        assert_eq!(original, hash(&root, &cargo_home));
+
+        fs::write(
+            cargo_home.join("config.toml"),
+            "[target.wasm32-wasip1]\nrustflags = ['home']\n",
+        )
+        .unwrap();
+        assert_ne!(original, hash(&root, &cargo_home));
+        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n").unwrap();
+
+        fs::write(
+            base.join(".cargo/config.toml"),
+            "[target.wasm32-wasip1]\nrustflags = ['changed']\n",
+        )
+        .unwrap();
+        assert_ne!(original, hash(&root, &cargo_home));
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn plugin_hash_ignores_runtime_rust_environment() {
+        for key in [
+            "RUSTFLAGS",
+            "RUSTC",
+            "RUSTC_BOOTSTRAP",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_BUILD_RUSTC",
+            "CARGO_PROFILE_RELEASE_LTO",
+            "CARGO_TARGET_WASM32_WASIP1_LINKER",
+        ] {
+            assert!(plugin_build_environment_variable(OsStr::new(key)), "{key}");
+        }
+        for key in ["RUST_BACKTRACE", "RUST_LOG"] {
+            assert!(!plugin_build_environment_variable(OsStr::new(key)), "{key}");
+        }
     }
 }
