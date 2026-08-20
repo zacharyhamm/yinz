@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
@@ -593,5 +594,312 @@ fn drag_floating_pane_left_over_the_global_pane(screen: &mut Screen, pane_id: u3
     screen.handle_mouse_event(
         MouseEvent::new_left_release_event(Position::new(row, to)),
         1,
+    );
+}
+
+/// Coordinates that turn a floating pane into an overlay, as the fork's popup plugins do from
+/// their `load()` - they are launched as ordinary floating panes and only upgrade themselves
+/// once they are running.
+fn overlay_coordinates() -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(2)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Percent(60)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        overlay: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Opening a floating pane shows the floating layer. A plugin that then turns that pane into an
+/// overlay leaves the layer flag set behind it, and the whole of zellij reads that flag as "the
+/// user has floating panes up": the status bar lights its `<f>` ribbon, the next new pane joins
+/// the floating layer, splits and focus moves get swallowed. Only the overlay is up, so the
+/// layer must go back down.
+#[test]
+fn a_floating_pane_that_becomes_an_overlay_takes_the_floating_layer_down_with_it() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", false);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(
+        tab.are_floating_panes_visible(),
+        "opening an ordinary floating pane shows the floating layer"
+    );
+
+    tab.change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
+        .expect("TEST");
+
+    assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "an overlay is not the floating layer"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the overlay keeps focus - the layer went away, it did not"
+    );
+}
+
+/// The two ways to arrive at an overlay - born one, or turned into one - have to land in the same
+/// place, or the fix above is only a fix for the path it was written against.
+#[test]
+fn a_pane_that_becomes_an_overlay_lands_where_a_pane_born_an_overlay_already_is() {
+    let size = Size { cols: 80, rows: 12 };
+
+    let mut born = create_non_mirrored_screen(size);
+    new_tab(&mut born, 1, 0);
+    open_floating_pane(&mut born, 0, 2, "POPUP", true);
+
+    let mut turned = create_non_mirrored_screen(size);
+    new_tab(&mut turned, 1, 0);
+    open_floating_pane(&mut turned, 0, 2, "POPUP", false);
+    turned
+        .get_active_tab_mut(1)
+        .unwrap()
+        .change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
+        .expect("TEST");
+
+    for screen in [&mut born, &mut turned] {
+        let tab = screen.get_active_tab_mut(1).unwrap();
+        assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
+        assert!(!tab.are_floating_panes_visible());
+        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(2)));
+    }
+
+    let render = |screen: &mut Screen| {
+        let (server_sender, server_receiver) = channels::unbounded();
+        screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+        let mut grid = grid_for_render_snapshot(size);
+        render_frame_into(screen, &server_receiver, 1, &mut grid)
+    };
+    assert_eq!(
+        render(&mut turned),
+        render(&mut born),
+        "a pane turned into an overlay must render as one born an overlay"
+    );
+}
+
+/// The layer only goes down because nothing but the overlay was on it. A real floating pane
+/// behind the overlay is still the user's floating pane, and still visible.
+#[test]
+fn the_floating_layer_stays_up_when_a_real_floating_pane_is_behind_the_new_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    open_floating_pane(&mut screen, 0, 3, "POPUP", false);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.change_floating_pane_coordinates(&PaneId::Terminal(3), overlay_coordinates())
+        .expect("TEST");
+
+    assert!(tab.pane_is_overlay(PaneId::Terminal(3)));
+    assert!(
+        tab.are_floating_panes_visible(),
+        "the floating pane behind the overlay is still up"
+    );
+}
+
+/// Overlay status is permanent for the pane's lifetime. A coordinate update must not turn an
+/// overlay back into an ordinary floating pane rendered on a hidden layer.
+#[test]
+fn changing_an_overlays_coordinates_does_not_remove_its_overlay_status() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", true);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(!tab.are_floating_panes_visible());
+
+    tab.change_floating_pane_coordinates(
+        &PaneId::Terminal(2),
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(4)),
+            y: Some(PercentOrFixed::Fixed(4)),
+            overlay: Some(false),
+            ..Default::default()
+        },
+    )
+    .expect("TEST");
+
+    assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "moving an overlay must not reveal the floating layer"
+    );
+    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(2)));
+}
+
+/// A plugin moving a hidden floating pane must not pop the layer open under the user.
+#[test]
+fn moving_an_unfocused_hidden_floating_pane_does_not_show_the_floating_layer() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.hide_floating_panes();
+    assert!(!tab.are_floating_panes_visible());
+
+    tab.change_floating_pane_coordinates(
+        &PaneId::Terminal(2),
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(6)),
+            y: Some(PercentOrFixed::Fixed(6)),
+            ..Default::default()
+        },
+    )
+    .expect("TEST");
+
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "moving a hidden floating pane must not reveal the floating layer"
+    );
+}
+
+/// A modal is the client's active pane while the floating layer is down. Reading that as "this
+/// client is working on the floating layer" sends the next new pane there - and reveals every
+/// hidden floating pane on the way.
+#[test]
+fn a_new_pane_opened_over_a_modal_is_tiled() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "MODAL", true);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(2)));
+
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "opening a pane over a modal must not reveal the floating layer"
+    );
+    assert!(
+        !tab.pane_id_is_floating(&PaneId::Terminal(3)),
+        "the new pane belongs on the tiled surface"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the modal gives the keyboard up to the pane the user asked for - a popup that closes \
+         when it loses focus depends on this"
+    );
+}
+
+/// A modal overlay (e.g. hocus-new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
+/// has no way to learn it lost focus, unlike a dismissible overlay that watches `PaneUpdate`.
+/// Stealing its focus the way `a_new_pane_opened_over_a_modal_is_tiled` does for a plain overlay
+/// would leave it stuck on screen while input goes to the pane underneath, so it must keep focus.
+#[test]
+fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let mut configuration = BTreeMap::new();
+    configuration.insert("modal".to_owned(), "true".to_owned());
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/modal", &Some(configuration), None, None)
+            .unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let modal = PaneFactory::plugin(
+        7,
+        Default::default(),
+        plugin_sender,
+        "modal".to_owned(),
+        "modal".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin)),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let modal_id = PaneId::Plugin(7);
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.add_floating_pane(modal, modal_id, Some(overlay_coordinates()), true, Some(1))
+        .expect("TEST");
+    assert!(tab.pane_is_overlay(modal_id));
+    assert_eq!(tab.get_active_pane_id(1), Some(modal_id));
+
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "opening a pane over a modal must not reveal the floating layer"
+    );
+    assert!(
+        !tab.pane_id_is_floating(&PaneId::Terminal(3)),
+        "the new pane belongs on the tiled surface"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(modal_id),
+        "a modal overlay has no way to learn it lost focus, so it must keep it"
+    );
+}
+
+/// The overlay did not lose focus - the layer under it went away. Telling its terminal otherwise
+/// is a lie, and one an application that tracks focus reporting will act on.
+///
+/// `FakeInputOutput::write_to_tty_stdin` is `unimplemented!()`, so the focus-out this used to
+/// send would panic the test rather than merely being wrong. That is the assertion.
+#[test]
+fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", false);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    // DECSET 1004: the pane asks to be told when it gains and loses focus
+    tab.handle_pty_bytes(2, b"\x1b[?1004h".to_vec())
+        .expect("TEST");
+
+    tab.change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
+        .expect("TEST");
+
+    assert!(!tab.are_floating_panes_visible());
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the overlay is still the active pane"
     );
 }
