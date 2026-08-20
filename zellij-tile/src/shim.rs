@@ -89,10 +89,24 @@ pub fn set_selectable(selectable: bool) {
 /// # Arguments
 /// * `cursor_position` - None to hide cursor, Some((x, y)) to show at coordinates
 pub fn show_cursor(cursor_position: Option<(usize, usize)>) {
+    #[cfg(test)]
+    LAST_CURSOR_POSITION.with(|last| *last.borrow_mut() = Some(cursor_position));
     let plugin_command = PluginCommand::ShowCursor(cursor_position);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
+}
+
+#[cfg(test)]
+thread_local! {
+    static LAST_CURSOR_POSITION: std::cell::RefCell<Option<Option<(usize, usize)>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn take_last_cursor_position() -> Option<Option<(usize, usize)>> {
+    LAST_CURSOR_POSITION.with(|last| last.borrow_mut().take())
 }
 
 pub fn request_permission(permissions: &[PermissionType]) {
