@@ -1299,11 +1299,14 @@ impl FloatingPanes {
     pub fn change_pane_coordinates(
         &mut self,
         pane_id: PaneId,
-        new_coordinates: FloatingPaneCoordinates,
+        mut new_coordinates: FloatingPaneCoordinates,
     ) -> Result<()> {
         let err_context = || "Failed to change_pane_coordinates".to_string();
 
         {
+            if self.is_overlay(pane_id) {
+                new_coordinates.overlay = Some(true);
+            }
             let is_overlay = new_coordinates.overlay.unwrap_or(false);
             let (viewport, origin) = self.coordinate_space(is_overlay);
             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
@@ -1365,6 +1368,15 @@ impl FloatingPanes {
 
     pub fn is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_coordinates.contains_key(&pane_id)
+    }
+
+    /// A modal overlay does not expect to be silently defocused - it only closes on
+    /// Esc/submit/`Event::Visible(false)`, unlike an overlay that watches `PaneUpdate` and
+    /// dismisses itself once it sees it isn't focused.
+    pub fn pane_is_modal(&self, pane_id: PaneId) -> bool {
+        self.panes.get(&pane_id).is_some_and(|pane| {
+            matches!(pane.invoked_with(), Some(Run::Plugin(run_plugin)) if run_plugin.requests_modal())
+        })
     }
 
     pub fn overlay_coordinates_for(&self, pane_id: PaneId) -> Option<FloatingPaneCoordinates> {

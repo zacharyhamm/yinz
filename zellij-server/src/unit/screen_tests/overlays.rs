@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
@@ -703,11 +704,10 @@ fn the_floating_layer_stays_up_when_a_real_floating_pane_is_behind_the_new_overl
     );
 }
 
-/// The inverse transition. A pane that stops being an overlay while the layer is down keeps the
-/// client's floating focus but stops being drawn and stops being its active pane - input would
-/// fall through to the tiled pane under it.
+/// Overlay status is permanent for the pane's lifetime. A coordinate update must not turn an
+/// overlay back into an ordinary floating pane rendered on a hidden layer.
 #[test]
-fn a_pane_that_stops_being_an_overlay_brings_the_floating_layer_back_up() {
+fn changing_an_overlays_coordinates_does_not_remove_its_overlay_status() {
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
@@ -721,22 +721,21 @@ fn a_pane_that_stops_being_an_overlay_brings_the_floating_layer_back_up() {
         FloatingPaneCoordinates {
             x: Some(PercentOrFixed::Fixed(4)),
             y: Some(PercentOrFixed::Fixed(4)),
+            overlay: Some(false),
             ..Default::default()
         },
     )
     .expect("TEST");
 
-    assert!(!tab.pane_is_overlay(PaneId::Terminal(2)));
+    assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
     assert!(
-        tab.are_floating_panes_visible(),
-        "a plain floating pane holding focus has to be on a visible layer"
+        !tab.are_floating_panes_visible(),
+        "moving an overlay must not reveal the floating layer"
     );
     assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(2)));
 }
 
-/// The negative for the case above: the layer comes back only for a pane that was an overlay and
-/// still holds focus. A plugin moving some other hidden floating pane must not pop the layer open
-/// under the user.
+/// A plugin moving a hidden floating pane must not pop the layer open under the user.
 #[test]
 fn moving_an_unfocused_hidden_floating_pane_does_not_show_the_floating_layer() {
     let size = Size { cols: 80, rows: 12 };
@@ -802,6 +801,78 @@ fn a_new_pane_opened_over_a_modal_is_tiled() {
         Some(PaneId::Terminal(3)),
         "the modal gives the keyboard up to the pane the user asked for - a popup that closes \
          when it loses focus depends on this"
+    );
+}
+
+/// A modal overlay (e.g. hocus-new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
+/// has no way to learn it lost focus, unlike a dismissible overlay that watches `PaneUpdate`.
+/// Stealing its focus the way `a_new_pane_opened_over_a_modal_is_tiled` does for a plain overlay
+/// would leave it stuck on screen while input goes to the pane underneath, so it must keep focus.
+#[test]
+fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let mut configuration = BTreeMap::new();
+    configuration.insert("modal".to_owned(), "true".to_owned());
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/modal", &Some(configuration), None, None)
+            .unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let modal = PaneFactory::plugin(
+        7,
+        Default::default(),
+        plugin_sender,
+        "modal".to_owned(),
+        "modal".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin)),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let modal_id = PaneId::Plugin(7);
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.add_floating_pane(modal, modal_id, Some(overlay_coordinates()), true, Some(1))
+        .expect("TEST");
+    assert!(tab.pane_is_overlay(modal_id));
+    assert_eq!(tab.get_active_pane_id(1), Some(modal_id));
+
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "opening a pane over a modal must not reveal the floating layer"
+    );
+    assert!(
+        !tab.pane_id_is_floating(&PaneId::Terminal(3)),
+        "the new pane belongs on the tiled surface"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(modal_id),
+        "a modal overlay has no way to learn it lost focus, so it must keep it"
     );
 }
 
