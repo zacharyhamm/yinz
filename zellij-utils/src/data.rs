@@ -3711,6 +3711,7 @@ pub enum PluginCommand {
         BTreeMap<String, String>, // env_variables
         PathBuf,                  // cwd
         BTreeMap<String, String>, // context
+        Option<usize>,            // max bytes returned for each output stream
     ),
     WebRequest(
         String, // url

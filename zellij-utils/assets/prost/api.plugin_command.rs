@@ -1275,6 +1275,8 @@ pub struct RunCommandPayload {
     pub cwd: ::prost::alloc::string::String,
     #[prost(message, repeated, tag="4")]
     pub context: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(uint64, optional, tag="5")]
+    pub max_output_bytes: ::core::option::Option<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

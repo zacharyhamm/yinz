@@ -88,8 +88,7 @@ pub use super::generated_api::api::{
         NewTabUnfocusedResponse as ProtobufNewTabUnfocusedResponse,
         NewTabsResponse as ProtobufNewTabsResponse, NewTabsWithLayoutInfoPayload,
         NewTiledPaneInTabPayload, NewTiledPaneInTabResponse as ProtobufNewTiledPaneInTabResponse,
-        NotifyWithPanePayload,
-        NotificationInfo as ProtobufNotificationInfo,
+        NotificationInfo as ProtobufNotificationInfo, NotifyWithPanePayload,
         OpenCommandPaneBackgroundResponse as ProtobufOpenCommandPaneBackgroundResponse,
         OpenCommandPaneFloatingNearPluginPayload,
         OpenCommandPaneFloatingNearPluginResponse as ProtobufOpenCommandPaneFloatingNearPluginResponse,
@@ -1428,6 +1427,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         env_variables,
                         PathBuf::from(run_command_payload.cwd),
                         context,
+                        run_command_payload
+                            .max_output_bytes
+                            .map(usize::try_from)
+                            .transpose()
+                            .map_err(|_| "Run command output limit is too large")?,
                     ))
                 },
                 _ => Err("Mismatched payload for RunCommand"),
@@ -3588,7 +3592,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
-            PluginCommand::RunCommand(command_line, env_variables, cwd, context) => {
+            PluginCommand::RunCommand(
+                command_line,
+                env_variables,
+                cwd,
+                context,
+                max_output_bytes,
+            ) => {
                 let env_variables: Vec<_> = env_variables
                     .into_iter()
                     .map(|(name, value)| EnvVariable { name, value })
@@ -3605,6 +3615,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         env_variables,
                         cwd,
                         context,
+                        max_output_bytes: max_output_bytes.map(|limit| limit as u64),
                     })),
                 })
             },
@@ -6281,6 +6292,27 @@ mod tests {
         match decoded {
             PluginCommand::CancelWebRequest(stream_id) => assert_eq!(stream_id, "stream-1"),
             other => panic!("expected CancelWebRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn run_command_output_limit_protobuf_round_trip() {
+        for max_output_bytes in [None, Some(40_000)] {
+            let original = PluginCommand::RunCommand(
+                vec!["git".to_owned(), "show".to_owned()],
+                BTreeMap::new(),
+                PathBuf::from("."),
+                BTreeMap::new(),
+                max_output_bytes,
+            );
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::RunCommand(_, _, _, _, decoded_limit) => {
+                    assert_eq!(decoded_limit, max_output_bytes)
+                },
+                other => panic!("expected RunCommand, got {:?}", other),
+            }
         }
     }
 

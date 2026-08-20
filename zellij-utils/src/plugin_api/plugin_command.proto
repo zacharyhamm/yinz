@@ -981,6 +981,7 @@ message RunCommandPayload {
   repeated EnvVariable env_variables = 2;
   string cwd = 3;
   repeated ContextItem context = 4;
+  optional uint64 max_output_bytes = 5;
 }
 
 message WebRequestPayload {

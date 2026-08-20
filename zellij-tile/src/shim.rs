@@ -861,6 +861,7 @@ pub fn run_command(cmd: &[&str], context: BTreeMap<String, String>) {
         BTreeMap::new(),
         PathBuf::from("."),
         context,
+        None,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -880,6 +881,28 @@ pub fn run_command_with_env_variables_and_cwd(
         env_variables,
         cwd,
         context,
+        None,
+    );
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Run this command in the background on the host machine while retaining at most
+/// `max_output_bytes` from each output stream.
+pub fn run_command_with_output_limit(
+    cmd: &[&str],
+    env_variables: BTreeMap<String, String>,
+    cwd: PathBuf,
+    context: BTreeMap<String, String>,
+    max_output_bytes: usize,
+) {
+    let plugin_command = PluginCommand::RunCommand(
+        cmd.iter().cloned().map(|s| s.to_owned()).collect(),
+        env_variables,
+        cwd,
+        context,
+        Some(max_output_bytes),
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

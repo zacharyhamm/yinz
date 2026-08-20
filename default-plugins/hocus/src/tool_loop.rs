@@ -366,12 +366,8 @@ impl State {
                 let target = tools::resolve_in_root(project, args.path.as_deref())?;
                 tools::file_argv(&call.name, &args, &target)
             } else if tools::GIT_TOOLS.contains(&call.name.as_str()) {
-                let target = args
-                    .path
-                    .as_deref()
-                    .map(|path| tools::resolve_in_root(project, Some(path)))
-                    .transpose()?;
-                tools::git_argv(&call.name, &args, project, target.as_deref())
+                let target = tools::resolve_in_root(project, args.path.as_deref())?;
+                tools::git_argv(&call.name, &args, project, &target)
             } else {
                 tools::github_argv(&args, project)
             }
@@ -384,7 +380,7 @@ impl State {
         };
 
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_command_with_env_variables_and_cwd(
+        run_command_with_output_limit(
             &borrowed,
             BTreeMap::new(),
             // Every path in the argv is absolute, so the command has nothing to
@@ -403,6 +399,7 @@ impl State {
             // Round-trips through the host, which is how the result is matched
             // back to the call that made it.
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+            MAX_TOOL_OUTPUT,
         );
         self.status = Status::AwaitingCommand;
         self.pin_to_bottom();

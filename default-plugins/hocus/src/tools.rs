@@ -1854,7 +1854,7 @@ pub fn git_argv(
     name: &str,
     args: &Args,
     project: &Project,
-    target: Option<&str>,
+    target: &str,
 ) -> Result<Vec<String>, String> {
     let mut argv = vec![
         "git".to_owned(),
@@ -1899,9 +1899,7 @@ pub fn git_argv(
         other => return Err(format!("no such tool: {other}")),
     }
     argv.push("--".to_owned());
-    if let Some(target) = target {
-        argv.push(target.to_owned());
-    }
+    argv.push(target.to_owned());
     Ok(argv)
 }
 
