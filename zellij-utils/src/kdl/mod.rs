@@ -2316,6 +2316,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let is_overlay = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "overlay"))
                     .unwrap_or(false);
+                let is_modal = command_metadata
+                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "modal"))
+                    .unwrap_or(false);
                 let move_to_focused_tab = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "move_to_focused_tab"))
                     .unwrap_or(false);
@@ -2331,10 +2334,14 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let global_placement =
                     parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
                 if global_placement.is_some()
-                    && (should_float || should_open_in_place || move_to_focused_tab)
+                    && (should_float
+                        || is_overlay
+                        || is_modal
+                        || should_open_in_place
+                        || move_to_focused_tab)
                 {
                     return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating, in-place or moved to the focused tab",
+                        "Global plugin panes cannot be floating, overlays, modal, in-place or moved to the focused tab",
                         kdl_action,
                     ));
                 }
@@ -2398,6 +2405,12 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let should_float = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "floating"))
                     .unwrap_or(false);
+                let is_overlay = command_metadata
+                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "overlay"))
+                    .unwrap_or(false);
+                let is_modal = command_metadata
+                    .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "modal"))
+                    .unwrap_or(false);
                 let should_open_in_place = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "in_place"))
                     .unwrap_or(false);
@@ -2409,9 +2422,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .unwrap_or(false);
                 let global_placement =
                     parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
-                if global_placement.is_some() && (should_float || should_open_in_place) {
+                if global_placement.is_some()
+                    && (should_float || is_overlay || is_modal || should_open_in_place)
+                {
                     return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating or in-place",
+                        "Global plugin panes cannot be floating, overlays, modal or in-place",
                         kdl_action,
                     ));
                 }

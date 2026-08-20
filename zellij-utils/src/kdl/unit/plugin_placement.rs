@@ -81,6 +81,37 @@ fn global_plugin_placement_rejects_move_to_focused_tab() {
 }
 
 #[test]
+fn global_plugin_placement_rejects_overlays() {
+    for action in ["LaunchOrFocusPlugin", "LaunchPlugin"] {
+        for overlay_setting in ["overlay true", "modal true"] {
+            let source = format!(
+                r#"
+                keybinds {{
+                    normal {{
+                        bind "Ctrl g" {{
+                            {action} "hocus" {{
+                                global true
+                                edge "left"
+                                size "25%"
+                                {overlay_setting}
+                            }}
+                        }}
+                    }}
+                }}
+            "#
+            );
+            let document: KdlDocument = source.parse().unwrap();
+            assert!(Keybinds::from_kdl(
+                document.get("keybinds").unwrap(),
+                Default::default(),
+                &Default::default(),
+            )
+            .is_err());
+        }
+    }
+}
+
+#[test]
 fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
     let source = r#"
         keybinds {

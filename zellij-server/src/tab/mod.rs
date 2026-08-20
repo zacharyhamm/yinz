@@ -2826,14 +2826,20 @@ impl Tab {
             .with_context(err_context)?;
             self.park_pane(new_pane);
             Ok(())
-        } else if should_focus_pane {
-            if self.floating_panes.panes_are_visible() {
-                self.add_floating_pane(new_pane, pid, None, true, client_id)
-            } else {
-                self.add_tiled_pane(new_pane, pid, false, client_id)
-            }
         } else {
-            if self.floating_panes.panes_are_visible() {
+            let active_pane_is_floating = client_id
+                .and_then(|client_id| self.get_active_pane_id(client_id))
+                .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+            if active_pane_is_floating && !self.floating_panes.panes_are_visible() {
+                self.show_floating_panes();
+            }
+            let should_add_floating =
+                self.floating_panes.panes_are_visible() || active_pane_is_floating;
+            if should_focus_pane && should_add_floating {
+                self.add_floating_pane(new_pane, pid, None, true, client_id)
+            } else if should_focus_pane {
+                self.add_tiled_pane(new_pane, pid, false, client_id)
+            } else if should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, false, client_id)
             } else {
                 self.add_tiled_pane(new_pane, pid, false, None)
@@ -3830,13 +3836,8 @@ impl Tab {
     }
 
     pub fn get_active_pane(&self, client_id: ClientId) -> Option<&dyn Pane> {
-        self.get_active_pane_id(client_id).and_then(|ap| {
-            if self.floating_panes.panes_are_visible() {
-                self.floating_panes.get_pane(ap).map(Box::as_ref)
-            } else {
-                self.tiled_panes.get_pane(ap).map(Box::as_ref)
-            }
-        })
+        self.get_active_pane_id(client_id)
+            .and_then(|pane_id| self.get_pane_with_id(pane_id))
     }
     pub fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
         self.get_active_pane(client_id)
@@ -3851,7 +3852,10 @@ impl Tab {
         direction: Direction,
         client_id: ClientId,
     ) -> bool {
-        if self.floating_panes.panes_are_visible() {
+        let active_pane_is_floating = self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+        if active_pane_is_floating {
             return false;
         }
         let Some(geom) = self
@@ -5451,7 +5455,10 @@ impl Tab {
         if self.floating_panes.fullscreen_is_active() {
             return Ok(());
         }
-        if self.floating_panes.panes_are_visible() {
+        let active_pane_is_floating = self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+        if active_pane_is_floating {
             let successfully_resized = self
                 .floating_panes
                 .resize_active_pane(client_id, &mut self.os_api, &strategy)
@@ -6221,19 +6228,7 @@ impl Tab {
             format!("failed to close focused pane (ID {pane_id:?}) for client {client_id}")
         };
 
-        if self.floating_panes.panes_are_visible() {
-            if let Some(active_floating_pane_id) = self.floating_panes.active_pane_id(client_id) {
-                self.close_pane(active_floating_pane_id, false, None);
-                self.senders
-                    .send_to_pty(PtyInstruction::ClosePane(
-                        active_floating_pane_id,
-                        completion_tx,
-                    ))
-                    .with_context(|| err_context(active_floating_pane_id))?;
-                return Ok(());
-            }
-        }
-        if let Some(active_pane_id) = self.tiled_panes.get_active_pane_id(client_id) {
+        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
             self.close_pane(active_pane_id, false, None);
             self.senders
                 .send_to_pty(PtyInstruction::ClosePane(active_pane_id, completion_tx))

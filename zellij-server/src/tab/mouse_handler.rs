@@ -1609,6 +1609,18 @@ impl MouseHandler {
                 tab.set_pane_active_at(clicked_pane);
                 return Ok(());
             }
+        } else if let Some(clicked_pane) = tab.visible_floating_pane_at(point) {
+            if tab.pane_is_overlay(clicked_pane) {
+                if tab
+                    .floating_panes
+                    .get_pane(clicked_pane)
+                    .is_some_and(|pane| pane.selectable())
+                {
+                    tab.floating_panes.focus_pane(clicked_pane, client_id);
+                    tab.set_pane_active_at(clicked_pane);
+                }
+                return Ok(());
+            }
         }
         if tab.floating_panes.has_pinned_panes() {
             let search_selectable = false;
@@ -1811,13 +1823,24 @@ impl MouseHandler {
             {
                 return Ok(tab.floating_panes.get_pane_mut(pane_id));
             }
-        } else if tab.floating_panes.has_pinned_panes() {
-            if let Some(pane_id) = tab
-                .floating_panes
-                .get_pinned_pane_id_at(point, search_selectable)
-                .with_context(err_context)?
-            {
-                return Ok(tab.floating_panes.get_pane_mut(pane_id));
+        } else {
+            if let Some(pane_id) = tab.visible_floating_pane_at(point) {
+                if tab.pane_is_overlay(pane_id) {
+                    let pane = tab.floating_panes.get_pane_mut(pane_id);
+                    if !search_selectable || pane.as_ref().is_some_and(|pane| pane.selectable()) {
+                        return Ok(pane);
+                    }
+                    return Ok(None);
+                }
+            }
+            if tab.floating_panes.has_pinned_panes() {
+                if let Some(pane_id) = tab
+                    .floating_panes
+                    .get_pinned_pane_id_at(point, search_selectable)
+                    .with_context(err_context)?
+                {
+                    return Ok(tab.floating_panes.get_pane_mut(pane_id));
+                }
             }
         }
         if let Some(pane_id) = tab
