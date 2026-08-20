@@ -157,6 +157,24 @@ impl RunPluginOrAlias {
     pub fn get_configuration(&self) -> Option<PluginUserConfiguration> {
         self.get_run_plugin().map(|r| r.configuration.clone())
     }
+    pub fn requests_overlay(&self) -> bool {
+        let configuration = match self {
+            RunPluginOrAlias::RunPlugin(run_plugin) => Some(&run_plugin.configuration),
+            RunPluginOrAlias::Alias(alias) => alias
+                .run_plugin
+                .as_ref()
+                .map(|run_plugin| &run_plugin.configuration)
+                .or(alias.configuration.as_ref()),
+        };
+        configuration.is_some_and(|configuration| {
+            ["overlay", "modal"].into_iter().any(|key| {
+                configuration
+                    .inner()
+                    .get(key)
+                    .is_some_and(|value| value == "true")
+            })
+        })
+    }
     pub fn get_initial_cwd(&self) -> Option<PathBuf> {
         self.get_run_plugin().and_then(|r| r.initial_cwd.clone())
     }

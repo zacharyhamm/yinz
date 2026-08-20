@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn modal_plugin_configuration_requests_overlay() {
+    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    modal.configuration.insert("modal", "true");
+    assert!(RunPluginOrAlias::RunPlugin(modal).requests_overlay());
+
+    let plain = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    assert!(!RunPluginOrAlias::RunPlugin(plain).requests_overlay());
+}
+
+#[test]
+fn resolved_modal_plugin_alias_requests_overlay() {
+    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    modal.configuration.insert("modal", "true");
+    let alias = PluginAlias {
+        name: "quit".to_owned(),
+        run_plugin: Some(modal),
+        ..Default::default()
+    };
+
+    assert!(RunPluginOrAlias::Alias(alias).requests_overlay());
+}
+
+#[test]
 fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
     use zellij_utils::data::GlobalPaneEdge;
 
@@ -196,7 +219,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
     // the client moves to the other tab and asks for the popup again
     screen.switch_active_tab(1, None, true, 1).expect("TEST");
     assert!(screen
-        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut None)
+        .focus_plugin_pane(&run_plugin, false, true, false, 1, &mut None)
         .expect("TEST"));
 
     let second_tab = screen.tabs.get(&1).expect("TEST");

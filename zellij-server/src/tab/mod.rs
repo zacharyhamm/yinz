@@ -2546,7 +2546,7 @@ impl Tab {
         default_shell: Option<TerminalAction>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        if self.floating_panes.panes_are_visible() {
+        if self.floating_panes.all_panes_are_visible() {
             self.hide_floating_panes();
             self.set_force_render();
         } else {
@@ -2826,14 +2826,20 @@ impl Tab {
             .with_context(err_context)?;
             self.park_pane(new_pane);
             Ok(())
-        } else if should_focus_pane {
-            if self.floating_panes.panes_are_visible() {
-                self.add_floating_pane(new_pane, pid, None, true, client_id)
-            } else {
-                self.add_tiled_pane(new_pane, pid, false, client_id)
-            }
         } else {
-            if self.floating_panes.panes_are_visible() {
+            let active_pane_is_floating = client_id
+                .and_then(|client_id| self.get_active_pane_id(client_id))
+                .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+            if active_pane_is_floating && !self.floating_panes.panes_are_visible() {
+                self.show_floating_panes();
+            }
+            let should_add_floating =
+                self.floating_panes.panes_are_visible() || active_pane_is_floating;
+            if should_focus_pane && should_add_floating {
+                self.add_floating_pane(new_pane, pid, None, true, client_id)
+            } else if should_focus_pane {
+                self.add_tiled_pane(new_pane, pid, false, client_id)
+            } else if should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, false, client_id)
             } else {
                 self.add_tiled_pane(new_pane, pid, false, None)
@@ -2957,7 +2963,10 @@ impl Tab {
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
-        if should_focus_pane {
+        let is_overlay = floating_pane_coordinates
+            .as_ref()
+            .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false));
+        if should_focus_pane && !is_overlay {
             self.show_floating_panes();
         }
         self.close_down_to_max_terminals()
@@ -3827,13 +3836,8 @@ impl Tab {
     }
 
     pub fn get_active_pane(&self, client_id: ClientId) -> Option<&dyn Pane> {
-        self.get_active_pane_id(client_id).and_then(|ap| {
-            if self.floating_panes.panes_are_visible() {
-                self.floating_panes.get_pane(ap).map(Box::as_ref)
-            } else {
-                self.tiled_panes.get_pane(ap).map(Box::as_ref)
-            }
-        })
+        self.get_active_pane_id(client_id)
+            .and_then(|pane_id| self.get_pane_with_id(pane_id))
     }
     pub fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
         self.get_active_pane(client_id)
@@ -3848,7 +3852,10 @@ impl Tab {
         direction: Direction,
         client_id: ClientId,
     ) -> bool {
-        if self.floating_panes.panes_are_visible() {
+        let active_pane_is_floating = self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+        if active_pane_is_floating {
             return false;
         }
         let Some(geom) = self
@@ -3886,30 +3893,28 @@ impl Tab {
             })
     }
     pub fn get_active_pane_mut(&mut self, client_id: ClientId) -> Option<&mut Box<dyn Pane>> {
-        self.get_active_pane_id(client_id).and_then(|ap| {
-            if self.floating_panes.panes_are_visible() {
-                self.floating_panes.get_pane_mut(ap)
-            } else {
-                self.tiled_panes.get_pane_mut(ap)
-            }
-        })
+        self.get_active_pane_id(client_id)
+            .and_then(|active_pane_id| {
+                self.floating_panes
+                    .get_pane_mut(active_pane_id)
+                    .or_else(|| self.tiled_panes.get_pane_mut(active_pane_id))
+            })
     }
     pub fn get_active_pane_or_floating_pane_mut(
         &mut self,
         client_id: ClientId,
     ) -> Option<&mut Box<dyn Pane>> {
-        if self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes() {
-            self.floating_panes.get_active_pane_mut(client_id)
-        } else {
-            self.get_active_pane_mut(client_id)
-        }
+        self.get_active_pane_mut(client_id)
     }
     pub fn get_active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.get_active_pane_id(client_id)
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)
-        }
+        self.floating_panes
+            .get_active_pane_id(client_id)
+            .filter(|pane_id| {
+                self.floating_panes.panes_are_visible()
+                    || (self.pane_is_overlay(*pane_id)
+                        && self.floating_panes.get_pane_z_index(*pane_id).is_some())
+            })
+            .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }
     pub fn get_active_pane_id_or_first_selectable(&self, client_id: ClientId) -> Option<PaneId> {
         self.get_active_pane_id(client_id)
@@ -4441,21 +4446,10 @@ impl Tab {
 
         self.clear_search(client_id);
         self.mouse_help_text_visible.clear();
-        let pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
-                .ok_or_else(|| {
-                    anyhow!(format!(
-                        "failed to find active pane id for client {client_id}"
-                    ))
-                })
-                .with_context(err_context)?
-        } else {
-            self.tiled_panes
-                .get_active_pane_id(client_id)
-                .with_context(err_context)?
-        };
+        let pane_id = self
+            .get_active_pane_id(client_id)
+            .ok_or_else(|| anyhow!("failed to find active pane id for client {client_id}"))
+            .with_context(err_context)?;
         // Can't use 'err_context' here since it borrows 'raw_input_bytes'
         self.write_to_pane_id(
             key_with_modifier,
@@ -4476,16 +4470,10 @@ impl Tab {
     ) -> Result<()> {
         let err_context = || format!("failed to write to terminal at position {position:?}");
 
-        if self.floating_panes.panes_are_visible() {
-            let pane_id = self
-                .floating_panes
-                .get_pane_id_at(position, false)
+        if let Some(pane_id) = self.floating_panes.visible_pane_id_at(position) {
+            self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
                 .with_context(err_context)?;
-            if let Some(pane_id) = pane_id {
-                self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
-                    .with_context(err_context)?;
-                return Ok(());
-            }
+            return Ok(());
         }
 
         let pane_id = self
@@ -4709,13 +4697,7 @@ impl Tab {
         Ok(should_update_ui)
     }
     pub fn active_terminal_is_mid_frame(&self, client_id: ClientId) -> Option<bool> {
-        let active_pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))?
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)?
-        };
+        let active_pane_id = self.get_active_pane_id(client_id)?;
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)
@@ -4727,13 +4709,7 @@ impl Tab {
         client_id: ClientId,
     ) -> Option<(usize, usize, bool)> {
         // (x, y, is_cursor_visible)
-        let active_pane_id = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .get_active_pane_id(client_id)
-                .or_else(|| self.tiled_panes.get_active_pane_id(client_id))?
-        } else {
-            self.tiled_panes.get_active_pane_id(client_id)?
-        };
+        let active_pane_id = self.get_active_pane_id(client_id)?;
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)
@@ -4837,7 +4813,7 @@ impl Tab {
             .or_else(|| self.floating_panes.fullscreen_pane_id())
     }
     pub fn are_floating_panes_visible(&self) -> bool {
-        self.floating_panes.panes_are_visible()
+        self.floating_panes.all_panes_are_visible()
     }
     pub fn focus_pane_left_fullscreen(&mut self, client_id: ClientId) -> bool {
         if !self.is_fullscreen_active() {
@@ -5117,7 +5093,8 @@ impl Tab {
     pub fn has_floating_panes_to_render(&self) -> bool {
         !self.tiled_panes.fullscreen_covers_ui()
             && ((self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
-                || self.floating_panes.has_pinned_panes())
+                || self.floating_panes.has_pinned_panes()
+                || self.floating_panes.has_overlays())
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
@@ -5480,7 +5457,10 @@ impl Tab {
         if self.floating_panes.fullscreen_is_active() {
             return Ok(());
         }
-        if self.floating_panes.panes_are_visible() {
+        let active_pane_is_floating = self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+        if active_pane_is_floating {
             let successfully_resized = self
                 .floating_panes
                 .resize_active_pane(client_id, &mut self.os_api, &strategy)
@@ -6250,19 +6230,7 @@ impl Tab {
             format!("failed to close focused pane (ID {pane_id:?}) for client {client_id}")
         };
 
-        if self.floating_panes.panes_are_visible() {
-            if let Some(active_floating_pane_id) = self.floating_panes.active_pane_id(client_id) {
-                self.close_pane(active_floating_pane_id, false, None);
-                self.senders
-                    .send_to_pty(PtyInstruction::ClosePane(
-                        active_floating_pane_id,
-                        completion_tx,
-                    ))
-                    .with_context(|| err_context(active_floating_pane_id))?;
-                return Ok(());
-            }
-        }
-        if let Some(active_pane_id) = self.tiled_panes.get_active_pane_id(client_id) {
+        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
             self.close_pane(active_pane_id, false, None);
             self.senders
                 .send_to_pty(PtyInstruction::ClosePane(active_pane_id, completion_tx))
@@ -7265,7 +7233,7 @@ impl Tab {
     }
 
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
-        if self.floating_panes.panes_are_visible() {
+        if self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
                 c.set_exit_status(2);
             }
@@ -7291,7 +7259,7 @@ impl Tab {
     }
 
     pub fn hide_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
-        if !self.floating_panes.panes_are_visible() {
+        if !self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
                 c.set_exit_status(2);
             }
@@ -7335,7 +7303,7 @@ impl Tab {
             .or_else(|_| {
                 let focused_floating_pane =
                     self.floating_panes.focus_pane_if_exists(pane_id, client_id);
-                if focused_floating_pane.is_ok() {
+                if focused_floating_pane.is_ok() && !self.pane_is_overlay(pane_id) {
                     self.show_floating_panes()
                 };
                 focused_floating_pane

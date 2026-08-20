@@ -81,6 +81,100 @@ fn global_plugin_placement_rejects_move_to_focused_tab() {
 }
 
 #[test]
+fn global_plugin_placement_rejects_overlays() {
+    for action in ["LaunchOrFocusPlugin", "LaunchPlugin"] {
+        for overlay_setting in [
+            "overlay true",
+            "overlay \"true\"",
+            "modal true",
+            "modal \"true\"",
+        ] {
+            let source = format!(
+                r#"
+                keybinds {{
+                    normal {{
+                        bind "Ctrl g" {{
+                            {action} "hocus" {{
+                                global true
+                                edge "left"
+                                size "25%"
+                                {overlay_setting}
+                            }}
+                        }}
+                    }}
+                }}
+            "#
+            );
+            let document: KdlDocument = source.parse().unwrap();
+            assert!(Keybinds::from_kdl(
+                document.get("keybinds").unwrap(),
+                Default::default(),
+                &Default::default(),
+            )
+            .is_err());
+        }
+    }
+}
+
+#[test]
+fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
+    let source = r#"
+        keybinds {
+            normal {
+                bind "Ctrl o" {
+                    LaunchOrFocusPlugin "hocus-ask" {
+                        floating true
+                        overlay true
+                        modal true
+                    }
+                }
+            }
+        }
+    "#;
+    let document: KdlDocument = source.parse().unwrap();
+    let keybinds = Keybinds::from_kdl(
+        document.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let key = KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier();
+    let Some(Action::LaunchOrFocusPlugin { plugin, .. }) = keybinds
+        .get_actions_for_key_in_mode(&InputMode::Normal, &key)
+        .and_then(|actions| actions.first())
+    else {
+        panic!("expected LaunchOrFocusPlugin");
+    };
+
+    let configuration = match plugin {
+        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+    };
+    assert!(configuration.is_some_and(|configuration| {
+        ["overlay", "modal"].into_iter().all(|key| {
+            configuration
+                .inner()
+                .get(key)
+                .is_some_and(|value| value == "true")
+        })
+    }));
+    let serialized = Keybinds::to_kdl(&keybinds, true).to_string();
+    assert!(serialized.contains("overlay true"));
+    assert!(serialized.contains("modal true"));
+    let reparsed = Keybinds::from_kdl(
+        serialized
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("keybinds")
+            .unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(keybinds, reparsed);
+}
+
+#[test]
 fn non_global_plugin_placement_named_configuration_round_trips() {
     let source = r#"
         keybinds {

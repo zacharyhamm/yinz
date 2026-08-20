@@ -158,19 +158,20 @@ impl FloatingPanes {
                 .then_some(vec![fullscreen_pane_id])
                 .unwrap_or_default();
         }
-        if self.panes_are_visible() {
+        if self.all_panes_are_visible() {
             self.z_indices
                 .iter()
                 .filter(|pane_id| self.panes.contains_key(pane_id))
                 .copied()
                 .collect()
-        } else if self.has_pinned_panes() {
+        } else if self.has_pinned_panes() || self.has_overlays() {
             self.z_indices
                 .iter()
                 .filter(|pane_id| {
-                    self.panes
-                        .get(pane_id)
-                        .is_some_and(|p| p.position_and_size().is_pinned)
+                    self.panes.get(pane_id).is_some_and(|p| {
+                        p.position_and_size().is_pinned
+                            || self.overlay_coordinates.contains_key(pane_id)
+                    })
                 })
                 .copied()
                 .collect()
@@ -285,15 +286,7 @@ impl FloatingPanes {
         self.panes.keys()
     }
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
-        if self.panes_are_visible() {
-            self.panes.keys().copied().collect()
-        } else {
-            self.panes
-                .iter()
-                .filter(|(_, pane)| pane.position_and_size().is_pinned)
-                .map(|(pane_id, _)| *pane_id)
-                .collect()
-        }
+        self.stack_layer_ids()
     }
     pub fn add_pane(&mut self, pane_id: PaneId, pane: Box<dyn Pane>) {
         self.desired_pane_positions
@@ -393,6 +386,9 @@ impl FloatingPanes {
             .and_then(|active_pane_id| self.panes.get_mut(active_pane_id))
     }
     pub fn panes_are_visible(&self) -> bool {
+        self.all_panes_are_visible()
+    }
+    pub fn all_panes_are_visible(&self) -> bool {
         self.show_panes && !*self.fullscreen_covers_ui.borrow()
     }
     pub fn has_active_panes(&self) -> bool {
@@ -405,7 +401,7 @@ impl FloatingPanes {
         self.active_panes.get(&client_id).copied()
     }
     pub fn get_pane_z_index(&self, pane_id: PaneId) -> Option<usize> {
-        self.z_indices.iter().position(|id| id == &pane_id)
+        self.stack_layer_ids().iter().position(|id| id == &pane_id)
     }
     pub fn active_pane_id_or_focused_pane_id(&self, client_id: Option<ClientId>) -> Option<PaneId> {
         // returns the focused pane of any client_id - should be safe because the way things are
@@ -606,9 +602,13 @@ impl FloatingPanes {
         }
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
-        let active_panes = if self.panes_are_visible() {
+        let active_panes = if self.all_panes_are_visible() || self.has_overlays() {
             let mut active_panes = self.active_panes.clone_active_panes();
-            active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
+            active_panes.retain(|client_id, pane_id| {
+                !inactive_clients.contains(client_id)
+                    && (self.all_panes_are_visible()
+                        || self.overlay_coordinates.contains_key(pane_id))
+            });
             active_panes
         } else {
             Default::default()
@@ -668,12 +668,15 @@ impl FloatingPanes {
                 .iter_mut()
                 .filter(|(id, _)| **id == fullscreen_pane_id)
                 .collect()
-        } else if self.panes_are_visible() {
+        } else if self.all_panes_are_visible() {
             self.panes.iter_mut().collect()
-        } else if self.has_pinned_panes() {
+        } else if self.has_pinned_panes() || self.has_overlays() {
             self.panes
                 .iter_mut()
-                .filter(|(_id, p)| p.position_and_size().is_pinned)
+                .filter(|(pane_id, pane)| {
+                    pane.position_and_size().is_pinned
+                        || self.overlay_coordinates.contains_key(pane_id)
+                })
                 .collect()
         } else {
             vec![]
@@ -935,8 +938,11 @@ impl FloatingPanes {
         let viewport = *self.viewport.borrow();
         let active_pane_id = self.active_panes.get(&client_id).copied();
         let updated_active_pane = if let Some(active_pane_id) = active_pane_id {
+            let rendered_pane_ids = self.rendered_pane_ids();
             let floating_pane_grid = FloatingPaneGrid::new(
-                &mut self.panes,
+                self.panes
+                    .iter_mut()
+                    .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
                 &mut self.desired_pane_positions,
                 display_area,
                 viewport,
@@ -1019,8 +1025,11 @@ impl FloatingPanes {
         }
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
+        let rendered_pane_ids = self.rendered_pane_ids();
         let floating_pane_grid = FloatingPaneGrid::new(
-            &mut self.panes,
+            self.panes
+                .iter_mut()
+                .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
             &mut self.desired_pane_positions,
             display_area,
             viewport,
@@ -1041,8 +1050,11 @@ impl FloatingPanes {
         }
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
+        let rendered_pane_ids = self.rendered_pane_ids();
         let floating_pane_grid = FloatingPaneGrid::new(
-            &mut self.panes,
+            self.panes
+                .iter_mut()
+                .filter(|(pane_id, _)| rendered_pane_ids.contains(pane_id)),
             &mut self.desired_pane_positions,
             display_area,
             viewport,
@@ -1075,6 +1087,7 @@ impl FloatingPanes {
             self.reenter_fullscreen_on_active_pane(client_id, covers_ui);
             return;
         }
+        let rendered_pane_ids = self.rendered_pane_ids();
         let currently_active_pane_id = self.active_panes.get(&client_id).copied();
         let last_pane_id = self
             .active_panes
@@ -1082,23 +1095,33 @@ impl FloatingPanes {
             .copied()
             .filter(|last_pane_id| {
                 Some(*last_pane_id) != currently_active_pane_id
+                    && rendered_pane_ids.contains(last_pane_id)
                     && self
                         .panes
                         .get(last_pane_id)
                         .map(|p| p.selectable())
                         .unwrap_or(false)
             });
-        let target_pane_id = last_pane_id
-            .or_else(|| self.most_recently_active_selectable_pane(currently_active_pane_id));
+        let target_pane_id = last_pane_id.or_else(|| {
+            self.most_recently_active_selectable_pane(currently_active_pane_id, &rendered_pane_ids)
+        });
         if let Some(target_pane_id) = target_pane_id {
             self.focus_pane(target_pane_id, client_id);
             self.set_force_render();
         }
     }
-    fn most_recently_active_selectable_pane(&self, exclude: Option<PaneId>) -> Option<PaneId> {
+    fn most_recently_active_selectable_pane(
+        &self,
+        exclude: Option<PaneId>,
+        rendered_pane_ids: &[PaneId],
+    ) -> Option<PaneId> {
         self.panes
             .iter()
-            .filter(|(pane_id, pane)| Some(**pane_id) != exclude && pane.selectable())
+            .filter(|(pane_id, pane)| {
+                Some(**pane_id) != exclude
+                    && rendered_pane_ids.contains(pane_id)
+                    && pane.selectable()
+            })
             .max_by_key(|(_pane_id, pane)| pane.active_at())
             .map(|(pane_id, _pane)| *pane_id)
     }
@@ -1424,6 +1447,11 @@ impl FloatingPanes {
         self.make_sure_pinned_panes_are_on_top();
         self.set_pane_active_at(pane_id);
         self.set_force_render();
+    }
+    #[cfg(test)]
+    pub fn set_active_pane_for_client(&mut self, pane_id: PaneId, client_id: ClientId) {
+        self.active_panes
+            .insert(client_id, pane_id, &mut self.panes);
     }
     pub fn fullscreen_is_active(&self) -> bool {
         self.fullscreen_pane_id.is_some()
