@@ -3460,6 +3460,9 @@ pub struct OriginatingPlugin {
     pub context: Context,
 }
 
+/// Marks command panes opened by the Hocus new/duplicate agent actions.
+pub const HOCUS_AGENT_PANE_CONTEXT: &str = "hocus_agent_pane";
+
 impl OriginatingPlugin {
     pub fn new(plugin_id: u32, client_id: ClientId, context: Context) -> Self {
         OriginatingPlugin {

@@ -160,7 +160,11 @@ impl ZellijPlugin for State {
             .find(|pane| pane.pane_id == pane_id)
             .and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
         if command.is_some_and(|command| {
-            open_command_pane_near_plugin(command, BTreeMap::new()).is_some()
+            open_command_pane_near_plugin(
+                command,
+                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+            )
+            .is_some()
         }) {
             close_self();
         }

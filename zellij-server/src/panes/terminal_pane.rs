@@ -22,7 +22,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::{self, Instant};
 use vte;
-use zellij_utils::data::PaneContents;
+use zellij_utils::data::{PaneContents, HOCUS_AGENT_PANE_CONTEXT};
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Offset;
@@ -432,6 +432,12 @@ impl Pane for TerminalPane {
                 None
             }
         } else if self.is_held.is_some() {
+            let is_hocus_agent = self.is_held.as_ref().is_some_and(|(_, _, command)| {
+                command
+                    .originating_plugin
+                    .as_ref()
+                    .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT))
+            });
             if key_with_modifier
                 .as_ref()
                 .map(|k| k.is_key_without_modifier(BareKey::Enter))
@@ -443,7 +449,11 @@ impl Pane for TerminalPane {
                 .map(|k| k.is_key_without_modifier(BareKey::Esc))
                 .unwrap_or(false)
             {
-                self.handle_held_drop_to_shell()
+                if is_hocus_agent {
+                    Some(AdjustedInput::CloseThisPane)
+                } else {
+                    self.handle_held_drop_to_shell()
+                }
             } else if key_with_modifier
                 .as_ref()
                 .map(|k| k.is_key_with_ctrl_modifier(BareKey::Char('c')))
@@ -453,6 +463,7 @@ impl Pane for TerminalPane {
             } else {
                 match raw_input_bytes.as_slice() {
                     ENTER_CARRIAGE_RETURN | ENTER_NEWLINE | SPACE => self.handle_held_run(),
+                    ESC if is_hocus_agent => Some(AdjustedInput::CloseThisPane),
                     ESC => self.handle_held_drop_to_shell(),
                     CTRL_C => Some(AdjustedInput::CloseThisPane),
                     _ => None,
@@ -1088,6 +1099,10 @@ impl Pane for TerminalPane {
         self.grid.is_alternate_mode_active()
     }
     fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, run_command: RunCommand) {
+        let is_hocus_agent = run_command
+            .originating_plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
         self.invoked_with = Some(Run::Command(run_command.clone()));
         self.is_held = Some((exit_status, is_first_run, run_command));
         if let Some(notification_end) = self.notification_end.as_mut() {
@@ -1103,7 +1118,7 @@ impl Pane for TerminalPane {
                 }
             }
         }
-        if is_first_run {
+        if is_first_run || is_hocus_agent {
             self.render_first_run_banner();
         }
         self.set_should_render(true);
