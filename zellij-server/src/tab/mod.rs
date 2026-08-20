@@ -1830,6 +1830,8 @@ impl Tab {
                         session_is_mirrored,
                         false,
                         true,
+                        true,
+                        true,
                     )?;
                 }
             }
@@ -2546,12 +2548,15 @@ impl Tab {
         default_shell: Option<TerminalAction>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        if self.floating_panes.all_panes_are_visible() {
+        let last_selectable_floating_pane_id =
+            self.floating_panes.last_selectable_non_overlay_pane_id();
+        if last_selectable_floating_pane_id.is_some() && self.floating_panes.all_panes_are_visible()
+        {
             self.hide_floating_panes();
             self.set_force_render();
         } else {
             self.show_floating_panes();
-            match self.floating_panes.last_selectable_floating_pane_id() {
+            match last_selectable_floating_pane_id {
                 Some(last_selectable_floating_pane_id) => match client_id {
                     Some(client_id) => {
                         if !self.floating_panes.active_panes_contain(&client_id) {

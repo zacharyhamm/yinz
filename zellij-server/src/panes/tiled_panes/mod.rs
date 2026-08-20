@@ -1441,6 +1441,8 @@ impl TiledPanes {
                                 self.session_is_mirrored,
                                 is_floating,
                                 pane_is_selectable,
+                                true,
+                                true,
                             )
                             .with_context(err_context)?;
                     } else if (self.pane_frame_style.draws_titles() || pane_is_stacked)
@@ -1453,6 +1455,8 @@ impl TiledPanes {
                                 self.session_is_mirrored,
                                 is_floating,
                                 pane_is_selectable,
+                                true,
+                                true,
                             )
                             .with_context(err_context)?;
                         let boundaries = client_id_to_boundaries

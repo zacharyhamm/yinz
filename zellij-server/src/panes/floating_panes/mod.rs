@@ -513,6 +513,14 @@ impl FloatingPanes {
             .rfind(|(_p_id, p)| p.selectable())
             .map(|(p_id, _p)| *p_id)
     }
+    pub fn last_selectable_non_overlay_pane_id(&self) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .rfind(|(pane_id, pane)| {
+                pane.selectable() && !self.overlay_coordinates.contains_key(pane_id)
+            })
+            .map(|(pane_id, _)| *pane_id)
+    }
     pub fn has_selectable_panes(&self) -> bool {
         self.panes
             .iter()
@@ -697,6 +705,11 @@ impl FloatingPanes {
                 { self.connected_clients_in_app.borrow().len() > 1 };
             active_panes.retain(|c_id, _| self.connected_clients.borrow().contains(c_id));
             let pane_is_selectable = pane.selectable();
+            let pane_is_overlay = self.overlay_coordinates.contains_key(kind);
+            let pane_is_modal = matches!(
+                pane.invoked_with(),
+                Some(Run::Plugin(run_plugin)) if run_plugin.requests_modal()
+            );
             let show_help_text = active_panes.iter().any(|(client_id, pane_id)| {
                 pane_id == &pane.pid() && help_text_visible.get(client_id).copied().unwrap_or(false)
             });
@@ -745,6 +758,8 @@ impl FloatingPanes {
                             self.session_is_mirrored,
                             is_floating,
                             pane_is_selectable,
+                            !pane_is_overlay,
+                            !pane_is_modal,
                         )
                         .with_context(err_context)?;
                 }
