@@ -6,14 +6,22 @@ use crate::prelude::*;
 use crate::ui_components::{print_text_with_coordinates, Text};
 use unicode_width::UnicodeWidthStr;
 
+/// The whole row is the click target - it is the label that says what the box
+/// means - but only the `[x]` marker is highlighted under the pointer, because
+/// that is the part a click changes. `last_marker` is where it was drawn.
 #[derive(Debug, Clone, Default)]
 pub struct Checkbox {
     checked: bool,
+    hovered: bool,
+    last_marker: Option<Rect>,
 }
 
 impl Checkbox {
     pub fn new(checked: bool) -> Self {
-        Self { checked }
+        Self {
+            checked,
+            ..Default::default()
+        }
     }
 
     pub fn is_checked(&self) -> bool {
@@ -28,7 +36,25 @@ impl Checkbox {
         self.checked = !self.checked;
     }
 
-    pub(super) fn render_row(&self, prompt: &str, x: usize, y: usize, width: usize, focused: bool) {
+    /// Returns whether this changed anything, so a caller can skip a re-render.
+    pub(super) fn set_hovered(&mut self, hovered: bool) -> bool {
+        let changed = self.hovered != hovered;
+        self.hovered = hovered;
+        changed
+    }
+
+    pub(super) fn clear_rendered(&mut self) {
+        self.last_marker = None;
+    }
+
+    pub(super) fn render_row(
+        &mut self,
+        prompt: &str,
+        x: usize,
+        y: usize,
+        width: usize,
+        focused: bool,
+    ) {
         let prompt = take_columns(prompt, width);
         let prompt_width = prompt.width();
         let mut prompt = Text::new(prompt).color_all(2);
@@ -40,12 +66,15 @@ impl Checkbox {
         let room = width.saturating_sub(prompt_width);
         if room > 0 {
             let marker = take_columns(if self.checked { "[x]" } else { "[ ]" }, room);
-            let text = if focused {
+            let marker_width = marker.width();
+            let text = if focused || self.hovered {
                 Text::new(marker).selected()
             } else {
                 Text::new(marker)
             };
-            print_text_with_coordinates(text, x + prompt_width, y, Some(room), None);
+            let marker_x = x + prompt_width;
+            print_text_with_coordinates(text, marker_x, y, Some(room), None);
+            self.last_marker = Some(Rect::new(marker_x, y, marker_width, 1));
         }
     }
 }
@@ -54,6 +83,7 @@ impl Checkbox {
 pub struct RadioGroup {
     options: Vec<String>,
     selected: Option<usize>,
+    hovered: Option<usize>,
     last_option_rects: Vec<(usize, Rect)>,
 }
 
@@ -71,6 +101,7 @@ impl RadioGroup {
         Self {
             options,
             selected,
+            hovered: None,
             last_option_rects: vec![],
         }
     }
@@ -174,7 +205,7 @@ impl RadioGroup {
             if visible_width == 0 {
                 break;
             }
-            let text = if focused {
+            let text = if focused || self.hovered == Some(index) {
                 Text::new(visible).selected()
             } else {
                 Text::new(visible)
@@ -188,6 +219,14 @@ impl RadioGroup {
 
     pub(super) fn clear_rendered(&mut self) {
         self.last_option_rects.clear();
+    }
+
+    /// Highlight the option under the pointer, or none. Returns whether this
+    /// changed anything, so a caller can skip a re-render.
+    pub(super) fn set_hovered(&mut self, hovered: Option<usize>) -> bool {
+        let changed = self.hovered != hovered;
+        self.hovered = hovered;
+        changed
     }
 
     pub(super) fn option_at(&self, x: usize, y: usize) -> Option<usize> {
@@ -239,6 +278,36 @@ mod tests {
         let radio = RadioGroup::new(Vec::<String>::new());
         assert_eq!(radio.selected_index(), None);
         assert_eq!(radio.selected_option(), None);
+    }
+
+    #[test]
+    fn the_checkbox_marker_rect_is_where_the_marker_was_drawn() {
+        let mut checkbox = Checkbox::new(true);
+        assert_eq!(checkbox.last_marker, None);
+        // "Frames: " is eight columns, so the marker starts eight past the row.
+        checkbox.render_row("Frames: ", 4, 2, 20, false);
+        assert_eq!(checkbox.last_marker, Some(Rect::new(12, 2, 3, 1)));
+        checkbox.clear_rendered();
+        assert_eq!(checkbox.last_marker, None);
+    }
+
+    #[test]
+    fn a_checkbox_with_no_room_for_its_marker_records_none() {
+        let mut checkbox = Checkbox::new(false);
+        checkbox.render_row("Frames: ", 0, 0, 8, false);
+        assert_eq!(checkbox.last_marker, None);
+    }
+
+    #[test]
+    fn hover_state_reports_whether_it_changed() {
+        let mut checkbox = Checkbox::new(false);
+        assert!(checkbox.set_hovered(true));
+        assert!(!checkbox.set_hovered(true));
+
+        let mut radio = RadioGroup::new(["one", "two"]);
+        assert!(radio.set_hovered(Some(1)));
+        assert!(!radio.set_hovered(Some(1)));
+        assert!(radio.set_hovered(None));
     }
 
     #[test]

@@ -343,6 +343,19 @@ fn edge_and_delta_to_strategies(
     }
 }
 
+/// Whether a press in this pane should be followed until it is released.
+///
+/// A pane that does its own text selection needs the drag to extend the selection. A
+/// plugin pane that opted *out* of selection needs it for the opposite reason: its
+/// `Mouse::LeftClick`, `Mouse::Hold` and `Mouse::Release` events are all sent from those
+/// same three `Pane` calls (see `PluginPane::start_selection`), so a plugin whose drag is
+/// not tracked only ever hears the press - and a form widget that activates on release
+/// would never fire. `GlobalPanes::route_mouse_event` tracks it for plugins for exactly
+/// this reason.
+fn drag_should_be_tracked(pane_id: PaneId, pane: &dyn Pane) -> bool {
+    pane.supports_mouse_selection() || matches!(pane_id, PaneId::Plugin(_))
+}
+
 pub struct MouseHandler;
 
 impl MouseHandler {
@@ -791,7 +804,7 @@ impl MouseHandler {
                 if pane.get_selected_text(client_id).is_some() {
                     leave_clipboard_message = true;
                 }
-                if pane.supports_mouse_selection() {
+                if drag_should_be_tracked(pane_id, &**pane) {
                     tab.selecting_with_mouse_in_pane = Some(pane_id);
                 }
                 if leave_clipboard_message {
@@ -995,7 +1008,7 @@ impl MouseHandler {
                 let relative_position = pane.relative_position(&position);
                 pane.set_selection_options(osc133_command_selection, &word_separators);
                 pane.start_selection(&relative_position, client_id);
-                if pane.supports_mouse_selection() {
+                if drag_should_be_tracked(active_pane_id, &**pane) {
                     tab.selecting_with_mouse_in_pane = Some(active_pane_id);
                 }
             }
