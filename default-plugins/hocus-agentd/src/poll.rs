@@ -40,11 +40,15 @@ pub fn pane_cwd(pane_id: u32) -> Option<String> {
 /// One poll's reading of a pane: what it shows, and what that reading is worth.
 ///
 /// The text alone cannot say whether an agent is working. A pane repaints when the user
-/// scrolls it, when it is resized, and when a client attaches — so the two host flags
+/// scrolls it, when it is resized, and when a client attaches — so the host flags
 /// travel with the text they qualify, sampled in the same call rather than looked up
 /// afterwards against a manifest that may already have moved on.
 pub struct PaneSample {
     pub text: String,
+    /// The host answered with a screen. `false` means it did not — the pane has closed, or
+    /// the call failed — and then `text` is an error message rather than anything the agent
+    /// wrote, so nothing may be concluded from it and nothing may be summarised out of it.
+    pub readable: bool,
     /// The user has scrolled this pane back off its live tail, so what it shows is old
     /// output rather than anything the process just did.
     pub is_scrolled: bool,
@@ -54,14 +58,15 @@ pub struct PaneSample {
 }
 
 impl PaneSample {
-    /// A reading we could not take, dressed as the reading that says the least: the host
-    /// refused, so this text is an error message rather than anything the agent wrote, and
-    /// it must neither look like work nor be summarised. `is_scrolled` is what the daemon
-    /// reads as "this says nothing" — see `State::qualify`.
+    /// A reading we could not take: the host refused — most often because the pane has
+    /// closed — so this text is an error message rather than anything the agent wrote, and
+    /// it must neither look like work nor be summarised. `readable` is what says so, and
+    /// the daemon reads it as "this says nothing" — see `State::qualify`.
     fn unreadable(reason: String) -> Self {
         PaneSample {
             text: reason,
-            is_scrolled: true,
+            readable: false,
+            is_scrolled: false,
             last_output_ms_ago: None,
         }
     }
@@ -87,6 +92,7 @@ pub fn read_pane(pane_id: u32) -> PaneSample {
             };
             PaneSample {
                 text,
+                readable: true,
                 is_scrolled,
                 last_output_ms_ago,
             }
