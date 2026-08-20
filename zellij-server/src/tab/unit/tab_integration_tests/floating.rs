@@ -2401,23 +2401,21 @@ fn floating_fullscreen_hides_other_floating_and_pinned_panes() {
 }
 
 // ---------------------------------------------------------------------------
-// Characterization tests added ahead of the modals/overlays refactor.
+// The floating collection's counts, and what an overlay does to them.
 //
 // These reach into `tab.floating_panes` directly, which the screen-level tests
-// in `unit/screen_tests/overlays.rs` cannot do. They pin the places where the
-// floating collection currently counts overlays as its own - the latent form of
-// the same bug the refactor exists to make unrepresentable.
+// in `unit/screen_tests/overlays.rs` cannot do. They were written ahead of the
+// modals/overlays refactor to pin the places where the floating collection
+// counted overlays as its own, and flipped by it.
 // ---------------------------------------------------------------------------
 
-/// An overlay lives in the floating collection today, so every count taken off that collection
-/// includes it. `visible_panes_count` is one of them, and it gates the auto-relayout in
-/// `Tab::extract_pane`: with only an overlay left, the count is 1 and a relayout runs over a
-/// layer that has nothing on it.
+/// An overlay is not on the floating layer, so no count taken off that collection includes it.
 ///
-/// This asserts today's (wrong) reading. The refactor makes the count exclude overlays by
-/// construction, at which point this test flips to `0` - see the commit that moves it.
+/// It used to, because an overlay *was* a floating pane. `visible_panes_count` is one such count
+/// and it gates the auto-relayout in `Tab::extract_pane`: with only an overlay left, the count
+/// was 1 and a relayout ran over a layer that had nothing on it.
 #[test]
-fn an_overlay_is_counted_by_the_floating_collection_today() {
+fn an_overlay_is_not_counted_by_the_floating_collection() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -2446,23 +2444,23 @@ fn an_overlay_is_counted_by_the_floating_collection_today() {
     assert!(tab.pane_is_overlay(overlay_pane_id));
     assert_eq!(
         tab.floating_panes.visible_panes_count(),
-        1,
-        "today the overlay is counted as a floating pane; after the refactor this is 0"
+        0,
+        "the overlay is not a floating pane"
     );
     assert!(
-        tab.floating_panes.has_panes(),
-        "and it makes the floating collection look non-empty"
+        !tab.floating_panes.has_panes(),
+        "and it does not make the floating collection look non-empty"
     );
 }
 
-/// Closing the last *real* floating pane while an overlay is up should take the floating layer
-/// down - there is nothing on it any more. `Tab::extract_pane` only does that when
-/// `floating_panes.has_panes()` is false, and the overlay keeps it true, so the layer is left
-/// flagged visible with nothing to show.
+/// Closing the last *real* floating pane while an overlay is up takes the floating layer down -
+/// there is nothing on it any more.
 ///
-/// This asserts today's (wrong) behavior so the refactor's fix is visible as a deliberate flip.
+/// It used to leave the layer flagged visible with nothing to show: `close_pane` only takes it
+/// down when the floating collection has no selectable panes left, and the overlay - being one of
+/// them - kept that false.
 #[test]
-fn closing_the_last_floating_pane_under_an_overlay_leaves_the_layer_up_today() {
+fn closing_the_last_floating_pane_under_an_overlay_takes_the_layer_down() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -2495,7 +2493,7 @@ fn closing_the_last_floating_pane_under_an_overlay_leaves_the_layer_up_today() {
     tab.close_pane(floating_pane_id, false, None);
 
     assert!(
-        tab.floating_panes.panes_are_visible(),
-        "today the overlay keeps the layer flagged visible; after the refactor this is false"
+        !tab.floating_panes.panes_are_visible(),
+        "the overlay does not keep the layer flagged visible"
     );
 }
