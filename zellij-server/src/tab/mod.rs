@@ -7590,20 +7590,6 @@ impl Tab {
         self.set_force_render();
     }
 
-    /// Take the floating layer down out from under an overlay that stays up.
-    ///
-    /// Deliberately not `hide_floating_panes`: that one unsets a floating fullscreen and tells
-    /// every focused floating pane it lost focus, and the overlay here neither is fullscreen nor
-    /// has lost anything. It does keep the tiled refocus, because the tiled panes were told they
-    /// lost focus when this pane was born an ordinary floating pane, and a pane born an overlay is
-    /// never told that at all - handing it back is what makes the two paths land in the same
-    /// place.
-    fn hide_floating_panes_under_overlay(&mut self) {
-        self.floating_panes.hide_panes_keeping_overlay_focus();
-        self.tiled_panes.focus_all_panes();
-        self.set_force_render();
-    }
-
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
         if self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
@@ -7983,10 +7969,6 @@ impl Tab {
             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
                 .with_context(err_context)?;
             self.floating_panes.add_pane(pane_id, pane);
-            if let Some(coordinates) = floating_pane_coordinates.as_ref() {
-                self.floating_panes
-                    .remember_overlay_coordinates(pane_id, coordinates);
-            }
             if should_focus_new_pane {
                 if let Some(client_id) = client_id {
                     self.floating_panes.focus_pane(pane_id, client_id);
@@ -8998,8 +8980,27 @@ impl Tab {
             claim(*pane_id, "suppressed_panes");
         }
 
-        // 2. (after the refactor) no overlay pane id appears in `floating_panes`.
-        // 3. (after the refactor) floating-layer visibility is independent of overlay focus.
+        // 2. No overlay pane id appears in `floating_panes`. Invariant 1 already forbids a pane
+        //    being in two collections; this says the specific thing the refactor is for, so that
+        //    the guarantee does not quietly become "some other collection" later.
+        for pane_id in self.overlay_panes.pane_ids() {
+            assert!(
+                !self.floating_panes.panes_contain(pane_id),
+                "{pane_id:?} is an overlay but is carried by the floating panes"
+            );
+        }
+
+        // 3. Nothing the floating layer draws is an overlay. The transition half of this - that
+        //    opening or focusing an overlay never *changes* the layer's visibility - is a property
+        //    of a step rather than of a state, and is asserted around each overlay operation by
+        //    the property test in `unit/screen_tests/overlays.rs`. (The layer can legitimately be
+        //    flagged visible with nothing on it: the user can just toggle it.)
+        for pane_id in self.floating_panes.rendered_pane_ids() {
+            assert!(
+                !self.overlay_panes.panes_contain(&pane_id),
+                "{pane_id:?} is an overlay but the floating layer is drawing it"
+            );
+        }
 
         // 4. The occlusion stack names only live panes, and a pane's z-index is its position in
         //    that stack - `FloatingPanes::stack_layer_ids` and `render` must agree, or a pane is

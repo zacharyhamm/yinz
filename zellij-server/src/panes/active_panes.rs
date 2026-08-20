@@ -5,7 +5,7 @@
 use crate::tab::Pane;
 
 use crate::{os_input_output::ServerOsApi, panes::PaneId, ClientId};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 /// Somewhere a `PaneId` can be resolved to a pane, so that focus bookkeeping does not care how the
 /// collection that owns the pane chooses to store it.
@@ -63,7 +63,7 @@ impl ActivePanes {
     ///
     /// For a pane that is moving between collections while keeping focus: it did not gain focus,
     /// it already had it, and the pane it is "replacing" is itself. Sending a focus-in here would
-    /// be as much of a lie as the focus-out that `unfocus_all_panes_except` used to suppress.
+    /// be as much of a lie as the focus-out this used to have to be carved out of.
     pub fn insert_silently(&mut self, client_id: ClientId, pane_id: PaneId) {
         self.active_panes.insert(client_id, pane_id);
     }
@@ -93,23 +93,6 @@ impl ActivePanes {
     }
     pub fn unfocus_all_panes(&self, panes: &impl PaneLookup) {
         for (_client_id, pane_id) in &self.active_panes {
-            self.unfocus_pane(*pane_id, panes);
-        }
-    }
-    /// Tell every focused pane it lost focus, except the ones that did not.
-    ///
-    /// The floating layer can go down while an overlay drawn on it keeps a client's focus and
-    /// keeps taking input (see `Tab::get_active_pane_id`) - sending that pane a focus-out would
-    /// be a lie.
-    pub fn unfocus_all_panes_except(
-        &self,
-        keep_focused: &HashSet<PaneId>,
-        panes: &impl PaneLookup,
-    ) {
-        for (_client_id, pane_id) in &self.active_panes {
-            if keep_focused.contains(pane_id) {
-                continue;
-            }
             self.unfocus_pane(*pane_id, panes);
         }
     }

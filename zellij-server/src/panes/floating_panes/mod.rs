@@ -63,7 +63,6 @@ pub struct FloatingPanes {
     style: Style,
     session_is_mirrored: bool,
     desired_pane_positions: HashMap<PaneId, PaneGeom>, // this represents the positions of panes the user moved with intention, rather than by resizing the terminal window
-    overlay_coordinates: HashMap<PaneId, FloatingPaneCoordinates>,
     /// The floating layer's visibility as it was immediately before each pane was opened onto
     /// it. A pane that turns itself into an overlay after the fact (which is how every popup
     /// plugin in this fork arrives - see `Tab::change_floating_pane_coordinates`) has to put the
@@ -118,7 +117,6 @@ impl FloatingPanes {
             default_mode_info,
             style,
             desired_pane_positions: HashMap::new(),
-            overlay_coordinates: HashMap::new(),
             layer_visible_when_added: HashMap::new(),
             z_indices: vec![],
             show_panes: false,
@@ -170,14 +168,13 @@ impl FloatingPanes {
                 .filter(|pane_id| self.panes.contains_key(pane_id))
                 .copied()
                 .collect()
-        } else if self.has_pinned_panes() || self.has_overlays() {
+        } else if self.has_pinned_panes() {
             self.z_indices
                 .iter()
                 .filter(|pane_id| {
-                    self.panes.get(pane_id).is_some_and(|p| {
-                        p.position_and_size().is_pinned
-                            || self.overlay_coordinates.contains_key(pane_id)
-                    })
+                    self.panes
+                        .get(pane_id)
+                        .is_some_and(|p| p.position_and_size().is_pinned)
                 })
                 .copied()
                 .collect()
@@ -215,14 +212,10 @@ impl FloatingPanes {
     /// pane depends on the tab's layout anyway, so it is taken out of the resize and put back
     /// afterwards - see `restore_geoms_outside_viewport`.
     ///
-    /// A pane placed as an overlay is left out: it was given coordinates against the surface and
-    /// `reapply_overlay_coordinates` re-resolves them against the new one, which is more than
-    /// restoring an absolute geometry can do.
     pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, PaneGeom> {
         let viewport = *self.viewport.borrow();
         self.panes
             .iter()
-            .filter(|(pane_id, _)| !self.overlay_coordinates.contains_key(pane_id))
             .filter_map(|(pane_id, pane)| {
                 let geom = pane.position_and_size();
                 geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
@@ -349,9 +342,6 @@ impl FloatingPanes {
             self.desired_pane_positions
                 .insert(with_pane_id, desired_pane_position);
         }
-        if let Some(coordinates) = self.overlay_coordinates.remove(&pane_id) {
-            self.overlay_coordinates.insert(with_pane_id, coordinates);
-        }
         if let Some(layer_was_visible) = self.layer_visible_when_added.remove(&pane_id) {
             self.layer_visible_when_added
                 .insert(with_pane_id, layer_was_visible);
@@ -365,7 +355,6 @@ impl FloatingPanes {
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.desired_pane_positions.remove(&pane_id);
-        self.overlay_coordinates.remove(&pane_id);
         self.layer_visible_when_added.remove(&pane_id);
         self.panes.remove(&pane_id)
     }
@@ -430,19 +419,6 @@ impl FloatingPanes {
         } else {
             self.active_panes.unfocus_all_panes(&self.panes);
         }
-    }
-    /// Take the layer down while the overlays drawn on it stay up.
-    ///
-    /// The whole point of an overlay is that it is not the floating layer: it renders and takes
-    /// input with `show_panes` false (see `stack_layer_ids`, `render` and
-    /// `Tab::get_active_pane_id`). So this is `toggle_show_panes(false)` minus the focus-out an
-    /// overlay has not earned - it did not lose focus, the layer under it went away.
-    pub fn hide_panes_keeping_overlay_focus(&mut self) {
-        self.window_title = None; // clear so that it will be re-rendered once we toggle back
-        self.show_panes = false;
-        let overlays: HashSet<PaneId> = self.overlay_coordinates.keys().copied().collect();
-        self.active_panes
-            .unfocus_all_panes_except(&overlays, &self.panes);
     }
     /// Which clients have this pane focused. Needed when a pane leaves this collection for
     /// another one while keeping its focus.
@@ -549,14 +525,6 @@ impl FloatingPanes {
             .rfind(|(_p_id, p)| p.selectable())
             .map(|(p_id, _p)| *p_id)
     }
-    pub fn last_selectable_non_overlay_pane_id(&self) -> Option<PaneId> {
-        self.panes
-            .iter()
-            .rfind(|(pane_id, pane)| {
-                pane.selectable() && !self.overlay_coordinates.contains_key(pane_id)
-            })
-            .map(|(pane_id, _)| *pane_id)
-    }
     pub fn has_selectable_panes(&self) -> bool {
         self.panes
             .iter()
@@ -646,13 +614,9 @@ impl FloatingPanes {
         }
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
-        let active_panes = if self.all_panes_are_visible() || self.has_overlays() {
+        let active_panes = if self.all_panes_are_visible() {
             let mut active_panes = self.active_panes.clone_active_panes();
-            active_panes.retain(|client_id, pane_id| {
-                !inactive_clients.contains(client_id)
-                    && (self.all_panes_are_visible()
-                        || self.overlay_coordinates.contains_key(pane_id))
-            });
+            active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
             active_panes
         } else {
             Default::default()
@@ -714,13 +678,10 @@ impl FloatingPanes {
                 .collect()
         } else if self.all_panes_are_visible() {
             self.panes.iter_mut().collect()
-        } else if self.has_pinned_panes() || self.has_overlays() {
+        } else if self.has_pinned_panes() {
             self.panes
                 .iter_mut()
-                .filter(|(pane_id, pane)| {
-                    pane.position_and_size().is_pinned
-                        || self.overlay_coordinates.contains_key(pane_id)
-                })
+                .filter(|(_, pane)| pane.position_and_size().is_pinned)
                 .collect()
         } else {
             vec![]
@@ -741,11 +702,6 @@ impl FloatingPanes {
                 { self.connected_clients_in_app.borrow().len() > 1 };
             active_panes.retain(|c_id, _| self.connected_clients.borrow().contains(c_id));
             let pane_is_selectable = pane.selectable();
-            let pane_is_overlay = self.overlay_coordinates.contains_key(kind);
-            let pane_is_modal = matches!(
-                pane.invoked_with(),
-                Some(Run::Plugin(run_plugin)) if run_plugin.requests_modal()
-            );
             let show_help_text = active_panes.iter().any(|(client_id, pane_id)| {
                 pane_id == &pane.pid() && help_text_visible.get(client_id).copied().unwrap_or(false)
             });
@@ -794,8 +750,11 @@ impl FloatingPanes {
                             self.session_is_mirrored,
                             is_floating,
                             pane_is_selectable,
-                            !pane_is_overlay,
-                            !pane_is_modal,
+                            // a floating pane always offers the pin toggle and the scroll
+                            // indication; the pane that wanted neither was the overlay, and an
+                            // overlay is no longer one of these
+                            true,
+                            true,
                         )
                         .with_context(err_context)?;
                 }
@@ -853,7 +812,6 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.resize(new_screen_size).non_fatal();
-        self.reapply_overlay_coordinates();
         self.set_force_render();
     }
 
@@ -1319,16 +1277,12 @@ impl FloatingPanes {
     pub fn change_pane_coordinates(
         &mut self,
         pane_id: PaneId,
-        mut new_coordinates: FloatingPaneCoordinates,
+        new_coordinates: FloatingPaneCoordinates,
     ) -> Result<()> {
         let err_context = || "Failed to change_pane_coordinates".to_string();
 
         {
-            if self.is_overlay(pane_id) {
-                new_coordinates.overlay = Some(true);
-            }
-            let is_overlay = new_coordinates.overlay.unwrap_or(false);
-            let (viewport, origin) = self.coordinate_space(is_overlay);
+            let (viewport, origin) = self.placement_space();
             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
             let mut pane_geom = pane.position_and_size();
             if let Some(pinned) = new_coordinates.pinned.as_ref() {
@@ -1355,12 +1309,6 @@ impl FloatingPanes {
             }
 
             self.desired_pane_positions.insert(pane_id, pane_geom);
-            if is_overlay {
-                self.overlay_coordinates
-                    .insert(pane_id, new_coordinates.clone());
-            } else {
-                self.overlay_coordinates.remove(&pane_id);
-            }
         }
         let _ = self.set_pane_frames();
         Ok(())
@@ -1371,29 +1319,19 @@ impl FloatingPanes {
         pane_geom: &mut PaneGeom,
         coordinates: FloatingPaneCoordinates,
     ) {
-        let (viewport, origin) = self.coordinate_space(coordinates.overlay.unwrap_or(false));
+        let (viewport, origin) = self.placement_space();
         pane_geom.adjust_coordinates(coordinates, viewport, origin);
-    }
-
-    pub fn remember_overlay_coordinates(
-        &mut self,
-        pane_id: PaneId,
-        coordinates: &FloatingPaneCoordinates,
-    ) {
-        if coordinates.overlay.unwrap_or(false) {
-            self.overlay_coordinates
-                .insert(pane_id, coordinates.clone());
-        }
-    }
-
-    pub fn is_overlay(&self, pane_id: PaneId) -> bool {
-        self.overlay_coordinates.contains_key(&pane_id)
     }
 
     /// Remember the floating layer's visibility as it was before `pane_id` was opened onto it.
     /// Call this with a value sampled *before* the opening path had its chance to reveal the
-    /// layer - opening an ordinary floating pane calls `Tab::show_floating_panes`, so sampling
-    /// from inside `add_pane` would only ever read back the reveal it is meant to undo.
+    /// layer - opening a floating pane calls `Tab::show_floating_panes`, so sampling from inside
+    /// `add_pane` would only ever read back the reveal it is meant to undo.
+    ///
+    /// This exists for one caller: a pane that opens as an ordinary floating pane and turns itself
+    /// into an overlay once it is running, which is how every popup plugin in this fork still
+    /// arrives. When they open as overlays directly there will be no reveal to undo, and this goes
+    /// with them.
     pub fn note_layer_state_before_adding(&mut self, pane_id: PaneId, layer_was_visible: bool) {
         self.layer_visible_when_added
             .insert(pane_id, layer_was_visible);
@@ -1406,74 +1344,24 @@ impl FloatingPanes {
         self.layer_visible_when_added.remove(&pane_id)
     }
 
-    /// Whether this pane says it is an overlay by virtue of the plugin configuration it was
-    /// launched with, regardless of the coordinates any particular caller happened to pass. A
-    /// caller that passes its own `FloatingPaneCoordinates` (`pane_groups.rs`, or a plugin
-    /// placing itself) otherwise silently drops the `overlay`/`modal` flag on the way through
-    /// `ScreenInstruction::AddPlugin`.
-    pub fn pane_requests_overlay(&self, pane_id: PaneId) -> bool {
-        self.panes.get(&pane_id).is_some_and(|pane| {
-            matches!(pane.invoked_with(), Some(Run::Plugin(run_plugin)) if run_plugin.requests_overlay())
-        })
-    }
-
-    /// A modal overlay does not expect to be silently defocused - it only closes on
-    /// Esc/submit/`Event::Visible(false)`, unlike an overlay that watches `PaneUpdate` and
-    /// dismisses itself once it sees it isn't focused.
-    pub fn pane_is_modal(&self, pane_id: PaneId) -> bool {
-        self.panes.get(&pane_id).is_some_and(|pane| {
-            matches!(pane.invoked_with(), Some(Run::Plugin(run_plugin)) if run_plugin.requests_modal())
-        })
-    }
-
-    pub fn overlay_coordinates_for(&self, pane_id: PaneId) -> Option<FloatingPaneCoordinates> {
-        self.overlay_coordinates.get(&pane_id).cloned()
-    }
-
-    pub fn has_overlays(&self) -> bool {
-        !self.overlay_coordinates.is_empty()
-    }
-
-    pub fn reapply_overlay_coordinates(&mut self) {
-        let overlays: Vec<_> = self
-            .overlay_coordinates
-            .iter()
-            .map(|(pane_id, coordinates)| (*pane_id, coordinates.clone()))
-            .collect();
-        for (pane_id, coordinates) in overlays {
-            let (viewport, origin) = self.coordinate_space(true);
-            if let Some(pane) = self.panes.get_mut(&pane_id) {
-                let mut geom = pane.position_and_size();
-                geom.adjust_coordinates(coordinates, viewport, origin);
-                pane.set_geom(geom);
-                self.desired_pane_positions.insert(pane_id, geom);
-            }
-        }
-        if !self.overlay_coordinates.is_empty() {
-            self.set_pane_frames().non_fatal();
-        }
-    }
-
     /// The area a floating pane may be *moved* around in: the whole session surface, global panes
-    /// included. Placement (percentages, and the coordinates a pane is opened with) still resolves
-    /// against the tab's own viewport unless the pane asked to be an overlay - a default floating
-    /// pane should open in the middle of its tab, not draped over a sidebar - but once it exists,
+    /// included. Placement still resolves against the tab's own viewport - a default floating pane
+    /// should open in the middle of its tab, not draped over a sidebar - but once it exists,
     /// dragging it is direct manipulation and the tab's edge is not a wall.
+    ///
+    /// This is the same surface an overlay is placed against, which is why `session_surface` is a
+    /// free function rather than a method on either collection.
     fn move_surface(&self) -> Viewport {
-        self.coordinate_space(true).0
+        session_surface(
+            *self.display_area.borrow(),
+            *self.display_area_origin.borrow(),
+            &self.global_pane_strips.borrow(),
+        )
     }
 
-    fn coordinate_space(&self, overlay: bool) -> (Viewport, (usize, usize)) {
-        if overlay {
-            let surface = session_surface(
-                *self.display_area.borrow(),
-                *self.display_area_origin.borrow(),
-                &self.global_pane_strips.borrow(),
-            );
-            (surface, (surface.x, surface.y))
-        } else {
-            (*self.viewport.borrow(), *self.display_area_origin.borrow())
-        }
+    /// Where a floating pane's coordinates are resolved: the tab's own viewport.
+    fn placement_space(&self) -> (Viewport, (usize, usize)) {
+        (*self.viewport.borrow(), *self.display_area_origin.borrow())
     }
     pub fn move_clients_out_of_pane(&mut self, pane_id: PaneId) {
         let active_panes: Vec<(ClientId, PaneId)> = self

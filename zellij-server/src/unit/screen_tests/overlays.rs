@@ -1494,6 +1494,31 @@ mod invariant_props {
         let mut opened: Vec<PaneId> = vec![];
 
         for (index, op) in ops.iter().enumerate() {
+            // Invariant 3, the transition half: opening or focusing an overlay must never change
+            // whether the floating layer is up. That reading - "floating panes are visible" -
+            // lights the status bar's <f>, sends the next new pane to the layer, and puts every
+            // hidden floating pane back on screen under a modal.
+            //
+            // `PromoteToOverlay` is exempt, and it is the one that proves the point: a pane that
+            // promotes itself was born an ordinary floating pane a moment earlier, and *that*
+            // raised the layer. The promotion putting it back down is the correction, not a
+            // violation. Once the popup plugins open as overlays directly there is no reveal to
+            // correct, and this exemption goes.
+            let layer_was_visible = screen
+                .get_active_tab_mut(1)
+                .unwrap()
+                .are_floating_panes_visible();
+            let op_may_move_the_layer = matches!(
+                op,
+                Op::NewTiledPane
+                    | Op::NewFloatingPane
+                    | Op::ClosePane
+                    | Op::ShowFloatingLayer
+                    | Op::HideFloatingLayer
+                    | Op::FocusFirstTiledPane
+                    | Op::Resize(_)
+                    | Op::PromoteToOverlay
+            );
             match op {
                 Op::NewTiledPane | Op::NewFloatingPane | Op::NewOverlay => {
                     let pane_id = PaneId::Terminal(next_id);
@@ -1574,6 +1599,13 @@ mod invariant_props {
             let tab = screen
                 .get_active_tab_mut(1)
                 .unwrap_or_else(|_| panic!("the tab is gone after {op:?} (step {index})"));
+            if !op_may_move_the_layer {
+                assert_eq!(
+                    tab.are_floating_panes_visible(),
+                    layer_was_visible,
+                    "{op:?} (step {index}) changed whether the floating layer is up"
+                );
+            }
             tab.assert_invariants();
         }
     }
