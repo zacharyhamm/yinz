@@ -778,6 +778,7 @@ impl Form {
         {
             let row_y = y + i - start;
             let prompt = field.prompt();
+            let focused = self.focus == Some(Focus::Field(i));
             match &mut field.widget {
                 Widget::Text(input) => {
                     let (line, _) = viewport(
@@ -787,24 +788,17 @@ impl Form {
                         width,
                     );
                     let prompt_len = prompt.chars().count().min(line.chars().count());
-                    let text = Text::new(&line).color_range(2, 0..prompt_len);
+                    let mut text = Text::new(&line).color_range(2, 0..prompt_len);
+                    if focused {
+                        text = text.selected();
+                    }
                     print_text_with_coordinates(text, x, row_y, Some(width), None);
                 },
-                Widget::Select(select) => select.render_row(&prompt, x, row_y, width),
-                Widget::Checkbox(checkbox) => checkbox.render_row(
-                    &prompt,
-                    x,
-                    row_y,
-                    width,
-                    self.focus == Some(Focus::Field(i)),
-                ),
-                Widget::Radio(radio) => radio.render_row(
-                    &prompt,
-                    x,
-                    row_y,
-                    width,
-                    self.focus == Some(Focus::Field(i)),
-                ),
+                Widget::Select(select) => select.render_row(&prompt, x, row_y, width, focused),
+                Widget::Checkbox(checkbox) => {
+                    checkbox.render_row(&prompt, x, row_y, width, focused)
+                },
+                Widget::Radio(radio) => radio.render_row(&prompt, x, row_y, width, focused),
             }
             field.last_rendered = Some(Rect::new(x, row_y, width, 1));
         }
