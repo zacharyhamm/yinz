@@ -276,6 +276,7 @@ fn split_off_a_remote_pane(zellij: &TestSession, says: &str) -> FakePtyHandle {
         height: None,
         pinned: None,
         overlay: None,
+        modal: None,
         stacked: false,
         blocking: false,
         block_until_exit_success: false,

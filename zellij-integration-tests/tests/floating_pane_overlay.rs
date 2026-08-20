@@ -50,6 +50,48 @@ fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyH
         height: Some("20%".to_string()),
         pinned: None,
         overlay: Some(true),
+        modal: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
+    });
+    zellij.expect_pty_spawn()
+}
+
+/// Open a plain command pane as a *modal* overlay - `--modal` rather than `--overlay`.
+fn open_modal_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
+    zellij.run_cli_action(CliAction::NewPane {
+        direction: None,
+        command: vec!["modal-cmd".to_string()],
+        remote_host: None,
+        plugin: None,
+        cwd: None,
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: Some("0%".to_string()),
+        y: Some("0%".to_string()),
+        width: Some("20%".to_string()),
+        height: Some("20%".to_string()),
+        pinned: None,
+        overlay: None,
+        modal: Some(true),
         stacked: false,
         blocking: false,
         block_until_exit_success: false,
@@ -90,6 +132,7 @@ fn open_plain_floating_pane(zellij: &TestSession) -> zellij_integration_tests::F
         height: Some("6".to_string()),
         pinned: None,
         overlay: None,
+        modal: None,
         stacked: false,
         blocking: false,
         block_until_exit_success: false,
@@ -261,6 +304,7 @@ fn open_self_upgrading_popup(zellij: &TestSession) {
         height: None,
         pinned: None,
         overlay: None,
+        modal: None,
         stacked: false,
         blocking: false,
         block_until_exit_success: false,
@@ -412,6 +456,47 @@ fn closing_a_popup_hands_focus_back_to_the_global_pane_that_had_it() {
         "the global pane has the keyboard back after the popup closes",
         |bytes| bytes.contains(&b'x'),
     );
+
+    zellij.quit();
+}
+
+/// `--modal` is `--overlay` plus "do not take focus from it". It reaches the tab as an overlay
+/// placement rather than as a coordinates flag, so it works for a plain command pane - modal-ness
+/// used to be spelled only in a plugin's own configuration, which a terminal pane does not have.
+#[test]
+fn a_modal_command_pane_is_placed_on_the_surface_and_keeps_focus() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_string()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    let shell = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL-PANE");
+    global.output(PROMPT);
+    shell.output(b"tiled shell");
+    shell.output(PROMPT);
+    zellij.wait_until("both panes load", |snapshot| {
+        snapshot.contains("GLOBAL-PANE") && snapshot.contains("tiled shell")
+    });
+
+    let modal = open_modal_pane(&zellij);
+    modal.output(b"MODAL-PANE");
+    zellij.wait_until("the modal is up", |snapshot| {
+        snapshot.contains("MODAL-PANE")
+    });
+
+    // it is on the surface, not the tab: it starts left of where the tab's own area begins
+    let snapshot = zellij.snapshot();
+    let (_, column) = position_of(&snapshot, "MODAL-PANE");
+    assert!(
+        column < TERMINAL_SIZE.cols / 2,
+        "a surface-placed pane at x=0% starts left of the tab area, which begins at 50%; \
+         got column {column} in:\n{snapshot}"
+    );
+
+    // and it holds the keyboard
+    zellij.send_stdin(&keys::key('x'));
+    modal.wait_for_stdin("the modal has the keyboard", |bytes| bytes.contains(&b'x'));
 
     zellij.quit();
 }

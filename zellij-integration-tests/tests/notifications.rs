@@ -190,6 +190,7 @@ fn notification_paints_over_a_floating_pane() {
         height: Some("100%".to_owned()),
         pinned: None,
         overlay: None,
+        modal: None,
         no_focus: false,
         tab_id: None,
         close_replaced_pane: false,

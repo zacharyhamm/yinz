@@ -1001,7 +1001,19 @@ message NewPanePlacement {
     NoPreferencePlacement no_preference_with_options = 6;
     TiledPlacement tiled_with_options = 7;
     StackedPlacement stacked_with_options = 8;
+    OverlayPlacement overlay = 9;
   }
+}
+
+// Over the whole session surface, above the global panes - not on a tab's floating layer.
+enum OverlayKind {
+  OVERLAY_KIND_DISMISSIBLE = 0;
+  OVERLAY_KIND_MODAL = 1;
+}
+
+message OverlayPlacement {
+  OverlayKind kind = 1;
+  optional FloatingPaneCoordinates coordinates = 2;
 }
 
 message NoPreferencePlacement {

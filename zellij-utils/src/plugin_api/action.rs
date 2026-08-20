@@ -43,6 +43,8 @@ pub use super::generated_api::api::{
         NewStackedPanePayload,
         NewTabPayload,
         NewTiledPanePayload,
+        OverlayKind as ProtobufOverlayKind,
+        OverlayPlacement as ProtobufOverlayPlacement,
         OverrideLayoutPayload,
         PaneId as ProtobufPaneId,
         PaneIdAndShouldFloat,
@@ -85,8 +87,8 @@ pub use super::generated_api::api::{
 };
 use crate::data::{
     CommandOrPlugin, Direction, FloatingPaneCoordinates, GlobalPaneEdge, GlobalPanePlacement,
-    InputMode, KeyWithModifier, NewPanePlacement, PaneId, PluginTag, ResizeStrategy,
-    UnblockCondition,
+    InputMode, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneId, PluginTag,
+    ResizeStrategy, UnblockCondition,
 };
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
@@ -2792,6 +2794,19 @@ impl TryFrom<ProtobufNewPanePlacement> for NewPanePlacement {
                 let coords = floating.coordinates.and_then(|c| c.try_into().ok());
                 Ok(NewPanePlacement::Floating(coords))
             },
+            Some(PlacementVariant::Overlay(overlay)) => {
+                let coordinates = overlay.coordinates.and_then(|c| c.try_into().ok());
+                let kind = ProtobufOverlayKind::try_from(overlay.kind)
+                    .map(|kind| match kind {
+                        ProtobufOverlayKind::Modal => OverlayKind::Modal,
+                        ProtobufOverlayKind::Dismissible => OverlayKind::Dismissible,
+                    })
+                    .unwrap_or_default();
+                Ok(NewPanePlacement::Overlay(OverlayPlacement {
+                    kind,
+                    coordinates,
+                }))
+            },
             Some(PlacementVariant::InPlace(config)) => {
                 let pane_id_to_replace =
                     config.pane_id_to_replace.and_then(|id| id.try_into().ok());
@@ -2864,6 +2879,17 @@ impl TryFrom<NewPanePlacement> for ProtobufNewPanePlacement {
                 Some(PlacementVariant::Stacked(ProtobufStackedPlacement {
                     pane_id,
                     borderless,
+                }))
+            },
+            NewPanePlacement::Overlay(overlay) => {
+                let kind = match overlay.kind {
+                    OverlayKind::Modal => ProtobufOverlayKind::Modal,
+                    OverlayKind::Dismissible => ProtobufOverlayKind::Dismissible,
+                } as i32;
+                let coordinates = overlay.coordinates.and_then(|c| c.try_into().ok());
+                Some(PlacementVariant::Overlay(ProtobufOverlayPlacement {
+                    kind,
+                    coordinates,
                 }))
             },
         };

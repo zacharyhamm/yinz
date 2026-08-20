@@ -3583,6 +3583,76 @@ impl FromStr for WebSharing {
     }
 }
 
+/// What a pane drawn over the whole session surface does when the user's attention moves
+/// elsewhere.
+///
+/// The distinction used to be a string in the plugin's own configuration map, read back out of
+/// `Pane::invoked_with()` at every decision point - which meant only a plugin pane could ever be
+/// modal, and that a caller which rebuilt a pane's coordinates silently dropped it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OverlayKind {
+    /// Watches `PaneUpdate` and closes itself once it sees it is no longer focused, so focus may
+    /// be taken from it freely - `hocus-ask`, `file-finder`.
+    #[default]
+    Dismissible,
+    /// Closes only on Esc, on submit, or on `Event::Visible(false)`. It has no way to learn that
+    /// it lost focus, so taking focus from it strands it on screen while the keyboard goes
+    /// somewhere else - `hocus-new-agent`, `quit-confirmation`.
+    Modal,
+}
+
+impl OverlayKind {
+    pub fn is_modal(&self) -> bool {
+        matches!(self, OverlayKind::Modal)
+    }
+}
+
+impl FromStr for OverlayKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "dismissible" | "Dismissible" | "overlay" => Ok(OverlayKind::Dismissible),
+            "modal" | "Modal" => Ok(OverlayKind::Modal),
+            _ => Err(format!("No such overlay kind: {s}")),
+        }
+    }
+}
+
+/// A request to place a pane on the session surface rather than on a tab's floating layer.
+///
+/// Modelled on `GlobalPanePlacement`: the placement is the thing that says what the pane is, so
+/// that overlay-ness cannot be lost by a caller that rebuilds the coordinates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayPlacement {
+    pub kind: OverlayKind,
+    /// Where on the surface. `None` centres it at a default size.
+    #[serde(default)]
+    pub coordinates: Option<FloatingPaneCoordinates>,
+}
+
+impl OverlayPlacement {
+    pub fn new(kind: OverlayKind, coordinates: Option<FloatingPaneCoordinates>) -> Self {
+        OverlayPlacement { kind, coordinates }
+    }
+    pub fn modal(coordinates: Option<FloatingPaneCoordinates>) -> Self {
+        OverlayPlacement::new(OverlayKind::Modal, coordinates)
+    }
+    pub fn dismissible(coordinates: Option<FloatingPaneCoordinates>) -> Self {
+        OverlayPlacement::new(OverlayKind::Dismissible, coordinates)
+    }
+    pub fn is_modal(&self) -> bool {
+        self.kind.is_modal()
+    }
+    /// The coordinates this placement resolves to, flagged as an overlay.
+    ///
+    /// Until overlays have their own collection, an overlay is still carried through the server
+    /// as a floating pane whose coordinates say `overlay: true`; this is the one place that
+    /// translation happens.
+    pub fn as_floating_pane_coordinates(&self) -> FloatingPaneCoordinates {
+        self.coordinates.clone().unwrap_or_default().as_overlay()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NewPanePlacement {
     NoPreference {
@@ -3602,6 +3672,8 @@ pub enum NewPanePlacement {
         pane_id_to_stack_under: Option<PaneId>,
         borderless: Option<bool>,
     },
+    /// Over the whole session surface, above the global panes - not on the tab's floating layer.
+    Overlay(OverlayPlacement),
 }
 
 impl Default for NewPanePlacement {
@@ -3611,6 +3683,46 @@ impl Default for NewPanePlacement {
 }
 
 impl NewPanePlacement {
+    /// The placement a `--floating` CLI invocation asks for.
+    ///
+    /// `--modal` and `--overlay` both put the pane on the session surface rather than on the
+    /// tab's floating layer; they differ only in whether focus may be taken from it. `--modal`
+    /// wins if both are given, being the stricter of the two.
+    #[allow(clippy::too_many_arguments)]
+    pub fn floating_or_overlay(
+        x: Option<String>,
+        y: Option<String>,
+        width: Option<String>,
+        height: Option<String>,
+        pinned: Option<bool>,
+        borderless: Option<bool>,
+        overlay: Option<bool>,
+        modal: Option<bool>,
+    ) -> Self {
+        let is_modal = modal.unwrap_or(false);
+        let is_overlay = is_modal || overlay.unwrap_or(false);
+        let coordinates = FloatingPaneCoordinates::new(
+            x,
+            y,
+            width,
+            height,
+            pinned,
+            borderless,
+            is_overlay.then_some(true),
+        );
+        if is_overlay {
+            NewPanePlacement::Overlay(OverlayPlacement {
+                kind: if is_modal {
+                    OverlayKind::Modal
+                } else {
+                    OverlayKind::Dismissible
+                },
+                coordinates,
+            })
+        } else {
+            NewPanePlacement::Floating(coordinates)
+        }
+    }
     pub fn with_floating_pane_coordinates(
         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     ) -> Self {
@@ -3675,6 +3787,9 @@ impl NewPanePlacement {
             NewPanePlacement::Floating(coords) => coords.as_ref().and_then(|c| c.borderless),
             NewPanePlacement::InPlace { borderless, .. } => *borderless,
             NewPanePlacement::Stacked { borderless, .. } => *borderless,
+            NewPanePlacement::Overlay(overlay) => {
+                overlay.coordinates.as_ref().and_then(|c| c.borderless)
+            },
         }
     }
 }

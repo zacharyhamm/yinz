@@ -2713,6 +2713,20 @@ impl Tab {
                 floating_pane_coordinates,
                 blocking_notification,
             ),
+            // Until overlays have a collection of their own, an overlay is still carried as a
+            // floating pane whose coordinates say `overlay: true`. `new_floating_pane` already
+            // declines to raise the layer for one, so this is the same path the `overlay`
+            // coordinates flag has always taken - just reached by an explicit placement that no
+            // caller can drop on the way through.
+            NewPanePlacement::Overlay(overlay) => self.new_floating_pane(
+                pid,
+                initial_pane_title,
+                invoked_with,
+                start_suppressed,
+                should_focus_pane,
+                Some(overlay.as_floating_pane_coordinates()),
+                blocking_notification,
+            ),
             NewPanePlacement::InPlace {
                 pane_id_to_replace,
                 close_replaced_pane,

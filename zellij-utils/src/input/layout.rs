@@ -13,7 +13,7 @@ use crate::downloader::Downloader;
 use crate::{
     data::{
         Direction, GlobalPanePlacement, LayoutInfo, LayoutMetadata, LayoutParsingError,
-        LayoutWithError,
+        LayoutWithError, OverlayPlacement,
     },
     home::{default_layout_dir, find_default_config_dir},
     input::{
@@ -173,13 +173,28 @@ impl RunPluginOrAlias {
                 .is_some_and(|value| value == "true")
         })
     }
+    /// The overlay placement this plugin's own configuration asks for, if any.
+    ///
+    /// **Compatibility shim.** Overlay-ness is a *placement*
+    /// (`NewPanePlacement::Overlay`), not a property of the plugin, but it used to be spelled as
+    /// `overlay`/`modal` keys in the free-form `PluginUserConfiguration` string map - which is
+    /// what every keybinding, layout and third-party plugin written so far still writes. This is
+    /// the one place that spelling is understood; everything downstream takes the resolved
+    /// `OverlayPlacement`. It can go once the old keys are no longer in circulation.
+    pub fn overlay_placement(&self) -> Option<OverlayPlacement> {
+        if self.configuration_value_is_true("modal") {
+            Some(OverlayPlacement::modal(None))
+        } else if self.configuration_value_is_true("overlay") {
+            Some(OverlayPlacement::dismissible(None))
+        } else {
+            None
+        }
+    }
     pub fn requests_overlay(&self) -> bool {
-        ["overlay", "modal"]
-            .into_iter()
-            .any(|key| self.configuration_value_is_true(key))
+        self.overlay_placement().is_some()
     }
     pub fn requests_modal(&self) -> bool {
-        self.configuration_value_is_true("modal")
+        self.overlay_placement().is_some_and(|p| p.is_modal())
     }
     pub fn get_initial_cwd(&self) -> Option<PathBuf> {
         self.get_run_plugin().and_then(|r| r.initial_cwd.clone())

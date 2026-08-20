@@ -574,6 +574,10 @@ pub enum Sessions {
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long, requires("floating"))]
+        modal: Option<bool>,
         #[clap(long, conflicts_with("floating"), conflicts_with("direction"))]
         stacked: bool,
         /// Block until the command has finished and its pane has been closed
@@ -673,6 +677,10 @@ pub enum Sessions {
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long, requires("floating"))]
+        modal: Option<bool>,
         #[clap(
             long,
             help = "if set, will open the plugin pane without changing the focus of any client, placing it relative to the pane the command was issued from"
@@ -733,6 +741,10 @@ pub enum Sessions {
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long, requires("floating"))]
+        modal: Option<bool>,
         /// if set, will open the pane near the current one rather than following the user's focus
         #[clap(long)]
         near_current_pane: bool,
@@ -1090,6 +1102,10 @@ pub enum CliAction {
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long, requires("floating"))]
+        modal: Option<bool>,
         #[clap(long, conflicts_with("floating"), conflicts_with("direction"))]
         stacked: bool,
         /// Block until the command has finished and its pane has been closed
@@ -1220,6 +1236,10 @@ pub enum CliAction {
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long, requires("floating"))]
+        modal: Option<bool>,
         /// if set, will open the pane near the current one rather than following the user's focus
         #[clap(long)]
         near_current_pane: bool,
@@ -1724,6 +1744,10 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         /// Position this pane against the whole session surface and draw it above global panes
         #[clap(long)]
         overlay: Option<bool>,
+        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
+        /// way to learn it was defocused, and would be stranded on screen if focus moved.
+        #[clap(long)]
+        modal: Option<bool>,
     },
     TogglePaneBorderless {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3 (equivalent to terminal_3)

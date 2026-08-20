@@ -786,6 +786,18 @@ pub fn warp_placement(focused_tab: bool, floating: bool) -> WarpPlacement {
     }
 }
 
+/// `--modal` implies `--overlay`. On the paths that carry bare `FloatingPaneCoordinates` rather
+/// than a `NewPanePlacement` (the plugin and command launchers), the surface placement is all the
+/// coordinates can express; which kind of overlay it is still reaches the server through the
+/// plugin's own configuration - see `RunPluginOrAlias::overlay_placement`.
+fn overlay_or_modal(overlay: Option<bool>, modal: Option<bool>) -> Option<bool> {
+    if modal.unwrap_or(false) {
+        Some(true)
+    } else {
+        overlay
+    }
+}
+
 impl Action {
     /// Checks that two Action are match except their mutable attributes.
     pub fn shallow_eq(&self, other_action: &Action) -> bool {
@@ -1219,6 +1231,7 @@ impl Action {
                 no_focus,
                 borderless,
                 overlay,
+                modal,
                 global,
                 edge,
                 size,
@@ -1326,9 +1339,9 @@ impl Action {
                     let command = terminal_run_command;
 
                     let placement = if floating {
-                        NewPanePlacement::Floating(FloatingPaneCoordinates::new(
-                            x, y, width, height, pinned, borderless, overlay,
-                        ))
+                        NewPanePlacement::floating_or_overlay(
+                            x, y, width, height, pinned, borderless, overlay, modal,
+                        )
                     } else if in_place {
                         NewPanePlacement::InPlace {
                             pane_id_to_replace,
@@ -1385,7 +1398,13 @@ impl Action {
                             skip_cache: skip_plugin_cache,
                             cwd,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless, overlay,
+                                x,
+                                y,
+                                width,
+                                height,
+                                pinned,
+                                borderless,
+                                overlay_or_modal(overlay, modal),
                             ),
                             no_focus,
                             tab_id,
@@ -1423,7 +1442,13 @@ impl Action {
                             command: Some(run_command_action),
                             pane_name: name,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless, overlay,
+                                x,
+                                y,
+                                width,
+                                height,
+                                pinned,
+                                borderless,
+                                overlay_or_modal(overlay, modal),
                             ),
                             near_current_pane,
                             no_focus,
@@ -1468,7 +1493,13 @@ impl Action {
                             command: None,
                             pane_name: name,
                             coordinates: FloatingPaneCoordinates::new(
-                                x, y, width, height, pinned, borderless, overlay,
+                                x,
+                                y,
+                                width,
+                                height,
+                                pinned,
+                                borderless,
+                                overlay_or_modal(overlay, modal),
                             ),
                             near_current_pane,
                             no_focus,
@@ -1526,6 +1557,7 @@ impl Action {
                 no_focus,
                 borderless,
                 overlay,
+                modal,
                 tab_id,
             } => {
                 let mut file = file;
@@ -1545,7 +1577,13 @@ impl Action {
                     close_replaced_pane,
                     start_suppressed,
                     coordinates: FloatingPaneCoordinates::new(
-                        x, y, width, height, pinned, borderless, overlay,
+                        x,
+                        y,
+                        width,
+                        height,
+                        pinned,
+                        borderless,
+                        overlay_or_modal(overlay, modal),
                     ),
                     near_current_pane,
                     no_focus,
@@ -2242,10 +2280,17 @@ impl Action {
                 pinned,
                 borderless,
                 overlay,
+                modal,
             } => {
-                let Some(coordinates) =
-                    FloatingPaneCoordinates::new(x, y, width, height, pinned, borderless, overlay)
-                else {
+                let Some(coordinates) = FloatingPaneCoordinates::new(
+                    x,
+                    y,
+                    width,
+                    height,
+                    pinned,
+                    borderless,
+                    overlay_or_modal(overlay, modal),
+                ) else {
                     return Err("Failed to parse floating pane coordinates".to_string());
                 };
                 let parsed_pane_id = PaneId::from_str(&pane_id);
@@ -3390,6 +3435,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3499,6 +3545,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3548,6 +3595,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3597,6 +3645,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3648,6 +3697,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3690,6 +3740,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3739,6 +3790,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: true,
             blocking: false,
             block_until_exit_success: false,
@@ -3788,6 +3840,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: true,
             block_until_exit_success: false,
@@ -3830,6 +3883,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             near_current_pane: false,
             no_focus: false,
             borderless: None,
@@ -3863,6 +3917,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             near_current_pane: false,
             no_focus: false,
             borderless: None,
@@ -3903,6 +3958,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
@@ -3952,6 +4008,7 @@ mod tests {
             height: None,
             pinned: None,
             overlay: None,
+            modal: None,
             stacked: false,
             blocking: false,
             block_until_exit_success: false,
