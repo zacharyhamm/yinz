@@ -45,9 +45,11 @@ fn overlay_does_not_show_hidden_floating_panes() {
         rows: 20,
     };
     let client_id = 1;
+    let other_client_id = 2;
     let mut tab = create_new_tab(size, ModeInfo::default());
     let floating_pane_id = PaneId::Terminal(2);
     let overlay_pane_id = PaneId::Terminal(3);
+    let other_client_pane_id = PaneId::Terminal(4);
 
     tab.new_floating_pane(
         floating_pane_id,
@@ -67,6 +69,7 @@ fn overlay_does_not_show_hidden_floating_panes() {
     .unwrap();
     assert!(tab.floating_panes.all_panes_are_visible());
     tab.hide_floating_panes();
+    tab.add_client(other_client_id, None).unwrap();
     tab.new_pane(
         overlay_pane_id,
         None,
@@ -85,6 +88,8 @@ fn overlay_does_not_show_hidden_floating_panes() {
         None,
     )
     .unwrap();
+    tab.floating_panes
+        .set_active_pane_for_client(floating_pane_id, other_client_id);
 
     assert!(tab.pane_is_overlay(overlay_pane_id));
     assert!(!tab.floating_panes.all_panes_are_visible());
@@ -95,12 +100,103 @@ fn overlay_does_not_show_hidden_floating_panes() {
         "only the overlay is rendered while floating panes are hidden"
     );
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+    assert_eq!(
+        tab.get_active_pane(client_id).unwrap().pid(),
+        overlay_pane_id
+    );
+    assert_eq!(
+        tab.get_active_pane(other_client_id).unwrap().pid(),
+        PaneId::Terminal(1),
+        "the other client must stay on its visible tiled pane"
+    );
     assert!(!tab.move_focus_right(client_id).unwrap());
     assert_eq!(
         tab.get_active_pane_id(client_id),
         Some(overlay_pane_id),
         "focus must not move to the hidden floating pane"
     );
+
+    let hidden_floating_pane_geom = tab
+        .get_pane_with_id(floating_pane_id)
+        .unwrap()
+        .position_and_size();
+    tab.resize(other_client_id, ResizeStrategy::new(Resize::Increase, None))
+        .unwrap();
+    assert_eq!(
+        tab.get_pane_with_id(floating_pane_id)
+            .unwrap()
+            .position_and_size(),
+        hidden_floating_pane_geom,
+        "resizing from the other client must not resize its hidden floating pane"
+    );
+
+    tab.new_pane(
+        other_client_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(other_client_id),
+        None,
+    )
+    .unwrap();
+    assert!(tab.tiled_panes.panes_contain(&other_client_pane_id));
+    tab.close_focused_pane(other_client_id, None).unwrap();
+    assert!(tab.get_pane_with_id(other_client_pane_id).is_none());
+    assert!(tab.get_pane_with_id(overlay_pane_id).is_some());
+    assert!(tab.get_pane_with_id(floating_pane_id).is_some());
+
+    tab.close_focused_pane(client_id, None).unwrap();
+    assert!(tab.get_pane_with_id(overlay_pane_id).is_none());
+    assert!(tab.get_pane_with_id(PaneId::Terminal(1)).is_some());
+    assert!(tab.get_pane_with_id(floating_pane_id).is_some());
+}
+
+#[test]
+fn default_new_pane_from_overlay_is_visible() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+    let new_pane_id = PaneId::Terminal(3);
+
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            overlay: Some(true),
+            ..Default::default()
+        })),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.new_pane(
+        new_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    assert!(tab.floating_panes.all_panes_are_visible());
+    assert!(tab.floating_panes.panes_contain(&new_pane_id));
+    assert!(tab
+        .floating_panes
+        .rendered_pane_ids()
+        .contains(&new_pane_id));
+    assert_eq!(tab.get_active_pane_id(client_id), Some(new_pane_id));
 }
 
 #[test]

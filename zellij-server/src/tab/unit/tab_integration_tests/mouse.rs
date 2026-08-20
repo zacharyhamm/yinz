@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn hidden_surface_overlay_owns_mouse_events() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(10)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
+            overlay: Some(true),
+            ..Default::default()
+        })),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    assert!(!tab.floating_panes.panes_are_visible());
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_press_event(Position::new(3, 11)),
+        client_id,
+    )
+    .unwrap();
+
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+}
+
+#[test]
 fn test_left_click_on_inactive_tiled_pane_changes_focus() {
     let size = Size {
         cols: 121,
