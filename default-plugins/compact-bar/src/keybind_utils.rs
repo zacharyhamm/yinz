@@ -742,6 +742,7 @@ impl KeybindProcessor {
             },
             InputMode::Agent => {
                 let ordered_predicates = vec![
+                    |action: &Action| action.launches_plugin("hocus-new-agent"),
                     |action: &Action| action.launches_plugin("hocus-agents"),
                     |action: &Action| action.launches_plugin("hocus"),
                     |action: &Action| action.launches_plugin("hocus-ask"),

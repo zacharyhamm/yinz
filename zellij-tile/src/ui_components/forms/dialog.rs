@@ -42,6 +42,10 @@ impl Dialog {
         self
     }
 
+    pub fn set_message(&mut self, message: Option<Text>) {
+        self.message = message;
+    }
+
     pub fn help(mut self, help: Text) -> Self {
         self.help = Some(help);
         self

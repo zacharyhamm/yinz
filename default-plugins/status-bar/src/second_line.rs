@@ -257,6 +257,7 @@ fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier
         (s("Session Manager"), s("Manager"), action_key(&km, &[A::LaunchOrFocusPlugin{plugin: Default::default(), should_float: true, move_to_focused_tab: true, should_open_in_place: false, close_replaced_pane: false, skip_cache: false, tab_id: None, global_placement: None}, TO_NORMAL])), // not entirely accurate
         (s("Select pane"), s("Select"), to_normal_key),
     ]} else if mi.mode == IM::Agent { vec![
+        (s("New agent"), s("New"), plugin_launch_key(&km, "hocus-new-agent")),
         (s("Agents"), s("Agents"), plugin_launch_key(&km, "hocus-agents")),
         (s("Chat"), s("Chat"), plugin_launch_key(&km, "hocus")),
         (s("Ask"), s("Ask"), plugin_launch_key(&km, "hocus-ask")),

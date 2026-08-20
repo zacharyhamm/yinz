@@ -271,6 +271,18 @@ Config {
                 ),
                 initial_cwd: None,
             },
+            "hocus-new-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+            },
             "hocus-store": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(

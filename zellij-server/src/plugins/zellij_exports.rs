@@ -42,13 +42,13 @@ use zellij_utils::data::{
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
     DeleteLayoutResponse, EditLayoutResponse, Event, FloatingPaneCoordinates,
     FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo,
-    LayoutMetadata, LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin,
+    GetPaneRunningCommandResponse, GitCheckout, HttpVerb, KeyWithModifier, KillSessionsResponse,
+    LayoutInfo, LayoutMetadata, LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin,
     NewPanePlacement, NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
     OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
-    OpenCommandPaneFloatingResponse, OpenCommandPaneInPlaceOfPaneIdResponse,
-    OpenCommandPaneInPlaceOfPluginResponse, OpenCommandPaneInPlaceResponse,
-    OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
+    OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
+    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
+    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
     OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
     OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
     OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
@@ -115,7 +115,7 @@ use zellij_utils::{
             ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
-            ProtobufOpenCommandPaneFloatingResponse,
+            ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
             ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
             ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
             ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneResponse,
@@ -249,6 +249,16 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::OpenCommandPaneNearPlugin(command_to_run, context) => {
                         open_command_pane_near_plugin(env, command_to_run, context)
                     },
+                    PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+                        command_to_run,
+                        source_directory,
+                        checkout,
+                    ) => open_command_pane_in_git_checkout_near_plugin(
+                        env,
+                        command_to_run,
+                        source_directory,
+                        checkout,
+                    ),
                     PluginCommand::OpenCommandPaneFloating(
                         command_to_run,
                         floating_pane_coordinates,
@@ -2362,6 +2372,18 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
+    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context);
+    let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
+        .non_fatal();
+}
+
+fn spawn_command_pane_near_plugin(
+    env: &PluginEnv,
+    command_to_run: CommandToRun,
+    context: BTreeMap<String, String>,
+) -> OpenCommandPaneNearPluginResponse {
     let command = command_to_run.path;
     let cwd = command_to_run
         .cwd
@@ -2410,13 +2432,111 @@ fn open_command_pane_near_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_command_pane_near_plugin", false);
-    let pane_id: OpenCommandPaneNearPluginResponse = result.affected_pane_id.map(|p| p.into());
+    result.affected_pane_id.map(|p| p.into())
+}
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
+fn open_command_pane_in_git_checkout_near_plugin(
+    env: &PluginEnv,
+    mut command_to_run: CommandToRun,
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+) {
+    let result: OpenCommandPaneInGitCheckoutResponse =
+        prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
+            command_to_run.cwd = Some(cwd);
+            spawn_command_pane_near_plugin(env, command_to_run, BTreeMap::new())
+                .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
+        });
+    let response = ProtobufOpenCommandPaneInGitCheckoutResponse::from(result);
     wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
+        .with_context(|| "failed to write open_command_pane_in_git_checkout response".to_string())
         .non_fatal();
+}
+
+fn prepare_git_checkout(
+    env: &PluginEnv,
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+) -> Result<PathBuf, String> {
+    let source_directory = translate_plugin_path(env, source_directory);
+    prepare_git_checkout_in(source_directory, checkout)
+}
+
+fn prepare_git_checkout_in(
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+) -> Result<PathBuf, String> {
+    let root_output = process::Command::new("git")
+        .arg("-C")
+        .arg(&source_directory)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    if !root_output.status.success() {
+        return Err(git_error("find the repository root", &root_output.stderr));
+    }
+    let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+    match checkout {
+        GitCheckout::Current => Ok(root),
+        GitCheckout::NewBranch { branch, base } => {
+            validate_git_names(&root, &branch, &base)?;
+            run_git(
+                &root,
+                &["switch", "-c", &branch, &base],
+                "create and switch to the branch",
+            )?;
+            Ok(root)
+        },
+        GitCheckout::NewWorktree { branch, base, path } => {
+            validate_git_names(&root, &branch, &base)?;
+            let path = if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            };
+            let path_string = path.to_string_lossy().into_owned();
+            run_git(
+                &root,
+                &["worktree", "add", "-b", &branch, "--", &path_string, &base],
+                "create the worktree",
+            )?;
+            Ok(path)
+        },
+    }
+}
+
+fn validate_git_names(root: &std::path::Path, branch: &str, base: &str) -> Result<(), String> {
+    if branch.trim().is_empty() || base.trim().is_empty() || base.starts_with('-') {
+        return Err("branch and base must be non-empty, and base cannot start with '-'".to_owned());
+    }
+    run_git(
+        root,
+        &["check-ref-format", "--branch", branch],
+        "validate the branch",
+    )
+}
+
+fn run_git(root: &std::path::Path, args: &[&str], operation: &str) -> Result<(), String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    output
+        .status
+        .success()
+        .then_some(())
+        .ok_or_else(|| git_error(operation, &output.stderr))
+}
+
+fn git_error(operation: &str, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr).trim().to_owned();
+    if detail.is_empty() {
+        format!("git could not {operation}")
+    } else {
+        format!("git could not {operation}: {detail}")
+    }
 }
 
 fn open_command_pane_floating(
@@ -6089,6 +6209,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         },
         PluginCommand::OpenCommandPane(..)
         | PluginCommand::OpenCommandPaneNearPlugin(..)
+        | PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(..)
         | PluginCommand::OpenCommandPaneFloating(..)
         | PluginCommand::OpenCommandPaneFloatingNearPlugin(..)
         | PluginCommand::OpenCommandPaneInPlace(..)
@@ -6291,6 +6412,25 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
 
+    fn repository() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["commit", "--allow-empty", "-q", "-m", "initial"],
+        ] {
+            assert!(process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        temp
+    }
+
     #[test]
     fn global_pane_splits_require_plugin_launch_permission() {
         let command = PluginCommand::LaunchOrFocusGlobalPaneSplit {
@@ -6306,5 +6446,44 @@ mod permission_tests {
             command_permission(&command),
             Some(PermissionType::OpenTerminalsOrPlugins)
         );
+    }
+
+    #[test]
+    fn git_checkout_request_creates_a_worktree_from_the_base() {
+        let repository = repository();
+        let target = repository.path().join(".worktrees/topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap();
+        assert_eq!(cwd, target);
+        assert!(std::fs::read_to_string(target.join(".git"))
+            .unwrap()
+            .starts_with("gitdir:"));
+    }
+
+    #[test]
+    fn branch_only_switches_the_current_checkout() {
+        let repository = repository();
+        prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewBranch {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+            },
+        )
+        .unwrap();
+        let branch = process::Command::new("git")
+            .arg("-C")
+            .arg(repository.path())
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "topic");
     }
 }
