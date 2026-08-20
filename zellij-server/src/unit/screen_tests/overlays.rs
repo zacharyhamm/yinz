@@ -4,10 +4,14 @@ use super::*;
 fn modal_plugin_configuration_requests_overlay() {
     let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
     modal.configuration.insert("modal", "true");
-    assert!(RunPluginOrAlias::RunPlugin(modal).requests_overlay());
+    let modal = RunPluginOrAlias::RunPlugin(modal);
+    assert!(modal.requests_overlay());
+    assert!(modal.requests_modal());
 
     let plain = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
-    assert!(!RunPluginOrAlias::RunPlugin(plain).requests_overlay());
+    let plain = RunPluginOrAlias::RunPlugin(plain);
+    assert!(!plain.requests_overlay());
+    assert!(!plain.requests_modal());
 }
 
 #[test]
@@ -20,7 +24,71 @@ fn resolved_modal_plugin_alias_requests_overlay() {
         ..Default::default()
     };
 
-    assert!(RunPluginOrAlias::Alias(alias).requests_overlay());
+    let alias = RunPluginOrAlias::Alias(alias);
+    assert!(alias.requests_overlay());
+    assert!(alias.requests_modal());
+}
+
+#[test]
+fn alt_f_opens_a_floating_pane_when_only_an_overlay_exists() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    new_tab(&mut screen, 1, 0);
+
+    let overlay = PaneId::Terminal(2);
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.new_pane(
+        overlay,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            overlay: Some(true),
+            ..Default::default()
+        })),
+        Some(1),
+        None,
+    )
+    .unwrap();
+    tab.toggle_floating_panes(Some(1), None, None).unwrap();
+
+    assert!(matches!(
+        pty_receiver.try_recv().map(|(instruction, _)| instruction),
+        Ok(PtyInstruction::SpawnTerminal(
+            _,
+            _,
+            NewPanePlacement::Floating(None),
+            _,
+            ClientTabIndexOrPaneId::ClientId(1),
+            _,
+            _,
+            _
+        ))
+    ));
+    assert!(tab.pane_is_overlay(overlay));
+    assert_eq!(tab.get_active_pane_id(1), Some(overlay));
+}
+
+#[test]
+fn alt_f_hides_regular_floating_panes_while_an_overlay_exists() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    open_floating_pane(&mut screen, 0, 3, "OVERLAY", true);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(tab.are_floating_panes_visible());
+    tab.toggle_floating_panes(Some(1), None, None).unwrap();
+
+    assert!(!tab.are_floating_panes_visible());
+    assert!(tab.pane_is_overlay(PaneId::Terminal(3)));
+    assert!(pty_receiver.try_recv().is_err());
 }
 
 #[test]

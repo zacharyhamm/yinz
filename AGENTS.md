@@ -59,6 +59,9 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
 
 Finish with a full `cargo x test` before calling work done — that's what CI runs.
+The full test and integration-test suites bind local TCP and Unix sockets, so run
+`cargo x test` and `cargo x integration-test` with sandbox escalation on the first
+attempt.
 
 ## Kitty graphics conformance
 

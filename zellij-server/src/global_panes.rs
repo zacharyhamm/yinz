@@ -1952,6 +1952,8 @@ impl GlobalPaneManager {
                             session_is_mirrored,
                             false,
                             pane_is_selectable,
+                            true,
+                            true,
                         )
                         .with_context(err_context)?;
                 }
