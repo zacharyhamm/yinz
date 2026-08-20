@@ -804,16 +804,8 @@ fn a_new_pane_opened_over_a_modal_is_tiled() {
     );
 }
 
-/// A modal overlay (e.g. hocus-new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
-/// has no way to learn it lost focus, unlike a dismissible overlay that watches `PaneUpdate`.
-/// Stealing its focus the way `a_new_pane_opened_over_a_modal_is_tiled` does for a plain overlay
-/// would leave it stuck on screen while input goes to the pane underneath, so it must keep focus.
-#[test]
-fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-
+/// A modal plugin overlay, focused, over the active tab - what `hocus-new-agent` is.
+fn add_modal_plugin_overlay(screen: &mut Screen, plugin_id: u32) -> PaneId {
     let mut configuration = BTreeMap::new();
     configuration.insert("modal".to_owned(), "true".to_owned());
     let run_plugin =
@@ -824,7 +816,7 @@ fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
         SenderWithContext::new(plugin_tx)
     });
     let modal = PaneFactory::plugin(
-        7,
+        plugin_id,
         Default::default(),
         plugin_sender,
         "modal".to_owned(),
@@ -842,10 +834,25 @@ fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
         screen.arrow_fonts,
         screen.styled_underlines,
     );
-    let modal_id = PaneId::Plugin(7);
+    let modal_id = PaneId::Plugin(plugin_id);
     let tab = screen.get_active_tab_mut(1).unwrap();
     tab.add_floating_pane(modal, modal_id, Some(overlay_coordinates()), true, Some(1))
         .expect("TEST");
+    modal_id
+}
+
+/// A modal overlay (e.g. hocus-new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
+/// has no way to learn it lost focus, unlike a dismissible overlay that watches `PaneUpdate`.
+/// Stealing its focus the way `a_new_pane_opened_over_a_modal_is_tiled` does for a plain overlay
+/// would leave it stuck on screen while input goes to the pane underneath, so it must keep focus.
+#[test]
+fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    let tab = screen.get_active_tab_mut(1).unwrap();
     assert!(tab.pane_is_overlay(modal_id));
     assert_eq!(tab.get_active_pane_id(1), Some(modal_id));
 
@@ -873,6 +880,48 @@ fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
         tab.get_active_pane_id(1),
         Some(modal_id),
         "a modal overlay has no way to learn it lost focus, so it must keep it"
+    );
+}
+
+/// The other half of the test above: keeping focus is not the end of the story, or the pane the
+/// user asked for would stay unreachable. `hocus-new-agent` submits, focuses the agent pane it
+/// just opened, and only then closes itself - and this is that hand-off. Focusing the tiled pane
+/// while the overlay is still up moves nothing a client can see (`get_active_pane_id` prefers the
+/// overlay), it moves the tiled focus *underneath*, which is what the close then lands on. Doing
+/// it in the other order - close, then focus - would have nothing left to focus from.
+#[test]
+fn a_modal_overlay_hands_focus_to_the_pane_it_opened_when_it_closes() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+    assert_eq!(tab.get_active_pane_id(1), Some(modal_id));
+
+    tab.focus_pane_with_id(PaneId::Terminal(3), false, false, 1)
+        .expect("TEST");
+    tab.close_pane(modal_id, false, None);
+
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the modal hands the keyboard to the pane it opened, not back to where the user came from"
+    );
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "the floating layer stays down - only the modal was ever up"
     );
 }
 
