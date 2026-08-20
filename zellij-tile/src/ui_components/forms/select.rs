@@ -348,8 +348,15 @@ impl Select {
     ///
     /// The dropdown is *not* drawn here — see [`Select::render_overlay`], which
     /// a form calls after everything else so the list lands on top.
-    pub(super) fn render_row(&mut self, prompt: &str, x: usize, y: usize, width: usize) {
-        let text = if self.open {
+    pub(super) fn render_row(
+        &mut self,
+        prompt: &str,
+        x: usize,
+        y: usize,
+        width: usize,
+        focused: bool,
+    ) {
+        let mut text = if self.open {
             let (line, _) = viewport(
                 prompt,
                 self.filter.get_text(),
@@ -367,6 +374,9 @@ impl Select {
             }
             text
         };
+        if focused {
+            text = text.selected();
+        }
         print_text_with_coordinates(text, x, y, Some(width), None);
         self.last_rendered = Some(Rect::new(x, y, width, 1));
     }
