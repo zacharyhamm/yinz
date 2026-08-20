@@ -104,6 +104,37 @@ fn overlay_does_not_show_hidden_floating_panes() {
         tab.get_active_pane(client_id).unwrap().pid(),
         overlay_pane_id
     );
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![floating_pane_id, overlay_pane_id]
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![overlay_pane_id]
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+
+    tab.show_floating_panes();
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![floating_pane_id, overlay_pane_id]
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+
+    tab.hide_floating_panes();
+    assert_eq!(
+        tab.floating_panes.rendered_pane_ids(),
+        vec![overlay_pane_id]
+    );
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+
     assert_eq!(
         tab.get_active_pane(other_client_id).unwrap().pid(),
         PaneId::Terminal(1),
@@ -149,6 +180,7 @@ fn overlay_does_not_show_hidden_floating_panes() {
 
     tab.close_focused_pane(client_id, None).unwrap();
     assert!(tab.get_pane_with_id(overlay_pane_id).is_none());
+    assert!(tab.floating_panes.rendered_pane_ids().is_empty());
     assert!(tab.get_pane_with_id(PaneId::Terminal(1)).is_some());
     assert!(tab.get_pane_with_id(floating_pane_id).is_some());
 }
