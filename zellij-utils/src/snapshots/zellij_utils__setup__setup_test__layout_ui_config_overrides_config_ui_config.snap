@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/setup.rs
-assertion_line: 737
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -6827,6 +6826,7 @@ Config {
                             configuration: Some(
                                 PluginUserConfiguration(
                                     {
+                                        "modal": "true",
                                         "overlay": "true",
                                     },
                                 ),
@@ -7031,6 +7031,7 @@ Config {
                             configuration: Some(
                                 PluginUserConfiguration(
                                     {
+                                        "modal": "true",
                                         "overlay": "true",
                                     },
                                 ),

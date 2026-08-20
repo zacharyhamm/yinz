@@ -2850,20 +2850,29 @@ impl Tab {
             if should_focus_pane && should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, true, client_id)
             } else if should_focus_pane {
-                // a modal holds this client's focus while the floating layer is down, and
+                // an overlay holds this client's focus while the floating layer is down, and
                 // `get_active_pane_id` would keep preferring it over the pane we are about to
-                // focus. The new pane is what the user just asked for, so the modal gives the
-                // keyboard up - which is also how a popup that closes on losing focus finds out.
-                if let Some(client_id) = client_id {
-                    if self
-                        .floating_panes
-                        .active_pane_id(client_id)
-                        .is_some_and(|pane_id| self.floating_panes.is_overlay(pane_id))
-                    {
-                        self.floating_panes.defocus_pane(client_id);
-                    }
+                // focus. The new pane is what the user just asked for, so a dismissible overlay
+                // (one that watches PaneUpdate and closes itself once it sees it isn't focused,
+                // e.g. hocus-ask) gives the keyboard up - which is also how it finds out. A modal
+                // overlay (e.g. hocus-new-agent) only closes on Esc/submit/Visible(false) and has
+                // no way to learn it lost focus, so stealing it would leave the modal stuck on
+                // screen while input goes to the pane underneath - it keeps focus instead, and the
+                // new pane opens tiled but unfocused behind it.
+                let active_overlay = client_id
+                    .and_then(|client_id| self.floating_panes.active_pane_id(client_id))
+                    .filter(|pane_id| self.floating_panes.is_overlay(*pane_id));
+                match active_overlay {
+                    Some(pane_id) if self.floating_panes.pane_is_modal(pane_id) => {
+                        self.add_tiled_pane(new_pane, pid, false, None)
+                    },
+                    Some(_) => {
+                        self.floating_panes
+                            .defocus_pane(client_id.expect("active_overlay implies client_id"));
+                        self.add_tiled_pane(new_pane, pid, false, client_id)
+                    },
+                    None => self.add_tiled_pane(new_pane, pid, false, client_id),
                 }
-                self.add_tiled_pane(new_pane, pid, false, client_id)
             } else if should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, false, client_id)
             } else {
@@ -8100,18 +8109,6 @@ impl Tab {
                     .is_none()
             {
                 self.hide_floating_panes_under_overlay();
-            }
-        } else if was_overlay && !is_overlay {
-            // The inverse: a pane that stops being an overlay while the layer is down keeps a
-            // client's floating focus but stops being drawn (`stack_layer_ids`) and stops being
-            // that client's active pane (`get_active_pane_id`) - input would fall through to the
-            // tiled pane under it. Narrow on purpose: `change_pane_coordinates` clears the
-            // overlay mark for any coordinates that do not ask for it, and merely moving a
-            // normal hidden floating pane must not pop the layer open.
-            if !self.floating_panes.all_panes_are_visible()
-                && self.floating_panes.pane_is_focused(pane_id)
-            {
-                self.show_floating_panes();
             }
         }
         self.set_force_render();
