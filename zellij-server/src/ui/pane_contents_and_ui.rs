@@ -329,6 +329,8 @@ impl<'a> PaneContentsAndUi<'a> {
         session_is_mirrored: bool,
         pane_is_floating: bool,
         pane_is_selectable: bool,
+        show_pinned_indication: bool,
+        show_scroll_indication: bool,
     ) -> Result<()> {
         let err_context = || format!("failed to render pane frame for client {client_id}");
 
@@ -382,6 +384,8 @@ impl<'a> PaneContentsAndUi<'a> {
                 pane_is_stacked,
                 should_draw_pane_frames: self.should_draw_pane_frames,
                 pane_is_floating,
+                show_pinned_indication,
+                show_scroll_indication,
                 content_offset: self.pane.get_content_offset(),
                 mouse_is_hovering_over_pane: self
                     .mouse_is_hovering_over_pane_for_clients
@@ -410,6 +414,8 @@ impl<'a> PaneContentsAndUi<'a> {
                 pane_is_stacked,
                 should_draw_pane_frames: self.should_draw_pane_frames,
                 pane_is_floating,
+                show_pinned_indication,
+                show_scroll_indication,
                 content_offset: self.pane.get_content_offset(),
                 mouse_is_hovering_over_pane: self
                     .mouse_is_hovering_over_pane_for_clients

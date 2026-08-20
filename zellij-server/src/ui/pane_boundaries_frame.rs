@@ -93,6 +93,8 @@ pub struct FrameParams {
     pub pane_is_stacked: bool,
     pub should_draw_pane_frames: bool,
     pub pane_is_floating: bool,
+    pub show_pinned_indication: bool,
+    pub show_scroll_indication: bool,
     pub content_offset: Offset,
     pub mouse_is_hovering_over_pane: bool,
     pub pane_is_selectable: bool,
@@ -126,6 +128,8 @@ pub struct PaneFrame {
     should_draw_pane_frames: bool,
     is_pinned: bool,
     is_floating: bool,
+    show_pinned_indication: bool,
+    show_scroll_indication: bool,
     content_offset: Offset,
     mouse_is_hovering_over_pane: bool,
     is_selectable: bool,
@@ -164,6 +168,8 @@ impl PaneFrame {
             should_draw_pane_frames: frame_params.should_draw_pane_frames,
             is_pinned: false,
             is_floating: frame_params.pane_is_floating,
+            show_pinned_indication: frame_params.show_pinned_indication,
+            show_scroll_indication: frame_params.show_scroll_indication,
             content_offset: frame_params.content_offset,
             mouse_is_hovering_over_pane: frame_params.mouse_is_hovering_over_pane,
             is_selectable: frame_params.pane_is_selectable,
@@ -233,14 +239,16 @@ impl PaneFrame {
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
         // string and length because of color
-        let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
+        let has_scroll = self.show_scroll_indication
+            && (self.scroll_position.0 > 0 || self.scroll_position.1 > 0);
         if has_scroll && self.is_selectable {
             // TODO: don't show SCROLL at all for plugins
-            let pin_indication = if self.is_floating && self.is_selectable {
-                self.render_pinned_indication(max_length)
-            } else {
-                None
-            }; // no pin indication for tiled panes
+            let pin_indication =
+                if self.is_floating && self.is_selectable && self.show_pinned_indication {
+                    self.render_pinned_indication(max_length)
+                } else {
+                    None
+                }; // no pin indication for tiled panes
             let space_for_scroll_indication = pin_indication
                 .as_ref()
                 .map(|(_, length)| max_length.saturating_sub(*length + 1))
@@ -261,7 +269,7 @@ impl PaneFrame {
                 (None, Some(scroll_indication)) => Some(scroll_indication),
                 _ => None,
             }
-        } else if self.is_floating && self.is_selectable {
+        } else if self.is_floating && self.is_selectable && self.show_pinned_indication {
             self.render_pinned_indication(max_length)
         } else {
             None
@@ -921,7 +929,8 @@ impl PaneFrame {
         &self,
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
+        let has_scroll = self.show_scroll_indication
+            && (self.scroll_position.0 > 0 || self.scroll_position.1 > 0);
         if !(has_scroll && self.is_selectable) {
             return None;
         }
@@ -1475,6 +1484,8 @@ mod tests {
                 pane_is_stacked: false,
                 should_draw_pane_frames: true,
                 pane_is_floating: is_floating,
+                show_pinned_indication: true,
+                show_scroll_indication: true,
                 content_offset: Offset::default(),
                 mouse_is_hovering_over_pane: false,
                 pane_is_selectable: true,
@@ -1493,6 +1504,35 @@ mod tests {
 
     fn characters_to_string(chars: &[TerminalCharacter]) -> String {
         chars.iter().map(|c| c.character).collect()
+    }
+
+    fn right_side_indicators(show_pin: bool, show_scroll: bool) -> String {
+        let mut frame = pane_frame_with(false, true, 80);
+        frame.scroll_position = (1, 2);
+        frame.show_pinned_indication = show_pin;
+        frame.show_scroll_indication = show_scroll;
+        frame
+            .render_title_right_side_inner(80)
+            .map(|(characters, _)| characters_to_string(&characters))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn overlay_and_modal_frame_indicators() {
+        let floating = right_side_indicators(true, true);
+        assert!(floating.contains("PIN"));
+        assert!(floating.contains("SCROLL"));
+
+        let overlay = right_side_indicators(false, true);
+        assert!(!overlay.contains("PIN"));
+        assert!(overlay.contains("SCROLL"));
+
+        assert!(right_side_indicators(false, false).is_empty());
+
+        let mut modal_title = pane_frame_with(false, true, 80);
+        modal_title.scroll_position = (1, 2);
+        modal_title.show_scroll_indication = false;
+        assert!(modal_title.bracketed_scroll_indicator(80).is_none());
     }
 
     #[test]
