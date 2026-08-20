@@ -58,10 +58,31 @@ failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
 - **Remote-pane tests:** `cargo x remote-test --test -- --exact <name>`. They are
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
 
-Finish with a full `cargo x test` before calling work done — that's what CI runs.
-The full test and integration-test suites bind local TCP and Unix sockets, so run
-`cargo x test` and `cargo x integration-test` with sandbox escalation on the first
-attempt.
+### Choosing what to run
+
+Default to the tests that cover what you touched, using the narrowing recipes above — the
+per-crate inner loop for unit tests, an `-E 'test(...)'` expression for integration tests.
+A full `cargo x test` rebuilds every wasm plugin and every crate's test binary; it is not the
+default finishing move.
+
+Escalate to the full `cargo x test` (and `cargo x integration-test`) when the change reaches
+past one crate:
+
+- `zellij-utils/` — IPC contracts, config/KDL parsing, errors, plugin API; nearly everything
+  depends on it
+- `zellij-tile/`, `zellij-tile-utils/`, or anything under `zellij-utils/assets/` (protobufs,
+  embedded plugins — also regenerate with `cargo x proto` / `cargo x assets`)
+- the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
+  integration tests cover broadly
+- screen/tab/pty plumbing that both plugins and the client sit on
+- dependency, toolchain, or `xtask` changes
+- a batch of edits spanning several crates, or any run where snapshots were regenerated
+
+Run it too when the user asks, or before handing off a branch or PR — that's what CI runs, so
+anything skipped locally gets checked there.
+
+The full test and integration-test suites bind local TCP and Unix sockets, so when you do run
+them, use sandbox escalation on the first attempt.
 
 ## Kitty graphics conformance
 
