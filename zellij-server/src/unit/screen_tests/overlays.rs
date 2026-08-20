@@ -1,16 +1,13 @@
 use super::*;
-use crate::screen::plugin_requests_overlay;
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
     let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
     modal.configuration.insert("modal", "true");
-    assert!(plugin_requests_overlay(&RunPluginOrAlias::RunPlugin(modal)));
+    assert!(RunPluginOrAlias::RunPlugin(modal).requests_overlay());
 
     let plain = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
-    assert!(!plugin_requests_overlay(&RunPluginOrAlias::RunPlugin(
-        plain
-    )));
+    assert!(!RunPluginOrAlias::RunPlugin(plain).requests_overlay());
 }
 
 #[test]
@@ -23,7 +20,7 @@ fn resolved_modal_plugin_alias_requests_overlay() {
         ..Default::default()
     };
 
-    assert!(plugin_requests_overlay(&RunPluginOrAlias::Alias(alias)));
+    assert!(RunPluginOrAlias::Alias(alias).requests_overlay());
 }
 
 #[test]

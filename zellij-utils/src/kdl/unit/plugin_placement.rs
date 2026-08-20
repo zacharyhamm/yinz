@@ -83,7 +83,12 @@ fn global_plugin_placement_rejects_move_to_focused_tab() {
 #[test]
 fn global_plugin_placement_rejects_overlays() {
     for action in ["LaunchOrFocusPlugin", "LaunchPlugin"] {
-        for overlay_setting in ["overlay true", "modal true"] {
+        for overlay_setting in [
+            "overlay true",
+            "overlay \"true\"",
+            "modal true",
+            "modal \"true\"",
+        ] {
             let source = format!(
                 r#"
                 keybinds {{
