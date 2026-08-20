@@ -50,6 +50,10 @@
 //! - An open [`Select`] dropdown *overlays* the rows below it, so a screen that
 //!   prints its own chrome after the form should check
 //!   [`Form::overlay_rect`].
+//! - Enter submits by default, from whichever field has focus.
+//!   [`Form::enter_never_submits`] turns that off: Enter then acts on the
+//!   focused widget - opening a list, toggling a checkbox, entering a text
+//!   field's input mode - and only a button submits.
 
 mod button;
 mod choice;

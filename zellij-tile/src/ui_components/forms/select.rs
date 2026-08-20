@@ -281,9 +281,10 @@ impl Select {
                 SelectAction::Continue
             },
             // Typing opens the list already filtered — the typeahead the widget
-            // exists for. Enter is deliberately not in this list: it means
-            // "submit the form" in every other field, and a select is not worth
-            // making it mean two things.
+            // exists for. Enter is deliberately not in this list: the `Form`
+            // owns what it means for a closed select, because that depends on
+            // whether the form submits from Enter at all. A form built with
+            // `Form::enter_never_submits` opens the list with it.
             BareKey::Char(c) if key.has_no_modifiers() => {
                 self.open();
                 self.filter.insert_char(c);
