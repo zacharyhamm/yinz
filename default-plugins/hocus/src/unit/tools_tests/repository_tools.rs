@@ -37,9 +37,7 @@ fn git_log_is_rooted_bounded_and_can_page() {
 fn git_show_accepts_only_a_hash_and_opts_into_a_patch() {
     let args = Args::parse(r#"{"commit":"abcdef12"}"#).unwrap();
     let argv = git_argv("git_show", &args, &project(), "/work/hocus").unwrap();
-    assert!(argv
-        .windows(2)
-        .any(|args| args == ["--no-patch", "--stat"]));
+    assert!(argv.windows(2).any(|args| args == ["--no-patch", "--stat"]));
 
     let args = Args::parse(r#"{"commit":"abcdef12","patch":true}"#).unwrap();
     let argv = git_argv("git_show", &args, &project(), "/work/hocus").unwrap();
