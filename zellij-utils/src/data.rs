@@ -2528,6 +2528,19 @@ pub struct PaneContents {
     pub viewport: Vec<String>,
     pub selected_text: Option<SelectedText>,
     pub cursor: Option<(usize, usize)>,
+    /// Milliseconds since this pane's process last wrote to its pty, if it ever did.
+    ///
+    /// The only signal that separates "the program produced something" from "the
+    /// picture moved": scrolling, reflowing and re-rendering all change what a pane
+    /// shows without a single byte arriving from the process.
+    #[serde(default)]
+    pub last_output_ms_ago: Option<u64>,
+    /// Whether the user has scrolled this pane up out of its live tail.
+    ///
+    /// A scrolled pane shows old output, so its viewport says nothing about what the
+    /// process is doing right now.
+    #[serde(default)]
+    pub is_scrolled: bool,
 }
 
 /// Extract text from a line between two column positions, accounting for wide characters
@@ -2622,7 +2635,7 @@ impl PaneContents {
             selected_text: SelectedText::from_positions(selection_start, selection_end),
             lines_above_viewport,
             lines_below_viewport,
-            cursor: None,
+            ..Default::default()
         }
     }
 

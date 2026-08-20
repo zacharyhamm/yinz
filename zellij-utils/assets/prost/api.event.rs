@@ -799,6 +799,10 @@ pub struct PaneContents {
     pub lines_below_viewport: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(message, optional, tag="5")]
     pub cursor: ::core::option::Option<super::action::Position>,
+    #[prost(uint64, optional, tag="6")]
+    pub last_output_ms_ago: ::core::option::Option<u64>,
+    #[prost(bool, tag="7")]
+    pub is_scrolled: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

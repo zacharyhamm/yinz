@@ -12819,12 +12819,19 @@ pub(crate) fn screen_thread_main(
                 get_full_scrollback,
                 response_channel,
             } => {
+                let last_output_ms_ago = screen
+                    .pane_output_activity
+                    .get(&pane_id)
+                    .map(|last| Instant::now().saturating_duration_since(*last).as_millis() as u64);
                 let pane_contents = screen.with_pane(pane_id, |pane| {
                     pane.pane_contents(Some(client_id), get_full_scrollback, None)
                 });
                 // Send response back through channel
                 let response = match pane_contents {
-                    Some(contents) => PaneScrollbackResponse::Ok(contents),
+                    Some(mut contents) => {
+                        contents.last_output_ms_ago = last_output_ms_ago;
+                        PaneScrollbackResponse::Ok(contents)
+                    },
                     None => {
                         log::warn!(
                             "Plugin requested scrollback for pane {:?} but pane was not found",
@@ -13264,6 +13271,7 @@ pub(crate) fn screen_thread_main(
                 }
 
                 screen.clear_nested_guest(id);
+                screen.pane_output_activity.remove(&id);
 
                 // Clean up PTY-side resources (async reader task, child PID mapping,
                 // terminal_id_to_raw_fd entry). This is needed because the natural
