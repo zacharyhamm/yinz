@@ -773,7 +773,7 @@ impl MouseHandler {
                 event: click_event,
             } => Self::execute_focus_pane_and_click_through(tab, position, click_event, client_id),
             MouseAction::ShowFloatingPanesAndFocus { pane_id } => {
-                tab.show_floating_panes();
+                tab.show_floating_panes_for(pane_id);
                 tab.floating_panes.focus_pane(pane_id, client_id);
                 Ok(MouseEffect::state_changed())
             },
@@ -1631,7 +1631,7 @@ impl MouseHandler {
             {
                 tab.floating_panes.focus_pane(pane_id, client_id);
                 tab.set_pane_active_at(pane_id);
-                tab.show_floating_panes();
+                tab.show_floating_panes_for(pane_id);
                 return Ok(());
             }
         }
