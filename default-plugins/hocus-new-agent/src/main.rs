@@ -79,29 +79,23 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
+            EventType::TabUpdate,
             EventType::PastedText,
             EventType::Visible,
         ]);
         set_selectable(true);
         rename_plugin_pane(self.plugin_id, "new agent");
-        if let Some(coordinates) = FloatingPaneCoordinates::new(
-            Some("15%".into()),
-            Some("20%".into()),
-            Some("70%".into()),
-            Some("14".into()),
-            None,
-            None,
-            None,
-        ) {
-            change_floating_panes_coordinates(vec![(
-                PaneId::Plugin(self.plugin_id),
-                coordinates.as_overlay(),
-            )]);
-        }
+        self.resize(None);
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
+            Event::TabUpdate(tabs) => {
+                if let Some(tab) = tabs.first() {
+                    self.resize(Some(tab.display_area_columns));
+                }
+                false
+            },
             Event::Key(key) => {
                 let event = self.dialog.handle_key(key);
                 self.handle(event)
@@ -171,6 +165,31 @@ impl ZellijPlugin for State {
             close_self();
         }
         false
+    }
+}
+
+fn modal_width(display_columns: Option<usize>) -> String {
+    display_columns
+        .map(|columns| columns.div_ceil(2).min(60).to_string())
+        .unwrap_or_else(|| "50%".to_owned())
+}
+
+impl State {
+    fn resize(&self, display_columns: Option<usize>) {
+        if let Some(coordinates) = FloatingPaneCoordinates::new(
+            None,
+            Some("20%".into()),
+            Some(modal_width(display_columns)),
+            Some("14".into()),
+            None,
+            None,
+            None,
+        ) {
+            change_floating_panes_coordinates(vec![(
+                PaneId::Plugin(self.plugin_id),
+                coordinates.as_overlay(),
+            )]);
+        }
     }
 }
 
@@ -313,6 +332,12 @@ fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_is_half_the_display_up_to_sixty_columns() {
+        assert_eq!(modal_width(Some(80)), "40");
+        assert_eq!(modal_width(Some(200)), "60");
+    }
 
     #[test]
     fn defaults_create_a_codex_worktree_from_main() {
