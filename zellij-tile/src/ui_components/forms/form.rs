@@ -231,6 +231,26 @@ pub struct Form {
     prev_key: KeyWithModifier,
     enter_never_submits: bool,
     editing: bool,
+    pressed: Option<PressTarget>,
+}
+
+/// What a left button went down on, remembered until it comes back up.
+///
+/// A widget acts on release rather than on press, and only if the release lands
+/// back on the same widget - the way a mis-aimed click is taken back everywhere
+/// else. The press itself still moves focus, so the row the pointer is on
+/// highlights immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressTarget {
+    Button(usize),
+    Checkbox(usize),
+    /// Field index and the option under the pointer.
+    Radio(usize, usize),
+    /// A select's own row: released on it, a collapsed list opens and an open
+    /// one closes again.
+    SelectRow(usize),
+    /// Field index and the option in the open dropdown.
+    SelectOption(usize, usize),
 }
 
 impl Default for Form {
@@ -249,6 +269,7 @@ impl Form {
             prev_key: KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
             enter_never_submits: false,
             editing: false,
+            pressed: None,
         }
     }
 
@@ -745,15 +766,41 @@ impl Form {
         Some(id)
     }
 
+    /// Route a mouse event.
+    ///
+    /// `Mouse::LeftClick` is the *press* - the host sends it when the button goes
+    /// down - so nothing is activated by it. `Mouse::Release` is what toggles a
+    /// checkbox, picks a radio option or fires a button, and only when it lands
+    /// back on the widget the press did. `Mouse::Hold` is the drag between them,
+    /// and only moves the highlight so that dragging off a button visibly takes
+    /// the press back.
     pub fn handle_mouse(&mut self, mouse: Mouse) -> FormEvent {
         match mouse {
             Mouse::LeftClick(line, column) => {
                 if line < 0 {
+                    self.pressed = None;
                     return FormEvent::Ignored;
                 }
-                self.handle_click(column, line as usize)
+                self.handle_press(column, line as usize)
+            },
+            Mouse::Hold(line, column) => {
+                if line < 0 {
+                    return self.clear_hover();
+                }
+                self.handle_hover(column, line as usize)
+            },
+            Mouse::Release(line, column) => {
+                if line < 0 {
+                    self.pressed = None;
+                    return FormEvent::Ignored;
+                }
+                self.handle_release(column, line as usize)
             },
             Mouse::Hover(line, column) => {
+                // A hover is buttonless motion, so any press that has not been
+                // released by now was released somewhere this form never heard
+                // about - off the pane, most likely.
+                self.pressed = None;
                 if line < 0 {
                     return self.clear_hover();
                 }
@@ -763,34 +810,39 @@ impl Form {
         }
     }
 
-    fn handle_click(&mut self, x: usize, y: usize) -> FormEvent {
-        // The dropdown is drawn on top, so it is hit-tested first: a click that
+    /// The button going down: move focus to whatever is under the pointer and
+    /// remember it, without acting on it.
+    fn handle_press(&mut self, x: usize, y: usize) -> FormEvent {
+        self.pressed = None;
+
+        // The dropdown is drawn on top, so it is hit-tested first: a press that
         // lands on it belongs to it whatever is underneath.
         if let Some(i) = self.open_select_index() {
-            let field = &mut self.fields[i];
-            let id = field.id.clone();
-            let select = field.select_mut().expect("open selects are select fields");
+            let select = self.fields[i]
+                .select_mut()
+                .expect("open selects are select fields");
             if let Some(option) = select.option_at(x, y) {
-                select.commit_option(option);
-                self.set_focus(Focus::Field(i));
-                return FormEvent::FieldChanged(id);
-            }
-            let on_its_own_row = select.row_contains(x, y);
-            select.close();
-            if on_its_own_row {
-                // Clicking the row that opened the list closes it again.
+                self.pressed = Some(PressTarget::SelectOption(i, option));
                 self.set_focus(Focus::Field(i));
                 return FormEvent::FocusMoved;
             }
-            // Anything else dismisses the list, and then lands where it was
-            // aimed — a click on a button should still press it.
+            if select.row_contains(x, y) {
+                // Pressing the row that opened the list closes it again.
+                self.pressed = Some(PressTarget::SelectRow(i));
+                self.set_focus(Focus::Field(i));
+                return FormEvent::FocusMoved;
+            }
+            // Anything else dismisses the list at once - a list left open under
+            // a pointer that has already moved on is a list in the way - and
+            // then the press lands where it was aimed.
+            select.close();
         }
 
-        for (i, (id, button)) in self.buttons.iter().enumerate() {
-            if button.contains(x, y) {
-                let id = id.clone();
+        for i in 0..self.buttons.len() {
+            if self.buttons[i].1.contains(x, y) {
+                self.pressed = Some(PressTarget::Button(i));
                 self.set_focus(Focus::Button(i));
-                return FormEvent::ButtonPressed(id);
+                return FormEvent::FocusMoved;
             }
         }
 
@@ -803,12 +855,12 @@ impl Form {
             }
             let field = &mut self.fields[i];
             let prompt = field.prompt();
-            let id = field.id.clone();
-            let event = match &mut field.widget {
-                // Put the cursor where the click landed, not just at the end —
+            match &mut field.widget {
+                // Put the cursor where the press landed, not just at the end —
                 // clicking into the middle of a word and typing at the end of
                 // it is exactly the sort of thing that makes a field feel
-                // broken.
+                // broken. Text is the one widget with nothing to activate, so
+                // this is all a press on it ever does.
                 Widget::Text(input) => {
                     let cursor = column_to_cursor(
                         &prompt,
@@ -818,34 +870,111 @@ impl Form {
                         x - rect.x,
                     );
                     input.set_cursor_position(cursor);
-                    FormEvent::FocusMoved
                 },
-                // Clicking a collapsed select opens it, which is the only thing
-                // there is to do with a row that is a list.
-                Widget::Select(select) => {
-                    select.open();
-                    FormEvent::FocusMoved
+                Widget::Select(_) => self.pressed = Some(PressTarget::SelectRow(i)),
+                Widget::Checkbox(_) => self.pressed = Some(PressTarget::Checkbox(i)),
+                Widget::Radio(radio) => {
+                    if let Some(option) = radio.option_at(x, y) {
+                        self.pressed = Some(PressTarget::Radio(i, option));
+                    }
                 },
-                Widget::Checkbox(checkbox) => {
-                    checkbox.toggle();
-                    FormEvent::FieldChanged(id)
-                },
-                Widget::Radio(radio) => match radio.option_at(x, y) {
-                    Some(option) if radio.select_index(option) => FormEvent::FieldChanged(id),
-                    _ => FormEvent::FocusMoved,
-                },
-            };
+            }
             self.set_focus(Focus::Field(i));
             // After `set_focus`, which clears input mode. Placing the caret
-            // where the click landed and then hiding it would be pointless: a
+            // where the press landed and then hiding it would be pointless: a
             // click into a field is intent enough to start typing in it.
             if self.enter_never_submits && self.fields[i].input().is_some() {
                 self.editing = true;
             }
-            return event;
+            return FormEvent::FocusMoved;
         }
 
         FormEvent::Ignored
+    }
+
+    /// The button coming back up. Only a release on the widget the press went
+    /// down on does anything.
+    fn handle_release(&mut self, x: usize, y: usize) -> FormEvent {
+        let Some(pressed) = self.pressed.take() else {
+            return FormEvent::Ignored;
+        };
+        match pressed {
+            PressTarget::Button(i) => {
+                let Some((id, button)) = self.buttons.get(i) else {
+                    return FormEvent::Ignored;
+                };
+                if !button.contains(x, y) {
+                    return FormEvent::Ignored;
+                }
+                FormEvent::ButtonPressed(id.clone())
+            },
+            PressTarget::Checkbox(i) => {
+                if !self.field_row_contains(i, x, y) {
+                    return FormEvent::Ignored;
+                }
+                let field = &mut self.fields[i];
+                let id = field.id.clone();
+                let Some(checkbox) = field.checkbox_mut() else {
+                    return FormEvent::Ignored;
+                };
+                checkbox.toggle();
+                FormEvent::FieldChanged(id)
+            },
+            PressTarget::Radio(i, option) => {
+                let field = &mut self.fields[i];
+                let id = field.id.clone();
+                let Some(radio) = field.radio_mut() else {
+                    return FormEvent::Ignored;
+                };
+                if radio.option_at(x, y) != Some(option) {
+                    return FormEvent::Ignored;
+                }
+                if radio.select_index(option) {
+                    FormEvent::FieldChanged(id)
+                } else {
+                    // Released on the option that was already selected.
+                    FormEvent::Ignored
+                }
+            },
+            PressTarget::SelectRow(i) => {
+                let on_row = self.field_row_contains(i, x, y);
+                let Some(select) = self.fields.get_mut(i).and_then(Field::select_mut) else {
+                    return FormEvent::Ignored;
+                };
+                if select.is_open() {
+                    if !select.row_contains(x, y) {
+                        return FormEvent::Ignored;
+                    }
+                    select.close();
+                } else {
+                    if !on_row {
+                        return FormEvent::Ignored;
+                    }
+                    select.open();
+                }
+                FormEvent::FocusMoved
+            },
+            PressTarget::SelectOption(i, option) => {
+                let field = &mut self.fields[i];
+                let id = field.id.clone();
+                let Some(select) = field.select_mut() else {
+                    return FormEvent::Ignored;
+                };
+                if select.option_at(x, y) != Some(option) {
+                    return FormEvent::Ignored;
+                }
+                select.commit_option(option);
+                FormEvent::FieldChanged(id)
+            },
+        }
+    }
+
+    fn field_row_contains(&self, i: usize, x: usize, y: usize) -> bool {
+        self.fields
+            .get(i)
+            .and_then(|field| field.last_rendered)
+            .map(|rect| rect.contains(x, y))
+            .unwrap_or(false)
     }
 
     /// The field index of the select with an open dropdown, if there is one.
@@ -870,6 +999,20 @@ impl Form {
         for (_, button) in self.buttons.iter_mut() {
             changed |= button.set_hovered(button.contains(x, y));
         }
+        // Checkbox and radio rows follow the pointer too. Without it those are
+        // the only clickable things in a dialog that give no sign of being
+        // clickable at all.
+        for i in 0..self.fields.len() {
+            let on_row = self.field_row_contains(i, x, y);
+            match &mut self.fields[i].widget {
+                Widget::Checkbox(checkbox) => changed |= checkbox.set_hovered(on_row),
+                Widget::Radio(radio) => {
+                    let option = if on_row { radio.option_at(x, y) } else { None };
+                    changed |= radio.set_hovered(option);
+                },
+                _ => {},
+            }
+        }
         if changed {
             FormEvent::FocusMoved
         } else {
@@ -881,6 +1024,13 @@ impl Form {
         let mut changed = false;
         for (_, button) in self.buttons.iter_mut() {
             changed |= button.set_hovered(false);
+        }
+        for field in self.fields.iter_mut() {
+            match &mut field.widget {
+                Widget::Checkbox(checkbox) => changed |= checkbox.set_hovered(false),
+                Widget::Radio(radio) => changed |= radio.set_hovered(None),
+                _ => {},
+            }
         }
         if changed {
             FormEvent::FocusMoved
@@ -931,6 +1081,7 @@ impl Form {
             match &mut field.widget {
                 Widget::Select(select) => select.clear_rendered(),
                 Widget::Radio(radio) => radio.clear_rendered(),
+                Widget::Checkbox(checkbox) => checkbox.clear_rendered(),
                 _ => {},
             }
         }
@@ -1591,7 +1742,7 @@ mod tests {
 
         assert_eq!(form.overlay_rect(), Some(Rect::new(0, 1, 40, 1)));
         assert_eq!(
-            form.handle_mouse(Mouse::LeftClick(1, 0)),
+            click(&mut form, 1, 0),
             FormEvent::FieldChanged("layout".to_string())
         );
         assert_eq!(form.text("layout"), "compact");
@@ -1604,6 +1755,13 @@ mod tests {
         form.handle_key(key(BareKey::Char(' ')));
         form.render(0, 0, 40);
         assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 3)));
+    }
+
+    /// A whole click - press and release on the same spot - the way the host
+    /// sends one.
+    fn click(form: &mut Form, line: isize, column: usize) -> FormEvent {
+        form.handle_mouse(Mouse::LeftClick(line, column));
+        form.handle_mouse(Mouse::Release(line, column))
     }
 
     fn a_form_with_choices() -> Form {
@@ -1649,19 +1807,140 @@ mod tests {
         form.render(0, 0, 40);
 
         assert_eq!(
-            form.handle_mouse(Mouse::LeftClick(0, 0)),
+            click(&mut form, 0, 0),
             FormEvent::FieldChanged("frames".to_string())
         );
         assert!(form.checked("frames"));
 
         assert_eq!(
-            form.handle_mouse(Mouse::LeftClick(1, 14)),
+            click(&mut form, 1, 14),
             FormEvent::FieldChanged("mode".to_string())
         );
         assert_eq!(form.text("mode"), "Two");
         assert_eq!(
-            form.handle_mouse(Mouse::LeftClick(1, 14)),
+            click(&mut form, 1, 14),
+            FormEvent::Ignored,
+            "releasing on the option that is already selected changes nothing"
+        );
+    }
+
+    /// A press is not a click. Everything below goes through `click`, which
+    /// sends both halves the way the host does; these are the cases where the
+    /// two halves disagree.
+    #[test]
+    fn a_press_alone_moves_focus_and_nothing_else() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(0, 0)),
             FormEvent::FocusMoved
+        );
+        assert!(!form.checked("frames"), "the press alone toggled nothing");
+        assert_eq!(form.focused_id(), Some("frames"));
+
+        assert_eq!(
+            form.handle_mouse(Mouse::Release(0, 0)),
+            FormEvent::FieldChanged("frames".to_string())
+        );
+        assert!(form.checked("frames"));
+    }
+
+    #[test]
+    fn releasing_off_the_widget_takes_the_press_back() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+
+        // Pressed on the checkbox, released on the radio row below it.
+        form.handle_mouse(Mouse::LeftClick(0, 0));
+        assert_eq!(form.handle_mouse(Mouse::Release(1, 0)), FormEvent::Ignored);
+        assert!(!form.checked("frames"));
+
+        // And the release does not act on what it landed on either.
+        assert_eq!(form.text("mode"), "One");
+    }
+
+    #[test]
+    fn a_press_dragged_off_a_button_and_back_still_fires() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+        let button_y = form.buttons[0].1.last_rendered().unwrap().y as isize;
+
+        form.handle_mouse(Mouse::LeftClick(button_y, 1));
+        // Off the button, then back onto it: only where the release lands counts.
+        form.handle_mouse(Mouse::Hold(button_y, 30));
+        form.handle_mouse(Mouse::Hold(button_y, 1));
+        assert_eq!(
+            form.handle_mouse(Mouse::Release(button_y, 1)),
+            FormEvent::ButtonPressed("save".to_string())
+        );
+
+        form.handle_mouse(Mouse::LeftClick(button_y, 1));
+        assert_eq!(
+            form.handle_mouse(Mouse::Release(button_y, 30)),
+            FormEvent::Ignored,
+            "released past the end of the button"
+        );
+    }
+
+    #[test]
+    fn a_release_without_a_press_does_nothing() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+        assert_eq!(form.handle_mouse(Mouse::Release(0, 0)), FormEvent::Ignored);
+        assert!(!form.checked("frames"));
+    }
+
+    /// The pointer leaving the pane arrives as buttonless motion, which means
+    /// the button came up somewhere this form never heard about.
+    #[test]
+    fn a_hover_between_press_and_release_cancels_the_press() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+
+        form.handle_mouse(Mouse::LeftClick(0, 0));
+        form.handle_mouse(Mouse::Hover(0, u16::MAX as usize));
+        assert_eq!(form.handle_mouse(Mouse::Release(0, 0)), FormEvent::Ignored);
+        assert!(!form.checked("frames"));
+    }
+
+    #[test]
+    fn a_disabled_button_refuses_the_mouse() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .button("save", Button::new("Save").disabled(true));
+        form.render(0, 0, 40);
+        let button_y = form.buttons[0].1.last_rendered().unwrap().y as isize;
+        assert_eq!(click(&mut form, button_y, 1), FormEvent::Ignored);
+    }
+
+    #[test]
+    fn hovering_highlights_the_choice_row_under_the_pointer() {
+        let mut form = a_form_with_choices();
+        form.render(0, 0, 40);
+
+        assert_eq!(
+            form.handle_mouse(Mouse::Hover(0, 0)),
+            FormEvent::FocusMoved,
+            "the checkbox row took the highlight"
+        );
+        assert_eq!(
+            form.handle_mouse(Mouse::Hover(0, 0)),
+            FormEvent::Ignored,
+            "nothing changed the second time"
+        );
+        assert_eq!(
+            form.handle_mouse(Mouse::Hover(1, 14)),
+            FormEvent::FocusMoved
+        );
+        // The leave sentinel the host sends when the pointer goes elsewhere.
+        assert_eq!(
+            form.handle_mouse(Mouse::Hover(0, u16::MAX as usize)),
+            FormEvent::FocusMoved
+        );
+        assert_eq!(
+            form.handle_mouse(Mouse::Hover(0, u16::MAX as usize)),
+            FormEvent::Ignored
         );
     }
 
