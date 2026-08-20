@@ -1210,19 +1210,16 @@ fn refocusing_a_suppressed_modal_does_not_reveal_the_floating_layer() {
 // baked in here.
 // ---------------------------------------------------------------------------
 
-/// An overlay is positioned against the whole session surface and `reapply_overlay_coordinates`
-/// re-resolves it whenever that surface changes, so a resize should leave it proportional to the
-/// new surface.
+/// An overlay is positioned against the whole session surface and re-resolves whenever that
+/// surface changes, so a resize leaves it proportional to the new surface.
 ///
-/// It does not. `reapply_overlay_coordinates` reads `display_area`, and inside
-/// `Tab::resize_whole_tab_locally` that shared cell is only updated by `tiled_panes.resize()` -
-/// which runs *after* `floating_panes.resize()`. The overlay is therefore re-resolved against the
-/// surface size the terminal had before the resize, and keeps its old width.
-///
-/// This pins the current (wrong) behavior so the refactor's fix shows up as a deliberate flip:
-/// with its own collection, an overlay reapplies once the surface is known.
+/// It used to keep its old width. `FloatingPanes::reapply_overlay_coordinates` ran from inside
+/// `floating_panes.resize()`, and the shared `display_area` cell it reads is only updated by
+/// `tiled_panes.resize()` - which runs after. The overlay was re-resolved against the surface the
+/// terminal had *before* the resize. `OverlayPanes::reapply_coordinates` is called from
+/// `Tab::resize_whole_tab_locally` once the surface is known.
 #[test]
-fn an_overlay_is_re_resolved_against_the_stale_surface_on_resize_today() {
+fn an_overlay_is_re_resolved_against_the_surface_on_resize() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
@@ -1246,12 +1243,7 @@ fn an_overlay_is_re_resolved_against_the_stale_surface_on_resize_today() {
         .get_pane_with_id(PaneId::Terminal(2))
         .expect("TEST")
         .position_and_size();
-    assert_eq!(
-        after.cols.as_usize(),
-        48,
-        "today the overlay is re-resolved against the pre-resize surface; after the refactor \
-         this is 72 (60% of the new 120 columns)"
-    );
+    assert_eq!(after.cols.as_usize(), 72, "60% of the new 120 columns");
     assert!(
         screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)),
         "and it is still an overlay afterwards"
