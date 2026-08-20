@@ -692,24 +692,30 @@ impl State {
     /// on. Unlike dobbs there is no setting to point at — `rg` and `sed` are
     /// looked up on PATH — so the only useful thing to say is which one is
     /// missing and that hunting for it is not on the table.
-    fn file_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
+    fn project_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
         let head = self.pending.front()?;
-        if !tools::FILE_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
+        if !tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
             return None;
         }
         if !String::from_utf8_lossy(stderr).contains("os error 2") {
             return None;
         }
-        let binary = if head.name == "read_file" {
-            "sed"
+        let binary = match head.name.as_str() {
+            "read_file" => "sed",
+            "find_files" | "search_files" => "rg",
+            "git_log" | "git_show" => "git",
+            "github_read" => "gh",
+            _ => return None,
+        };
+        let install = if binary == "rg" {
+            " — ripgrep provides rg"
         } else {
-            "rg"
+            ""
         };
         Some(format!(
-            "{binary} could not be run: it is not installed or not on PATH.\n\n\
-             Tell the user to install it — ripgrep provides rg. You have no other way to \
-             reach these files, so do not try other commands, and do not ask a pane to run \
-             one on your behalf."
+            "{binary} could not be run: it is not installed or not on PATH{install}.\n\n\
+             Tell the user this; do not try other commands, and do not ask a pane to run one \
+             on your behalf."
         ))
     }
 
@@ -722,7 +728,7 @@ impl State {
     /// The listing is cut to the call's line cap before `MAX_TOOL_OUTPUT` gets
     /// near it, so a search of a large repository comes back as a usable head of
     /// the matches with a count, rather than 40 000 bytes ending mid-line.
-    fn file_tool_result(
+    fn project_tool_result(
         head: &ToolCall,
         exit_code: Option<i32>,
         stdout: &[u8],
@@ -733,10 +739,16 @@ impl State {
         let stderr = String::from_utf8_lossy(stderr);
         let stderr = stderr.trim();
 
-        if exit_code == Some(1) && stdout.is_empty() && stderr.is_empty() {
+        if tools::FILE_TOOLS.contains(&head.name.as_str())
+            && exit_code == Some(1)
+            && stdout.is_empty()
+            && stderr.is_empty()
+        {
             return "no matches".to_owned();
         }
-        if exit_code != Some(0) && exit_code != Some(1) {
+        let successful = exit_code == Some(0)
+            || tools::FILE_TOOLS.contains(&head.name.as_str()) && exit_code == Some(1);
+        if !successful {
             let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
             if !stderr.is_empty() {
                 result.push_str(&format!(
@@ -747,12 +759,18 @@ impl State {
             return result;
         }
         if stdout.is_empty() {
-            // `sed` on an empty range, or a start_line past the end of the file.
-            return "no lines".to_owned();
+            return if head.name == "read_file" {
+                // `sed` on an empty range, or a start_line past the end of the file.
+                "no lines".to_owned()
+            } else {
+                "no output".to_owned()
+            };
         }
 
-        let cap = tools::Args::parse(&head.arguments)
-            .ok()
+        let cap = tools::FILE_TOOLS
+            .contains(&head.name.as_str())
+            .then(|| tools::Args::parse(&head.arguments).ok())
+            .flatten()
             .and_then(|args| tools::file_line_cap(&head.name, &args));
         let total = stdout.lines().count();
         let mut result = match cap {
@@ -810,11 +828,11 @@ impl State {
         // conversation: say which binary, and which setting names it.
         let result = match self
             .slack_exec_hint(exit_code, stderr)
-            .or_else(|| self.file_exec_hint(exit_code, stderr))
+            .or_else(|| self.project_exec_hint(exit_code, stderr))
         {
             Some(hint) => hint,
-            None if tools::FILE_TOOLS.contains(&head.name.as_str()) => {
-                Self::file_tool_result(head, exit_code, stdout, stderr)
+            None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
+                Self::project_tool_result(head, exit_code, stdout, stderr)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));

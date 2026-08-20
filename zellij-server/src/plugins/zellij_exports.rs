@@ -282,9 +282,20 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     PluginCommand::SwitchTabTo(tab_index) => switch_tab_to(env, tab_index),
                     PluginCommand::SetTimeout(seconds) => set_timeout(env, seconds),
                     PluginCommand::ExecCmd(command_line) => exec_cmd(env, command_line),
-                    PluginCommand::RunCommand(command_line, env_variables, cwd, context) => {
-                        run_command(env, command_line, env_variables, cwd, context)
-                    },
+                    PluginCommand::RunCommand(
+                        command_line,
+                        env_variables,
+                        cwd,
+                        context,
+                        max_output_bytes,
+                    ) => run_command(
+                        env,
+                        command_line,
+                        env_variables,
+                        cwd,
+                        context,
+                        max_output_bytes,
+                    ),
                     PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
                         web_request(env, url, verb, headers, body, context, stream_id)
                     },
@@ -2868,6 +2879,7 @@ fn run_command(
     env_variables: BTreeMap<String, String>,
     cwd: PathBuf,
     context: BTreeMap<String, String>,
+    max_output_bytes: Option<usize>,
 ) {
     if command_line.is_empty() {
         log::error!("Command cannot be empty");
@@ -2884,6 +2896,7 @@ fn run_command(
                 env_variables,
                 cwd,
                 context,
+                max_output_bytes,
             ));
     }
 }

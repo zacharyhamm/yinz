@@ -49,6 +49,80 @@ struct ActiveWebRequestStream {
     context: BTreeMap<String, String>,
 }
 
+const OUTPUT_TRUNCATED: &[u8] = b"\n[truncated]";
+
+async fn read_command_stream<R>(
+    mut stream: R,
+    max_output_bytes: Option<usize>,
+) -> std::io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = vec![];
+    let mut buffer = [0; 8192];
+    let mut truncated = false;
+    loop {
+        let read = tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        match max_output_bytes {
+            Some(limit) => {
+                let keep = limit.saturating_sub(output.len()).min(read);
+                output.extend_from_slice(&buffer[..keep]);
+                truncated |= keep < read;
+            },
+            None => output.extend_from_slice(&buffer[..read]),
+        }
+    }
+    if truncated {
+        let limit = max_output_bytes.unwrap_or_default();
+        output.truncate(limit.saturating_sub(OUTPUT_TRUNCATED.len()));
+        output.extend_from_slice(&OUTPUT_TRUNCATED[..OUTPUT_TRUNCATED.len().min(limit)]);
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod command_output_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn bounded_command_output_is_truncated_and_drained() {
+        let (mut writer, reader) = tokio::io::duplex(8);
+        let write = tokio::spawn(async move {
+            writer.write_all(&vec![b'x'; 100_000]).await.unwrap();
+        });
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_command_stream(reader, Some(40)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        write.await.unwrap();
+
+        assert_eq!(output.len(), 40);
+        assert!(output.ends_with(OUTPUT_TRUNCATED));
+    }
+
+    #[tokio::test]
+    async fn unbounded_command_output_is_unchanged() {
+        let (mut writer, reader) = tokio::io::duplex(8);
+        let write = tokio::spawn(async move {
+            writer.write_all(b"complete output").await.unwrap();
+        });
+
+        assert_eq!(
+            read_command_stream(reader, None).await.unwrap(),
+            b"complete output"
+        );
+        write.await.unwrap();
+    }
+}
+
 #[derive(Default)]
 struct WebRequestStreamState {
     response_sent: bool,
@@ -71,7 +145,8 @@ pub enum BackgroundJob {
         BTreeMap<String, String>,
         PathBuf,
         BTreeMap<String, String>,
-    ), // command, args, env_variables, cwd, context
+        Option<usize>,
+    ), // command, args, env_variables, cwd, context, max_output_bytes
     WebRequest(
         PluginId,
         ClientId,
@@ -382,24 +457,37 @@ pub(crate) fn background_jobs_main(
                 env_variables,
                 cwd,
                 context,
+                max_output_bytes,
             ) => {
                 runtime.spawn({
                     let senders = bus.senders.clone();
                     async move {
-                        let output = tokio::process::Command::new(&command)
-                            .args(&args)
-                            .envs(env_variables)
-                            .current_dir(cwd)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .output()
-                            .await;
+                        let output = async {
+                            let mut child = tokio::process::Command::new(&command)
+                                .args(&args)
+                                .envs(env_variables)
+                                .current_dir(cwd)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()?;
+                            let stdout = child.stdout.take().ok_or_else(|| {
+                                std::io::Error::other("command stdout was not piped")
+                            })?;
+                            let stderr = child.stderr.take().ok_or_else(|| {
+                                std::io::Error::other("command stderr was not piped")
+                            })?;
+                            let (stdout, stderr, status) = tokio::join!(
+                                read_command_stream(stdout, max_output_bytes),
+                                read_command_stream(stderr, max_output_bytes),
+                                child.wait(),
+                            );
+                            Ok::<_, std::io::Error>((status?, stdout?, stderr?))
+                        }
+                        .await;
                         match output {
-                            Ok(output) => {
-                                let stdout = output.stdout.to_vec();
-                                let stderr = output.stderr.to_vec();
-                                let exit_code = output.status.code();
+                            Ok((status, stdout, stderr)) => {
+                                let exit_code = status.code();
                                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
                                     Some(plugin_id),
                                     Some(client_id),

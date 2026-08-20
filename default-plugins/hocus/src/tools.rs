@@ -1072,6 +1072,41 @@ pub fn specs() -> Value {
                 "required": ["path"],
             }),
         ),
+        tool(
+            "git_log",
+            "Active project history.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "before_commit": { "type": "string" },
+                    "max_results": { "type": "integer" },
+                },
+            }),
+        ),
+        tool(
+            "git_show",
+            "Active project git_log commit.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "commit": { "type": "string" },
+                    "path": { "type": "string" },
+                    "patch": { "type": "boolean" },
+                },
+                "required": ["commit"],
+            }),
+        ),
+        tool(
+            "github_read",
+            "Active project GitHub; GET only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "endpoint": { "type": "string" },
+                },
+            }),
+        ),
     ])
 }
 
@@ -1353,6 +1388,11 @@ pub struct Args {
     pub max_results: Option<usize>,
     pub start_line: Option<usize>,
     pub line_count: Option<usize>,
+    // Read-only repository tools.
+    pub before_commit: Option<String>,
+    pub commit: Option<String>,
+    pub patch: bool,
+    pub endpoint: Option<String>,
 }
 
 impl Args {
@@ -1657,6 +1697,15 @@ pub fn slack_argv(name: &str, args: &Args) -> Result<Vec<String>, String> {
 /// `/tmp` — and a project root is none of those, so `std::fs` cannot open a file
 /// in the user's checkout at all. These shell out the way the Slack tools do.
 pub const FILE_TOOLS: [&str; 3] = ["find_files", "search_files", "read_file"];
+pub const GIT_TOOLS: [&str; 2] = ["git_log", "git_show"];
+pub const PROJECT_READ_TOOLS: [&str; 6] = [
+    "find_files",
+    "search_files",
+    "read_file",
+    "git_log",
+    "git_show",
+    "github_read",
+];
 
 /// How many lines of a listing or a search reach the model before the rest is
 /// dropped. `read_file` is exempt: its length is what the caller asked for.
@@ -1796,6 +1845,141 @@ pub fn file_argv(name: &str, args: &Args, target: &str) -> Result<Vec<String>, S
         },
         other => Err(format!("no such tool: {other}")),
     }
+}
+
+/// A Git history call as a fixed argv. Git receives neither an arbitrary
+/// subcommand nor an option-shaped revision, and every optional path has
+/// already passed `resolve_in_root`.
+pub fn git_argv(
+    name: &str,
+    args: &Args,
+    project: &Project,
+    target: &str,
+) -> Result<Vec<String>, String> {
+    let mut argv = vec![
+        "git".to_owned(),
+        "-C".to_owned(),
+        project.root.clone(),
+        "--no-pager".to_owned(),
+    ];
+    match name {
+        "git_log" => {
+            let max = args.max_results.unwrap_or(100).clamp(1, 500);
+            argv.extend([
+                "log".to_owned(),
+                "--no-color".to_owned(),
+                "--date=iso-strict".to_owned(),
+                "--format=%H%x09%aI%x09%an%x09%s".to_owned(),
+                format!("--max-count={max}"),
+            ]);
+            if let Some(commit) = args.before_commit.as_deref() {
+                argv.push("--skip=1".to_owned());
+                argv.push("--end-of-options".to_owned());
+                argv.push(commit_id(commit)?.to_owned());
+            }
+        },
+        "git_show" => {
+            let commit = args
+                .commit
+                .as_deref()
+                .ok_or_else(|| "commit is required".to_owned())?;
+            let commit = commit_id(commit)?;
+            argv.extend([
+                "show".to_owned(),
+                "--no-color".to_owned(),
+                "--no-ext-diff".to_owned(),
+                "--no-textconv".to_owned(),
+                "--format=fuller".to_owned(),
+                if args.patch { "--patch" } else { "--no-patch" }.to_owned(),
+                "--stat".to_owned(),
+                "--end-of-options".to_owned(),
+                commit.to_owned(),
+            ]);
+        },
+        other => return Err(format!("no such tool: {other}")),
+    }
+    argv.push("--".to_owned());
+    argv.push(target.to_owned());
+    Ok(argv)
+}
+
+fn commit_id(commit: &str) -> Result<&str, String> {
+    let commit = commit.trim();
+    if (4..=64).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(commit)
+    } else {
+        Err("commit must be a 4-64 character hexadecimal hash from git_log".to_owned())
+    }
+}
+
+/// Turn the common Git remote spellings into the repository identity `gh`
+/// needs. The host is kept so GitHub Enterprise works the same way.
+pub fn github_repository(remote: Option<&str>) -> Result<(String, String, String), String> {
+    let remote = remote
+        .map(str::trim)
+        .filter(|remote| !remote.is_empty())
+        .ok_or("the active project has no Git remote for github_read")?;
+    let (host, path) = if let Some((_, rest)) = remote.split_once("://") {
+        let (authority, path) = rest
+            .split_once('/')
+            .ok_or("the active project's Git remote is not a repository URL")?;
+        (authority.rsplit('@').next().unwrap_or(authority), path)
+    } else if let Some((authority, path)) = remote.split_once(':') {
+        if authority.contains('@') && !authority.contains('/') {
+            (authority.rsplit('@').next().unwrap_or(authority), path)
+        } else {
+            return Err(
+                "the active project's Git remote is not a GitHub repository URL".to_owned(),
+            );
+        }
+    } else {
+        let (host, path) = remote
+            .split_once('/')
+            .ok_or("the active project's Git remote is not a GitHub repository URL")?;
+        (host, path)
+    };
+    let parts: Vec<&str> = path
+        .trim_matches('/')
+        .strip_suffix(".git")
+        .unwrap_or(path.trim_matches('/'))
+        .split('/')
+        .collect();
+    if host.is_empty() || parts.len() != 2 || parts.iter().any(|part| part.is_empty()) {
+        return Err("the active project's Git remote is not a GitHub repository URL".to_owned());
+    }
+    Ok((host.to_owned(), parts[0].to_owned(), parts[1].to_owned()))
+}
+
+pub fn github_argv(args: &Args, project: &Project) -> Result<Vec<String>, String> {
+    let (host, owner, repository) = github_repository(project.remote.as_deref())?;
+    let endpoint = args.endpoint.as_deref().unwrap_or_default().trim();
+    if endpoint.contains("://") || endpoint.chars().any(char::is_control) {
+        return Err("endpoint must be a repository-relative REST path".to_owned());
+    }
+    let endpoint = endpoint.trim_matches('/');
+    let route = endpoint.split('?').next().unwrap_or_default();
+    if route.contains('%')
+        || route.contains('\\')
+        || route
+            .split('/')
+            .any(|part| matches!(part, "." | "..") || part.is_empty() && !route.is_empty())
+    {
+        return Err("endpoint must not contain empty, . or .. path components".to_owned());
+    }
+    let endpoint = if endpoint.is_empty() {
+        format!("repos/{owner}/{repository}")
+    } else {
+        format!("repos/{owner}/{repository}/{endpoint}")
+    };
+    Ok(vec![
+        "gh".to_owned(),
+        "api".to_owned(),
+        "--method".to_owned(),
+        "GET".to_owned(),
+        "--hostname".to_owned(),
+        host,
+        endpoint,
+    ])
 }
 
 /// A bare name is matched anywhere in the path, a glob is left as written.
