@@ -5,10 +5,28 @@
 //! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
 use crate::{flags, metadata, WorkspaceMember};
 use anyhow::Context;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use xshell::{cmd, Shell};
+
+const PLUGIN_INPUT_DIRS: &[&str] = &[
+    "default-plugins",
+    "zellij-tile/src",
+    "zellij-tile-utils/src",
+    "zellij-utils/src",
+    "zellij-utils/assets",
+];
+
+const PLUGIN_INPUT_FILES: &[&str] = &[
+    ".cargo/config.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "zellij-tile/Cargo.toml",
+    "zellij-tile-utils/Cargo.toml",
+    "zellij-utils/Cargo.toml",
+];
 
 /// Build members of the zellij workspace.
 ///
@@ -30,11 +48,11 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
     // [1]: https://github.com/zellij-org/zellij/pull/2711#issuecomment-1695015818
     run_proto_codegen(sh, false);
 
-    // Build all plugins in a single invocation so Cargo can unify transitive dependency
-    // features across all of them and compile shared crates (e.g. zellij-utils) only once.
-    let build_plugins =
-        !flags.no_plugins && (flags.release || plugins_force() || plugin_sources_changed());
-    if build_plugins {
+    if flags.release && !flags.no_plugins {
+        ensure_plugin_assets(sh)?;
+    } else if !flags.no_plugins && (plugins_force() || plugin_sources_changed()) {
+        // Build all plugins in a single invocation so Cargo can unify transitive dependency
+        // features across all of them and compile shared crates (e.g. zellij-utils) only once.
         let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
             .iter()
             .filter(|m| m.build && m.crate_name.contains("plugins"))
@@ -46,16 +64,12 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
             crate::status(msg);
             eprintln!("{}", msg);
 
-            if flags.release {
-                build_plugins_release_into_assets(sh, &plugin_members)?;
-            } else {
-                let mut base_cmd = cmd!(sh, "{cargo} build --target wasm32-wasip1");
-                for member in &plugin_members {
-                    base_cmd = base_cmd.args(["-p", plugin_name_of(member)?]);
-                }
-                base_cmd.run().context("failed to build plugins")?;
-                write_plugin_stamp(sh);
+            let mut base_cmd = cmd!(sh, "{cargo} build --target wasm32-wasip1");
+            for member in &plugin_members {
+                base_cmd = base_cmd.args(["-p", plugin_name_of(member)?]);
             }
+            base_cmd.run().context("failed to build plugins")?;
+            write_plugin_stamp(sh);
         }
     } else if !flags.no_plugins {
         let msg = ">> Plugins unchanged since last build, skipping (set ZELLIJ_FORCE_PLUGINS=1 to rebuild)";
@@ -119,38 +133,70 @@ fn plugin_asset_path(plugin_name: &str) -> PathBuf {
         .with_extension("wasm")
 }
 
-/// Hashes the content of every plugin source file, so staleness reflects actual content
-/// rather than filesystem mtimes (which git does not preserve across checkout/rebase/worktree
-/// operations, causing spurious "changed" detections with an mtime-based comparison).
-fn hash_plugin_sources() -> Option<u64> {
+/// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
+/// cause rebuilds while dependency, toolchain and build-flag changes still do.
+fn hash_plugin_inputs() -> Option<String> {
     let root = crate::project_root();
-    // zellij-utils/src is in here because plugins depend on it through zellij-tile: changing eg.
-    // an `Action` variant in it invalidates the built wasm just as much as touching a plugin
-    // source. It is scoped to src/ on purpose - zellij-utils/assets/plugins holds the built wasm
-    // we are comparing against, and including it would make the assets permanently stale
+    let mut hasher = hash_plugin_files(&root)?;
+
+    let cargo = crate::cargo().ok()?;
+    for program in [cargo, PathBuf::from("rustc")] {
+        let output = Command::new(program).arg("-vV").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        hasher.update(output.stdout);
+    }
+
+    let mut environment: Vec<_> = std::env::vars_os()
+        .filter(|(key, _)| {
+            let key = key.to_string_lossy();
+            key.starts_with("RUST")
+                || key.starts_with("CARGO_BUILD_")
+                || key.starts_with("CARGO_PROFILE_")
+                || key.starts_with("CARGO_TARGET_WASM32_WASIP1_")
+                || key == "CARGO"
+                || key == "CARGO_ENCODED_RUSTFLAGS"
+        })
+        .collect();
+    environment.sort();
+    for (key, value) in environment {
+        hasher.update(key.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(value.to_string_lossy().as_bytes());
+        hasher.update([0]);
+    }
+
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+fn hash_plugin_files(root: &Path) -> Option<Sha256> {
     let mut files = vec![];
-    for dir in [
-        "default-plugins",
-        "zellij-tile",
-        "zellij-tile-utils",
-        "zellij-utils/src",
-    ] {
+    for dir in PLUGIN_INPUT_DIRS {
         collect_files(&root.join(dir), &mut files);
     }
+    files.extend(PLUGIN_INPUT_FILES.iter().map(|path| root.join(path)));
     if files.is_empty() {
         return None;
     }
-    // Sort for a deterministic hash independent of directory iteration order.
     files.sort();
+    files.dedup();
 
-    let mut hasher = DefaultHasher::new();
-    for path in &files {
-        path.strip_prefix(&root).unwrap_or(path).hash(&mut hasher);
-        if let Ok(contents) = std::fs::read(path) {
-            contents.hash(&mut hasher);
-        }
+    let mut hasher = Sha256::new();
+    for path in files {
+        let relative = path.strip_prefix(root).ok()?;
+        hasher.update(relative.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(std::fs::read(path).ok()?);
+        hasher.update([0]);
     }
-    Some(hasher.finish())
+    Some(hasher)
 }
 
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -165,16 +211,24 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
             Err(_) => continue,
         };
         if file_type.is_dir() {
-            if path
-                .file_name()
-                .map(|name| name == "target")
-                .unwrap_or(false)
+            let name = path.file_name().and_then(|name| name.to_str());
+            if matches!(name, Some("benches" | "target" | "tests" | "unit"))
+                || path.ends_with("zellij-utils/assets/plugins")
             {
                 continue;
             }
             collect_files(&path, out);
         } else {
-            out.push(path);
+            let name = path.file_name().and_then(|name| name.to_str());
+            if !matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("md" | "snap")
+            ) && !matches!(name, Some(".gitignore" | "test.rs"))
+                && !name
+                    .is_some_and(|name| name.ends_with("_test.rs") || name.ends_with("_tests.rs"))
+            {
+                out.push(path);
+            }
         }
     }
 }
@@ -224,7 +278,7 @@ fn build_plugins_release_into_assets(
     base_cmd.run().context("failed to build plugin assets")?;
 
     for member in plugin_members {
-        move_plugin_to_assets(sh, plugin_name_of(member)?)?;
+        move_plugin_to_assets(plugin_name_of(member)?)?;
     }
     write_release_plugin_stamp(sh);
     Ok(())
@@ -247,14 +301,14 @@ fn release_plugin_stamp_path() -> PathBuf {
 }
 
 fn write_plugin_stamp(sh: &Shell) {
-    if let Some(hash) = hash_plugin_sources() {
-        let _ = sh.write_file(plugin_stamp_path(), hash.to_string());
+    if let Some(hash) = hash_plugin_inputs() {
+        let _ = sh.write_file(plugin_stamp_path(), hash);
     }
 }
 
 fn write_release_plugin_stamp(sh: &Shell) {
-    if let Some(hash) = hash_plugin_sources() {
-        let _ = sh.write_file(release_plugin_stamp_path(), hash.to_string());
+    if let Some(hash) = hash_plugin_inputs() {
+        let _ = sh.write_file(release_plugin_stamp_path(), hash);
     }
 }
 
@@ -271,8 +325,8 @@ fn sources_changed_since(stamp_path: &Path) -> bool {
         Ok(contents) => contents,
         Err(_) => return true,
     };
-    match hash_plugin_sources() {
-        Some(current_hash) => stamp_hash != current_hash.to_string(),
+    match hash_plugin_inputs() {
+        Some(current_hash) => stamp_hash != current_hash,
         None => true,
     }
 }
@@ -349,7 +403,7 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
     }
 }
 
-fn move_plugin_to_assets(sh: &Shell, plugin_name: &str) -> anyhow::Result<()> {
+fn move_plugin_to_assets(plugin_name: &str) -> anyhow::Result<()> {
     let err_context = || format!("failed to move plugin '{plugin_name}' to assets folder");
 
     // Get asset path
@@ -370,8 +424,67 @@ fn move_plugin_to_assets(sh: &Shell, plugin_name: &str) -> anyhow::Result<()> {
             .with_context(err_context);
     }
 
-    // This is a plugin we want to move
     let from = plugin.as_path();
     let to = asset_name.as_path();
-    sh.copy_file(from, to).with_context(err_context)
+    let bytes = std::fs::read(from).with_context(err_context)?;
+    if std::fs::read(to).ok().as_deref() == Some(bytes.as_slice()) {
+        return Ok(());
+    }
+    std::fs::write(to, bytes).with_context(err_context)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, FileTimes, OpenOptions};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn plugin_file_hash_tracks_build_inputs_not_mtimes_or_tests() {
+        let root = std::env::temp_dir().join(format!(
+            "zellij-xtask-plugin-inputs-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for dir in PLUGIN_INPUT_DIRS {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in PLUGIN_INPUT_FILES {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), file).unwrap();
+        }
+
+        let source = root.join("default-plugins/example/src/main.rs");
+        let test = root.join("default-plugins/example/tests/plugin.rs");
+        let adjacent_test = root.join("default-plugins/example/src/main_test.rs");
+        let readme = root.join("default-plugins/example/README.md");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(test.parent().unwrap()).unwrap();
+        fs::write(&source, "fn main() {}\n").unwrap();
+        fs::write(&test, "test\n").unwrap();
+        fs::write(&adjacent_test, "test\n").unwrap();
+        fs::write(&readme, "docs\n").unwrap();
+
+        let original = hash_plugin_files(&root).unwrap().finalize();
+        OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(original, hash_plugin_files(&root).unwrap().finalize());
+
+        fs::write(&test, "changed test\n").unwrap();
+        fs::write(&adjacent_test, "changed test\n").unwrap();
+        fs::write(&readme, "changed docs\n").unwrap();
+        assert_eq!(original, hash_plugin_files(&root).unwrap().finalize());
+
+        fs::write(&source, "fn main() { println!(\"changed\"); }\n").unwrap();
+        assert_ne!(original, hash_plugin_files(&root).unwrap().finalize());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
