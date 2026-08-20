@@ -2930,6 +2930,21 @@ pub struct CommandToRun {
     pub remote_default_shell: bool,
 }
 
+/// Git setup Zellij performs before opening a command pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCheckout {
+    Current,
+    NewBranch {
+        branch: String,
+        base: String,
+    },
+    NewWorktree {
+        branch: String,
+        base: String,
+        path: PathBuf,
+    },
+}
+
 impl CommandToRun {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         CommandToRun {
@@ -3824,6 +3839,7 @@ pub enum PluginCommand {
     TogglePaneBorderless(PaneId),
     SetPaneBorderless(PaneId, bool),
     OpenCommandPaneNearPlugin(CommandToRun, Context),
+    OpenCommandPaneInGitCheckoutNearPlugin(CommandToRun, PathBuf, GitCheckout),
     OpenTerminalNearPlugin(FileToOpen),
     OpenTerminalFloatingNearPlugin(FileToOpen, Option<FloatingPaneCoordinates>),
     OpenTerminalInPlaceOfPlugin(FileToOpen, bool), // bool -> close_plugin_after_replace
@@ -4081,6 +4097,7 @@ pub type OpenCommandPaneResponse = Option<PaneId>;
 pub type OpenCommandPaneFloatingResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceResponse = Option<PaneId>;
 pub type OpenCommandPaneNearPluginResponse = Option<PaneId>;
+pub type OpenCommandPaneInGitCheckoutResponse = Result<PaneId, String>;
 pub type OpenCommandPaneFloatingNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceOfPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneBackgroundResponse = Option<PaneId>;

@@ -20,10 +20,11 @@ pub use super::generated_api::api::{
         get_pane_cwd_response, get_pane_pid_response, get_pane_running_command_response,
         get_session_list_response, hide_floating_panes_response,
         highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
-        new_tab_response, new_tab_unfocused_response, parse_layout_response,
-        plugin_command::Payload, rename_layout_response, save_layout_response,
-        save_session_response, show_floating_panes_response, warp_pane_response,
-        AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
+        new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
+        open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
+        rename_layout_response, save_layout_response, save_session_response,
+        show_floating_panes_response, warp_pane_response, AdoptOrphanedPanePayload,
+        BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -83,17 +84,20 @@ pub use super::generated_api::api::{
         ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
         ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
         LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
-        MovePaneWithPaneIdPayload, MovePayload, NewPluginArgs as ProtobufNewPluginArgs,
-        NewTabPayload, NewTabResponse as ProtobufNewTabResponse, NewTabUnfocusedPayload,
+        MovePaneWithPaneIdPayload, MovePayload, NewBranchGitCheckout,
+        NewPluginArgs as ProtobufNewPluginArgs, NewTabPayload,
+        NewTabResponse as ProtobufNewTabResponse, NewTabUnfocusedPayload,
         NewTabUnfocusedResponse as ProtobufNewTabUnfocusedResponse,
         NewTabsResponse as ProtobufNewTabsResponse, NewTabsWithLayoutInfoPayload,
         NewTiledPaneInTabPayload, NewTiledPaneInTabResponse as ProtobufNewTiledPaneInTabResponse,
+        NewWorktreeGitCheckout, NotificationInfo as ProtobufNotificationInfo,
         NotifyWithPanePayload,
-        NotificationInfo as ProtobufNotificationInfo,
         OpenCommandPaneBackgroundResponse as ProtobufOpenCommandPaneBackgroundResponse,
         OpenCommandPaneFloatingNearPluginPayload,
         OpenCommandPaneFloatingNearPluginResponse as ProtobufOpenCommandPaneFloatingNearPluginResponse,
         OpenCommandPaneFloatingResponse as ProtobufOpenCommandPaneFloatingResponse,
+        OpenCommandPaneInGitCheckoutPayload,
+        OpenCommandPaneInGitCheckoutResponse as ProtobufOpenCommandPaneInGitCheckoutResponse,
         OpenCommandPaneInPlaceOfPaneIdPayload,
         OpenCommandPaneInPlaceOfPaneIdResponse as ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
         OpenCommandPaneInPlaceOfPluginPayload,
@@ -172,12 +176,12 @@ use crate::data::{
     DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
     DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates,
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, GetSessionListResponse, HighlightLayer, HighlightStyle,
-    HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse, ListOrphanedPanesResponse,
-    MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo, OrphanedPane, PaneId,
-    PermissionType, PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
-    WarpPlacement,
+    GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
+    HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
+    ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
+    OpenCommandPaneInGitCheckoutResponse, OrphanedPane, PaneId, PermissionType, PluginCommand,
+    RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit,
+    SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -844,6 +848,45 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     }
                 },
                 _ => Err("Mismatched payload for OpenCommandPane"),
+            },
+            Some(CommandName::OpenCommandPaneInGitCheckoutNearPlugin) => {
+                match protobuf_plugin_command.payload {
+                    Some(Payload::OpenCommandPaneInGitCheckoutPayload(payload)) => {
+                        let command = payload
+                            .command_to_run
+                            .ok_or("Malformed git checkout command pane payload")?
+                            .try_into()?;
+                        let checkout = match payload.checkout {
+                            Some(open_command_pane_in_git_checkout_payload::Checkout::Current(
+                                _,
+                            )) => GitCheckout::Current,
+                            Some(
+                                open_command_pane_in_git_checkout_payload::Checkout::NewBranch(
+                                    setup,
+                                ),
+                            ) => GitCheckout::NewBranch {
+                                branch: setup.branch,
+                                base: setup.base,
+                            },
+                            Some(
+                                open_command_pane_in_git_checkout_payload::Checkout::NewWorktree(
+                                    setup,
+                                ),
+                            ) => GitCheckout::NewWorktree {
+                                branch: setup.branch,
+                                base: setup.base,
+                                path: setup.path.into(),
+                            },
+                            None => return Err("Missing git checkout mode"),
+                        };
+                        Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+                            command,
+                            payload.source_directory.into(),
+                            checkout,
+                        ))
+                    },
+                    _ => Err("Mismatched payload for OpenCommandPaneInGitCheckoutNearPlugin"),
+                }
             },
             Some(CommandName::OpenCommandPaneFloating) => match protobuf_plugin_command.payload {
                 Some(Payload::OpenCommandPaneFloatingPayload(command_to_run_payload)) => {
@@ -3182,6 +3225,43 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         floating_pane_coordinates: None,
                         context,
                     })),
+                })
+            },
+            PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+                command_to_run,
+                source_directory,
+                checkout,
+            ) => {
+                let checkout = match checkout {
+                    GitCheckout::Current => {
+                        open_command_pane_in_git_checkout_payload::Checkout::Current(
+                            Default::default(),
+                        )
+                    },
+                    GitCheckout::NewBranch { branch, base } => {
+                        open_command_pane_in_git_checkout_payload::Checkout::NewBranch(
+                            NewBranchGitCheckout { branch, base },
+                        )
+                    },
+                    GitCheckout::NewWorktree { branch, base, path } => {
+                        open_command_pane_in_git_checkout_payload::Checkout::NewWorktree(
+                            NewWorktreeGitCheckout {
+                                branch,
+                                base,
+                                path: path.display().to_string(),
+                            },
+                        )
+                    },
+                };
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::OpenCommandPaneInGitCheckoutNearPlugin as i32,
+                    payload: Some(Payload::OpenCommandPaneInGitCheckoutPayload(
+                        OpenCommandPaneInGitCheckoutPayload {
+                            command_to_run: Some(command_to_run.try_into()?),
+                            source_directory: source_directory.display().to_string(),
+                            checkout: Some(checkout),
+                        },
+                    )),
                 })
             },
             PluginCommand::OpenCommandPaneFloating(
@@ -5737,6 +5817,40 @@ impl From<OpenCommandPaneResponse> for ProtobufOpenCommandPaneResponse {
     }
 }
 
+impl From<OpenCommandPaneInGitCheckoutResponse> for ProtobufOpenCommandPaneInGitCheckoutResponse {
+    fn from(response: OpenCommandPaneInGitCheckoutResponse) -> Self {
+        let result = match response {
+            Ok(pane_id) => open_command_pane_in_git_checkout_response::Result::PaneId(
+                pane_id.try_into().unwrap(),
+            ),
+            Err(error) => open_command_pane_in_git_checkout_response::Result::Error(error),
+        };
+        Self {
+            result: Some(result),
+        }
+    }
+}
+
+impl TryFrom<ProtobufOpenCommandPaneInGitCheckoutResponse>
+    for OpenCommandPaneInGitCheckoutResponse
+{
+    type Error = &'static str;
+
+    fn try_from(
+        response: ProtobufOpenCommandPaneInGitCheckoutResponse,
+    ) -> Result<Self, Self::Error> {
+        match response.result {
+            Some(open_command_pane_in_git_checkout_response::Result::PaneId(pane_id)) => {
+                Ok(Ok(pane_id.try_into()?))
+            },
+            Some(open_command_pane_in_git_checkout_response::Result::Error(error)) => {
+                Ok(Err(error))
+            },
+            None => Err("OpenCommandPaneInGitCheckoutResponse without a result"),
+        }
+    }
+}
+
 impl TryFrom<ProtobufOpenCommandPaneFloatingResponse> for OpenCommandPaneFloatingResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufOpenCommandPaneFloatingResponse) -> Result<Self, Self::Error> {
@@ -6049,7 +6163,27 @@ impl From<SearchHit> for ProtobufSearchHit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{GlobalPaneEdge, GlobalPanePlacement, PluginCommand};
+    use crate::data::{
+        CommandToRun, GitCheckout, GlobalPaneEdge, GlobalPanePlacement, PluginCommand,
+    };
+
+    #[test]
+    fn git_checkout_command_survives_the_wire() {
+        let command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+            CommandToRun::new("codex"),
+            PathBuf::from("/work/project"),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        );
+        let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
+        let decoded: PluginCommand = protobuf.try_into().unwrap();
+        assert!(matches!(decoded,
+            PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path })
+            if source == PathBuf::from("/work/project") && branch == "topic" && base == "main" && path == PathBuf::from(".worktrees/topic")));
+    }
 
     #[test]
     fn notifications_with_and_without_panes_survive_the_wire() {

@@ -240,6 +240,7 @@ enum CommandName {
   GetPluginAliasConfiguration = 247;
   SetTabProjects = 248;
   RevealPaneWithId = 249;
+  OpenCommandPaneInGitCheckoutNearPlugin = 251;
 }
 
 message PluginCommand {
@@ -420,6 +421,37 @@ message PluginCommand {
     SetTabProjectsPayload set_tab_projects_payload = 189;
     RevealPaneWithIdPayload reveal_pane_with_id_payload = 190;
     NotifyWithPanePayload notify_with_pane_payload = 191;
+    OpenCommandPaneInGitCheckoutPayload open_command_pane_in_git_checkout_payload = 192;
+  }
+}
+
+message OpenCommandPaneInGitCheckoutPayload {
+  command.Command command_to_run = 1;
+  string source_directory = 2;
+  oneof checkout {
+    CurrentGitCheckout current = 3;
+    NewBranchGitCheckout new_branch = 4;
+    NewWorktreeGitCheckout new_worktree = 5;
+  }
+}
+
+message CurrentGitCheckout {}
+
+message NewBranchGitCheckout {
+  string branch = 1;
+  string base = 2;
+}
+
+message NewWorktreeGitCheckout {
+  string branch = 1;
+  string base = 2;
+  string path = 3;
+}
+
+message OpenCommandPaneInGitCheckoutResponse {
+  oneof result {
+    PaneId pane_id = 1;
+    string error = 2;
   }
 }
 

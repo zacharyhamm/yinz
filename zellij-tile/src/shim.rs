@@ -33,20 +33,21 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
     ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
     ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
-    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
-    ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneResponse,
-    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
-    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
-    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
-    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
-    ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
-    ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
-    ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
-    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
+    ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
+    ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
+    ProtobufOpenCommandPaneResponse, ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+    ProtobufOpenFileFloatingNearPluginResponse, ProtobufOpenFileFloatingResponse,
+    ProtobufOpenFileInPlaceOfPluginResponse, ProtobufOpenFileInPlaceResponse,
+    ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse, ProtobufOpenPaneInNewTabResponse,
+    ProtobufOpenPluginPaneFloatingResponse, ProtobufOpenTerminalFloatingNearPluginResponse,
+    ProtobufOpenTerminalFloatingResponse, ProtobufOpenTerminalInPlaceOfPluginResponse,
+    ProtobufOpenTerminalInPlaceResponse, ProtobufOpenTerminalNearPluginResponse,
+    ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
+    ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
+    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
+    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
+    RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -648,6 +649,29 @@ pub fn open_command_pane_near_plugin(
         ProtobufOpenCommandPaneNearPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
             .unwrap();
     OpenCommandPaneNearPluginResponse::try_from(response).unwrap()
+}
+
+/// Perform local Git checkout setup on the host, then open a command pane in its root.
+pub fn open_command_pane_in_git_checkout_near_plugin(
+    command_to_run: CommandToRun,
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+) -> Result<PaneId, String> {
+    let plugin_command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+        command_to_run,
+        source_directory,
+        checkout,
+    );
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response = ProtobufOpenCommandPaneInGitCheckoutResponse::decode(
+        bytes_from_stdin()
+            .map_err(|error| format!("Failed to read response: {error}"))?
+            .as_slice(),
+    )
+    .map_err(|error| format!("Failed to decode response: {error}"))?;
+    OpenCommandPaneInGitCheckoutResponse::try_from(response).map_err(|error| error.to_owned())?
 }
 
 /// Open a new floating command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).

@@ -1856,6 +1856,7 @@ fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier
         (s("About"), s("About"), about_key(&km)),
         (s("Select pane"), s("Select"), to_basemode_key),
     ]} else if mi.mode == IM::Agent { vec![
+        (s("New agent"), s("New"), plugin_launch_key(&km, "hocus-new-agent")),
         (s("Agents"), s("Agents"), plugin_launch_key(&km, "hocus-agents")),
         (s("Chat"), s("Chat"), plugin_launch_key(&km, "hocus")),
         (s("Ask"), s("Ask"), plugin_launch_key(&km, "hocus-ask")),

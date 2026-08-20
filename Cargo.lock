@@ -1749,6 +1749,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hocus-new-agent"
+version = "0.1.0"
+dependencies = [
+ "zellij-tile",
+]
+
+[[package]]
 name = "hocus-proto"
 version = "0.1.0"
 dependencies = [

@@ -164,6 +164,13 @@ keybinds {
     }
     agent {
         bind "Ctrl e" { SwitchToMode "Normal"; }
+        bind "n" {
+            LaunchOrFocusPlugin "hocus-new-agent" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
         // Land on the agent list, the top pane of the hocus sidebar, without
         // going through the conversation first. Reveals the strip if it was
         // hidden, and starts one from scratch — chat pane included — if hocus
@@ -347,6 +354,7 @@ plugins {
     // shared: each attached client gets its own prompt buffer. `x`/`y`/`width`/
     // `height` size it.
     hocus-ask location="zellij:hocus-ask"
+    hocus-new-agent location="zellij:hocus-new-agent"
     // Shared for the same reason hocus is: one instance owns the event-fed
     // agent snapshot for the whole session.
     hocus-agentd location="zellij:hocus-agentd" {

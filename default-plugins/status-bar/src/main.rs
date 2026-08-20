@@ -748,6 +748,10 @@ pub mod tests {
     fn plugin_launch_key_prefers_the_modes_own_letter_over_a_global_shortcut() {
         let keymap = vec![
             (
+                KeyWithModifier::new(BareKey::Char('n')),
+                vec![launches("hocus-new-agent"), TO_NORMAL],
+            ),
+            (
                 KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier(),
                 vec![launches("hocus")],
             ),
@@ -756,6 +760,11 @@ pub mod tests {
                 vec![launches("hocus"), TO_NORMAL],
             ),
         ];
+
+        assert_eq!(
+            plugin_launch_key(&keymap, "hocus-new-agent"),
+            vec![KeyWithModifier::new(BareKey::Char('n'))]
+        );
 
         assert_eq!(
             plugin_launch_key(&keymap, "hocus"),
