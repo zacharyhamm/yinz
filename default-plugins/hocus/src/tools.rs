@@ -1890,8 +1890,8 @@ pub fn git_argv(
                 "--no-ext-diff".to_owned(),
                 "--no-textconv".to_owned(),
                 "--format=fuller".to_owned(),
-                "--stat".to_owned(),
                 if args.patch { "--patch" } else { "--no-patch" }.to_owned(),
+                "--stat".to_owned(),
                 "--end-of-options".to_owned(),
                 commit.to_owned(),
             ]);
