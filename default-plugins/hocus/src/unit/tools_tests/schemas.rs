@@ -81,6 +81,9 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         ("find_files", &["active project"][..]),
         ("search_files", &["active project"][..]),
         ("read_file", &["active project"][..]),
+        ("git_log", &["Active project"][..]),
+        ("git_show", &["Active project", "git_log"][..]),
+        ("github_read", &["Active project", "GET only"][..]),
         ("close_pane", &["process"][..]),
     ] {
         let description = specs

@@ -151,6 +151,8 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("projects", &["project"]),
     ("todos", &["todo"]),
     ("files", &["find_files", "search_files", "read_file"]),
+    ("git", &["git"]),
+    ("github", &["github"]),
     ("slack", &["slack"]),
     ("chat", &["schedule", "unschedule", "web_search"]),
 ];

@@ -93,8 +93,8 @@ impl State {
         }
         // These need the active project, which dispatch cannot reach, and read
         // files no wasm plugin can open — so they defer on the host as well.
-        if tools::FILE_TOOLS.contains(&call.name.as_str()) {
-            return self.start_file_tool(call);
+        if tools::PROJECT_READ_TOOLS.contains(&call.name.as_str()) {
+            return self.start_project_read(call);
         }
         // The todo store lives in another plugin now, so these defer on its
         // reply the way a command defers on the host's.
@@ -322,9 +322,9 @@ impl State {
         false
     }
 
-    /// The project a file tool reads from.
+    /// The project a repository tool reads from.
     ///
-    /// Unlike the todo tools this takes no `project` argument: the file tools
+    /// Unlike the todo tools this takes no `project` argument: these tools
     /// read whatever the user is looking at, and the active project follows the
     /// active tab. A pane sitting outside any checkout has none, and that is an
     /// answer rather than a guess — reading a project the user is not in is
@@ -340,9 +340,9 @@ impl State {
             .ok_or_else(|| format!("unknown project {name}; call project_list"))
     }
 
-    /// Run one of the file tools by shelling out to `rg` or `sed`, rooted at the
-    /// active project. The result comes back as `RunCommandResult` carrying this
-    /// call's id, the same way the Slack tools answer.
+    /// Run a file, Git or GitHub reader rooted at the active project. The result
+    /// comes back as `RunCommandResult` carrying this call's id, the same way
+    /// the Slack tools answer.
     ///
     /// A wasm plugin's WASI preopens are `/host`, `/data`, `/cache` and `/tmp`,
     /// and a project root is none of them, so there is no reading these files
@@ -351,7 +351,7 @@ impl State {
     /// Everything that can be refused without running anything is refused here:
     /// no project, a bad argument, or a path outside the root never reaches a
     /// command.
-    pub(crate) fn start_file_tool(&mut self, call: &ToolCall) -> bool {
+    pub(crate) fn start_project_read(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
             Ok(args) => args,
             Err(error) => {
@@ -360,10 +360,17 @@ impl State {
             },
         };
         let argv = match self.project_target().and_then(|project| {
-            // `path` is the file for `read_file` and the folder to search under
-            // for the other two; either way it is checked against the root.
-            let target = tools::resolve_in_root(project, args.path.as_deref())?;
-            tools::file_argv(&call.name, &args, &target)
+            if tools::FILE_TOOLS.contains(&call.name.as_str()) {
+                // `path` is the file for `read_file` and the folder to search
+                // under for the other two; either way it is rooted here.
+                let target = tools::resolve_in_root(project, args.path.as_deref())?;
+                tools::file_argv(&call.name, &args, &target)
+            } else if tools::GIT_TOOLS.contains(&call.name.as_str()) {
+                let target = tools::resolve_in_root(project, args.path.as_deref())?;
+                tools::git_argv(&call.name, &args, project, &target)
+            } else {
+                tools::github_argv(&args, project)
+            }
         }) {
             Ok(argv) => argv,
             Err(error) => {
@@ -373,7 +380,7 @@ impl State {
         };
 
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_command_with_env_variables_and_cwd(
+        run_command_with_output_limit(
             &borrowed,
             BTreeMap::new(),
             // Every path in the argv is absolute, so the command has nothing to
@@ -392,6 +399,7 @@ impl State {
             // Round-trips through the host, which is how the result is matched
             // back to the call that made it.
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+            MAX_TOOL_OUTPUT,
         );
         self.status = Status::AwaitingCommand;
         self.pin_to_bottom();
