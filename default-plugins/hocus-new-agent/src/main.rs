@@ -19,6 +19,10 @@ const PATH: &str = "path";
 const DUPLICATE_FOCUSED: &str = "duplicate_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
+/// Top and bottom border of the pane frame, which the plugin does not draw and
+/// is not given rows for.
+const FRAME_ROWS: usize = 2;
+
 struct State {
     dialog: Dialog,
     source_directory: PathBuf,
@@ -49,7 +53,8 @@ impl Default for State {
             .button("create", Button::new("Create agent"));
         Self {
             dialog: Dialog::new(Text::new("New agent").color_all(2), form)
-                .help(Text::new("<Tab> next  <Enter> create  <Esc> cancel")),
+                .help(Text::new("<Tab> next  <Enter> create  <Esc> cancel"))
+                .status_row(),
             source_directory: PathBuf::from("."),
             plugin_id: 0,
             duplicate_pane_id: None,
@@ -127,7 +132,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        self.dialog.set_message(
+        self.dialog.set_status(
             self.error
                 .as_ref()
                 .map(|error| Text::new(error).color_all(3)),
@@ -177,13 +182,20 @@ fn modal_width(display_columns: Option<usize>) -> String {
         .unwrap_or_else(|| "50%".to_owned())
 }
 
+/// Rows of pane the dialog needs: its own rows plus the two the pane frame
+/// takes. Derived rather than written down so that adding a field - or the
+/// error row - cannot quietly start scrolling the form.
+fn modal_height(dialog: &Dialog) -> String {
+    (dialog.height() + FRAME_ROWS).to_string()
+}
+
 impl State {
     fn resize(&self, display_columns: Option<usize>) {
         if let Some(coordinates) = FloatingPaneCoordinates::new(
             None,
             Some("20%".into()),
             Some(modal_width(display_columns)),
-            Some("14".into()),
+            Some(modal_height(&self.dialog)),
             None,
             None,
             None,
@@ -362,6 +374,13 @@ mod tests {
     fn modal_is_half_the_display_up_to_sixty_columns() {
         assert_eq!(modal_width(Some(80)), "40");
         assert_eq!(modal_width(Some(200)), "60");
+    }
+
+    #[test]
+    fn the_modal_is_tall_enough_for_the_whole_dialog() {
+        let state = State::default();
+        assert_eq!(modal_height(&state.dialog), "15");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 15);
     }
 
     #[test]

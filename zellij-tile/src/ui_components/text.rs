@@ -323,6 +323,20 @@ impl Text {
     pub fn content(&self) -> &str {
         &self.text
     }
+
+    /// Replace the content, keeping the styling that still lands on it.
+    ///
+    /// For rewriting text a renderer has already been handed - clipping it to
+    /// the room available, say. Colour indices past the end of the new content
+    /// are dropped rather than left dangling.
+    pub fn with_content<S: AsRef<str> + ToString>(mut self, content: S) -> Self {
+        self.text = content.to_string();
+        let characters = self.text.chars().count();
+        for level in &mut self.indices {
+            level.retain(|index| *index < characters);
+        }
+        self
+    }
     fn pad_indices(&mut self, index_level: usize) {
         if self.indices.get(index_level).is_none() {
             for _ in self.indices.len()..=index_level {
