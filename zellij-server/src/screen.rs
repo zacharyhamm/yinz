@@ -76,9 +76,10 @@ use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
     GlobalPaneEdge, GlobalPanePlacement, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
     LayoutWithError, ListPanesResponse, ListTabsResponse, NewPanePlacement, NotificationInfo,
-    PaneContents, PaneInfo, PaneListEntry, PaneManifest, PaneRenderReport, PaneScrollbackResponse,
-    PluginPermission, RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, SessionInfo,
-    Styling, TabInfo, ThemeHue, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    OverlayPlacement, PaneContents, PaneInfo, PaneListEntry, PaneManifest, PaneRenderReport,
+    PaneScrollbackResponse, PluginPermission, RegexHighlight, RemotePaneHandoff, Resize,
+    ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement, WarpedPane, WarpedTab,
+    WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
@@ -14527,17 +14528,28 @@ pub(crate) fn screen_thread_main(
                 let mut new_pane_placement = NewPanePlacement::default();
                 let maybe_should_float = should_float;
                 let should_float = maybe_should_float.unwrap_or(false);
-                let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
+                // The one place a plugin's own `overlay`/`modal` configuration is read: resolve it
+                // into a placement here and everything downstream takes the placement. Coordinates
+                // the caller passed are kept - they say *where* on the surface, not *whether*.
+                let overlay_placement =
                     run_plugin_or_alias
-                        .requests_overlay()
-                        .then_some(FloatingPaneCoordinates {
-                            overlay: Some(true),
-                            ..Default::default()
-                        })
+                        .overlay_placement()
+                        .map(|placement| OverlayPlacement {
+                            coordinates: floating_pane_coordinates
+                                .clone()
+                                .or(placement.coordinates.clone()),
+                            ..placement
+                        });
+                let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
+                    overlay_placement
+                        .as_ref()
+                        .map(|placement| placement.as_floating_pane_coordinates())
                 });
                 let should_be_tiled = maybe_should_float.map(|f| !f).unwrap_or(false)
                     && floating_pane_coordinates.is_none();
-                if floating_pane_coordinates.is_some() || should_float {
+                if let Some(overlay_placement) = overlay_placement {
+                    new_pane_placement = NewPanePlacement::Overlay(overlay_placement);
+                } else if floating_pane_coordinates.is_some() || should_float {
                     new_pane_placement = NewPanePlacement::with_floating_pane_coordinates(
                         floating_pane_coordinates.clone(),
                     );

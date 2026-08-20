@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+use zellij_utils::data::OverlayPlacement;
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
@@ -1576,4 +1577,151 @@ mod invariant_props {
             tab.assert_invariants();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The new placement.
+// ---------------------------------------------------------------------------
+
+/// Modal-ness used to be a string in a plugin's own configuration map, which meant a terminal
+/// pane could not be one: there was no configuration to read. `NewPanePlacement::Overlay` carries
+/// the kind with the placement, so any pane can be placed as a modal.
+#[test]
+fn a_terminal_pane_can_be_placed_as_a_modal() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal = PaneId::Terminal(2);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            modal,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::modal(Some(overlay_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(
+        tab.pane_is_overlay(modal),
+        "a pane placed as a modal is an overlay"
+    );
+    assert!(
+        !tab.are_floating_panes_visible(),
+        "and does not raise the floating layer"
+    );
+    assert_eq!(tab.get_active_pane_id(1), Some(modal), "and holds focus");
+    tab.assert_invariants();
+}
+
+/// The same placement without coordinates. Nothing is dropped on the way through: the placement
+/// itself says the pane belongs on the surface, so there is no coordinates field for a caller to
+/// rebuild without the flag.
+#[test]
+fn an_overlay_placement_without_coordinates_is_still_an_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let overlay = PaneId::Terminal(2);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            overlay,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(tab.pane_is_overlay(overlay));
+    assert!(!tab.are_floating_panes_visible());
+    tab.assert_invariants();
+}
+
+/// `--modal` on the CLI is `--overlay` plus "do not take focus from it". Both reach the tab as an
+/// overlay placement rather than as a coordinates flag a caller could drop.
+#[test]
+fn the_cli_modal_and_overlay_flags_both_produce_an_overlay_placement() {
+    use zellij_utils::data::{NewPanePlacement, OverlayKind};
+
+    let modal =
+        NewPanePlacement::floating_or_overlay(None, None, None, None, None, None, None, Some(true));
+    assert!(matches!(
+        &modal,
+        NewPanePlacement::Overlay(placement) if placement.kind == OverlayKind::Modal
+    ));
+
+    let overlay =
+        NewPanePlacement::floating_or_overlay(None, None, None, None, None, None, Some(true), None);
+    assert!(matches!(
+        &overlay,
+        NewPanePlacement::Overlay(placement) if placement.kind == OverlayKind::Dismissible
+    ));
+
+    // --modal wins over --overlay, being the stricter of the two
+    let both = NewPanePlacement::floating_or_overlay(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(true),
+        Some(true),
+    );
+    assert!(matches!(
+        &both,
+        NewPanePlacement::Overlay(placement) if placement.kind == OverlayKind::Modal
+    ));
+
+    let plain =
+        NewPanePlacement::floating_or_overlay(None, None, None, None, None, None, None, None);
+    assert!(matches!(plain, NewPanePlacement::Floating(_)));
+}
+
+/// The compatibility shim: a plugin (or keybinding, or layout) that still spells overlay-ness as
+/// `overlay`/`modal` keys in the free-form plugin configuration map resolves to the same
+/// placement. This is the only place that spelling is understood.
+#[test]
+fn plugin_configuration_keys_resolve_to_an_overlay_placement() {
+    use zellij_utils::data::OverlayKind;
+
+    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    modal.configuration.insert("modal", "true");
+    let modal = RunPluginOrAlias::RunPlugin(modal);
+    assert_eq!(
+        modal.overlay_placement().map(|placement| placement.kind),
+        Some(OverlayKind::Modal)
+    );
+
+    let mut dismissible = RunPlugin::from_url("zellij:file-finder").expect("test plugin");
+    dismissible.configuration.insert("overlay", "true");
+    let dismissible = RunPluginOrAlias::RunPlugin(dismissible);
+    assert_eq!(
+        dismissible
+            .overlay_placement()
+            .map(|placement| placement.kind),
+        Some(OverlayKind::Dismissible)
+    );
+
+    let plain = RunPlugin::from_url("zellij:file-finder").expect("test plugin");
+    assert_eq!(
+        RunPluginOrAlias::RunPlugin(plain).overlay_placement(),
+        None,
+        "a plugin that asks for neither is not an overlay"
+    );
 }

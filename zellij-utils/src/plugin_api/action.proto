@@ -602,7 +602,19 @@ message NewPanePlacement {
     FloatingPlacement floating = 3;
     InPlaceConfig in_place = 4;
     StackedPlacement stacked = 5;
+    OverlayPlacement overlay = 6;
   }
+}
+
+// Over the whole session surface, above the global panes - not on a tab's floating layer.
+enum OverlayKind {
+  Dismissible = 0;
+  Modal = 1;
+}
+
+message OverlayPlacement {
+  OverlayKind kind = 1;
+  optional FloatingPaneCoordinates coordinates = 2;
 }
 
 message NoPreferenceOptions {

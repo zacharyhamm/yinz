@@ -782,7 +782,7 @@ pub struct SetPaneBorderlessPayload {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NewPanePlacement {
-    #[prost(oneof="new_pane_placement::PlacementVariant", tags="1, 2, 3, 4, 5")]
+    #[prost(oneof="new_pane_placement::PlacementVariant", tags="1, 2, 3, 4, 5, 6")]
     pub placement_variant: ::core::option::Option<new_pane_placement::PlacementVariant>,
 }
 /// Nested message and enum types in `NewPanePlacement`.
@@ -800,7 +800,17 @@ pub mod new_pane_placement {
         InPlace(super::InPlaceConfig),
         #[prost(message, tag="5")]
         Stacked(super::StackedPlacement),
+        #[prost(message, tag="6")]
+        Overlay(super::OverlayPlacement),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OverlayPlacement {
+    #[prost(enumeration="OverlayKind", tag="1")]
+    pub kind: i32,
+    #[prost(message, optional, tag="2")]
+    pub coordinates: ::core::option::Option<FloatingPaneCoordinates>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1502,6 +1512,33 @@ impl UnblockCondition {
             "UNBLOCK_ON_EXIT_SUCCESS" => Some(Self::UnblockOnExitSuccess),
             "UNBLOCK_ON_EXIT_FAILURE" => Some(Self::UnblockOnExitFailure),
             "UNBLOCK_ON_ANY_EXIT" => Some(Self::UnblockOnAnyExit),
+            _ => None,
+        }
+    }
+}
+/// Over the whole session surface, above the global panes - not on a tab's floating layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OverlayKind {
+    Dismissible = 0,
+    Modal = 1,
+}
+impl OverlayKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            OverlayKind::Dismissible => "Dismissible",
+            OverlayKind::Modal => "Modal",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Dismissible" => Some(Self::Dismissible),
+            "Modal" => Some(Self::Modal),
             _ => None,
         }
     }

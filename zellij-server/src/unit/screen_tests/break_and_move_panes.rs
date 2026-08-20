@@ -683,6 +683,7 @@ pub fn send_cli_change_floating_pane_coordinates_action() {
         height: Some("10".to_owned()),
         pinned: None,
         overlay: None,
+        modal: None,
         borderless: Some(false),
     };
     send_cli_action_to_server(
@@ -999,6 +1000,7 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         height: None,
         pinned: None,
         overlay: None,
+        modal: None,
         stacked: false,
         blocking: false,
         block_until_exit_success: false,
@@ -1058,6 +1060,7 @@ pub fn send_cli_edit_in_place_with_close_replaced_pane() {
         height: None,
         pinned: None,
         overlay: None,
+        modal: None,
         near_current_pane: false,
         no_focus: false,
         borderless: None,

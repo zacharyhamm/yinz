@@ -3791,6 +3791,22 @@ fn resize_to_proto_i32(resize: crate::data::Resize) -> i32 {
     }
 }
 
+fn overlay_kind_to_proto_i32(kind: crate::data::OverlayKind) -> i32 {
+    use crate::client_server_contract::client_server_contract::OverlayKind as ProtoOverlayKind;
+    match kind {
+        crate::data::OverlayKind::Dismissible => ProtoOverlayKind::Dismissible as i32,
+        crate::data::OverlayKind::Modal => ProtoOverlayKind::Modal as i32,
+    }
+}
+
+fn overlay_kind_from_proto_i32(kind: i32) -> crate::data::OverlayKind {
+    use crate::client_server_contract::client_server_contract::OverlayKind as ProtoOverlayKind;
+    match ProtoOverlayKind::try_from(kind) {
+        Ok(ProtoOverlayKind::Modal) => crate::data::OverlayKind::Modal,
+        _ => crate::data::OverlayKind::Dismissible,
+    }
+}
+
 fn direction_to_proto_i32(direction: crate::data::Direction) -> i32 {
     use crate::client_server_contract::client_server_contract::Direction as ProtoDirection;
     match direction {
@@ -4293,6 +4309,12 @@ impl From<crate::data::NewPanePlacement>
                     .map(|id| id.into())
                     .unwrap_or_default(),
             ),
+            crate::data::NewPanePlacement::Overlay(overlay) => PlacementType::Overlay(
+                crate::client_server_contract::client_server_contract::OverlayPlacement {
+                    kind: overlay_kind_to_proto_i32(overlay.kind),
+                    coordinates: overlay.coordinates.map(|c| c.into()),
+                },
+            ),
         };
         Self {
             placement_type: Some(placement_type),
@@ -4377,6 +4399,18 @@ impl TryFrom<crate::client_server_contract::client_server_contract::NewPanePlace
                     pane_id_to_stack_under: pane_id,
                     borderless: None,
                 })
+            },
+            PlacementType::Overlay(overlay) => {
+                let coordinates = match overlay.coordinates {
+                    Some(coordinates) => Some(coordinates.try_into()?),
+                    None => None,
+                };
+                Ok(crate::data::NewPanePlacement::Overlay(
+                    crate::data::OverlayPlacement {
+                        kind: overlay_kind_from_proto_i32(overlay.kind),
+                        coordinates,
+                    },
+                ))
             },
         }
     }
