@@ -31,7 +31,11 @@ impl Checkbox {
     pub(super) fn render_row(&self, prompt: &str, x: usize, y: usize, width: usize, focused: bool) {
         let prompt = take_columns(prompt, width);
         let prompt_width = prompt.width();
-        print_text_with_coordinates(Text::new(prompt).color_all(2), x, y, Some(width), None);
+        let mut prompt = Text::new(prompt).color_all(2);
+        if focused {
+            prompt = prompt.selected();
+        }
+        print_text_with_coordinates(prompt, x, y, Some(width), None);
 
         let room = width.saturating_sub(prompt_width);
         if room > 0 {
@@ -136,7 +140,11 @@ impl RadioGroup {
         self.last_option_rects.clear();
         let prompt = take_columns(prompt, width);
         let prompt_width = prompt.width();
-        print_text_with_coordinates(Text::new(prompt).color_all(2), x, y, Some(width), None);
+        let mut prompt = Text::new(prompt).color_all(2);
+        if focused {
+            prompt = prompt.selected();
+        }
+        print_text_with_coordinates(prompt, x, y, Some(width), None);
 
         let right = x.saturating_add(width);
         let mut option_x = x.saturating_add(prompt_width);
@@ -160,7 +168,7 @@ impl RadioGroup {
             if visible_width == 0 {
                 break;
             }
-            let text = if focused && self.selected == Some(index) {
+            let text = if focused {
                 Text::new(visible).selected()
             } else {
                 Text::new(visible)
