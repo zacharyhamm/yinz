@@ -27,7 +27,9 @@
 //! Note the ordering consequence: traversal is checked *before* the focused
 //! field sees the key, so with the default keys `Tab` moves focus and a field
 //! never reports [`FormEvent::Complete`]. A form that wants tab-completion
-//! should pick different traversal keys.
+//! should pick different traversal keys. Under
+//! [`Form::enter_never_submits`] the same ordering is what lets `Tab` leave a
+//! text field's input mode: it never reaches the field at all.
 
 use super::button::{Button, Rect};
 use super::choice::{Checkbox, RadioGroup};
@@ -50,9 +52,12 @@ pub enum FormEvent {
     Complete(FieldId),
     /// A button was activated, by key or by click.
     ButtonPressed(FieldId),
-    /// Focus moved between widgets.
+    /// Focus moved between widgets, or the focused widget's interaction state
+    /// changed - a dropdown opened or closed, a text field entered or left
+    /// input mode. Nothing a caller reads has a new value.
     FocusMoved,
-    /// The form was submitted — Enter in a field.
+    /// The form was submitted — Enter in a field. Never emitted by a form built
+    /// with [`Form::enter_never_submits`], where a button is the only way out.
     Submit,
     /// The form was cancelled — Esc, or Ctrl-c in a field.
     Cancel,
@@ -224,6 +229,8 @@ pub struct Form {
     focus: Option<Focus>,
     next_key: KeyWithModifier,
     prev_key: KeyWithModifier,
+    enter_never_submits: bool,
+    editing: bool,
 }
 
 impl Default for Form {
@@ -240,6 +247,8 @@ impl Form {
             focus: None,
             next_key: KeyWithModifier::new(BareKey::Tab),
             prev_key: KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
+            enter_never_submits: false,
+            editing: false,
         }
     }
 
@@ -291,6 +300,30 @@ impl Form {
             self.focus = Some(Focus::Button(0));
         }
         self
+    }
+
+    /// Enter never submits: it acts on the focused widget instead.
+    ///
+    /// A closed [`Select`] opens on Enter (and the open one commits on the
+    /// next), a [`Checkbox`] toggles, a [`RadioGroup`] advances, and a
+    /// [`TextInput`] enters and leaves an input mode - so [`FormEvent::Submit`]
+    /// is never emitted and a button is the only way to submit.
+    ///
+    /// Note that a text field is not typed into until it is in input mode, so a
+    /// form whose *first* widget is one opens with no cursor anywhere until the
+    /// user presses Enter or starts typing.
+    pub fn enter_never_submits(mut self) -> Self {
+        self.enter_never_submits = true;
+        self
+    }
+
+    /// Whether the focused text field is in input mode.
+    ///
+    /// Always false unless the form was built with
+    /// [`enter_never_submits`](Self::enter_never_submits): every other form
+    /// types into its focused field directly.
+    pub fn is_editing(&self) -> bool {
+        self.editing
     }
 
     /// Replace the default Tab / Shift-Tab traversal.
@@ -388,6 +421,9 @@ impl Form {
         if self.focus != Some(focus) {
             self.close_open_select();
         }
+        // Unguarded, unlike the dropdown above: `focus_on` onto the field that
+        // already has focus is a request to start over on it, not a no-op.
+        self.editing = false;
         self.focus = Some(focus);
         for (i, (_, button)) in self.buttons.iter_mut().enumerate() {
             button.set_focused(focus == Focus::Button(i));
@@ -479,6 +515,9 @@ impl Form {
         if key == self.prev_key {
             return self.move_focus(false);
         }
+        if self.enter_never_submits {
+            return self.handle_key_strict(key);
+        }
 
         match self.focus {
             Some(Focus::Field(i)) => {
@@ -549,6 +588,161 @@ impl Form {
             },
             None => FormEvent::Ignored,
         }
+    }
+
+    /// Key handling for a form built with
+    /// [`enter_never_submits`](Self::enter_never_submits): Enter acts on the
+    /// focused widget, and only a button submits.
+    fn handle_key_strict(&mut self, key: KeyWithModifier) -> FormEvent {
+        match self.focus {
+            Some(Focus::Field(i)) => {
+                // Text is split out because it is the one widget whose Enter
+                // changes form-level state, which cannot be done while a field
+                // is borrowed out of `self.fields`.
+                if self.fields.get(i).map(|field| field.input().is_some()) == Some(true) {
+                    return self.handle_key_text(i, key);
+                }
+                let Some(field) = self.fields.get_mut(i) else {
+                    return FormEvent::Ignored;
+                };
+                let id = field.id.clone();
+                match &mut field.widget {
+                    // Handled above; `input()` said this is not a text field.
+                    Widget::Text(_) => FormEvent::Ignored,
+                    Widget::Select(select) => match select.handle_key(key.clone()) {
+                        SelectAction::Continue | SelectAction::Committed => {
+                            FormEvent::FieldChanged(id)
+                        },
+                        SelectAction::Cancelled => FormEvent::FocusMoved,
+                        // A closed select: Enter opens the list, which the next
+                        // Enter commits from. Nothing here submits.
+                        SelectAction::NoAction => match key.bare_key {
+                            BareKey::Enter if key.has_no_modifiers() => {
+                                select.open();
+                                FormEvent::FocusMoved
+                            },
+                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                            _ => FormEvent::Ignored,
+                        },
+                    },
+                    Widget::Checkbox(checkbox) => match key.bare_key {
+                        BareKey::Char(' ') | BareKey::Enter if key.has_no_modifiers() => {
+                            checkbox.toggle();
+                            FormEvent::FieldChanged(id)
+                        },
+                        BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                        _ => FormEvent::Ignored,
+                    },
+                    Widget::Radio(radio) => {
+                        if radio.handle_key(key.clone()) {
+                            return FormEvent::FieldChanged(id);
+                        }
+                        match key.bare_key {
+                            // A radio cannot be unset, so the nearest thing to
+                            // toggling one is moving to the next option.
+                            BareKey::Enter if key.has_no_modifiers() => {
+                                if radio.advance(true) {
+                                    FormEvent::FieldChanged(id)
+                                } else {
+                                    FormEvent::Ignored
+                                }
+                            },
+                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                            _ => FormEvent::Ignored,
+                        }
+                    },
+                }
+            },
+            // Buttons are unchanged: this is the one place Enter still acts on
+            // the form as a whole.
+            Some(Focus::Button(_)) | None => self.handle_key_unfocused_or_button(key),
+        }
+    }
+
+    /// A focused text field under
+    /// [`enter_never_submits`](Self::enter_never_submits), where Enter is a
+    /// mode switch rather than anything the form as a whole hears about.
+    fn handle_key_text(&mut self, i: usize, key: KeyWithModifier) -> FormEvent {
+        let editing = self.editing;
+        if key.bare_key == BareKey::Enter {
+            // `TextInput`'s bare-key arm ignores modifiers, so an Alt-Enter
+            // reaching it would come back as the `Submit` this form promises
+            // never to emit. Left for the plugin instead.
+            if !key.has_no_modifiers() {
+                return FormEvent::Ignored;
+            }
+            self.editing = !editing;
+            return FormEvent::FocusMoved;
+        }
+        if key.bare_key == BareKey::Esc && key.has_no_modifiers() {
+            // One Esc per thing being backed out of, as with an open dropdown:
+            // the input mode first, the dialog only once it is left.
+            if editing {
+                self.editing = false;
+                return FormEvent::FocusMoved;
+            }
+            return FormEvent::Cancel;
+        }
+        if !editing && !matches!(key.bare_key, BareKey::Char(_) if key.has_no_modifiers()) {
+            return FormEvent::Ignored;
+        }
+        // Typing is intent enough: a character that fell on the floor because
+        // the field was not in input mode would read as a dropped keystroke.
+        // It still goes through `handle_key`, so which character started the
+        // edit makes no difference to undo coalescing.
+        self.editing = true;
+        let Some(field) = self.fields.get_mut(i) else {
+            return FormEvent::Ignored;
+        };
+        let id = field.id.clone();
+        let Some(input) = field.input_mut() else {
+            return FormEvent::Ignored;
+        };
+        match input.handle_key(key) {
+            InputAction::Continue => FormEvent::FieldChanged(id),
+            InputAction::Cancel => FormEvent::Cancel,
+            InputAction::Complete => FormEvent::Complete(id),
+            // Enter was dealt with above, whatever its modifiers.
+            InputAction::Submit => FormEvent::FocusMoved,
+            InputAction::NoAction => FormEvent::Ignored,
+        }
+    }
+
+    fn handle_key_unfocused_or_button(&mut self, key: KeyWithModifier) -> FormEvent {
+        let Some(Focus::Button(i)) = self.focus else {
+            return FormEvent::Ignored;
+        };
+        let Some((id, button)) = self.buttons.get(i) else {
+            return FormEvent::Ignored;
+        };
+        match key.bare_key {
+            BareKey::Enter | BareKey::Char(' ') if key.has_no_modifiers() => {
+                if button.is_disabled() {
+                    FormEvent::Ignored
+                } else {
+                    FormEvent::ButtonPressed(id.clone())
+                }
+            },
+            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+            _ => FormEvent::Ignored,
+        }
+    }
+
+    /// Insert pasted text into the focused text field, entering input mode.
+    ///
+    /// Returns the field it landed in, or `None` when the focused widget is not
+    /// something typed into.
+    pub fn insert_pasted_text(&mut self, text: &str) -> Option<FieldId> {
+        let Some(Focus::Field(i)) = self.focus else {
+            return None;
+        };
+        let field = self.fields.get_mut(i)?;
+        let id = field.id.clone();
+        field.input_mut()?.insert_text(text);
+        // Text arriving in a field that shows no cursor reads as a paste that
+        // went somewhere else.
+        self.editing = true;
+        Some(id)
     }
 
     pub fn handle_mouse(&mut self, mouse: Mouse) -> FormEvent {
@@ -642,6 +836,12 @@ impl Form {
                 },
             };
             self.set_focus(Focus::Field(i));
+            // After `set_focus`, which clears input mode. Placing the caret
+            // where the click landed and then hiding it would be pointless: a
+            // click into a field is intent enough to start typing in it.
+            if self.enter_never_submits && self.fields[i].input().is_some() {
+                self.editing = true;
+            }
             return event;
         }
 
@@ -739,11 +939,16 @@ impl Form {
         }
 
         // 1. Work out where the cursor goes, printing nothing yet.
+        // Read out here: `self` is borrowed for the field below.
+        let typing = !self.enter_never_submits || self.editing;
         let cursor = match self.focus {
             Some(Focus::Field(i)) if i >= start && i < end => {
                 self.fields.get(i).and_then(|field| {
                     let prompt = field.prompt();
                     let column = match &field.widget {
+                        // A field that is not in input mode is not being typed
+                        // into, and a cursor sitting in one says it is.
+                        Widget::Text(_) if !typing => None,
                         Widget::Text(input) => {
                             let (_, column) = viewport(
                                 &prompt,
@@ -790,6 +995,15 @@ impl Form {
                     let prompt_len = prompt.chars().count().min(line.chars().count());
                     let mut text = Text::new(&line).color_range(2, 0..prompt_len);
                     if focused {
+                        // Dimming the value of a focused-but-not-editing field
+                        // is what a collapsed select already does with an
+                        // unchosen one: the row is where you are, but nothing
+                        // you type is going into it yet.
+                        if typing {
+                            text = text.color_range(0, prompt_len..);
+                        } else {
+                            text = text.dim_range(prompt_len..);
+                        }
                         text = text.selected();
                     }
                     print_text_with_coordinates(text, x, row_y, Some(width), None);
@@ -879,6 +1093,185 @@ mod tests {
 
     fn key(bare_key: BareKey) -> KeyWithModifier {
         KeyWithModifier::new(bare_key)
+    }
+
+    /// A form of every widget type, built with `enter_never_submits`.
+    fn a_strict_form() -> Form {
+        Form::new()
+            .field("name", "Name", TextInput::empty())
+            .select("layout", "Layout", Select::new(["default", "compact"]))
+            .checkbox("frames", "Frames", Checkbox::new(false))
+            .radio("mode", "Mode", RadioGroup::new(["One", "Two"]))
+            .button("save", Button::new("Save"))
+            .enter_never_submits()
+    }
+
+    #[test]
+    fn enter_toggles_input_mode_and_never_submits() {
+        let mut form = a_strict_form();
+        assert!(!form.is_editing());
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert!(form.is_editing());
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert!(!form.is_editing());
+    }
+
+    #[test]
+    fn typing_auto_enters_input_mode() {
+        let mut form = a_strict_form();
+        assert_eq!(
+            form.handle_key(key(BareKey::Char('a'))),
+            FormEvent::FieldChanged("name".to_string())
+        );
+        assert!(form.is_editing());
+        assert_eq!(form.text("name"), "a");
+    }
+
+    #[test]
+    fn esc_leaves_input_mode_before_cancelling() {
+        let mut form = a_strict_form();
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+        form.handle_key(key(BareKey::Enter));
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
+        assert!(!form.is_editing());
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+    }
+
+    #[test]
+    fn tab_leaves_input_mode_and_moves_focus() {
+        let mut form = a_strict_form();
+        form.handle_key(key(BareKey::Enter));
+        assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
+        assert!(!form.is_editing());
+        assert_eq!(form.focused_id(), Some("layout"));
+    }
+
+    #[test]
+    fn moving_focus_leaves_input_mode() {
+        let mut form = a_strict_form();
+        form.handle_key(key(BareKey::Enter));
+        // Even onto the field that already has it: that is a request to start
+        // over on the field, not a no-op.
+        form.focus_on("name");
+        assert!(!form.is_editing());
+
+        form.handle_key(key(BareKey::Enter));
+        form.move_focus(true);
+        assert!(!form.is_editing());
+    }
+
+    #[test]
+    fn the_cursor_is_only_shown_while_editing() {
+        use crate::shim::take_last_cursor_position;
+
+        let mut form = a_strict_form();
+        form.render(2, 5, 40);
+        assert_eq!(take_last_cursor_position(), Some(None));
+
+        form.handle_key(key(BareKey::Enter));
+        form.render(2, 5, 40);
+        assert_eq!(take_last_cursor_position(), Some(Some((8, 4))));
+    }
+
+    #[test]
+    fn enter_opens_a_closed_dropdown_then_commits_it() {
+        let mut form = a_strict_form();
+        form.focus_on("layout");
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert!(form.select_by_id("layout").unwrap().is_open());
+
+        form.handle_key(key(BareKey::Down));
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("layout".to_string())
+        );
+        assert_eq!(form.text("layout"), "compact");
+        assert!(!form.select_by_id("layout").unwrap().is_open());
+    }
+
+    #[test]
+    fn enter_toggles_a_checkbox() {
+        let mut form = a_strict_form();
+        form.focus_on("frames");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("frames".to_string())
+        );
+        assert!(form.checked("frames"));
+        form.handle_key(key(BareKey::Enter));
+        assert!(!form.checked("frames"));
+    }
+
+    #[test]
+    fn enter_advances_a_radio_and_wraps() {
+        let mut form = a_strict_form();
+        form.focus_on("mode");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("mode".to_string())
+        );
+        assert_eq!(form.text("mode"), "Two");
+        form.handle_key(key(BareKey::Enter));
+        assert_eq!(form.text("mode"), "One");
+    }
+
+    #[test]
+    fn enter_on_the_button_is_the_only_submit() {
+        let mut form = a_strict_form();
+        form.focus_on("save");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::ButtonPressed("save".to_string())
+        );
+    }
+
+    /// `TextInput`'s bare-key arm ignores modifiers, so an unguarded Alt-Enter
+    /// comes back as the `Submit` this form promises never to emit.
+    #[test]
+    fn a_modified_enter_is_left_for_the_plugin() {
+        let alt_enter = KeyWithModifier::new(BareKey::Enter).with_alt_modifier();
+        for id in ["name", "layout", "frames", "mode"] {
+            let mut form = a_strict_form();
+            form.focus_on(id);
+            assert_eq!(
+                form.handle_key(alt_enter.clone()),
+                FormEvent::Ignored,
+                "{id}"
+            );
+        }
+
+        let mut editing = a_strict_form();
+        editing.handle_key(key(BareKey::Enter));
+        assert_eq!(editing.handle_key(alt_enter), FormEvent::Ignored);
+        assert!(
+            editing.is_editing(),
+            "a key it did not take changes nothing"
+        );
+    }
+
+    #[test]
+    fn clicking_a_text_field_starts_editing() {
+        let mut form = a_strict_form();
+        form.focus_on("layout");
+        form.render(0, 0, 40);
+        let row = form.field_by_id("name").unwrap().last_rendered.unwrap().y;
+        assert_eq!(
+            form.handle_mouse(Mouse::LeftClick(row as isize, 8)),
+            FormEvent::FocusMoved
+        );
+        assert_eq!(form.focused_id(), Some("name"));
+        assert!(form.is_editing());
+    }
+
+    #[test]
+    fn pasted_text_lands_in_the_focused_field_and_starts_editing() {
+        let mut form = a_strict_form();
+        assert_eq!(form.insert_pasted_text("branch"), Some("name".to_string()));
+        assert_eq!(form.text("name"), "branch");
+        assert!(form.is_editing());
+
+        form.focus_on("frames");
+        assert_eq!(form.insert_pasted_text("nope"), None);
     }
 
     #[test]
