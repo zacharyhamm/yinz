@@ -528,3 +528,73 @@ fn break_group_with_mouse() {
         "Group cleared by mouse event"
     );
 }
+
+/// A form widget acts when the button comes back up, not when it goes down, so a
+/// plugin that only ever hears the press cannot have a clickable button. The tab
+/// used to track the drag only for panes doing their own text selection - which
+/// is the very flag that stops a plugin being sent `Mouse::LeftClick` at all - so
+/// a plugin heard the press and nothing after it.
+#[test]
+fn a_plugin_pane_hears_the_whole_click_and_not_just_the_press() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = 1;
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let mut screen = create_non_mirrored_screen(size);
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, 0);
+
+    let dialog = Run::Plugin(
+        RunPluginOrAlias::from_url("file:/path/to/fake/dialog", &None, None, None).unwrap(),
+    );
+    screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .new_pane(
+            PaneId::Plugin(7),
+            Some("dialog".to_owned()),
+            Some(dialog),
+            false,
+            true,
+            NewPanePlacement::Floating(None),
+            Some(client_id),
+            None,
+        )
+        .expect("TEST");
+    let (content_x, content_y) = screen
+        .with_pane(PaneId::Plugin(7), |pane| {
+            (pane.get_content_x(), pane.get_content_y())
+        })
+        .expect("the dialog is in the tab");
+    while plugin_rx.try_recv().is_ok() {}
+
+    let press = Position::new((content_y + 1) as i32, (content_x + 2) as u16);
+    let drag = Position::new((content_y + 2) as i32, (content_x + 3) as u16);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(press), client_id);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(drag), client_id);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(drag), client_id);
+
+    let events: Vec<_> = plugin_rx
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .filter_map(|(plugin_id, _, event)| (plugin_id == Some(7)).then_some(event))
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+
+    // Content-relative, so the press lands one row and two columns in.
+    assert!(
+        events.contains(&Event::Mouse(Mouse::LeftClick(1, 2))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::Hold(2, 3))),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&Event::Mouse(Mouse::Release(2, 3))),
+        "{events:?}"
+    );
+}

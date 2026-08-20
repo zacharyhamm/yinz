@@ -23,7 +23,7 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        subscribe(&[EventType::Key]);
+        subscribe(&[EventType::Key, EventType::Mouse]);
         set_selectable(true);
 
         let plugin_id = get_plugin_ids().plugin_id;
@@ -44,10 +44,16 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
-        let Event::Key(key) = event else {
-            return false;
+        let event = match event {
+            Event::Key(key) => self.dialog.handle_key(key),
+            // The dialog is two buttons, and a dialog whose buttons only answer
+            // to the keyboard is a dialog that looks broken to whoever reached
+            // for the mouse. Every variant goes through: the form acts on the
+            // release, not on the press.
+            Event::Mouse(mouse) => self.dialog.handle_mouse(mouse),
+            _ => return false,
         };
-        match self.dialog.handle_key(key) {
+        match event {
             FormEvent::Cancel => {
                 close_self();
                 false

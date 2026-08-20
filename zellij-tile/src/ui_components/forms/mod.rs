@@ -50,6 +50,10 @@
 //! - An open [`Select`] dropdown *overlays* the rows below it, so a screen that
 //!   prints its own chrome after the form should check
 //!   [`Form::overlay_rect`].
+//! - [`Form::handle_mouse`] wants the whole click, not just the press: widgets
+//!   act on `Mouse::Release`, and only when it lands back where the
+//!   `Mouse::LeftClick` did. A plugin that subscribes to `EventType::Mouse` and
+//!   forwards every variant gets that for free.
 //! - Enter submits by default, from whichever field has focus.
 //!   [`Form::enter_never_submits`] turns that off: Enter then acts on the
 //!   focused widget - opening a list, toggling a checkbox, entering a text
