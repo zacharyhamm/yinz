@@ -1,7 +1,12 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use hocus_proto::{
     agents::{self, AgentPane},
+    projects::{self, Registry},
+    store::{self, Backend},
     wire::{self, PollReply},
 };
 use zellij_tile::prelude::*;
@@ -9,6 +14,7 @@ use zellij_tile::ui_components::forms::{
     Button, Checkbox, Dialog, Form, FormEvent, Rect, Select, TextInput,
 };
 
+const PROJECT: &str = "project";
 const AGENT: &str = "agent";
 const MODEL: &str = "model";
 const CREATE_BRANCH: &str = "create_branch";
@@ -19,13 +25,30 @@ const PATH: &str = "path";
 const DUPLICATE_FOCUSED: &str = "duplicate_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
+/// The project option that stands for "wherever the caller was", which is where
+/// this modal created agents before it knew about projects at all.
+///
+/// Always the first option, whether or not a project owns the caller's cwd. A
+/// project means its root, and a caller is very often somewhere else inside it -
+/// a linked worktree, a vendored repository below it - so "here" has to stay
+/// sayable, or the only way to start an agent in the folder you are looking at
+/// would be to have no project at all.
+///
+/// Everything resolves it by *position*, never by this text: `projects::validate`
+/// accepts any non-empty name without control characters, so a real project can
+/// be called this, and a name lookup would hand it the sentinel's meaning.
+const CURRENT_DIRECTORY: &str = "(current directory)";
+
 /// Top and bottom border of the pane frame, which the plugin does not draw and
 /// is not given rows for.
 const FRAME_ROWS: usize = 2;
 
 struct State {
     dialog: Dialog,
+    /// The caller's cwd: the fallback source directory, and what the default
+    /// project is derived from.
     source_directory: PathBuf,
+    projects: Registry,
     plugin_id: u32,
     duplicate_pane_id: Option<u32>,
     path_edited: bool,
@@ -35,6 +58,14 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         let form = Form::new()
+            // First, because it decides what every field below it means: the
+            // base branch, the worktree path and the agent's cwd are all read
+            // against this project's root.
+            //
+            // The one option here is a placeholder `load` replaces. Building it
+            // empty is what keeps `Default` free of host calls, which is what
+            // lets the tests construct a `State`.
+            .select(PROJECT, "Project", Select::new([CURRENT_DIRECTORY]))
             .select(AGENT, "Agent", Select::new(["Codex", "Claude", "Cursor"]))
             .field(MODEL, "Model (optional)", TextInput::empty())
             .checkbox(
@@ -66,6 +97,7 @@ impl Default for State {
                 .help(Text::new(help))
                 .status_row(),
             source_directory: PathBuf::from("."),
+            projects: Registry::new(),
             plugin_id: 0,
             duplicate_pane_id: None,
             path_edited: false,
@@ -82,6 +114,8 @@ impl ZellijPlugin for State {
             .get("caller_cwd")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
+        self.load_projects();
+        self.fill_projects();
         self.plugin_id = get_plugin_ids().plugin_id;
         if configuration.get(DUPLICATE_FOCUSED).map(String::as_str) == Some("true") {
             self.duplicate_pane_id = configuration
@@ -243,6 +277,104 @@ impl State {
     }
 }
 
+impl State {
+    /// Take the project registry as it stands.
+    ///
+    /// A plain fetch rather than a watch: this modal lives for as long as it
+    /// takes to fill a form in, and a registry that changes underneath it has
+    /// nothing to correct - the user is already looking at the choice they
+    /// meant. A failure leaves the registry empty, which offers the caller's
+    /// own folder and is exactly what this modal did before.
+    fn load_projects(&mut self) {
+        let backend = store::Host::shared();
+        // Declared before reading, because a fetch against an entity nobody has
+        // declared is an error and any of the hocus plugins may start first.
+        // The definitions come from one place so no two can disagree.
+        if backend.define_all(&store::shared_defs()).is_err() {
+            return;
+        }
+        if let Ok(rows) =
+            backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+        {
+            self.projects = projects::from_rows(&rows);
+        }
+    }
+
+    /// Put the registry into the select, opened on the active project.
+    fn fill_projects(&mut self) {
+        let (options, selected) = project_options(&self.projects, &self.source_directory);
+        if let Some(select) = self.dialog.form_mut().select_by_id_mut(PROJECT) {
+            select.set_options(options);
+            // By index, because the options are not unique by text: see
+            // `CURRENT_DIRECTORY`.
+            select.select_index(selected);
+        }
+    }
+}
+
+/// What the project select offers, and the index of the one that starts
+/// selected.
+///
+/// `CURRENT_DIRECTORY` first, then every project; an index rather than a name,
+/// because the sentinel is positional. The list is built from `values()` rather
+/// than `keys()` so it is visibly the same order `source_directory` indexes back
+/// into - both are sorted by name, a `Registry` being a `BTreeMap`.
+///
+/// The default is the deepest project whose root contains the caller's cwd, and
+/// that is *containment only*. hocus resolves its own active project differently
+/// (`project_for_cwd`, default-plugins/hocus/src/tool_loop.rs): it first requires
+/// the folder to be a Git checkout, then prefers `projects::for_repository` - the
+/// remote, or the common directory - and falls back to `for_cwd` only after that.
+/// It can, because the daemon probes Git for it; this modal has no probe of its
+/// own and no rows to read one out of, so it cannot follow. Two differences come
+/// of that, both survivable because the first option is always there:
+///
+/// - a linked worktree living *outside* its project's root matches nothing here
+///   and defaults to `CURRENT_DIRECTORY`, where hocus would recognise the project
+///   by its remote;
+/// - a folder that is not a checkout but sits below a project root the user named
+///   defaults to that project, where hocus would report no project. Should that
+///   root not be a checkout either, the host answers "git could not find the
+///   repository root" - and the caller's own folder, which may well be a
+///   repository, is one option away.
+fn project_options(projects: &Registry, caller_cwd: &Path) -> (Vec<String>, usize) {
+    let selected = projects::for_cwd(projects, &caller_cwd.to_string_lossy())
+        .and_then(|active| {
+            projects
+                .values()
+                .position(|project| project.name == active.name)
+        })
+        // Past the sentinel, which is what index 0 is.
+        .map_or(0, |position| position + 1);
+    let options = std::iter::once(CURRENT_DIRECTORY.to_owned())
+        .chain(projects.values().map(|project| project.name.clone()))
+        .collect();
+    (options, selected)
+}
+
+/// Where the agent is created: the selected project's root, or - at option 0 -
+/// the caller's own folder.
+///
+/// Everything downstream hangs off this - `prepare_git_checkout` resolves the
+/// repository from it, so the base branch, the new branch and a relative
+/// worktree path all belong to whichever project is selected here. An absolute
+/// root reaches the host untouched; only `/host`, `/data`, `/cache`, `/tmp` and
+/// relative paths are translated.
+///
+/// Read by index, so a project called `(current directory)` is that project and
+/// not the sentinel.
+fn source_directory(form: &Form, projects: &Registry, caller_cwd: &Path) -> PathBuf {
+    form.select_by_id(PROJECT)
+        .and_then(|select| select.selected_index())
+        // Option 0 is the sentinel; each later option is the project at that
+        // offset in the registry's own order, which is the order the options
+        // were built in.
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|nth| projects.values().nth(nth))
+        .map(|project| PathBuf::from(&project.root))
+        .unwrap_or_else(|| caller_cwd.to_path_buf())
+}
+
 fn duplicate_command(
     pane: &AgentPane,
     manual_kinds: &BTreeMap<u32, String>,
@@ -319,11 +451,8 @@ impl State {
                 return true;
             },
         };
-        match open_command_pane_in_git_checkout_near_plugin(
-            command,
-            self.source_directory.clone(),
-            checkout,
-        ) {
+        let source = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
+        match open_command_pane_in_git_checkout_near_plugin(command, source, checkout) {
             Ok(pane_id) => {
                 hand_over_focus(pane_id);
                 false
@@ -407,6 +536,28 @@ fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hocus_proto::projects::Project;
+
+    fn project(name: &str, root: &str) -> (String, Project) {
+        (
+            name.to_owned(),
+            Project {
+                name: name.to_owned(),
+                root: root.to_owned(),
+                remote: None,
+                worktree_status: None,
+                common_dir: None,
+                discovered: false,
+            },
+        )
+    }
+
+    fn registry() -> Registry {
+        Registry::from([
+            project("zellij", "/work/zellij"),
+            project("dobbs", "/work/dobbs"),
+        ])
+    }
 
     #[test]
     fn modal_is_half_the_display_up_to_sixty_columns() {
@@ -417,8 +568,8 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), "15");
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 15);
+        assert_eq!(modal_height(&state.dialog), "16");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 16);
     }
 
     #[test]
@@ -467,7 +618,7 @@ mod tests {
 
     /// The bug this dialog had: a stray Enter created a half-configured agent.
     #[test]
-    fn enter_in_the_first_field_opens_the_agent_list_instead_of_creating() {
+    fn enter_in_the_first_field_opens_its_list_instead_of_creating() {
         let mut state = State::default();
         // Not `handle`, which reaches host functions: the point is what the
         // form did with the key, and that it was not a submit.
@@ -475,7 +626,9 @@ mod tests {
             .dialog
             .handle_key(KeyWithModifier::new(BareKey::Enter));
         assert_eq!(event, FormEvent::FocusMoved);
-        assert!(state.dialog.form().select_by_id(AGENT).unwrap().is_open());
+        // The first field is the project select now; the assertion is about
+        // where the Enter went, not about which list it opened.
+        assert!(state.dialog.form().select_by_id(PROJECT).unwrap().is_open());
     }
 
     #[test]
@@ -485,7 +638,7 @@ mod tests {
         let narrowest: usize = modal_width(Some(80)).parse().unwrap();
         let mut state = State::default();
         let mut lines = vec![];
-        for id in [AGENT, MODEL, CREATE_BRANCH, "create"] {
+        for id in [PROJECT, AGENT, MODEL, CREATE_BRANCH, "create"] {
             state.dialog.form_mut().focus_on(id);
             lines.push(help_for(state.dialog.form()));
         }
@@ -510,6 +663,131 @@ mod tests {
                 "{line:?} does not fit {narrowest} columns"
             );
         }
+    }
+
+    #[test]
+    fn the_project_field_is_first_and_defaults_to_the_active_project() {
+        let mut state = State::default();
+        state.projects = registry();
+        // A worktree below the project root is still the project's.
+        state.source_directory = PathBuf::from("/work/zellij/.worktrees/topic");
+        state.fill_projects();
+
+        assert_eq!(state.dialog.form().fields()[0].id(), PROJECT);
+        let select = state.dialog.form().select_by_id(PROJECT).unwrap();
+        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "zellij"]);
+        assert_eq!(select.selected_option(), Some("zellij"));
+    }
+
+    /// The finding this fixes: the caller's own folder had no option at all once
+    /// a project owned it, and `git switch -c` for a branch without a worktree
+    /// then ran in the project's primary checkout instead of the worktree the
+    /// modal was opened from.
+    #[test]
+    fn the_current_directory_is_offered_from_inside_a_project() {
+        let mut state = State::default();
+        state.projects = registry();
+        let worktree = PathBuf::from("/work/zellij/.worktrees/topic");
+        state.source_directory = worktree.clone();
+        state.fill_projects();
+
+        let select = state.dialog.form_mut().select_by_id_mut(PROJECT).unwrap();
+        assert_eq!(select.options()[0], CURRENT_DIRECTORY);
+        assert!(select.select_index(0));
+        assert_eq!(
+            source_directory(
+                state.dialog.form(),
+                &state.projects,
+                &state.source_directory
+            ),
+            worktree
+        );
+    }
+
+    /// Nothing stops a project being named exactly like the sentinel, so the
+    /// sentinel cannot be a name.
+    #[test]
+    fn a_project_named_like_the_sentinel_does_not_shadow_it() {
+        let mut state = State::default();
+        state.projects = Registry::from([project(CURRENT_DIRECTORY, "/work/oddly-named")]);
+        state.source_directory = PathBuf::from("/elsewhere");
+        state.fill_projects();
+
+        let select = state.dialog.form_mut().select_by_id_mut(PROJECT).unwrap();
+        assert_eq!(select.options(), [CURRENT_DIRECTORY, CURRENT_DIRECTORY]);
+        assert_eq!(select.selected_index(), Some(0));
+        assert_eq!(
+            source_directory(
+                state.dialog.form(),
+                &state.projects,
+                &state.source_directory
+            ),
+            PathBuf::from("/elsewhere")
+        );
+
+        let select = state.dialog.form_mut().select_by_id_mut(PROJECT).unwrap();
+        assert!(select.select_index(1));
+        assert_eq!(
+            source_directory(
+                state.dialog.form(),
+                &state.projects,
+                &state.source_directory
+            ),
+            PathBuf::from("/work/oddly-named")
+        );
+    }
+
+    /// The registry is the only source of projects, so a folder outside every
+    /// one of them - and a session whose registry is still empty - has to keep
+    /// the behaviour this modal had before the field existed.
+    #[test]
+    fn a_cwd_in_no_project_offers_the_current_directory() {
+        let mut state = State::default();
+        state.projects = registry();
+        state.source_directory = PathBuf::from("/elsewhere");
+        state.fill_projects();
+
+        let select = state.dialog.form().select_by_id(PROJECT).unwrap();
+        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "zellij"]);
+        assert_eq!(select.selected_option(), Some(CURRENT_DIRECTORY));
+
+        let (options, selected) = project_options(&Registry::new(), Path::new("/elsewhere"));
+        assert_eq!(options, [CURRENT_DIRECTORY]);
+        assert_eq!(selected, 0);
+    }
+
+    #[test]
+    fn the_agent_is_created_in_the_selected_projects_root() {
+        let mut state = State::default();
+        state.projects = registry();
+        state.source_directory = PathBuf::from("/work/zellij");
+        state.fill_projects();
+        // The point of the field: an agent for a project the caller is not in.
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PROJECT)
+            .unwrap()
+            .select_option("dobbs");
+        assert_eq!(
+            source_directory(
+                state.dialog.form(),
+                &state.projects,
+                &state.source_directory
+            ),
+            PathBuf::from("/work/dobbs")
+        );
+
+        state.source_directory = PathBuf::from("/elsewhere");
+        state.fill_projects();
+        assert_eq!(
+            source_directory(
+                state.dialog.form(),
+                &state.projects,
+                &state.source_directory
+            ),
+            PathBuf::from("/elsewhere")
+        );
     }
 
     #[test]
