@@ -1059,8 +1059,7 @@ impl TiledPanes {
                 .map(|p_id| pane_ids_in_stack.contains(p_id))
                 .unwrap_or(false)
             {
-                self.active_panes
-                    .insert(client_id, pane_id, &mut self.panes);
+                self.active_panes.insert(client_id, pane_id, &self.panes);
                 self.set_pane_active_at(pane_id);
             }
         }
@@ -1081,8 +1080,7 @@ impl TiledPanes {
                     {
                         stack_ids_to_pane_ids_to_expand.push((stack_id, *pane_id));
                     }
-                    self.active_panes
-                        .insert(client_id, *pane_id, &mut self.panes);
+                    self.active_panes.insert(client_id, *pane_id, &self.panes);
                     self.set_pane_active_at(*pane_id);
                 },
                 None => {
@@ -1095,8 +1093,7 @@ impl TiledPanes {
                         {
                             stack_ids_to_pane_ids_to_expand.push((stack_id, pane_id));
                         }
-                        self.active_panes
-                            .insert(client_id, pane_id, &mut self.panes);
+                        self.active_panes.insert(client_id, pane_id, &self.panes);
                         self.set_pane_active_at(pane_id);
                     }
                 },
@@ -1127,8 +1124,7 @@ impl TiledPanes {
                                 self.active_panes
                                     .set_last_pane(client_id, focused_pane_id_for_client);
                             }
-                            self.active_panes
-                                .insert(client_id, pane_id, &mut self.panes);
+                            self.active_panes.insert(client_id, pane_id, &self.panes);
                             self.set_pane_active_at(pane_id);
                         }
                     }
@@ -1173,15 +1169,13 @@ impl TiledPanes {
             self.focus_pane_for_all_clients_in_stack(pane_id, stack_id);
             self.reapply_pane_frames();
         }
-        self.active_panes
-            .insert(client_id, pane_id, &mut self.panes);
+        self.active_panes.insert(client_id, pane_id, &self.panes);
         if self.session_is_mirrored {
             // move all clients
             let connected_clients: Vec<ClientId> =
                 self.connected_clients.borrow().iter().copied().collect();
             for client_id in connected_clients {
-                self.active_panes
-                    .insert(client_id, pane_id, &mut self.panes);
+                self.active_panes.insert(client_id, pane_id, &self.panes);
             }
         }
         self.reset_boundaries();
@@ -1229,7 +1223,7 @@ impl TiledPanes {
         }
     }
     pub fn clear_active_panes(&mut self) {
-        self.active_panes.clear(&mut self.panes);
+        self.active_panes.clear(&self.panes);
         self.reset_boundaries();
     }
     pub fn first_active_pane_id(&self) -> Option<PaneId> {
@@ -2214,7 +2208,7 @@ impl TiledPanes {
             self.active_panes.set_last_pane(client_id, active_pane_id);
         }
         self.active_panes
-            .insert(client_id, next_active_pane_id, &mut self.panes);
+            .insert(client_id, next_active_pane_id, &self.panes);
         self.set_pane_active_at(next_active_pane_id);
         self.reset_boundaries();
     }
@@ -2246,7 +2240,7 @@ impl TiledPanes {
             self.active_panes.set_last_pane(client_id, active_pane_id);
         }
         self.active_panes
-            .insert(client_id, next_active_pane_id, &mut self.panes);
+            .insert(client_id, next_active_pane_id, &self.panes);
         self.set_pane_active_at(next_active_pane_id);
         self.reset_boundaries();
     }
@@ -2916,7 +2910,7 @@ impl TiledPanes {
                 for (client_id, active_pane_id) in active_panes {
                     if active_pane_id == pane_id {
                         self.active_panes
-                            .insert(client_id, next_active_pane_id, &mut self.panes);
+                            .insert(client_id, next_active_pane_id, &self.panes);
                         if let Some(last_active_pane_id) = last_active_pane_id {
                             self.active_panes
                                 .set_last_pane(client_id, last_active_pane_id);
@@ -2924,7 +2918,7 @@ impl TiledPanes {
                     }
                 }
             },
-            None => self.active_panes.clear(&mut self.panes),
+            None => self.active_panes.clear(&self.panes),
         }
     }
     pub fn extract_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
@@ -2953,7 +2947,7 @@ impl TiledPanes {
             {
                 // this is a bit of a roundabout way to say: this is the last pane and so the tab
                 // should be destroyed
-                self.active_panes.clear(&mut self.panes);
+                self.active_panes.clear(&self.panes);
             }
             closed_pane
         }
@@ -3216,10 +3210,10 @@ impl TiledPanes {
         self.panes_to_hide.remove(&pid);
     }
     pub fn unfocus_all_panes(&mut self) {
-        self.active_panes.unfocus_all_panes(&mut self.panes);
+        self.active_panes.unfocus_all_panes(&self.panes);
     }
     pub fn focus_all_panes(&mut self) {
-        self.active_panes.focus_all_panes(&mut self.panes);
+        self.active_panes.focus_all_panes(&self.panes);
     }
     pub fn drain(&mut self) -> BTreeMap<PaneId, Box<dyn Pane>> {
         self.unset_fullscreen();
@@ -3254,9 +3248,8 @@ impl TiledPanes {
             .map(|(cid, _pid)| *cid)
             .collect();
         for client_id in clients_in_pane {
-            self.active_panes.remove(&client_id, &mut self.panes);
-            self.active_panes
-                .insert(client_id, to_pane_id, &mut self.panes);
+            self.active_panes.remove(&client_id, &self.panes);
+            self.active_panes.insert(client_id, to_pane_id, &self.panes);
         }
     }
     fn reset_boundaries(&mut self) {
