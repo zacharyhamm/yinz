@@ -7993,10 +7993,14 @@ impl Screen {
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
             if should_float || overlay_coordinates.is_some() {
-                if !overlay_coordinates
+                // an overlay is not on the floating layer, so moving one here must not raise it -
+                // and `run_plugin` is asked as well as the coordinates, because a keybinding
+                // written before `overlay`/`modal` existed carries neither of them
+                let is_overlay = overlay_coordinates
                     .as_ref()
                     .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false))
-                {
+                    || run_plugin.requests_overlay();
+                if !is_overlay {
                     new_active_tab.show_floating_panes();
                 }
                 new_active_tab.add_floating_pane(

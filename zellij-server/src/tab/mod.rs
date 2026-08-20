@@ -902,6 +902,15 @@ pub enum AdjustedInput {
     GuestModalZoom,
     GuestModalDescend,
 }
+
+/// Whether a pane launched with this `Run` is an overlay by its own configuration - a plugin
+/// with `overlay`/`modal` set. Overlay-ness has to survive callers that pass their own
+/// `FloatingPaneCoordinates` (which suppresses the flag `AddPlugin` would otherwise synthesize)
+/// and configs written before the flags existed.
+fn run_requests_overlay(run: &Option<Run>) -> bool {
+    matches!(run, Some(Run::Plugin(run_plugin)) if run_plugin.requests_overlay())
+}
+
 pub fn get_next_terminal_position(
     tiled_panes: &TiledPanes,
     floating_panes: &FloatingPanes,
@@ -2997,9 +3006,18 @@ impl Tab {
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
+        // A modal is an overlay because of what it is, not because of the coordinates whichever
+        // caller happened to pass: `ScreenInstruction::AddPlugin` only synthesizes overlay
+        // coordinates when nobody passed any, and a keybinding written before `overlay`/`modal`
+        // existed passes none of it at all. Asking the plugin's own configuration catches both.
         let is_overlay = floating_pane_coordinates
             .as_ref()
-            .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false));
+            .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false))
+            || run_requests_overlay(&invoked_with);
+        // Sampled before the reveal below, so that a pane which turns itself into an overlay once
+        // it is running can put the layer back the way it found it - see
+        // `change_floating_pane_coordinates`.
+        let layer_was_visible = self.floating_panes.panes_are_visible();
         if should_focus_pane && !is_overlay {
             self.show_floating_panes();
         }
@@ -3084,13 +3102,18 @@ impl Tab {
             self.park_pane(new_pane);
             Ok(())
         } else {
-            self.add_floating_pane(
+            let added = self.add_floating_pane(
                 new_pane,
                 pid,
                 floating_pane_coordinates,
                 should_focus_pane,
                 None,
-            )
+            );
+            if self.floating_panes.panes_contain(&pid) {
+                self.floating_panes
+                    .note_layer_state_before_adding(pid, layer_was_visible);
+            }
+            added
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -7255,6 +7278,17 @@ impl Tab {
         self.set_force_render();
     }
 
+    /// Show the floating layer because a pane on it is being opened or focused - unless that pane
+    /// is an overlay, which is not on the layer in the first place and must never drag it up.
+    fn show_floating_panes_for(&mut self, pane_id: PaneId) {
+        if self.floating_panes.is_overlay(pane_id)
+            || self.floating_panes.pane_requests_overlay(pane_id)
+        {
+            return;
+        }
+        self.show_floating_panes();
+    }
+
     pub fn hide_floating_panes(&mut self) {
         // this function is to be preferred to directly invoking
         // floating_panes.toggle_show_panes(false)
@@ -7351,8 +7385,8 @@ impl Tab {
             .or_else(|_| {
                 let focused_floating_pane =
                     self.floating_panes.focus_pane_if_exists(pane_id, client_id);
-                if focused_floating_pane.is_ok() && !self.pane_is_overlay(pane_id) {
-                    self.show_floating_panes()
+                if focused_floating_pane.is_ok() {
+                    self.show_floating_panes_for(pane_id)
                 };
                 focused_floating_pane
             })
@@ -7367,7 +7401,18 @@ impl Tab {
                     Some(mut pane) => {
                         pane.set_selectable(true);
                         if should_float {
-                            self.show_floating_panes();
+                            // A modal parked in the suppressed panes comes back out as one: it
+                            // keeps whatever overlay coordinates it had (`add_floating_pane`
+                            // re-derives them from the plugin itself if it has none), and it
+                            // does not bring the floating layer up with it.
+                            let is_overlay = run_requests_overlay(pane.invoked_with())
+                                || self
+                                    .floating_panes
+                                    .overlay_coordinates_for(pane_id)
+                                    .is_some();
+                            if !is_overlay {
+                                self.show_floating_panes();
+                            }
                             self.add_floating_pane(pane, pane_id, None, true, Some(client_id))
                         } else if should_be_in_place {
                             let replaced_pane = if self.are_floating_panes_visible() {
@@ -7405,7 +7450,11 @@ impl Tab {
         }
         match self.suppressed_panes.remove(&pane_id) {
             Some(suppressed) => {
-                self.show_floating_panes();
+                // as in `focus_pane_with_id`: a modal coming back out of the suppressed panes is
+                // still a modal, and does not bring the floating layer up with it
+                if !run_requests_overlay(suppressed.pane.invoked_with()) {
+                    self.show_floating_panes();
+                }
                 self.add_floating_pane(suppressed.pane, pane_id, None, true, None)
                     .non_fatal();
                 self.floating_panes.focus_pane_for_all_clients(pane_id);
@@ -7558,6 +7607,20 @@ impl Tab {
         client_id: Option<ClientId>,
     ) -> Result<()> {
         let err_context = || "failed to add floating pane".to_string();
+        // A pane that is an overlay by configuration is one wherever it came from, including the
+        // paths that pass no coordinates at all (`focus_pane_with_id` taking a modal back out of
+        // the suppressed panes) or their own (`pane_groups`). Placing it as anything else would
+        // size it against the tab's viewport and draw it under the global panes.
+        let floating_pane_coordinates = if run_requests_overlay(pane.invoked_with()) {
+            Some(
+                floating_pane_coordinates
+                    .or_else(|| self.floating_panes.overlay_coordinates_for(pane_id))
+                    .unwrap_or_default()
+                    .as_overlay(),
+            )
+        } else {
+            floating_pane_coordinates
+        };
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
         }
@@ -8100,14 +8163,25 @@ impl Tab {
             // A pane that turns itself into an overlay after the fact was, a moment ago, an
             // ordinary floating pane - and opening one of those shows the floating layer. Left
             // set, that reads as "floating panes are visible": it lights the status bar's <f>,
-            // sends the next new pane to the floating layer, and swallows splits and focus
-            // moves. Only the overlay is up, so the layer is not.
-            if self.floating_panes.all_panes_are_visible()
-                && self
+            // sends the next new pane to the floating layer, swallows splits and focus moves,
+            // and - the reason this matters most - every floating pane the user had hidden is
+            // now on screen under the modal.
+            //
+            // So put the layer back where this pane found it. Asking instead whether anything
+            // else is on the layer (which is what this used to do) gets the answer wrong in
+            // exactly the case that hurts: a tab with hidden floating panes in it, where the
+            // reveal is visible and the corrective declines to fire. Where nothing was noted -
+            // a pane that arrived by some route other than being opened, and only later became
+            // an overlay - fall back to the old reading rather than guess at intent.
+            let restore_hidden = match self.floating_panes.take_layer_state_before_adding(*pane_id)
+            {
+                Some(layer_was_visible) => !layer_was_visible,
+                None => self
                     .floating_panes
                     .last_selectable_non_overlay_pane_id()
-                    .is_none()
-            {
+                    .is_none(),
+            };
+            if restore_hidden && self.floating_panes.all_panes_are_visible() {
                 self.hide_floating_panes_under_overlay();
             }
         }
