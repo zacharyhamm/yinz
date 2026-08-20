@@ -13,7 +13,7 @@ fn git_log_is_rooted_bounded_and_can_page() {
         Args::parse(r#"{"path":"src","before_commit":"abcdef12","max_results":999}"#).unwrap();
     let target = resolve_in_root(&project(), args.path.as_deref()).unwrap();
     assert_eq!(
-        git_argv("git_log", &args, &project(), Some(&target)).unwrap(),
+        git_argv("git_log", &args, &project(), &target).unwrap(),
         [
             "git",
             "-C",
@@ -36,13 +36,33 @@ fn git_log_is_rooted_bounded_and_can_page() {
 #[test]
 fn git_show_accepts_only_a_hash_and_opts_into_a_patch() {
     let args = Args::parse(r#"{"commit":"abcdef12","patch":true}"#).unwrap();
-    let argv = git_argv("git_show", &args, &project(), None).unwrap();
+    let argv = git_argv("git_show", &args, &project(), "/work/hocus").unwrap();
     assert!(argv.contains(&"--patch".to_owned()));
     assert!(argv.contains(&"--no-ext-diff".to_owned()));
     assert!(argv.contains(&"--no-textconv".to_owned()));
+    assert_eq!(argv.last().unwrap(), "/work/hocus");
     for commit in ["HEAD", "--help", "abc", "abcd;touch /tmp/x"] {
         let args = Args::parse(&format!(r#"{{"commit":"{commit}"}}"#)).unwrap();
-        assert!(git_argv("git_show", &args, &project(), None).is_err());
+        assert!(git_argv("git_show", &args, &project(), "/work/hocus").is_err());
+    }
+}
+
+#[test]
+fn git_tools_require_the_active_project_pathspec() {
+    let mut nested = project();
+    nested.root = "/work/monorepo/packages/hocus".to_owned();
+    for (name, arguments) in [("git_log", "{}"), ("git_show", r#"{"commit":"abcdef12"}"#)] {
+        let argv = git_argv(
+            name,
+            &Args::parse(arguments).unwrap(),
+            &nested,
+            &nested.root,
+        )
+        .unwrap();
+        assert_eq!(
+            &argv[argv.len() - 2..],
+            ["--", "/work/monorepo/packages/hocus"]
+        );
     }
 }
 
