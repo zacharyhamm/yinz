@@ -5,7 +5,7 @@
 use crate::tab::Pane;
 
 use crate::{os_input_output::ServerOsApi, panes::PaneId, ClientId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct ActivePanes {
@@ -76,6 +76,23 @@ impl ActivePanes {
     }
     pub fn unfocus_all_panes(&self, panes: &mut BTreeMap<PaneId, Box<dyn Pane>>) {
         for (_client_id, pane_id) in &self.active_panes {
+            self.unfocus_pane(*pane_id, panes);
+        }
+    }
+    /// Tell every focused pane it lost focus, except the ones that did not.
+    ///
+    /// The floating layer can go down while an overlay drawn on it keeps a client's focus and
+    /// keeps taking input (see `Tab::get_active_pane_id`) - sending that pane a focus-out would
+    /// be a lie.
+    pub fn unfocus_all_panes_except(
+        &self,
+        keep_focused: &HashSet<PaneId>,
+        panes: &mut BTreeMap<PaneId, Box<dyn Pane>>,
+    ) {
+        for (_client_id, pane_id) in &self.active_panes {
+            if keep_focused.contains(pane_id) {
+                continue;
+            }
             self.unfocus_pane(*pane_id, panes);
         }
     }

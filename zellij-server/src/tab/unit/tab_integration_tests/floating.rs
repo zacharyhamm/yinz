@@ -185,8 +185,14 @@ fn overlay_does_not_show_hidden_floating_panes() {
     assert!(tab.get_pane_with_id(floating_pane_id).is_some());
 }
 
+/// A new pane opened while a modal holds the focus goes to the tiled surface.
+///
+/// It used to join the floating layer and show it, which is the reading of a focused overlay as
+/// "this client is working on the floating layer" - and that reveals every hidden floating pane
+/// and lights the status bar's `<f>` on the way. Tiled keeps what that behaviour was actually
+/// for, which is that the new pane is visible rather than stranded on a layer that is down.
 #[test]
-fn default_new_pane_from_overlay_is_visible() {
+fn default_new_pane_from_overlay_is_tiled_and_visible() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -222,13 +228,23 @@ fn default_new_pane_from_overlay_is_visible() {
     )
     .unwrap();
 
-    assert!(tab.floating_panes.all_panes_are_visible());
-    assert!(tab.floating_panes.panes_contain(&new_pane_id));
-    assert!(tab
-        .floating_panes
-        .rendered_pane_ids()
-        .contains(&new_pane_id));
-    assert_eq!(tab.get_active_pane_id(client_id), Some(new_pane_id));
+    assert!(
+        !tab.floating_panes.all_panes_are_visible(),
+        "a modal must not put the tab into 'floating panes visible'"
+    );
+    assert!(tab.tiled_panes.panes_contain(&new_pane_id));
+    assert!(!tab.floating_panes.panes_contain(&new_pane_id));
+    assert!(
+        tab.floating_panes
+            .rendered_pane_ids()
+            .contains(&overlay_pane_id),
+        "the overlay is still drawn over it"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(new_pane_id),
+        "the pane the user just asked for takes the keyboard from the modal"
+    );
 }
 
 #[test]

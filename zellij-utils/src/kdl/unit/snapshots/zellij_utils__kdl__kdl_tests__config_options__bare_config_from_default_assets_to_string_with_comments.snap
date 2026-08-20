@@ -169,6 +169,8 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-duplicate-agent" {
                 floating true
                 move_to_focused_tab true
+                modal true
+                overlay true
             }
             SwitchToMode "normal"
         }
@@ -185,6 +187,8 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
                 move_to_focused_tab true
+                modal true
+                overlay true
             }
             SwitchToMode "normal"
         }
