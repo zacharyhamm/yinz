@@ -43,7 +43,10 @@ impl Default for State {
             .checkbox(WORKTREE, "Use worktree", Checkbox::new(true))
             .field(
                 PATH,
-                "Worktree path",
+                // Named because a relative path is anchored to the repository's
+                // primary checkout, not to the pane's cwd — which differs whenever
+                // the agent asking sits in a worktree already.
+                "Worktree path (from repo root)",
                 TextInput::new(".worktrees/".to_owned()),
             )
             .button("create", Button::new("Create agent"));
