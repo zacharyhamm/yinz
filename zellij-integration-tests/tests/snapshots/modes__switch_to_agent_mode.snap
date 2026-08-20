@@ -4,4 +4,4 @@ expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  Tab #1  + 
 $ █
- Ctrl + <e> AGENT   a  Agents  c  Chat  k  Ask  ENTER  Select pane 
+ Ctrl + <e> AGENT   n  New agent  d  Duplicate agent  a  Agents  c  Chat  k  Ask  ENTER  Select pane 

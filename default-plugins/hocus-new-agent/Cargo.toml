@@ -4,4 +4,6 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+hocus-proto = { path = "../hocus-proto" }
+serde_json = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }

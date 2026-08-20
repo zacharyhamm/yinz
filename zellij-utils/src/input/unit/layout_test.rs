@@ -2633,3 +2633,38 @@ fn tiled_pane_still_rejects_zero_percent() {
     let result = SplitSize::from_str("1%");
     assert!(result.is_ok());
 }
+
+#[test]
+fn plugin_alias_records_the_caller_terminal_without_overwriting_it() {
+    let mut alias = PluginAlias::new("plugin", &None, None);
+    alias.set_caller_terminal_pane_id_if_not_set(Some(7));
+    alias.set_caller_terminal_pane_id_if_not_set(Some(9));
+
+    assert_eq!(
+        alias
+            .configuration
+            .unwrap()
+            .inner()
+            .get("caller_terminal_pane_id")
+            .map(String::as_str),
+        Some("7")
+    );
+}
+
+#[test]
+fn caller_context_does_not_change_plugin_alias_identity() {
+    let configuration = Some(std::collections::BTreeMap::from([(
+        "duplicate_focused".to_owned(),
+        "true".to_owned(),
+    )]));
+    let requested = RunPluginOrAlias::Alias(PluginAlias::new(
+        "hocus-duplicate-agent",
+        &configuration,
+        None,
+    ));
+    let mut running = PluginAlias::new("hocus-duplicate-agent", &configuration, None);
+    running.set_caller_cwd_if_not_set(Some("/repo".into()));
+    running.set_caller_terminal_pane_id_if_not_set(Some(7));
+
+    assert!(requested.is_equivalent_to_run(&Some(Run::Plugin(RunPluginOrAlias::Alias(running)))));
+}

@@ -1752,6 +1752,8 @@ dependencies = [
 name = "hocus-new-agent"
 version = "0.1.0"
 dependencies = [
+ "hocus-proto",
+ "serde_json",
  "zellij-tile",
 ]
 

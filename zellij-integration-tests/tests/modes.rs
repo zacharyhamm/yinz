@@ -91,8 +91,8 @@ fn switch_to_session_mode() {
 
 /// `Ctrl e` gathers the agent actions the way `Ctrl p` gathers the pane ones.
 ///
-/// The hints are the point: each of the three launches a *different* plugin, and the keymap cannot
-/// tell them apart by action variant alone, so a regression here shows up as all three sharing one
+/// The hints are the point: each launch names a different plugin alias, and the keymap cannot
+/// tell them apart by action variant alone, so a regression here shows up as them sharing one
 /// key rather than as a missing mode.
 #[test]
 fn switch_to_agent_mode() {
@@ -108,7 +108,18 @@ fn switch_to_agent_mode() {
     // glyphs rather than spaces, so match on the sequence rather than on exact spacing.
     let hints = grid_snapshot.lines().last().cloned().unwrap();
     let mut rest = hints.as_str();
-    for expected in [" a ", " Agents ", " c ", " Chat ", " k ", " Ask "] {
+    for expected in [
+        " n ",
+        " New agent ",
+        " d ",
+        " Duplicate agent ",
+        " a ",
+        " Agents ",
+        " c ",
+        " Chat ",
+        " k ",
+        " Ask ",
+    ] {
         let found = rest.find(expected).unwrap_or_else(|| {
             panic!("agent hints lost {expected:?} in order, got: {hints:?}");
         });
