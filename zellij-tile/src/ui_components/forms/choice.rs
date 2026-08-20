@@ -116,6 +116,12 @@ impl RadioGroup {
             BareKey::Left | BareKey::Up if key.has_no_modifiers() => false,
             _ => return false,
         };
+        self.advance(forward)
+    }
+
+    /// Move to the next or previous option, wrapping. Returns whether the
+    /// selection changed - a group of fewer than two options has nowhere to go.
+    pub(super) fn advance(&mut self, forward: bool) -> bool {
         let count = self.options.len();
         if count < 2 {
             return false;

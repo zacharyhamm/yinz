@@ -19,6 +19,10 @@ const PATH: &str = "path";
 const DUPLICATE_FOCUSED: &str = "duplicate_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
+/// Top and bottom border of the pane frame, which the plugin does not draw and
+/// is not given rows for.
+const FRAME_ROWS: usize = 2;
+
 struct State {
     dialog: Dialog,
     source_directory: PathBuf,
@@ -49,10 +53,18 @@ impl Default for State {
                 "Worktree path (from repo root)",
                 TextInput::new(".worktrees/".to_owned()),
             )
-            .button("create", Button::new("Create agent"));
+            .button("create", Button::new("Create agent"))
+            // Half a form filled in and an Enter pressed out of habit used to
+            // be enough to start an agent. Nothing but the button starts one.
+            .enter_never_submits();
+        // Replaced every render by `help_for`, which says what Enter does in
+        // whichever field has focus. Set here too so the dialog reserves the
+        // row from the start.
+        let help = help_for(&form);
         Self {
             dialog: Dialog::new(Text::new("New agent").color_all(2), form)
-                .help(Text::new("<Tab> next  <Enter> create  <Esc> cancel")),
+                .help(Text::new(help))
+                .status_row(),
             source_directory: PathBuf::from("."),
             plugin_id: 0,
             duplicate_pane_id: None,
@@ -107,19 +119,12 @@ impl ZellijPlugin for State {
                 let event = self.dialog.handle_mouse(mouse);
                 self.handle(event)
             },
-            Event::PastedText(text) => {
-                let focused = self.dialog.form().focused_id().map(str::to_owned);
-                if let Some(input) = focused
-                    .as_deref()
-                    .and_then(|id| self.dialog.form_mut().field_by_id_mut(id))
-                    .and_then(|field| field.input_mut())
-                {
-                    input.insert_text(&text);
-                    self.changed(focused.as_deref().unwrap_or_default());
+            Event::PastedText(text) => match self.dialog.form_mut().insert_pasted_text(&text) {
+                Some(id) => {
+                    self.changed(&id);
                     true
-                } else {
-                    false
-                }
+                },
+                None => false,
             },
             Event::Visible(false) => {
                 close_self();
@@ -130,7 +135,9 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        self.dialog.set_message(
+        let help = help_for(self.dialog.form());
+        self.dialog.set_help(Some(Text::new(help)));
+        self.dialog.set_status(
             self.error
                 .as_ref()
                 .map(|error| Text::new(error).color_all(3)),
@@ -162,16 +169,45 @@ impl ZellijPlugin for State {
             .flatten()
             .find(|pane| pane.pane_id == pane_id)
             .and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
-        if command.is_some_and(|command| {
+        if let Some(new_pane_id) = command.and_then(|command| {
             open_command_pane_near_plugin(
                 command,
                 BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
             )
-            .is_some()
         }) {
-            close_self();
+            hand_over_focus(new_pane_id);
         }
         false
+    }
+}
+
+/// The help line for whatever has focus.
+///
+/// Enter means something different in every widget here, so one static line
+/// cannot describe it. Every arm has to fit the narrowest modal - see
+/// `the_help_line_fits_the_narrowest_modal`.
+fn help_for(form: &Form) -> &'static str {
+    let Some(field) = form.focused_id().and_then(|id| form.field_by_id(id)) else {
+        // No field of that id: focus is on the button, or the form is empty.
+        return "<Enter> create  <Tab> next  <Esc> cancel";
+    };
+    if let Some(select) = field.select() {
+        return if select.is_open() {
+            "<Enter> choose  <↑↓> move  <Esc> close"
+        } else {
+            "<Enter> open  <Tab> next  <Esc> cancel"
+        };
+    }
+    if field.checkbox().is_some() {
+        return "<Enter> toggle  <Tab> next  <Esc> cancel";
+    }
+    if field.radio().is_some() {
+        return "<Enter> change  <Tab> next  <Esc> cancel";
+    }
+    if form.is_editing() {
+        "<Enter> done  <Tab> next  <Esc> back"
+    } else {
+        "<Enter> edit  <Tab> next  <Esc> cancel"
     }
 }
 
@@ -181,13 +217,20 @@ fn modal_width(display_columns: Option<usize>) -> String {
         .unwrap_or_else(|| "50%".to_owned())
 }
 
+/// Rows of pane the dialog needs: its own rows plus the two the pane frame
+/// takes. Derived rather than written down so that adding a field - or the
+/// error row - cannot quietly start scrolling the form.
+fn modal_height(dialog: &Dialog) -> String {
+    (dialog.height() + FRAME_ROWS).to_string()
+}
+
 impl State {
     fn resize(&self, display_columns: Option<usize>) {
         if let Some(coordinates) = FloatingPaneCoordinates::new(
             None,
             Some("20%".into()),
             Some(modal_width(display_columns)),
-            Some("14".into()),
+            Some(modal_height(&self.dialog)),
             None,
             None,
             None,
@@ -222,7 +265,10 @@ fn duplicate_command(
 impl State {
     fn handle(&mut self, event: FormEvent) -> bool {
         match event {
-            FormEvent::Submit | FormEvent::ButtonPressed(_) => self.submit(),
+            // Only the button. `FormEvent::Submit` cannot reach here - the form
+            // is built with `enter_never_submits` - and saying so in the match
+            // is what keeps a stray Enter from ever creating an agent again.
+            FormEvent::ButtonPressed(_) => self.submit(),
             FormEvent::Cancel => {
                 close_self();
                 false
@@ -278,8 +324,8 @@ impl State {
             self.source_directory.clone(),
             checkout,
         ) {
-            Ok(_) => {
-                close_self();
+            Ok(pane_id) => {
+                hand_over_focus(pane_id);
                 false
             },
             Err(error) => {
@@ -288,6 +334,28 @@ impl State {
             },
         }
     }
+}
+
+/// Close the modal onto the pane it just created, keyboard and all.
+///
+/// Neither half of this happens on its own. A pane opened near a plugin is
+/// anchored to a pane rather than to a client, so the host has no client to
+/// focus it for and does not try (`ScreenInstruction::NewPane`, the
+/// `ClientTabIndexOrPaneId::PaneId` arm). And a modal overlay is never robbed
+/// of focus by a pane opening behind it, because it has no way to learn it lost
+/// it and would sit there taking no input while the user typed underneath. Both
+/// are right; what neither can do is decide that *this* submit is over. Only
+/// the modal knows that, so handing the keyboard on is its job.
+///
+/// Focus first, then close. While this pane is still up it goes on reading as
+/// the focused one whatever the tiled layer says, so the focus call moves the
+/// tiled focus *underneath* - and closing the last floating pane hands that
+/// tiled focus back out. The other order has nothing left to focus from: the
+/// close would restore whichever pane the user came from, and this plugin is
+/// gone by then.
+fn hand_over_focus(pane_id: PaneId) {
+    focus_pane_with_id(pane_id, false, false);
+    close_self();
 }
 
 fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
@@ -347,6 +415,13 @@ mod tests {
     }
 
     #[test]
+    fn the_modal_is_tall_enough_for_the_whole_dialog() {
+        let state = State::default();
+        assert_eq!(modal_height(&state.dialog), "15");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 15);
+    }
+
+    #[test]
     fn defaults_create_a_codex_worktree_from_main() {
         let mut state = State::default();
         state
@@ -388,6 +463,53 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("claude"));
         assert_eq!(command.args, ["--model", "opus"]);
         assert_eq!(checkout, GitCheckout::Current);
+    }
+
+    /// The bug this dialog had: a stray Enter created a half-configured agent.
+    #[test]
+    fn enter_in_the_first_field_opens_the_agent_list_instead_of_creating() {
+        let mut state = State::default();
+        // Not `handle`, which reaches host functions: the point is what the
+        // form did with the key, and that it was not a submit.
+        let event = state
+            .dialog
+            .handle_key(KeyWithModifier::new(BareKey::Enter));
+        assert_eq!(event, FormEvent::FocusMoved);
+        assert!(state.dialog.form().select_by_id(AGENT).unwrap().is_open());
+    }
+
+    #[test]
+    fn the_help_line_fits_the_narrowest_modal() {
+        // `modal_width` is half the display, so 80 columns is the narrowest
+        // terminal worth drawing this in.
+        let narrowest: usize = modal_width(Some(80)).parse().unwrap();
+        let mut state = State::default();
+        let mut lines = vec![];
+        for id in [AGENT, MODEL, CREATE_BRANCH, "create"] {
+            state.dialog.form_mut().focus_on(id);
+            lines.push(help_for(state.dialog.form()));
+        }
+        // The two states a field has beyond being focused.
+        state.dialog.form_mut().focus_on(AGENT);
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(AGENT)
+            .unwrap()
+            .open();
+        lines.push(help_for(state.dialog.form()));
+        state.dialog.form_mut().focus_on(MODEL);
+        state
+            .dialog
+            .handle_key(KeyWithModifier::new(BareKey::Enter));
+        lines.push(help_for(state.dialog.form()));
+
+        for line in lines {
+            assert!(
+                line.chars().count() <= narrowest,
+                "{line:?} does not fit {narrowest} columns"
+            );
+        }
     }
 
     #[test]
