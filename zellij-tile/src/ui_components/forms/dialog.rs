@@ -79,6 +79,16 @@ impl Dialog {
         self
     }
 
+    /// Replace the help line, or clear it.
+    ///
+    /// A dialog whose keys mean different things in different fields has to say
+    /// so as focus moves. Note that clearing it gives the row back, which moves
+    /// everything above it - a dialog that swaps its help line should always
+    /// set one.
+    pub fn set_help(&mut self, help: Option<Text>) {
+        self.help = help;
+    }
+
     pub fn form(&self) -> &Form {
         &self.form
     }
