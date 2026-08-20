@@ -1387,14 +1387,14 @@ fn frame_of_an_overlay_over_a_hidden_layer_beside_a_global_pane() {
 /// Relative z-order between the three things that can be on top of the tiled panes while the
 /// floating layer is up: a plain floating pane, a pinned floating pane, and an overlay.
 ///
-/// A pinned pane paints *above* the overlay - `stack_layer_ids` returns the plain `z_indices`
-/// when the layer is visible, and `make_sure_pinned_panes_are_on_top` has already lifted the
-/// pinned pane to the end of it. Whether that is right is a separate question (a modal arguably
-/// belongs above everything); this pins what the code does so the refactor does not change it by
-/// accident.
+/// The overlay paints above both, pinned included. It used to be the other way round: overlays
+/// shared the floating layer's `z_indices`, and `make_sure_pinned_panes_are_on_top` had already
+/// lifted the pinned pane to the end of that list. Now `Tab::occlusion_stack` appends the overlay
+/// layers after every floating layer, so an overlay outranks anything on the layer by
+/// construction - which is what a modal should do, being the one pane the user has to answer.
 ///
-/// The frame also shows the one place overlay-ness reaches the pane frame today: the two plain
-/// floating panes carry a `PIN` toggle and the overlay does not.
+/// The frame also shows the one place overlay-ness reaches the pane frame: the two plain floating
+/// panes carry a `PIN` toggle and the overlay does not.
 #[test]
 fn frame_of_an_overlay_with_a_pinned_and_a_plain_floating_pane() {
     let size = Size { cols: 80, rows: 12 };

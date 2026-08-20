@@ -4258,6 +4258,7 @@ impl Tab {
         let pane = self
             .floating_panes
             .get_mut(&pane_id)
+            .or_else(|| self.overlay_panes.get_mut(&pane_id))
             .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
             .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane));
         if let Some(pane) = pane {
@@ -4778,6 +4779,7 @@ impl Tab {
         let active_pane = self
             .floating_panes
             .get_mut(&pane_id)
+            .or_else(|| self.overlay_panes.get_mut(&pane_id))
             .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
             .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane))
             .ok_or_else(|| anyhow!(format!("failed to find pane with id {pane_id:?}")))
@@ -4945,6 +4947,7 @@ impl Tab {
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)
+            .or_else(|| self.overlay_panes.get(&active_pane_id))
             .or_else(|| self.tiled_panes.get_pane(active_pane_id))?;
         Some(active_terminal.is_mid_frame())
     }
@@ -4957,6 +4960,7 @@ impl Tab {
         let active_terminal = &self
             .floating_panes
             .get(&active_pane_id)
+            .or_else(|| self.overlay_panes.get(&active_pane_id))
             .or_else(|| self.tiled_panes.get_pane(active_pane_id))?;
         active_terminal.cursor_coordinates(Some(client_id)).map(
             |(x_in_terminal, y_in_terminal, is_visible)| {
@@ -5456,9 +5460,17 @@ impl Tab {
             }
             match self.get_active_terminal_cursor_position(client_id) {
                 Some((cursor_position_x, cursor_position_y, is_cursor_visible)) => {
-                    let active_pane_z_index = self
-                        .get_active_pane_id(client_id)
-                        .and_then(|pane_id| self.floating_panes.get_pane_z_index(pane_id));
+                    // the same flat list `occlusion_stack` builds, so an overlay's index has to
+                    // be offset past the floating layers exactly as it is when it renders
+                    let active_pane_z_index =
+                        self.get_active_pane_id(client_id).and_then(|pane_id| {
+                            self.floating_panes.get_pane_z_index(pane_id).or_else(|| {
+                                self.overlay_panes
+                                    .get_pane_z_index(pane_id)
+                                    .filter(|_| self.overlays_are_rendered())
+                                    .map(|index| index + self.floating_layer_count())
+                            })
+                        });
                     output.set_cursor_coordinates(client_id, cursor_position_x, cursor_position_y);
                     let not_occluded = output.cursor_is_visible(
                         cursor_position_x,
@@ -8187,6 +8199,7 @@ impl Tab {
         match self
             .floating_panes
             .get_mut(&pane_id)
+            .or_else(|| self.overlay_panes.get_mut(&pane_id))
             .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
             .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane))
         {

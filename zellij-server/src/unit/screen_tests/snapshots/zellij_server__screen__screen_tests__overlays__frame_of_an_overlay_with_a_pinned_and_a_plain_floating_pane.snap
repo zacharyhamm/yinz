@@ -1,14 +1,13 @@
 ---
 source: zellij-server/src/./unit/screen_tests/overlays.rs
-assertion_line: 1426
 expression: "rendered_frame(&mut screen, size)"
 ---
 00 (C):                                                                                 
 01 (C):                                                                                 
 02 (C):   ┌ Pane #4 ─────────────────────────────────────┐                              
-03 (C):   │O┌ Pane #3 ────────── PIN [+] ┐               │ PIN [ ] ┐                    
-04 (C):   │ │PINNEDFLOATING              │               │         │                    
-05 (C):   └─│                            │───────────────┘         │                    
+03 (C):   │OVERLAY                                       │ PIN [ ] ┐                    
+04 (C):   │                                              │         │                    
+05 (C):   └──────────────────────────────────────────────┘         │                    
 06 (C):     │                            │                         │                    
 07 (C):     └────────────────────────────┘                         │                    
 08 (C):                     └──────────────────────────────────────┘                    
