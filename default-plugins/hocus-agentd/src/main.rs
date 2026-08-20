@@ -582,6 +582,7 @@ impl State {
         // coming back from being suppressed — has been running all along, and
         // reading it as a re-run would take the latch that survived the
         // suppression in the first place.
+        let mut forgotten: Vec<u32> = Vec::new();
         for pane in &panes {
             if pane.status == agents::AgentStatus::Running
                 && was_shown.contains(&pane.pane_id)
@@ -589,14 +590,15 @@ impl State {
             {
                 self.latched.remove(&pane.pane_id);
                 self.pending_release.remove(&pane.pane_id);
-                // A re-run starts a new process, which has nothing to do with what the old
-                // one was summarised as doing — keeping either would show a stale answer
-                // the moment the new run pauses once. See `waiting_marker`.
-                self.activity.remove(&pane.pane_id);
-                self.phase.remove(&pane.pane_id);
-                self.summaries.remove(&pane.pane_id);
-                self.summary_baselines.remove(&pane.pane_id);
+                forgotten.push(pane.pane_id);
             }
+        }
+        // A re-run starts a new process, which has nothing to do with what the old one was
+        // summarised as doing — keeping any of it would show a stale answer the moment the
+        // new run pauses once. See `waiting_marker`. Out of the loop above only because it
+        // borrows `self` whole.
+        for pane_id in forgotten {
+            self.forget_agent(pane_id);
         }
         // Anything the manifest itself carries is news, and worth taking before
         // the rejoin below writes what we already knew back over it.
@@ -691,6 +693,10 @@ impl State {
                 && agents::kind_from_command(&command).is_none()
             {
                 self.latched.remove(&pane_id);
+                // The verdict that the agent is gone, not merely quiet. What we last knew
+                // about it describes a session that has ended, so it goes now rather than on
+                // the next heartbeat — and a settling this pane still owed goes with it.
+                self.forget_agent(pane_id);
                 found_something_new = true;
             }
             if self.commands.get(&pane_id) != Some(&command) {
@@ -998,12 +1004,17 @@ impl State {
 
     /// What one poll's reading is worth as evidence about the agent behind the pane.
     ///
-    /// Two readings say nothing. A pane the user has scrolled back shows old output, so its
-    /// text is not about now at all. And a pane whose picture moved while its pty stayed
-    /// silent moved for some reason other than the process — a reflow after a resize, most
-    /// often — which is not work either. Both keep the stretch of stillness going rather
-    /// than restarting it: see `agents::Sample`.
+    /// Three readings say nothing. One we could not take at all is an error message rather
+    /// than a screen — the pane has usually closed under us — and reading anything into it
+    /// would put that message in front of the model. A pane the user has scrolled back shows
+    /// old output, so its text is not about now at all. And a pane whose picture moved while
+    /// its pty stayed silent moved for some reason other than the process — a reflow after a
+    /// resize, most often — which is not work either. All three keep the stretch of stillness
+    /// going rather than restarting it: see `agents::Sample`.
     fn qualify<'a>(&self, pane_id: u32, reading: &'a poll::PaneSample) -> agents::Sample<'a> {
+        if !reading.readable {
+            return agents::Sample::Unusable;
+        }
         if reading.is_scrolled {
             return agents::Sample::Unusable;
         }
@@ -1077,6 +1088,15 @@ impl State {
             return false;
         }
         if self.summary_requests.contains_key(&pane_id) || !agents::worth_summarizing(text) {
+            return false;
+        }
+        // The pane's foreground command has dropped back to a shell, which proposes that the
+        // agent behind it has finished; `repair_commands` confirms or withdraws that within a
+        // tick or two. Asking in the meantime describes a shell prompt as an agent session —
+        // the latch still calls this pane an agent, but its screen is no longer one. Nothing
+        // is lost by waiting: the settling stays owed, and is either paid once the proposal
+        // is withdrawn or forgotten with the pane when it is confirmed.
+        if self.pending_release.contains(&pane_id) {
             return false;
         }
         if agents::activity_hash(&self.activity, pane_id).is_none() {
@@ -1208,6 +1228,13 @@ impl State {
         if agents::activity_hash(&self.activity, pane_id) != Some(hash) {
             return;
         }
+        // The agent went away between the request leaving and its answer landing: the pane
+        // closed, or it is back at its prompt. The answer describes a session that is over,
+        // and storing it would put a summary on a pane that has nothing to summarise —
+        // toasting it is worse still.
+        if self.agent_kind(pane_id).is_none() || self.pending_release.contains(&pane_id) {
+            return;
+        }
         // A failed summary is simply no summary — the same stance `ProbeOutcome::Failed`
         // takes, and for the same reason: a guess here would outlive the reason for it.
         // The next idle edge asks again.
@@ -1241,10 +1268,31 @@ impl State {
         self.publish();
     }
 
+    /// Forget everything this daemon holds about a pane *as an agent*.
+    ///
+    /// For the two verdicts that end an agent rather than pause one: a latch released because
+    /// the pane is demonstrably back at its prompt, and a re-run putting a new process behind
+    /// the same id. The retention rules in `observe_activity_with` reach the same state on the
+    /// next heartbeat, but only after up to a poll interval of showing a summary of a session
+    /// that is over — and, for the released latch, one more chance to ask about it.
+    ///
+    /// Not for a pane that has merely gone `Held` or `Exited`: that is an agent that finished
+    /// its work, and its last summary is the most useful thing on the row.
+    fn forget_agent(&mut self, pane_id: u32) {
+        self.activity.remove(&pane_id);
+        self.phase.remove(&pane_id);
+        self.summaries.remove(&pane_id);
+        self.summary_baselines.remove(&pane_id);
+        self.summary_requests.remove(&pane_id);
+        self.summary_cooldown.remove(&pane_id);
+        self.geometry_grace.remove(&pane_id);
+    }
+
     /// What kind of agent a pane is running, if it is one we can still classify.
     ///
     /// `None` for a pane that has closed or stopped looking like an agent between the
-    /// request going out and its answer landing — the toast simply goes without the label.
+    /// request going out and its answer landing, which is why `finish_summary_with` asks it
+    /// before storing anything: there is no session left for the answer to be about.
     fn agent_kind(&self, pane_id: u32) -> Option<&str> {
         let pane = self
             .panes
@@ -2273,6 +2321,7 @@ mod tests {
     fn sample(text: &str) -> poll::PaneSample {
         poll::PaneSample {
             text: text.to_owned(),
+            readable: true,
             is_scrolled: false,
             last_output_ms_ago: Some(0),
         }
@@ -2292,6 +2341,16 @@ mod tests {
         poll::PaneSample {
             is_scrolled: true,
             ..sample(text)
+        }
+    }
+
+    /// A reading the host refused — what a pane that has closed under us answers with, and
+    /// what `poll::read_pane` makes of it: an error message where the screen would be.
+    fn unreadable() -> poll::PaneSample {
+        poll::PaneSample {
+            readable: false,
+            last_output_ms_ago: None,
+            ..sample("could not read pane: Pane Terminal(7) not found")
         }
     }
 
@@ -2946,6 +3005,126 @@ mod tests {
 
         poll_showing(&mut state, BUSY_PANE, &mut sent);
         assert_eq!(sent.len(), 1, "and the settling was not thrown away");
+    }
+
+    /// The pane closed under the poll, so the host answered an error instead of a screen.
+    /// That error is not what the agent wrote, and asking the model to summarise it would
+    /// describe the failure as if it were the session.
+    #[test]
+    fn a_pane_we_could_not_read_is_never_sent_to_the_model() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        // The flag alone has to be enough. Nothing else about this reading looks wrong —
+        // it is not scrolled, and there is no earlier screen for it to have moved away
+        // from — so it is the failure itself that makes it worth nothing.
+        assert!(matches!(
+            state.qualify(7, &unreadable()),
+            agents::Sample::Unusable
+        ));
+
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        for _ in 0..SUMMARY_SETTLE_POLLS {
+            poll_reading(&mut state, unreadable(), &mut sent);
+        }
+
+        assert!(sent.is_empty(), "an error message is not a screen");
+
+        // And if the pane comes back — a read that failed for some passing reason — the
+        // settling it could not pay for is still owed.
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// The agent exits and leaves its pane sitting at a shell prompt. The latch and the
+    /// title still call the pane an agent, and the prompt drawing itself looks exactly like
+    /// a screenful of work settling — so this used to ask the model to describe a session
+    /// that had already ended.
+    #[test]
+    fn an_agent_that_has_finished_is_not_summarised() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_command(7, vec!["claude".to_owned()], true);
+        let mut sent = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        // The agent exits: nothing in the foreground, and no agent in the command.
+        state.on_command(7, vec!["zsh".to_owned()], false);
+        assert!(state.pending_release.contains(&7), "proposed, not settled");
+        for _ in 0..=SUMMARY_SETTLE_POLLS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        assert!(sent.is_empty(), "there is no agent behind this screen");
+
+        // The proposal was wrong — the agent was only between tool runs — and the settling
+        // it swallowed was deferred rather than dropped.
+        state.repair_commands_with(|_| Some("claude".to_owned()));
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// And when the proposal is confirmed, what we knew about the agent goes with it: a
+    /// summary of a session that has ended is worse than no summary at all.
+    #[test]
+    fn a_confirmed_release_takes_the_summary_with_it() {
+        let (mut state, sent) = idle_agent(BUSY_PANE);
+        assert_eq!(sent.len(), 1);
+        state.on_command(7, vec!["claude".to_owned()], true);
+        finish(
+            &mut state,
+            200,
+            &reply("Running the tests", false),
+            &context(7, 1),
+        );
+        assert!(state.summaries.contains_key(&7), "there was one to lose");
+
+        state.on_command(7, vec!["zsh".to_owned()], false);
+        state.repair_commands_with(|_| Some("zsh".to_owned()));
+
+        assert!(state.summaries.is_empty(), "the session is over");
+        assert!(state.summary_baselines.is_empty());
+        assert!(state.activity.is_empty());
+        assert!(state.phase.is_empty());
+    }
+
+    /// The agent went away while we were asking about it. The answer describes a session
+    /// that has ended, and a toast about one is an interruption for nothing.
+    #[test]
+    fn a_reply_that_outlived_its_agent_is_dropped() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.on_command(7, vec!["claude".to_owned()], true);
+        state.on_command(7, vec!["zsh".to_owned()], false);
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Running the tests", false),
+            &context(7, 1),
+        );
+
+        assert!(finished.toasts.is_empty(), "nothing to interrupt for");
+        assert!(finished.renames.is_empty());
+        assert!(!state.summaries.contains_key(&7));
+
+        // The same for a pane that has gone altogether rather than merely stopped being an
+        // agent — there is nothing left to name, toast at, or describe.
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.panes = Some(Vec::new());
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Running the tests", false),
+            &context(7, 1),
+        );
+
+        assert!(finished.toasts.is_empty());
+        assert!(state.summaries.is_empty());
     }
 
     /// A settling the cooldown swallowed is deferred, not dropped — the opposite of one a
