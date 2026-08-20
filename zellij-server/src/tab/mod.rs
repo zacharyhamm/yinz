@@ -4245,6 +4245,7 @@ impl Tab {
             || self
                 .floating_panes
                 .panes_contain(&PaneId::Plugin(plugin_id))
+            || self.overlay_panes.panes_contain(&PaneId::Plugin(plugin_id))
             || self
                 .suppressed_panes
                 .contains_key(&PaneId::Plugin(plugin_id))
@@ -5112,6 +5113,7 @@ impl Tab {
     pub fn set_force_render(&mut self) {
         self.tiled_panes.set_force_render();
         self.floating_panes.set_force_render();
+        self.overlay_panes.set_force_render();
         for member in self.stack_list_of_member.keys() {
             if let Some(pane) = self.suppressed_panes.get_mut(member).map(|s| &mut s.pane) {
                 pane.set_should_render(true);
@@ -5831,9 +5833,7 @@ impl Tab {
         Ok(())
     }
     fn set_pane_active_at(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self.tiled_panes.get_pane_mut(pane_id) {
-            pane.set_active_at(Instant::now());
-        } else if let Some(pane) = self.floating_panes.get_pane_mut(pane_id) {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_active_at(Instant::now());
         }
     }
@@ -7306,14 +7306,7 @@ impl Tab {
             )
         };
         let pane = self
-            .floating_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
+            .get_pane_with_id_mut(pane_id)
             .with_context(err_context)?;
         pane.rename(buf);
         Ok(())
@@ -7328,16 +7321,13 @@ impl Tab {
 
     pub fn undo_active_rename_pane(&mut self, client_id: ClientId) -> Result<()> {
         if let Some(active_terminal_id) = self.get_active_terminal_id(client_id) {
-            let active_terminal = if self.are_floating_panes_visible() {
-                self.floating_panes
-                    .get_pane_mut(PaneId::Terminal(active_terminal_id))
-            } else {
-                self.tiled_panes
-                    .get_pane_mut(PaneId::Terminal(active_terminal_id))
-            }
-            .with_context(|| {
-                format!("failed to undo rename of active pane for client {client_id}")
-            })?;
+            // by id rather than by which collection the layer's visibility suggests: the active
+            // terminal can be an overlay, which is on neither the floating layer nor the tiled one
+            let active_terminal = self
+                .get_pane_with_id_mut(PaneId::Terminal(active_terminal_id))
+                .with_context(|| {
+                    format!("failed to undo rename of active pane for client {client_id}")
+                })?;
 
             active_terminal.load_pane_name();
         }
