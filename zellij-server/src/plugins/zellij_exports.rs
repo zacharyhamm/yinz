@@ -57,7 +57,7 @@ use zellij_utils::data::{
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
     OriginatingPlugin, OrphanedPane, PaneFrameStyle, PaneScrollbackResponse, PermissionStatus,
     PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse,
-    TabMetadata, WarpPaneResponse, WarpPlacement,
+    TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::home::default_layout_dir;
 use zellij_utils::input::layout::PercentOrFixed;
@@ -2455,8 +2455,12 @@ fn open_command_pane_in_git_checkout_near_plugin(
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
             command_to_run.cwd = Some(cwd);
-            spawn_command_pane_near_plugin(env, command_to_run, BTreeMap::new())
-                .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
+            spawn_command_pane_near_plugin(
+                env,
+                command_to_run,
+                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+            )
+            .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
         });
     let response = ProtobufOpenCommandPaneInGitCheckoutResponse::from(result);
     wasi_write_object(env, &response.encode_to_vec())
