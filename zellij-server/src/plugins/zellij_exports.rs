@@ -2503,6 +2503,11 @@ fn prepare_git_checkout_in(
             Ok(root)
         },
         GitCheckout::NewWorktree { branch, base, path } => {
+            // Anchored to the primary checkout, not to the caller's. A relative path
+            // joined onto the caller's root nests a worktree inside a worktree
+            // whenever the agent asking for one is already sitting in a worktree,
+            // and a nested worktree is stranded the moment its parent is removed.
+            let root = primary_worktree(&root)?;
             validate_git_names(&root, &branch, &base)?;
             let path = if path.is_absolute() {
                 path
@@ -2518,6 +2523,34 @@ fn prepare_git_checkout_in(
             Ok(path)
         },
     }
+}
+
+/// The repository's primary worktree — the checkout a relative worktree path is
+/// resolved against.
+///
+/// `git rev-parse --show-toplevel` answers the *caller's* worktree, which is the
+/// wrong anchor for `git worktree add`. `git worktree list --porcelain` always
+/// lists the primary worktree first and answers its real checkout path. Taking the
+/// parent of `--git-common-dir` instead would assume the common directory is a
+/// `.git` sitting inside its checkout, which `--separate-git-dir` and `$GIT_DIR`
+/// both break.
+fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    if !output.status.success() {
+        return Err(git_error("list the worktrees", &output.stderr));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("worktree "))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| git_error("find the primary worktree", &output.stderr))
 }
 
 fn validate_git_names(root: &std::path::Path, branch: &str, base: &str) -> Result<(), String> {
@@ -6475,6 +6508,76 @@ mod permission_tests {
                 branch: "topic".to_owned(),
                 base: "main".to_owned(),
                 path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap();
+        assert_eq!(cwd, target);
+        assert!(std::fs::read_to_string(target.join(".git"))
+            .unwrap()
+            .starts_with("gitdir:"));
+    }
+
+    /// A linked worktree of `primary`, nested inside it the way this repository
+    /// keeps its own.
+    fn worktree(primary: &std::path::Path, name: &str, branch: &str) -> PathBuf {
+        let path = primary.join(".worktrees").join(name);
+        assert!(process::Command::new("git")
+            .arg("-C")
+            .arg(primary)
+            .args(["worktree", "add", "-b", branch])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        path
+    }
+
+    /// `tempfile` hands out a path under a symlinked `/var` on macOS while git
+    /// answers the physical one, so paths only compare after resolving.
+    fn resolved(path: &std::path::Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    #[test]
+    fn a_worktree_request_from_inside_a_worktree_anchors_to_the_primary() {
+        let repository = repository();
+        let first = worktree(repository.path(), "first", "first");
+        let cwd = prepare_git_checkout_in(
+            first.clone(),
+            GitCheckout::NewWorktree {
+                branch: "second".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/second"),
+            },
+        )
+        .unwrap();
+        // Checked before the equality, whose expected path does not exist when this
+        // regresses — a missing-path panic would hide what actually went wrong.
+        assert!(
+            !resolved(&cwd).starts_with(resolved(&first)),
+            "{cwd:?} must not be nested inside {first:?}"
+        );
+        assert_eq!(
+            resolved(&cwd),
+            resolved(&repository.path().join(".worktrees/second")),
+            "the second worktree is a sibling of the first, not a child of it"
+        );
+        assert!(std::fs::read_to_string(cwd.join(".git"))
+            .unwrap()
+            .starts_with("gitdir:"));
+    }
+
+    #[test]
+    fn an_absolute_worktree_path_is_honoured_from_inside_a_worktree() {
+        let repository = repository();
+        let first = worktree(repository.path(), "first", "first");
+        let target = repository.path().join("elsewhere/second");
+        let cwd = prepare_git_checkout_in(
+            first,
+            GitCheckout::NewWorktree {
+                branch: "second".to_owned(),
+                base: "main".to_owned(),
+                path: target.clone(),
             },
         )
         .unwrap();
