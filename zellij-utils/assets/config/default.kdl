@@ -167,6 +167,7 @@ keybinds {
         bind "n" {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
+                overlay true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
@@ -174,6 +175,7 @@ keybinds {
         bind "d" {
             LaunchOrFocusPlugin "hocus-duplicate-agent" {
                 floating true
+                overlay true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"

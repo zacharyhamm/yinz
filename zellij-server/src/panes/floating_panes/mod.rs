@@ -420,6 +420,22 @@ impl FloatingPanes {
             self.active_panes.unfocus_all_panes(&mut self.panes);
         }
     }
+    /// Take the layer down while the overlays drawn on it stay up.
+    ///
+    /// The whole point of an overlay is that it is not the floating layer: it renders and takes
+    /// input with `show_panes` false (see `stack_layer_ids`, `render` and
+    /// `Tab::get_active_pane_id`). So this is `toggle_show_panes(false)` minus the focus-out an
+    /// overlay has not earned - it did not lose focus, the layer under it went away.
+    pub fn hide_panes_keeping_overlay_focus(&mut self) {
+        self.window_title = None; // clear so that it will be re-rendered once we toggle back
+        self.show_panes = false;
+        let overlays: HashSet<PaneId> = self.overlay_coordinates.keys().copied().collect();
+        self.active_panes
+            .unfocus_all_panes_except(&overlays, &mut self.panes);
+    }
+    pub fn pane_is_focused(&self, pane_id: &PaneId) -> bool {
+        self.active_panes.pane_id_is_focused(pane_id)
+    }
     pub fn active_panes_contain(&self, client_id: &ClientId) -> bool {
         self.active_panes.contains_key(client_id)
     }

@@ -2832,9 +2832,16 @@ impl Tab {
             self.park_pane(new_pane);
             Ok(())
         } else {
+            // an overlay is the client's active pane while the floating layer is down (see
+            // `get_active_pane_id`) - it must not be read as "the floating layer is where this
+            // client is working", or opening a pane over a modal reveals every hidden floating
+            // pane and puts the new one among them
             let active_pane_is_floating = client_id
                 .and_then(|client_id| self.get_active_pane_id(client_id))
-                .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
+                .is_some_and(|pane_id| {
+                    self.floating_panes.panes_contain(&pane_id)
+                        && !self.floating_panes.is_overlay(pane_id)
+                });
             if active_pane_is_floating && !self.floating_panes.panes_are_visible() {
                 self.show_floating_panes();
             }
@@ -2843,6 +2850,19 @@ impl Tab {
             if should_focus_pane && should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, true, client_id)
             } else if should_focus_pane {
+                // a modal holds this client's focus while the floating layer is down, and
+                // `get_active_pane_id` would keep preferring it over the pane we are about to
+                // focus. The new pane is what the user just asked for, so the modal gives the
+                // keyboard up - which is also how a popup that closes on losing focus finds out.
+                if let Some(client_id) = client_id {
+                    if self
+                        .floating_panes
+                        .active_pane_id(client_id)
+                        .is_some_and(|pane_id| self.floating_panes.is_overlay(pane_id))
+                    {
+                        self.floating_panes.defocus_pane(client_id);
+                    }
+                }
                 self.add_tiled_pane(new_pane, pid, false, client_id)
             } else if should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, false, client_id)
@@ -7237,6 +7257,20 @@ impl Tab {
         self.set_force_render();
     }
 
+    /// Take the floating layer down out from under an overlay that stays up.
+    ///
+    /// Deliberately not `hide_floating_panes`: that one unsets a floating fullscreen and tells
+    /// every focused floating pane it lost focus, and the overlay here neither is fullscreen nor
+    /// has lost anything. It does keep the tiled refocus, because the tiled panes were told they
+    /// lost focus when this pane was born an ordinary floating pane, and a pane born an overlay is
+    /// never told that at all - handing it back is what makes the two paths land in the same
+    /// place.
+    fn hide_floating_panes_under_overlay(&mut self) {
+        self.floating_panes.hide_panes_keeping_overlay_focus();
+        self.tiled_panes.focus_all_panes();
+        self.set_force_render();
+    }
+
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
         if self.floating_panes.all_panes_are_visible() {
             if let Some(c) = completion.as_mut() {
@@ -8049,8 +8083,37 @@ impl Tab {
                 }
             }
         }
+        let was_overlay = self.floating_panes.is_overlay(*pane_id);
         self.floating_panes
             .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+        let is_overlay = self.floating_panes.is_overlay(*pane_id);
+        if is_overlay && !was_overlay {
+            // A pane that turns itself into an overlay after the fact was, a moment ago, an
+            // ordinary floating pane - and opening one of those shows the floating layer. Left
+            // set, that reads as "floating panes are visible": it lights the status bar's <f>,
+            // sends the next new pane to the floating layer, and swallows splits and focus
+            // moves. Only the overlay is up, so the layer is not.
+            if self.floating_panes.all_panes_are_visible()
+                && self
+                    .floating_panes
+                    .last_selectable_non_overlay_pane_id()
+                    .is_none()
+            {
+                self.hide_floating_panes_under_overlay();
+            }
+        } else if was_overlay && !is_overlay {
+            // The inverse: a pane that stops being an overlay while the layer is down keeps a
+            // client's floating focus but stops being drawn (`stack_layer_ids`) and stops being
+            // that client's active pane (`get_active_pane_id`) - input would fall through to the
+            // tiled pane under it. Narrow on purpose: `change_pane_coordinates` clears the
+            // overlay mark for any coordinates that do not ask for it, and merely moving a
+            // normal hidden floating pane must not pop the layer open.
+            if !self.floating_panes.all_panes_are_visible()
+                && self.floating_panes.pane_is_focused(pane_id)
+            {
+                self.show_floating_panes();
+            }
+        }
         self.set_force_render();
         self.swap_layouts.set_is_floating_damaged();
         Ok(())

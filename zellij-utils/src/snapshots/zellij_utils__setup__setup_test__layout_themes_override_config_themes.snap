@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/setup.rs
+assertion_line: 753
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -6825,7 +6826,9 @@ Config {
                             name: "hocus-duplicate-agent",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
@@ -7027,7 +7030,9 @@ Config {
                             name: "hocus-new-agent",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
