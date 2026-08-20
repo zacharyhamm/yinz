@@ -758,7 +758,7 @@ impl Form {
                         Widget::Select(select) => select.cursor_column(&prompt, width),
                         Widget::Checkbox(_) | Widget::Radio(_) => None,
                     };
-                    column.map(|column| (x + column, y + i - start))
+                    column.map(|column| (x + column, (y + i - start).saturating_sub(1)))
                 })
             },
             // Focus is on a button: there is nothing to type into, and a cursor
@@ -902,12 +902,38 @@ mod tests {
     }
 
     #[test]
-    fn traversal_wraps_through_fields_then_buttons() {
-        let mut form = a_form();
-        for expected in ["path", "save", "cancel", "name"] {
+    fn tab_traverses_every_widget_and_wraps() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .select("kind", "Kind", Select::new(["One", "Two"]))
+            .checkbox("frames", "Frames", Checkbox::new(false))
+            .radio("mode", "Mode", RadioGroup::new(["One", "Two"]))
+            .button("save", Button::new("Save"))
+            .button("cancel", Button::new("Cancel"));
+        for expected in ["kind", "frames", "mode", "save", "cancel", "name"] {
             assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
             assert_eq!(form.focused_id(), Some(expected));
         }
+    }
+
+    #[test]
+    fn cursor_tracks_the_focused_field_row_after_traversal() {
+        use crate::shim::take_last_cursor_position;
+
+        let mut form = Form::new()
+            .select("kind", "Kind", Select::new(["One", "Two"]))
+            .field("name", "Name", TextInput::empty())
+            .field("path", "Path", TextInput::empty());
+
+        form.handle_key(key(BareKey::Tab));
+        form.render(2, 5, 40);
+        let name_row = form.field_by_id("name").unwrap().last_rendered.unwrap().y;
+        assert_eq!(take_last_cursor_position(), Some(Some((8, name_row - 1))));
+
+        form.handle_key(key(BareKey::Tab));
+        form.render_in_viewport(2, 5, 40, 1);
+        let path_row = form.field_by_id("path").unwrap().last_rendered.unwrap().y;
+        assert_eq!(take_last_cursor_position(), Some(Some((8, path_row - 1))));
     }
 
     #[test]
@@ -1250,16 +1276,6 @@ mod tests {
             form.handle_mouse(Mouse::LeftClick(1, 14)),
             FormEvent::FocusMoved
         );
-    }
-
-    #[test]
-    fn traversal_includes_choices_before_buttons() {
-        let mut form = a_form_with_choices();
-        assert_eq!(form.focused_id(), Some("frames"));
-        for expected in ["mode", "save", "frames"] {
-            assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
-            assert_eq!(form.focused_id(), Some(expected));
-        }
     }
 
     #[test]
