@@ -214,24 +214,17 @@ impl RunPluginOrAlias {
                 RunPluginOrAlias::Alias(self_alias),
                 Some(Run::Plugin(RunPluginOrAlias::Alias(run_alias))),
             ) => {
+                let without_caller_context = |configuration: Option<&PluginUserConfiguration>| {
+                    let mut configuration = configuration
+                        .map(|configuration| configuration.inner().clone())
+                        .unwrap_or_default();
+                    configuration.remove("caller_cwd");
+                    configuration.remove("caller_terminal_pane_id");
+                    configuration
+                };
                 self_alias.name == run_alias.name
-                    && self_alias
-                        .configuration
-                        .as_ref()
-                        // we do the is_empty() checks because an empty configuration is the same as no
-                        // configuration (i.e. None)
-                        .filter(|c| !c.inner().is_empty())
-                        == run_alias.configuration.as_ref().and_then(|c| {
-                            let mut to_compare = c.inner().clone();
-                            // caller_cwd is a special attribute given to alias and should not be
-                            // considered when weighing configuration equivalency
-                            to_compare.remove("caller_cwd");
-                            if to_compare.is_empty() {
-                                None
-                            } else {
-                                Some(c)
-                            }
-                        })
+                    && without_caller_context(self_alias.configuration.as_ref())
+                        == without_caller_context(run_alias.configuration.as_ref())
             },
             (
                 RunPluginOrAlias::Alias(self_alias),
@@ -538,6 +531,20 @@ impl PluginAlias {
                     .configuration
                     .get_or_insert_with(|| PluginUserConfiguration::new(BTreeMap::new()));
                 configuration.insert("caller_cwd", caller_cwd.display().to_string());
+            }
+        }
+    }
+    pub fn set_caller_terminal_pane_id_if_not_set(&mut self, pane_id: Option<u32>) {
+        if let Some(pane_id) = pane_id {
+            let configuration = self
+                .configuration
+                .get_or_insert_with(|| PluginUserConfiguration::new(BTreeMap::new()));
+            if configuration
+                .inner()
+                .get("caller_terminal_pane_id")
+                .is_none()
+            {
+                configuration.insert("caller_terminal_pane_id", pane_id.to_string());
             }
         }
     }
