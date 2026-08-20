@@ -12,7 +12,7 @@ use crate::tab::{pane_info_for_pane, Pane};
 use floating_pane_grid::FloatingPaneGrid;
 
 use crate::{
-    global_panes::{expand_viewport_over_global_panes, GlobalPaneStrip},
+    global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{FloatingPanesStack, Output},
     panes::{ActivePanes, PaneId},
@@ -40,7 +40,7 @@ const RESIZE_INCREMENT_HEIGHT: usize = 2;
 
 /// Whether any part of `geom` lies outside `viewport` - for a floating pane, whether it hangs off
 /// its tab and onto the global panes or the chrome beside them.
-fn geom_is_outside_viewport(geom: &PaneGeom, viewport: &Viewport) -> bool {
+pub fn geom_is_outside_viewport(geom: &PaneGeom, viewport: &Viewport) -> bool {
     geom.x < viewport.x
         || geom.y < viewport.y
         || geom.x + geom.cols.as_usize() > viewport.x + viewport.cols
@@ -426,9 +426,9 @@ impl FloatingPanes {
         self.window_title = None; // clear so that it will be re-rendered once we toggle back
         self.show_panes = should_show_floating_panes;
         if should_show_floating_panes {
-            self.active_panes.focus_all_panes(&mut self.panes);
+            self.active_panes.focus_all_panes(&self.panes);
         } else {
-            self.active_panes.unfocus_all_panes(&mut self.panes);
+            self.active_panes.unfocus_all_panes(&self.panes);
         }
     }
     /// Take the layer down while the overlays drawn on it stay up.
@@ -442,7 +442,7 @@ impl FloatingPanes {
         self.show_panes = false;
         let overlays: HashSet<PaneId> = self.overlay_coordinates.keys().copied().collect();
         self.active_panes
-            .unfocus_all_panes_except(&overlays, &mut self.panes);
+            .unfocus_all_panes_except(&overlays, &self.panes);
     }
     pub fn pane_is_focused(&self, pane_id: &PaneId) -> bool {
         self.active_panes.pane_id_is_focused(pane_id)
@@ -1051,7 +1051,7 @@ impl FloatingPanes {
             },
             None => {
                 // TODO: can this happen?
-                self.active_panes.clear(&mut self.panes);
+                self.active_panes.clear(&self.panes);
                 self.z_indices.clear();
             },
         }
@@ -1456,15 +1456,9 @@ impl FloatingPanes {
 
     fn coordinate_space(&self, overlay: bool) -> (Viewport, (usize, usize)) {
         if overlay {
-            let (x, y) = *self.display_area_origin.borrow();
-            let display_area = *self.display_area.borrow();
-            let surface = expand_viewport_over_global_panes(
-                Viewport {
-                    x,
-                    y,
-                    cols: display_area.cols,
-                    rows: display_area.rows,
-                },
+            let surface = session_surface(
+                *self.display_area.borrow(),
+                *self.display_area_origin.borrow(),
                 &self.global_pane_strips.borrow(),
             );
             (surface, (surface.x, surface.y))
@@ -1502,7 +1496,7 @@ impl FloatingPanes {
                 match next_active_pane_id {
                     Some(next_active_pane_id) => {
                         self.active_panes
-                            .insert(client_id, next_active_pane_id, &mut self.panes);
+                            .insert(client_id, next_active_pane_id, &self.panes);
                         self.focus_pane(next_active_pane_id, client_id);
                         if let Some(last_active_pane_id) = last_active_pane_id {
                             self.active_panes
@@ -1520,8 +1514,7 @@ impl FloatingPanes {
         let connected_clients: Vec<ClientId> =
             self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
-            self.active_panes
-                .insert(client_id, pane_id, &mut self.panes);
+            self.active_panes.insert(client_id, pane_id, &self.panes);
         }
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.z_indices.push(pane_id);
@@ -1531,8 +1524,7 @@ impl FloatingPanes {
     }
     #[cfg(test)]
     pub fn set_active_pane_for_client(&mut self, pane_id: PaneId, client_id: ClientId) {
-        self.active_panes
-            .insert(client_id, pane_id, &mut self.panes);
+        self.active_panes.insert(client_id, pane_id, &self.panes);
     }
     pub fn fullscreen_is_active(&self) -> bool {
         self.fullscreen_pane_id.is_some()
@@ -1686,8 +1678,7 @@ impl FloatingPanes {
             log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
             return;
         }
-        self.active_panes
-            .insert(client_id, pane_id, &mut self.panes);
+        self.active_panes.insert(client_id, pane_id, &self.panes);
         self.focus_pane_for_all_clients(pane_id);
     }
     pub fn focus_pane_if_client_not_focused(&mut self, pane_id: PaneId, client_id: ClientId) {
@@ -1707,7 +1698,7 @@ impl FloatingPanes {
         }
     }
     pub fn defocus_pane(&mut self, client_id: ClientId) {
-        self.active_panes.remove(&client_id, &mut self.panes);
+        self.active_panes.remove(&client_id, &self.panes);
         self.set_force_render();
     }
     pub fn get_pane(&self, pane_id: PaneId) -> Option<&Box<dyn Pane>> {
@@ -1934,9 +1925,8 @@ impl FloatingPanes {
             .map(|(cid, _pid)| *cid)
             .collect();
         for client_id in clients_in_pane {
-            self.active_panes.remove(&client_id, &mut self.panes);
-            self.active_panes
-                .insert(client_id, to_pane_id, &mut self.panes);
+            self.active_panes.remove(&client_id, &self.panes);
+            self.active_panes.insert(client_id, to_pane_id, &self.panes);
         }
     }
     pub fn reapply_pane_focus(&mut self) {

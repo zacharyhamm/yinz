@@ -78,6 +78,50 @@ the entry point and keeps the existing storage, with
 `OverlayPlacement::as_floating_pane_coordinates()` as the one translation. It changes no
 behavior. The storage swap is Phases 2–3; the field deletion moves to Phase 4.
 
+### Phase 2 — the `OverlayPanes` collection
+
+`zellij-server/src/panes/overlay_panes/mod.rs`, with its own unit tests in
+`overlay_panes/unit/`. Built, wired onto `Tab`, and consumed by nothing: every existing
+test passes unchanged because no call path reaches it yet. Phase 3 routes to it.
+
+The surface computation came out of `FloatingPanes::coordinate_space` as
+`global_panes::session_surface(display_area, display_area_origin, strips) -> Viewport`,
+which both collections now call. It was *extracted, not moved* - finding 6.
+
+`Tab::assert_invariants()` gained `overlay_panes` in invariant 1 (a pane lives in exactly
+one collection) and a second copy of invariant 4 (the occlusion stack agrees with every
+pane's z-index) for the new collection. Invariants 2 and 3 are still off; they are
+Phase 3's.
+
+**Deviations from the Phase 2 sketch below, both forced:**
+
+1. **`ActivePanes` is not "reused unchanged".** The sketch asks for both
+   `panes: BTreeMap<PaneId, OverlayPane>` and an untouched `ActivePanes`, and those cannot
+   both hold - `ActivePanes`' signatures named `BTreeMap<PaneId, Box<dyn Pane>>`
+   concretely. It gained a one-method `PaneLookup` trait instead. This turned out to be
+   nearly free: `ActivePanes` only ever calls `panes.get(&pane_id)`, read-only, so the
+   change also drops a `&mut` that was never used at 27 call sites.
+2. **`session_surface` returns only the `Viewport`.** `coordinate_space` returned
+   `(Viewport, (usize, usize))`, but for the overlay arm the origin is always
+   `(surface.x, surface.y)`, so callers derive it rather than being handed it.
+
+Two things in `OverlayPanes::render` are worth knowing before Phase 3 touches it:
+
+- It takes a **`z_index_offset`**. `Output` receives one flat `FloatingPanesStack` and a
+  pane's z-index is its absolute position in it, so once `Tab::floating_panes_stack`
+  concatenates floating-then-overlay layers, overlay indices must be offset by the floating
+  layer count. The parameter exists now so the signature does not have to change later.
+- `render` iterates `stack_layer_ids()` **directly** rather than re-deriving the list.
+  `FloatingPanes` keeps two hand-duplicated filter chains in step by hand
+  (`floating_panes/mod.rs:150-185` vs `:700-722`) and warns that a pane given an index that
+  is not its own erases itself. That is the refactor's highest-risk site; here there is no
+  second list to drift.
+
+`OverlayPanes` deliberately has no `show_panes`, `fullscreen_pane_id`,
+`desired_pane_positions` or `pane_being_moved_with_mouse`, and the module doc says why for
+each. If Phase 3 finds it needs one of them, that is a signal about the concept - say so
+rather than adding it quietly.
+
 ---
 
 ## Findings that the remaining work depends on
@@ -132,9 +176,10 @@ behavior and is expected to flip.
 
 ---
 
-## Phase 2 — the `OverlayPanes` collection
+## Phase 2 — the `OverlayPanes` collection (**landed**; see Done, above)
 
-New `zellij-server/src/panes/overlay_panes/mod.rs`. Structural precedent:
+Kept for the reasoning behind the shape, and for the deviations recorded above.
+`zellij-server/src/panes/overlay_panes/mod.rs`. Structural precedent:
 `GlobalPaneManager` (`global_panes.rs:436`), a pane collection owning its own placement
 metadata and focus map.
 
@@ -286,8 +331,23 @@ Notes from running these on this branch:
 - **Pre-existing failures**, confirmed by stashing the branch and re-running:
   `misc::quit_with_keybinding`, and the `nested_guest_modal` / `nested_hardening` group.
   Not caused by this work.
-- `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`
-  is flaky — it failed once and passed on re-run with the same tree.
+- **The `zellij-server` lib suite is flaky under parallel load, and the failing set changes
+  from run to run.** Four runs on the same tree produced four different one- or two-test
+  failure sets, drawn from
+  `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
+  `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`
+  and `screen_tests::cli_actions::send_cli_scroll_up_action`. Every one of them passes when
+  run alone, and `global_panes_focus` also fails on a stashed (pre-branch) tree — so this is
+  load, not a regression.
+
+  The mechanism is visible in the tests themselves: `mode_update_payload...` loads a real
+  wasm plugin and then synchronizes with bare `std::thread::sleep(500ms)`
+  (`plugins/unit/plugin_tests/keybinds.rs:95,114,133`). Under contention the load overruns
+  the sleep and the assertion reads a half-built state.
+
+  **Consequence for anyone measuring this branch:** a single red run is not evidence. Re-run,
+  and check the named test alone before believing it. Adding tests to this suite — Phase 2
+  added 11 — changes the scheduling and so changes which of these surface.
 - **`cargo x build` and `cargo x integration-test` rewrite every `.wasm` under
   `zellij-utils/assets/plugins/`.** Revert that churn (`git checkout --
   zellij-utils/assets/plugins/`) unless plugin source actually changed, or it lands in

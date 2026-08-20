@@ -65,7 +65,7 @@ use crate::{
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
-    panes::{FloatingPanes, PaneFactory, TiledPanes},
+    panes::{FloatingPanes, OverlayPanes, PaneFactory, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane, EMPTY_TERMINAL_CHARACTER},
     plugins::PluginInstruction,
     pty::{ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
@@ -267,6 +267,13 @@ pub(crate) struct Tab {
     pub size: Size,
     tiled_panes: TiledPanes,
     floating_panes: FloatingPanes,
+    // panes drawn over the whole session surface, above the global panes - a sibling of the two
+    // above rather than a special case of the floating layer, so that "the floating layer is down"
+    // can never mean "nothing on it is focused".
+    // Built and held but not yet routed to; Phase 3 of the modals/overlays refactor moves the
+    // behavior across from `floating_panes` and this attribute comes off.
+    #[allow(dead_code)]
+    overlay_panes: OverlayPanes,
     suppressed_panes: SuppressedPanes,
     stacked_pane_list: Rc<RefCell<bool>>,
     reserved_top_rows: Rc<RefCell<HashMap<PaneId, usize>>>,
@@ -1046,6 +1053,22 @@ impl Tab {
             os_api.clone(),
             senders.clone(),
         );
+        let overlay_panes = OverlayPanes::new(
+            display_area.clone(),
+            display_area_origin.clone(),
+            viewport.clone(),
+            global_pane_strips.clone(),
+            connected_clients.clone(),
+            connected_clients_in_app.clone(),
+            mode_info.clone(),
+            character_cell_size.clone(),
+            pane_frame_style,
+            session_is_mirrored,
+            default_mode_info.clone(),
+            style,
+            os_api.clone(),
+            senders.clone(),
+        );
 
         let clipboard_provider = match copy_options.command {
             Some(command) => ClipboardProvider::Command(CopyCommand::new(command)),
@@ -1058,6 +1081,7 @@ impl Tab {
             position,
             tiled_panes,
             floating_panes,
+            overlay_panes,
             suppressed_panes: HashMap::new(),
             stacked_pane_list,
             reserved_top_rows,
@@ -8623,6 +8647,9 @@ impl Tab {
         for pane_id in self.floating_panes.pane_ids() {
             claim(*pane_id, "floating_panes");
         }
+        for pane_id in self.overlay_panes.pane_ids() {
+            claim(*pane_id, "overlay_panes");
+        }
         for pane_id in self.suppressed_panes.keys() {
             claim(*pane_id, "suppressed_panes");
         }
@@ -8643,6 +8670,20 @@ impl Tab {
                 self.floating_panes.get_pane_z_index(*pane_id),
                 Some(index),
                 "{pane_id:?} is at position {index} of the occlusion stack but reports a \
+                 different z-index"
+            );
+        }
+
+        let overlay_stack = self.overlay_panes.rendered_pane_ids();
+        for (index, pane_id) in overlay_stack.iter().enumerate() {
+            assert!(
+                self.overlay_panes.panes_contain(pane_id),
+                "{pane_id:?} is in the overlay occlusion stack but not in the overlay panes"
+            );
+            assert_eq!(
+                self.overlay_panes.get_pane_z_index(*pane_id),
+                Some(index),
+                "{pane_id:?} is at position {index} of the overlay occlusion stack but reports a \
                  different z-index"
             );
         }

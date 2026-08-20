@@ -26,7 +26,7 @@ use zellij_utils::{
     input::layout::PercentOrFixed,
     input::layout::RunPluginOrAlias,
     input::options::PaneFrameStyle,
-    pane_size::{Dimension, Offset, PaneGeom, SizeInPixels, Viewport},
+    pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
 
 #[derive(Debug)]
@@ -117,6 +117,32 @@ pub fn expand_viewport_over_global_panes(
         }
         viewport
     })
+}
+
+/// The whole session surface: a tab's display area grown back over the global-pane strips.
+///
+/// This is the coordinate space a pane drawn *over* the session resolves against - an overlay, and
+/// a floating pane being dragged (see `FloatingPanes::move_surface`). It is deliberately not the
+/// tab's viewport: a pane placed here is not confined to the tab, and a percentage means a
+/// percentage of the screen rather than of whatever the tab happens to have been left.
+///
+/// The returned viewport's own `x`/`y` is the origin coordinates resolve from, so callers needing
+/// the `(x, y)` pair read it back off the result rather than being handed it separately.
+pub fn session_surface(
+    display_area: Size,
+    display_area_origin: (usize, usize),
+    strips: &[GlobalPaneStrip],
+) -> Viewport {
+    let (x, y) = display_area_origin;
+    expand_viewport_over_global_panes(
+        Viewport {
+            x,
+            y,
+            cols: display_area.cols,
+            rows: display_area.rows,
+        },
+        strips,
+    )
 }
 
 /// The rows inside a left/right strip's columns that neither the strip nor `tab_area`'s tab paints,
