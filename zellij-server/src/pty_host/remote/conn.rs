@@ -49,8 +49,8 @@ pub struct RemoteStatus {
 /// What git said about a remote pane's working directory, unparsed.
 ///
 /// Carried to the plugins that attribute panes to projects, which already know
-/// how to read exactly this. Kept raw so the parsing stays in one place rather
-/// than being duplicated for remote panes.
+/// how to read exactly this, by `PluginCommand::GetPaneGitProbe`. Kept raw so
+/// the parsing stays in one place rather than being duplicated for remote panes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteGitProbe {
     /// The machine this was run on, so two checkouts at the same path on

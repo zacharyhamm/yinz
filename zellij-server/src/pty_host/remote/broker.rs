@@ -639,6 +639,104 @@ fn git_report(git: &super::status::GitProbe) -> BrokerToServerMsg {
 /// pane's information is no staler than a local one's.
 const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How often to ask Git about the pane's folder again, on top of asking whenever
+/// the folder changes.
+///
+/// A checkout's *identity* cannot change under it, but its branch can, and
+/// nothing about the pane says when: `git checkout` in place moves the branch
+/// without moving the folder, so a cwd-triggered probe alone would report a
+/// branch that is wrong for as long as the pane sits there. Matches
+/// `hocus-agentd`'s own `GIT_REFRESH_SECONDS`, which is the cadence the local
+/// half of the same job already runs at.
+///
+/// Not shorter: each pane has its own pump, so this is two `git` processes per
+/// remote pane per interval, duplicated between panes that share a folder.
+const GIT_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Overrides `GIT_REFRESH_INTERVAL`, so a test can watch a branch change be
+/// picked up without waiting a minute for it. Same shape, and the same reason,
+/// as `ORPHAN_TIMEOUT_ENV`.
+pub const GIT_REFRESH_ENV: &str = "ZELLIJ_REMOTE_GIT_REFRESH_SECS";
+
+fn git_refresh_interval() -> std::time::Duration {
+    match std::env::var(GIT_REFRESH_ENV) {
+        Ok(secs) => match secs.parse::<u64>() {
+            Ok(secs) if secs > 0 => std::time::Duration::from_secs(secs),
+            _ => {
+                log::warn!(
+                    "ignoring {GIT_REFRESH_ENV}={secs:?}: expected a positive number of seconds"
+                );
+                GIT_REFRESH_INTERVAL
+            },
+        },
+        Err(_) => GIT_REFRESH_INTERVAL,
+    }
+}
+
+/// When to run the Git probe again, and whether the answer is worth sending.
+///
+/// Pulled out of the pump's loop so it can be tested at all: inside a
+/// `loop { sleep }` the refresh interval is only reachable by waiting for it.
+pub struct GitProbePump {
+    last: Option<super::status::GitProbe>,
+    since_refresh: std::time::Duration,
+    interval: std::time::Duration,
+}
+
+impl GitProbePump {
+    pub fn new(interval: std::time::Duration) -> Self {
+        GitProbePump {
+            last: None,
+            since_refresh: std::time::Duration::ZERO,
+            interval,
+        }
+    }
+
+    /// Advance by `elapsed`, and return the probe if this tick ran one.
+    ///
+    /// Two triggers. A folder change probes at once — it is the only thing that
+    /// can change which *checkout* a pane is in — and the interval probes
+    /// whatever else may have moved under an unchanging folder.
+    ///
+    /// `changed` is reported separately from having run, because the two have
+    /// different consumers: every probe is worth *caching*, since that cache is
+    /// what a reconnecting server is handed, but only a changed one is worth
+    /// *sending*. An idle pane in an unchanging checkout therefore stays silent,
+    /// which is the property this pane's only traffic is built around.
+    ///
+    /// The whole `GitProbe` is compared rather than any parsed part of it: a
+    /// branch change shows up in `metadata` and a fetch that rewrites a remote
+    /// url shows up in `config`, and comparing the raw struct catches both
+    /// without knowing which is which.
+    pub fn tick(
+        &mut self,
+        cwd: &str,
+        elapsed: std::time::Duration,
+        probe: impl Fn(&str) -> super::status::GitProbe,
+    ) -> Option<Probed> {
+        self.since_refresh += elapsed;
+        let moved = self.last.as_ref().map(|last| last.cwd.as_str()) != Some(cwd);
+        let due = self.since_refresh >= self.interval;
+        if !moved && !due {
+            return None;
+        }
+        self.since_refresh = std::time::Duration::ZERO;
+        let git = probe(cwd);
+        let changed = self.last.as_ref() != Some(&git);
+        self.last = Some(git.clone());
+        Some(Probed {
+            probe: git,
+            changed,
+        })
+    }
+}
+
+/// One run of the Git probe: what it said, and whether that is news.
+pub struct Probed {
+    pub probe: super::status::GitProbe,
+    pub changed: bool,
+}
+
 /// Watch the pane's process and report what changes.
 ///
 /// Pushed rather than polled: the alternative is the server asking, from
@@ -650,7 +748,7 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
         .name("remote-pane-status".to_owned())
         .spawn(move || {
             let mut last: Option<super::status::Probe> = None;
-            let mut last_git_cwd: Option<String> = None;
+            let mut git = GitProbePump::new(git_refresh_interval());
             loop {
                 thread::sleep(STATUS_INTERVAL);
                 if session.is_terminated() || session.child_exit().is_some() {
@@ -658,16 +756,17 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 }
                 let probe = super::status::probe(session.master_fd(), session.child_pid);
 
-                // A new working directory may mean a different checkout, which
-                // is the only thing that can change a pane's project.
-                if let Some(cwd) = probe.cwd.clone() {
-                    if last_git_cwd.as_deref() != Some(cwd.as_str()) {
-                        let git = super::status::probe_git(&cwd);
-                        session.set_git_probe(git.clone());
-                        if let Some(wire) = session.wire() {
-                            let _ = send(&wire, &git_report(&git));
+                if let Some(cwd) = probe.cwd.as_deref() {
+                    if let Some(ran) = git.tick(cwd, STATUS_INTERVAL, super::status::probe_git) {
+                        // Cached whether or not it is sent: this cache is what
+                        // `catch_up_and_attach` replays to a server that has
+                        // just reconnected and has no probe of its own.
+                        session.set_git_probe(ran.probe.clone());
+                        if ran.changed {
+                            if let Some(wire) = session.wire() {
+                                let _ = send(&wire, &git_report(&ran.probe));
+                            }
                         }
-                        last_git_cwd = Some(cwd);
                     }
                 }
 

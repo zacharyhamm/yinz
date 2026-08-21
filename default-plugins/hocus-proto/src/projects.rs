@@ -1,5 +1,6 @@
 //! Persistent projects and the repositories or folders that identify them.
 
+use crate::location::Location;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -47,9 +48,19 @@ pub enum WorktreeStatus {
 }
 
 /// What Git says about one checkout. Missing Git fields mean an ordinary folder.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {
     pub root: String,
+    /// The machine this checkout is on, or `None` for this one.
+    ///
+    /// Redundant with the key of the map a repository is usually found in, and
+    /// kept anyway: [`discover`] and [`for_repository`] are handed bare
+    /// repositories with no key in sight, and those two are precisely the
+    /// functions that must refuse to match a checkout on another machine by
+    /// path. `root` and `common_dir` are paths over *there*, and comparing them
+    /// to a project's is comparing two different filesystems.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,11 +84,14 @@ impl Repository {
     pub fn folder(root: impl Into<String>) -> Self {
         Self {
             root: root.into(),
-            remote: None,
-            worktree_status: None,
-            common_dir: None,
-            branch: None,
+            ..Self::default()
         }
+    }
+
+    /// Say which machine this checkout is on. `None` leaves it on this one.
+    pub fn on_host(mut self, host: Option<String>) -> Self {
+        self.host = host;
+        self
     }
 
     /// True when Git claimed this folder. Only a checkout makes a project.
@@ -299,21 +313,45 @@ pub fn delete_mutation(name: &str) -> Mutation {
     Mutation::delete("project", Pred::eq("name", name))
 }
 
-pub fn contains(project: &Project, cwd: &str) -> bool {
-    Path::new(cwd).starts_with(&project.root)
+/// Whether a folder is inside a project's root.
+///
+/// A project's `root` is a path on *this* machine — the user named it here, or
+/// discovery made it from a checkout here — so only a folder on this machine can
+/// be inside it. A folder on another machine that happens to spell the same path
+/// is a different place, and matching it would file a remote agent under
+/// whichever local project happens to sit at that path. That is the ordinary
+/// case, not a corner one: someone's build box has their layout on it.
+pub fn contains(project: &Project, cwd: &Location) -> bool {
+    cwd.host.is_none() && Path::new(&cwd.path).starts_with(&project.root)
 }
 
-pub fn for_cwd<'a>(projects: &'a Registry, cwd: &str) -> Option<&'a Project> {
+pub fn for_cwd<'a>(projects: &'a Registry, cwd: &Location) -> Option<&'a Project> {
     projects
         .values()
         .filter(|project| contains(project, cwd))
         .max_by_key(|project| Path::new(&project.root).components().count())
 }
 
+/// Whether a project and a checkout are the same repository.
+///
+/// A remote URL is the one identity that survives crossing a machine: the same
+/// repository checked out on a build box and here is the same work, and saying
+/// so is the whole point of letting a remote pane have a project at all.
+///
+/// The fallback for a repository with no remote is not: a `common_dir` is a bare
+/// path, with nothing in it to say which filesystem it is on, so comparing one
+/// from over there to one from here is comparing two strings that mean different
+/// things. A hosted checkout with no remote therefore matches nothing — it would
+/// need its own machine's folders to be known before it could, and that is a
+/// larger change than this one.
 fn same_repository(project: &Project, repository: &Repository) -> bool {
     match (&project.remote, &repository.remote) {
         (Some(left), Some(right)) => left == right,
-        (None, None) => project.common_dir.is_some() && project.common_dir == repository.common_dir,
+        (None, None) => {
+            repository.host.is_none()
+                && project.common_dir.is_some()
+                && project.common_dir == repository.common_dir
+        },
         _ => false,
     }
 }
@@ -387,6 +425,14 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
     let mut roots: Vec<&Repository> = repositories
         .iter()
         .filter(|repository| repository.is_checkout())
+        // A checkout on another machine makes no project. Everything a project
+        // row holds — `root`, `common_dir` — is a path, and a path from over
+        // there written into a row here would name a folder on this machine that
+        // is either missing or, worse, somebody else's. Attributing a remote
+        // agent to a project that already exists is this change's job;
+        // *creating* one from a remote checkout is deliberately not, and this is
+        // the single place that makes that hold however the caller behaves.
+        .filter(|repository| repository.host.is_none())
         .filter(|repository| !repository.root.trim().is_empty())
         .collect();
     roots.sort_by_key(|repository| {
@@ -399,7 +445,8 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
 
     let mut discovery = Discovery::default();
     for repository in roots {
-        if let Some(name) = for_cwd(projects, &repository.root)
+        let root = Location::local(&repository.root);
+        if let Some(name) = for_cwd(projects, &root)
             .and_then(|project| (project.root == repository.root).then(|| project.name.clone()))
         {
             let Some(project) = projects.get_mut(&name) else {
@@ -415,7 +462,7 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
             }
             continue;
         }
-        if for_cwd(projects, &repository.root).is_some() {
+        if for_cwd(projects, &root).is_some() {
             continue;
         }
         let identity_matches: Vec<String> = projects
@@ -711,7 +758,7 @@ mod tests {
             remote: Some("git@example.com:me/hocus".to_owned()),
             worktree_status: Some(WorktreeStatus::Primary),
             common_dir: Some("/work/hocus/.git".to_owned()),
-            branch: None,
+            ..Repository::default()
         }];
 
         let mut registry = read_back(&backend);
@@ -754,9 +801,9 @@ mod tests {
     #[test]
     fn folder_matching_stops_at_component_boundaries() {
         let project = validate("hocus", "/work/hocus").unwrap();
-        assert!(contains(&project, "/work/hocus"));
-        assert!(contains(&project, "/work/hocus/src"));
-        assert!(!contains(&project, "/work/hocus-old"));
+        assert!(contains(&project, &Location::local("/work/hocus")));
+        assert!(contains(&project, &Location::local("/work/hocus/src")));
+        assert!(!contains(&project, &Location::local("/work/hocus-old")));
     }
 
     #[test]
@@ -768,7 +815,12 @@ mod tests {
                 validate("hocus", "/work/hocus").unwrap(),
             ),
         ]);
-        assert_eq!(for_cwd(&projects, "/work/hocus/src").unwrap().name, "hocus");
+        assert_eq!(
+            for_cwd(&projects, &Location::local("/work/hocus/src"))
+                .unwrap()
+                .name,
+            "hocus"
+        );
     }
 
     #[test]
@@ -793,7 +845,7 @@ mod tests {
                 remote: None,
                 worktree_status: Some(WorktreeStatus::Primary),
                 common_dir: Some(format!("{root}/.git")),
-                branch: None,
+                ..Repository::default()
             })
             .collect()
     }
@@ -891,8 +943,18 @@ mod tests {
 
         assert_eq!(discovery.added, vec!["work".to_owned()]);
         assert!(discovery.replaced.is_empty());
-        assert_eq!(for_cwd(&projects, "/work/hocus/src").unwrap().name, "hocus");
-        assert_eq!(for_cwd(&projects, "/work/other").unwrap().name, "work");
+        assert_eq!(
+            for_cwd(&projects, &Location::local("/work/hocus/src"))
+                .unwrap()
+                .name,
+            "hocus"
+        );
+        assert_eq!(
+            for_cwd(&projects, &Location::local("/work/other"))
+                .unwrap()
+                .name,
+            "work"
+        );
     }
 
     #[test]
@@ -976,13 +1038,92 @@ mod tests {
         );
     }
 
+    // -- checkouts on another machine ------------------------------------
+
+    /// The headline case, and the reason any of this exists: a build box has the
+    /// same layout as the laptop, so a remote agent's folder spells a path a
+    /// local project owns. Matching it by that path files the agent under work
+    /// it is not doing.
+    #[test]
+    fn a_folder_on_another_machine_is_not_inside_a_local_project() {
+        let project = validate("hocus", "/work/hocus").unwrap();
+        let projects = registry(&[project.clone()]);
+        let there = Location::new(Some("build-box"), "/work/hocus/src");
+
+        assert!(!contains(&project, &there));
+        assert_eq!(for_cwd(&projects, &there), None);
+    }
+
+    /// What a remote checkout *may* match on: the one identity that means the
+    /// same thing on both machines.
+    #[test]
+    fn a_remote_checkout_joins_the_project_its_remote_url_names() {
+        let mut project = validate("hocus", "/work/hocus").unwrap();
+        project.remote = Some("git@example.com:me/hocus".to_owned());
+        let projects = registry(&[project]);
+
+        let there = Repository {
+            root: "/srv/hocus".to_owned(),
+            remote: Some("git@example.com:me/hocus".to_owned()),
+            worktree_status: Some(WorktreeStatus::Primary),
+            common_dir: Some("/srv/hocus/.git".to_owned()),
+            ..Repository::default()
+        }
+        .on_host(Some("build-box".to_owned()));
+
+        assert_eq!(
+            for_repository(&projects, &there).map(|project| project.name.as_str()),
+            Some("hocus")
+        );
+    }
+
+    /// A `common_dir` is a bare path with nothing in it to say whose filesystem
+    /// it is. Two machines that both keep their checkout at the same place would
+    /// otherwise look like one repository.
+    #[test]
+    fn a_remote_checkout_with_no_remote_url_matches_nothing() {
+        let mut project = validate("hocus", "/work/hocus").unwrap();
+        project.common_dir = Some("/work/hocus/.git".to_owned());
+        let projects = registry(&[project]);
+
+        let there = Repository {
+            root: "/work/hocus".to_owned(),
+            worktree_status: Some(WorktreeStatus::Primary),
+            common_dir: Some("/work/hocus/.git".to_owned()),
+            ..Repository::default()
+        }
+        .on_host(Some("build-box".to_owned()));
+
+        assert_eq!(for_repository(&projects, &there), None);
+        // ...while the identical checkout on this machine still does.
+        let here = Repository {
+            host: None,
+            ..there
+        };
+        assert!(for_repository(&projects, &here).is_some());
+    }
+
+    /// Discovery writes a `root` into a stored row, and a path from another
+    /// machine names a folder here that is missing or somebody else's.
+    #[test]
+    fn discovery_ignores_a_checkout_on_another_machine() {
+        let mut projects = Registry::new();
+        let there =
+            git("/work/hocus", None, WorktreeStatus::Primary).on_host(Some("build-box".to_owned()));
+
+        let discovery = discover(&mut projects, &[there]);
+
+        assert!(discovery.added.is_empty(), "made a project: {discovery:?}");
+        assert!(projects.is_empty(), "{projects:?}");
+    }
+
     fn git(root: &str, remote: Option<&str>, status: WorktreeStatus) -> Repository {
         Repository {
             root: root.to_owned(),
             remote: remote.map(str::to_owned),
             worktree_status: Some(status),
             common_dir: Some("/repos/hocus/.git".to_owned()),
-            branch: None,
+            ..Repository::default()
         }
     }
 
@@ -1007,7 +1148,7 @@ mod tests {
         let project = projects.values().next().expect("a project");
         assert_eq!(project.root, "/work/hocus");
         assert_eq!(
-            for_cwd(&projects, &nested.root).map(|p| &p.name),
+            for_cwd(&projects, &Location::local(&nested.root)).map(|p| &p.name),
             Some(&project.name)
         );
     }

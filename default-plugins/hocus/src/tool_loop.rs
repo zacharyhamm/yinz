@@ -1,8 +1,8 @@
 use crate::message::{Job, Message, Status};
 use crate::worker::read_pane_text;
 use crate::*;
+use hocus_proto::location::Location;
 use std::collections::BTreeMap;
-use std::path::Path;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -841,9 +841,19 @@ impl State {
             .and_then(|(tab_id, _)| self.tab_projects.get(tab_id))
             .cloned()
             .or_else(|| {
-                self.project_for_cwd(pane.cwd.as_deref()?)
+                self.project_for_cwd(&Self::pane_location(pane)?)
                     .map(|project| project.name.clone())
             })
+    }
+
+    /// The folder a pane is in, with the machine it is on.
+    ///
+    /// Both halves come off the pane: the daemon puts the folder there and the
+    /// manifest puts the host there. Keeping them together is what stops two
+    /// panes sitting in the same path on different machines from being read as
+    /// one folder.
+    fn pane_location(pane: &agents::AgentPane) -> Option<Location> {
+        Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?))
     }
 
     /// Pane id to project name, for each agent whose folder a project owns.
@@ -852,7 +862,7 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| {
-                let owner = self.project_for_cwd(pane.cwd.as_deref()?)?;
+                let owner = self.project_for_cwd(&Self::pane_location(pane)?)?;
                 Some((pane.pane_id, owner.name.clone()))
             })
             .collect()
@@ -868,7 +878,7 @@ impl State {
             .iter()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
             .filter_map(|pane| {
-                let branch = self.branch_for_cwd(pane.cwd.as_deref()?)?;
+                let branch = self.branch_for_cwd(&Self::pane_location(pane)?)?;
                 Some((pane.pane_id, branch.to_owned()))
             })
             .collect()
@@ -889,7 +899,7 @@ impl State {
     /// one — where the stand-in would have filed it under the primary's branch,
     /// which is a different agent's work. A header that is briefly missing can
     /// be waited out; one that is confidently wrong cannot.
-    fn branch_for_cwd(&self, cwd: &str) -> Option<&str> {
+    fn branch_for_cwd(&self, cwd: &Location) -> Option<&str> {
         self.repositories.get(cwd)?.branch.as_deref()
     }
 
@@ -904,16 +914,18 @@ impl State {
     ///
     /// For the project only. The branch goes through `branch_for_cwd`, which
     /// takes no stand-in — see the reason there.
-    fn repository_for_cwd(&self, cwd: &str) -> Option<&projects::Repository> {
+    fn repository_for_cwd(&self, cwd: &Location) -> Option<&projects::Repository> {
         if let Some(repository) = self.repositories.get(cwd) {
             return Some(repository);
         }
         self.repositories
             .iter()
-            // Component-wise, the same rule `projects::contains` puts on a
-            // project root, so `/work/hocus-old` is not below `/work/hocus`.
-            .filter(|(probed, _)| Path::new(cwd).starts_with(probed))
-            .max_by_key(|(probed, _)| Path::new(probed).components().count())
+            // Component-wise, and on the same machine — the rule
+            // `Location::starts_with` puts on a folder, so `/work/hocus-old` is
+            // not below `/work/hocus` and neither is `/work/hocus/src` on
+            // another host.
+            .filter(|(probed, _)| cwd.starts_with(probed))
+            .max_by_key(|(probed, _)| probed.depth())
             .map(|(_, repository)| repository)
     }
 
@@ -932,7 +944,15 @@ impl State {
     /// matches when both sides carry Git metadata, so a project the user named
     /// on a plain folder is found by nothing else, and two projects sharing a
     /// remote fall through to the folder rather than to nothing at all.
-    fn project_for_cwd(&self, cwd: &str) -> Option<&projects::Project> {
+    ///
+    /// For a pane on another machine there is no second answer, and
+    /// `projects::contains` is what says so: a project's root is a path here,
+    /// and a folder over there that spells the same path is a different place.
+    /// A remote agent is matched by its repository's remote url or not at all —
+    /// which is right, because a build box laid out like the laptop would
+    /// otherwise put every remote agent in whichever local project sits at its
+    /// path.
+    fn project_for_cwd(&self, cwd: &Location) -> Option<&projects::Project> {
         let repository = self
             .repository_for_cwd(cwd)
             .filter(|repository| repository.is_checkout())?;
@@ -1070,9 +1090,8 @@ impl State {
             .iter()
             .filter(|pane| {
                 project.is_none_or(|project| {
-                    pane.cwd
-                        .as_deref()
-                        .and_then(|cwd| self.project_for_cwd(cwd))
+                    Self::pane_location(pane)
+                        .and_then(|location| self.project_for_cwd(&location))
                         .is_some_and(|owner| owner.name == project.name)
                 })
             })
@@ -1137,7 +1156,7 @@ impl State {
             None => None,
         };
         if let (Some(project), Some(cwd)) = (project, args.cwd.as_deref()) {
-            if !projects::contains(project, cwd) {
+            if !projects::contains(project, &Location::local(cwd)) {
                 return Err(format!("cwd must be inside project {}", project.name));
             }
         }

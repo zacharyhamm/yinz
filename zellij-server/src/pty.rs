@@ -28,9 +28,10 @@ use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
-        CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse, GetPanePidResponse,
-        GetPaneRunningCommandResponse, GlobalPanePlacement, NewPanePlacement, OriginatingPlugin,
-        SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
+        CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
+        GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
+        GlobalPanePlacement, NewPanePlacement, OriginatingPlugin, PaneGitProbe, SessionInfo,
+        WarpPlacement, WarpedPane, WarpedTab,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -365,6 +366,10 @@ pub enum PtyInstruction {
         pane_id: PaneId,
         response_channel: crossbeam::channel::Sender<GetPaneCwdResponse>,
     },
+    GetPaneGitProbe {
+        pane_id: PaneId,
+        response_channel: crossbeam::channel::Sender<GetPaneGitProbeResponse>,
+    },
     UpdateAndReportCwds,
     NotifyCwdFromOsc7(u32, PathBuf),
     Exit,
@@ -404,6 +409,7 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::GetPanePid { .. } => PtyContext::GetPanePid,
             PtyInstruction::GetPaneRunningCommand { .. } => PtyContext::GetPaneRunningCommand,
             PtyInstruction::GetPaneCwd { .. } => PtyContext::GetPaneCwd,
+            PtyInstruction::GetPaneGitProbe { .. } => PtyContext::GetPaneGitProbe,
             PtyInstruction::UpdateAndReportCwds => PtyContext::UpdateAndReportCwds,
             PtyInstruction::NotifyCwdFromOsc7(..) => PtyContext::NotifyCwdFromOsc7,
             PtyInstruction::Exit => PtyContext::Exit,
@@ -1214,6 +1220,13 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 response_channel,
             } => {
                 let response = pty.get_pane_cwd(pane_id);
+                let _ = response_channel.send(response);
+            },
+            PtyInstruction::GetPaneGitProbe {
+                pane_id,
+                response_channel,
+            } => {
+                let response = pty.get_pane_git_probe(pane_id);
                 let _ = response_channel.send(response);
             },
             PtyInstruction::UpdateAndReportCwds => {
@@ -3217,6 +3230,42 @@ impl Pty {
             PaneId::Plugin(plugin_id) => {
                 GetPaneCwdResponse::Err(format!("Cannot get CWD for plugin pane {}", plugin_id))
             },
+        }
+    }
+
+    /// What Git said about a remote pane's folder, as the far machine sees it.
+    ///
+    /// Answered from the cache the broker pushes up, never by running Git here:
+    /// the folder is a path on another machine, and this is the pty thread,
+    /// which every pane in the session is waiting on. A local pane is an `Err`
+    /// for the same reason — there is nothing cached to give, and spawning two
+    /// `git` processes to make one would block that thread. Plugins branch on
+    /// `PaneInfo::host` and run Git themselves for a local pane.
+    pub fn get_pane_git_probe(&self, pane_id: PaneId) -> GetPaneGitProbeResponse {
+        match pane_id {
+            PaneId::Terminal(terminal_id) => {
+                match self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.remote_pane_git_probe(terminal_id))
+                {
+                    Some(probe) => GetPaneGitProbeResponse::Ok(PaneGitProbe {
+                        host: probe.host,
+                        cwd: probe.cwd,
+                        exit_code: probe.exit_code,
+                        metadata: probe.metadata,
+                        config: probe.config,
+                    }),
+                    None => GetPaneGitProbeResponse::Err(format!(
+                        "terminal pane {terminal_id} is not remote, or its machine has not \
+                         reported a git probe yet"
+                    )),
+                }
+            },
+            PaneId::Plugin(plugin_id) => GetPaneGitProbeResponse::Err(format!(
+                "cannot get a git probe for plugin pane {plugin_id}"
+            )),
         }
     }
 }

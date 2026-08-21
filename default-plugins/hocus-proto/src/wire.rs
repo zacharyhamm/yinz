@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::agents;
+use crate::location::Location;
 use crate::projects;
 
 /// hocus → agentd: "keep me posted, and here are the manual overrides".
@@ -75,9 +76,15 @@ pub struct PollReply {
     /// registered agent looks like an ordinary shell to everyone downstream.
     #[serde(default)]
     pub manual_kinds: BTreeMap<u32, String>,
-    /// Resolved agent CWD to its repository or plain-folder definition.
+    /// Resolved agent folder to its repository or plain-folder definition.
+    ///
+    /// Keyed by folder *and machine*: a remote pane's path names a place on
+    /// another host, and two panes sitting in the same path on different
+    /// machines are in different checkouts. A local folder's key is its plain
+    /// path, exactly as it was before hosts existed, so this is unchanged on the
+    /// wire for a session with no remote panes.
     #[serde(default)]
-    pub repositories: BTreeMap<String, projects::Repository>,
+    pub repositories: BTreeMap<Location, projects::Repository>,
     /// The terminal pane the user is looking at, if it is one.
     ///
     /// Here rather than on `AgentPane` because it is a fact about the session, not

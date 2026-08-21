@@ -283,13 +283,14 @@ fn poll_reply_round_trips_through_json() {
         activity,
         manual_kinds: BTreeMap::new(),
         repositories: BTreeMap::from([(
-            "/tmp/work".to_owned(),
+            Location::local("/tmp/work"),
             projects::Repository {
                 root: "/tmp/work".to_owned(),
                 remote: Some("git@example.com:work.git".to_owned()),
                 worktree_status: Some(projects::WorktreeStatus::Linked),
                 common_dir: Some("/tmp/main/.git".to_owned()),
                 branch: Some("topic".to_owned()),
+                host: None,
             },
         )]),
         focused: Some(7),

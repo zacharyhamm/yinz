@@ -41,10 +41,11 @@ use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
     DeleteLayoutResponse, EditLayoutResponse, Event, FloatingPaneCoordinates,
-    FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, GitCheckout, HttpVerb, KeyWithModifier, KillSessionsResponse,
-    LayoutInfo, LayoutMetadata, LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin,
-    NewPanePlacement, NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
+    FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
+    GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GitCheckout,
+    HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo, LayoutMetadata,
+    LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement,
+    NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
     OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
     OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
     OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
@@ -106,7 +107,8 @@ use zellij_utils::{
             ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse,
             ProtobufFocusOrCreateTabResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-            ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+            ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+            ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
             ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
             ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
@@ -602,6 +604,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         get_pane_running_command(env, pane_id.into())
                     },
                     PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
+                    PluginCommand::GetPaneGitProbe { pane_id } => {
+                        get_pane_git_probe(env, pane_id.into())
+                    },
                     PluginCommand::MovePaneWithPaneId(pane_id) => {
                         move_pane_with_pane_id(env, pane_id.into())
                     },
@@ -5205,6 +5210,66 @@ fn write_pane_cwd_response(env: &PluginEnv, pane_id: PaneId, response: GetPaneCw
         .non_fatal();
 }
 
+/// The far machine's Git probe for a remote pane, from the cache the broker
+/// pushes up.
+///
+/// One channel round trip and no process: unlike the local path, which spawns
+/// two `git` processes per folder, this is only a read of what has already
+/// arrived. That is why the plugin side can afford to ask on its heartbeat.
+fn get_pane_git_probe(env: &PluginEnv, pane_id: PaneId) {
+    let (sender, receiver) = crossbeam::channel::bounded(1);
+
+    env.senders
+        .send_to_pty(PtyInstruction::GetPaneGitProbe {
+            pane_id,
+            response_channel: sender,
+        })
+        .with_context(|| format!("Failed to get the git probe for pane {:?}", pane_id))
+        .non_fatal();
+
+    let response = await_pane_git_probe_response(env, pane_id, receiver);
+
+    let protobuf_response = ProtobufGetPaneGitProbeResponse::from(response);
+    wasi_write_object(env, &protobuf_response.encode_to_vec())
+        .with_context(|| format!("Failed to get the git probe for pane {:?}", pane_id))
+        .non_fatal();
+}
+
+fn await_pane_git_probe_response(
+    env: &PluginEnv,
+    pane_id: PaneId,
+    receiver: crossbeam::channel::Receiver<GetPaneGitProbeResponse>,
+) -> GetPaneGitProbeResponse {
+    use crossbeam::channel::RecvTimeoutError;
+    use std::time::Duration;
+
+    match receiver.recv_timeout(Duration::from_millis(100)) {
+        Ok(response) => response,
+        Err(RecvTimeoutError::Timeout) => {
+            log::error!(
+                "GetPaneGitProbe timed out for plugin {} requesting pane {:?}",
+                env.plugin_id,
+                pane_id
+            );
+            GetPaneGitProbeResponse::Err(format!(
+                "Timeout retrieving the git probe for pane {:?}",
+                pane_id
+            ))
+        },
+        Err(RecvTimeoutError::Disconnected) => {
+            log::error!(
+                "GetPaneGitProbe channel disconnected for plugin {} requesting pane {:?}",
+                env.plugin_id,
+                pane_id
+            );
+            GetPaneGitProbeResponse::Err(format!(
+                "Channel disconnected while retrieving the git probe for pane {:?}",
+                pane_id
+            ))
+        },
+    }
+}
+
 fn save_layout(env: &PluginEnv, layout_name: String, layout_kdl: String, overwrite: bool) {
     let err_context = || format!("Failed to save layout '{}'", layout_name);
 
@@ -6404,6 +6469,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::GetPanePid { .. }
         | PluginCommand::GetPaneRunningCommand { .. }
         | PluginCommand::GetPaneCwd { .. }
+        | PluginCommand::GetPaneGitProbe { .. }
         | PluginCommand::GenerateRandomName
         | PluginCommand::GetLayoutDir
         | PluginCommand::GetFocusedPaneInfo

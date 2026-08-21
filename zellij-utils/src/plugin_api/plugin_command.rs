@@ -17,8 +17,8 @@ pub use super::generated_api::api::{
         data_define_response, data_fetch_response, data_unwatch_response, data_watch_response,
         delete_layout_response, dump_layout_response, dump_session_layout_response,
         edit_layout_response, focus_or_create_tab_response, get_focused_pane_info_response,
-        get_pane_cwd_response, get_pane_pid_response, get_pane_running_command_response,
-        get_session_list_response, hide_floating_panes_response,
+        get_pane_cwd_response, get_pane_git_probe_response, get_pane_pid_response,
+        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
         highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
         new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
         open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
@@ -61,7 +61,9 @@ pub use super::generated_api::api::{
         GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
         GetLayoutDirResponse as ProtobufGetLayoutDirResponse,
         GetPaneCwdPayload as ProtobufGetPaneCwdPayload,
-        GetPaneCwdResponse as ProtobufGetPaneCwdResponse, GetPaneInfoPayload,
+        GetPaneCwdResponse as ProtobufGetPaneCwdResponse,
+        GetPaneGitProbePayload as ProtobufGetPaneGitProbePayload,
+        GetPaneGitProbeResponse as ProtobufGetPaneGitProbeResponse, GetPaneInfoPayload,
         GetPaneInfoResponse as ProtobufGetPaneInfoResponse, GetPanePidPayload,
         GetPanePidResponse as ProtobufGetPanePidResponse,
         GetPaneRunningCommandPayload as ProtobufGetPaneRunningCommandPayload,
@@ -132,7 +134,8 @@ pub use super::generated_api::api::{
         OpenTerminalPaneInPlaceOfPaneIdResponse as ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
         OpenTerminalResponse as ProtobufOpenTerminalResponse, OrphanedPane as ProtobufOrphanedPane,
         OrphanedPaneList as ProtobufOrphanedPaneList, OverrideLayoutPayload,
-        PageScrollDownInPaneIdPayload, PageScrollUpInPaneIdPayload, PaneId as ProtobufPaneId,
+        PageScrollDownInPaneIdPayload, PageScrollUpInPaneIdPayload,
+        PaneGitProbe as ProtobufPaneGitProbe, PaneId as ProtobufPaneId,
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
         PluginMessagePayload, RebindKeysPayload, ReconfigurePayload,
@@ -175,13 +178,13 @@ use crate::data::{
     ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse, DataFetchResponse,
     DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
     DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates,
-    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
+    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
     GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
     HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
     ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
-    OpenCommandPaneInGitCheckoutResponse, OrphanedPane, PaneId, PermissionType, PluginCommand,
-    RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit,
-    SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
+    OpenCommandPaneInGitCheckoutResponse, OrphanedPane, PaneGitProbe, PaneId, PermissionType,
+    PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse,
+    SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -521,6 +524,43 @@ impl From<GetPaneCwdResponse> for ProtobufGetPaneCwdResponse {
             },
             GetPaneCwdResponse::Err(err) => ProtobufGetPaneCwdResponse {
                 result: Some(get_pane_cwd_response::Result::Error(err)),
+            },
+        }
+    }
+}
+
+impl From<PaneGitProbe> for ProtobufPaneGitProbe {
+    fn from(probe: PaneGitProbe) -> Self {
+        ProtobufPaneGitProbe {
+            host: probe.host,
+            cwd: probe.cwd,
+            exit_code: probe.exit_code,
+            metadata: probe.metadata,
+            config: probe.config,
+        }
+    }
+}
+
+impl From<ProtobufPaneGitProbe> for PaneGitProbe {
+    fn from(probe: ProtobufPaneGitProbe) -> Self {
+        PaneGitProbe {
+            host: probe.host,
+            cwd: probe.cwd,
+            exit_code: probe.exit_code,
+            metadata: probe.metadata,
+            config: probe.config,
+        }
+    }
+}
+
+impl From<GetPaneGitProbeResponse> for ProtobufGetPaneGitProbeResponse {
+    fn from(response: GetPaneGitProbeResponse) -> Self {
+        match response {
+            GetPaneGitProbeResponse::Ok(probe) => ProtobufGetPaneGitProbeResponse {
+                result: Some(get_pane_git_probe_response::Result::Probe(probe.into())),
+            },
+            GetPaneGitProbeResponse::Err(err) => ProtobufGetPaneGitProbeResponse {
+                result: Some(get_pane_git_probe_response::Result::Error(err)),
             },
         }
     }
@@ -1842,6 +1882,17 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .try_into()?,
                 }),
                 _ => Err("Malformed GetPaneCwd payload"),
+            },
+            Some(CommandName::GetPaneGitProbe) => match protobuf_plugin_command.payload {
+                Some(Payload::GetPaneGitProbePayload(payload)) => {
+                    Ok(PluginCommand::GetPaneGitProbe {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("Malformed GetPaneGitProbe: missing pane_id")?
+                            .try_into()?,
+                    })
+                },
+                _ => Err("Malformed GetPaneGitProbe payload"),
             },
             Some(CommandName::OverrideLayout) => match protobuf_plugin_command.payload {
                 Some(Payload::OverrideLayoutPayload(override_layout_payload)) => {
@@ -3996,6 +4047,14 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::GetPaneCwdPayload(ProtobufGetPaneCwdPayload {
                     pane_id: Some(pane_id.try_into()?),
                 })),
+            }),
+            PluginCommand::GetPaneGitProbe { pane_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::GetPaneGitProbe as i32,
+                payload: Some(Payload::GetPaneGitProbePayload(
+                    ProtobufGetPaneGitProbePayload {
+                        pane_id: Some(pane_id.try_into()?),
+                    },
+                )),
             }),
             PluginCommand::OverrideLayout(
                 layout_info,

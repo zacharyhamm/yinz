@@ -1279,6 +1279,71 @@ fn a_git_checkout_on_the_far_machine_is_probed_there() {
     remote_sh(&format!("rm -rf {dir}"));
 }
 
+/// `git checkout` moves the branch without moving the folder, and nothing about
+/// the pane says it happened — no new cwd, no new command, often no output at
+/// all. Only the far machine looking again finds it, which is what the refresh
+/// interval is for.
+///
+/// Gated on the container's short interval for the same reason
+/// `a_pane_nobody_comes_back_for_is_reclaimed` is gated on its short orphan
+/// timeout: at the real default this test would sit for a minute.
+#[test]
+#[ignore]
+fn a_branch_switched_in_place_on_the_far_machine_is_reported() {
+    let hosts = start();
+    let marker = marker("branch");
+    let dir = format!("/tmp/{marker}");
+    remote_sh(&format!(
+        "rm -rf {dir} && mkdir -p {dir} && cd {dir} && git init -q -b main . && \
+         git config user.email t@example.com && git config user.name test && \
+         git commit -q --allow-empty -m first"
+    ));
+
+    let configured: u64 = remote_sh("echo $ZELLIJ_REMOTE_GIT_REFRESH_SECS")
+        .parse()
+        .expect(
+            "the container has no ZELLIJ_REMOTE_GIT_REFRESH_SECS, so this test \
+             would have to wait a minute",
+        );
+
+    let pane = open_pane_in(&hosts, &idle_marked(&marker), Some(&dir));
+    pane.wait_for_output(&format!("{marker}-started"));
+
+    let branch_of = |probe: &RemoteGitProbe| {
+        String::from_utf8_lossy(&probe.metadata)
+            .lines()
+            .nth(3)
+            .map(str::to_owned)
+    };
+    let wait_for_branch = |want: &str| {
+        let deadline = Instant::now() + Duration::from_secs(configured * 3);
+        loop {
+            if let Some(probe) = pane.git_probe() {
+                if branch_of(&probe).as_deref() == Some(want) {
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the far machine never reported branch {want}; last probe was {:?}",
+                pane.git_probe(),
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+
+    wait_for_branch("main");
+
+    // Nothing here touches the pane: the checkout happens beside it, over ssh,
+    // so the pane's folder and command are exactly what they were.
+    remote_sh(&format!("cd {dir} && git checkout -q -b topic"));
+
+    wait_for_branch("topic");
+
+    pane.close();
+    remote_sh(&format!("rm -rf {dir}"));
+}
+
 // ---------------------------------------------------------------------------
 // Outages
 // ---------------------------------------------------------------------------

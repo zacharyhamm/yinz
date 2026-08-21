@@ -10,6 +10,7 @@
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+use hocus_proto::location::Location;
 use hocus_proto::paths;
 use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
@@ -1752,7 +1753,9 @@ pub fn resolve_in_root(project: &Project, path: Option<&str>) -> Result<String, 
     // fails is the model sending `..` — say that rather than repeating the rule.
     let resolved =
         paths::normalize(&joined).map_err(|_| "path must not contain a .. component".to_owned())?;
-    if !projects::contains(project, &resolved) {
+    // A path the model gave for a project on this machine, so local by
+    // construction — a project's root is a folder here.
+    if !projects::contains(project, &Location::local(&resolved)) {
         return Err(format!("path must be inside project {}", project.name));
     }
     Ok(resolved)
