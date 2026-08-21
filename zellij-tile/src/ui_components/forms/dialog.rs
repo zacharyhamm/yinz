@@ -125,8 +125,17 @@ impl Dialog {
         // any print call. Keep it first even though its rows appear below the
         // title.
         if layout.form_rows > 0 && area.columns > 0 {
-            self.form
-                .render_in_viewport(form_x, layout.form_y, form_width, layout.form_rows);
+            // The rows below the form - the blank one, the status and the help -
+            // are the dialog's, and an open dropdown may cover them. Lending
+            // them out is what keeps a select on the form's last row from having
+            // to scroll the form to find space.
+            self.form.render_in_viewport_with_overlay(
+                form_x,
+                layout.form_y,
+                form_width,
+                layout.form_rows,
+                area.y.saturating_add(area.rows),
+            );
         } else {
             show_cursor(None);
         }
@@ -134,11 +143,16 @@ impl Dialog {
         if area.rows == 0 || area.columns == 0 {
             return;
         }
+        // Drawn after the form, so a tail row the list is sitting on has to be
+        // left alone rather than printed over it.
+        let overlay = self.form.overlay_rect();
         self.render_centered(&self.title, area, layout.title_y);
         if let (Some(message), Some(y)) = (&self.message, layout.message_y) {
             self.render_centered(message, area, y);
         }
-        if let (Some(status), Some(y)) = (&self.status, layout.status_y) {
+        let status_y = layout.status_y.filter(|y| !covered(overlay, *y));
+        let help_y = layout.help_y.filter(|y| !covered(overlay, *y));
+        if let (Some(status), Some(y)) = (&self.status, status_y) {
             // Clipped to the reserved row: a status is often a host error, and
             // git speaks in paragraphs. Wrapping one would push the help line
             // off the bottom, which is the whole thing the reserved row exists
@@ -148,7 +162,7 @@ impl Dialog {
                 .with_content(take_columns(status.content(), area.columns));
             self.render_centered(&clipped, area, y);
         }
-        if let (Some(help), Some(y)) = (&self.help, layout.help_y) {
+        if let (Some(help), Some(y)) = (&self.help, help_y) {
             self.render_centered(help, area, y);
         }
     }
@@ -221,6 +235,17 @@ impl Dialog {
     }
 }
 
+/// Whether an open dropdown is sitting on row `y`.
+///
+/// The dialog draws its tail after the form, so a row the list reached has to be
+/// skipped rather than printed over - the list is on top, and half of it painted
+/// out is worse than a help line missing for as long as it is open.
+fn covered(overlay: Option<Rect>, y: usize) -> bool {
+    overlay
+        .map(|rect| y >= rect.y && y < rect.y + rect.rows)
+        .unwrap_or(false)
+}
+
 /// Rows the blank-separated tail below the form takes: one blank line, then
 /// the status row if reserved, then the help row.
 fn tail_rows(show_help: bool, show_status: bool) -> usize {
@@ -249,7 +274,7 @@ fn centered_span(area: Rect, text: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_components::forms::{Button, TextInput};
+    use crate::ui_components::forms::{Button, Select, TextInput};
 
     fn dialog() -> Dialog {
         Dialog::new(
@@ -383,6 +408,39 @@ mod tests {
     /// A centered line padded out to the area's *full* width starts indented and
     /// so ends past the pane, where it wraps and scrolls the frame. It has to
     /// end exactly at the right edge instead.
+    #[test]
+    fn a_tail_row_under_an_open_dropdown_is_left_to_the_dropdown() {
+        let overlay = Some(Rect::new(0, 5, 40, 3));
+        assert!(!covered(overlay, 4));
+        assert!(covered(overlay, 5));
+        assert!(covered(overlay, 7));
+        assert!(!covered(overlay, 8), "one past the last option row");
+        assert!(!covered(None, 5), "a closed dropdown covers nothing");
+    }
+
+    /// The dialog is the same size and in the same place whether or not a list
+    /// is open - the list overlays the tail rather than displacing anything.
+    #[test]
+    fn an_open_dropdown_does_not_move_the_dialog() {
+        let mut dialog = Dialog::new(
+            Text::new("New agent"),
+            Form::new()
+                .field("name", "Name", TextInput::empty())
+                .select("agent", "Agent", Select::new(["Codex", "Claude"]))
+                .button("create", Button::new("Create")),
+        )
+        .help(Text::new("<Enter> create"))
+        .status_row();
+        let area = Rect::new(0, 0, 40, dialog.height());
+        let closed = dialog.layout(area);
+
+        dialog.form_mut().focus_on("agent");
+        dialog.form_mut().select_by_id_mut("agent").unwrap().open();
+
+        assert_eq!(dialog.height(), area.rows);
+        assert_eq!(dialog.layout(area), closed);
+    }
+
     #[test]
     fn a_centered_line_never_reaches_past_the_area() {
         let area = Rect::new(4, 0, 20, 1);

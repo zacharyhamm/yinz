@@ -19,10 +19,16 @@
 //! down: [`Select::height`] is always 1, and a [`Form`](super::Form) holding one
 //! does not change size when it opens. A form that grew and shrank as the user
 //! opened a list would move the buttons out from under the pointer, and in a
-//! short pane could push them off screen entirely. The cost is that anything the
-//! plugin prints *after* `Form::render` paints over the list — see
-//! [`Form::overlay_rect`](super::Form::overlay_rect) for how a screen keeps its
-//! chrome out of the way.
+//! short pane could push them off screen entirely. For the same reason a form
+//! never *scrolls* to make room for a list either: the row the user just opened
+//! would jump to the top of the viewport, taking everything above it off screen.
+//! A list with nothing under it inside the form's own rows can still be given
+//! room the caller owns —
+//! [`Form::render_in_viewport_with_overlay`](super::Form::render_in_viewport_with_overlay).
+//!
+//! The cost is that anything the plugin prints *after* `Form::render` paints
+//! over the list — see [`Form::overlay_rect`](super::Form::overlay_rect) for how
+//! a screen keeps its chrome out of the way.
 
 use super::fuzzy::{fuzzy_filter, Match};
 use super::list::list_window;
