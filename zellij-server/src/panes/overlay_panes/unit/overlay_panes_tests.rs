@@ -138,6 +138,18 @@ fn coordinates(width: &str, height: &str) -> FloatingPaneCoordinates {
     .unwrap()
 }
 
+fn borderless_coordinates(borderless: bool) -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates::new(
+        None,
+        None,
+        Some("60%".to_owned()),
+        Some("50%".to_owned()),
+        None,
+        Some(borderless),
+    )
+    .unwrap()
+}
+
 /// A collection over a `cols` x `rows` surface with no clients.
 fn overlay_panes(cols: usize, rows: usize) -> OverlayPanes {
     overlay_panes_with(cols, rows, (0, 0), vec![]).0
@@ -444,4 +456,104 @@ fn an_overlay_reports_the_cells_it_owns_outside_the_tab_s_viewport() {
     assert!(panes
         .geoms_outside_viewport()
         .contains_key(&PaneId::Terminal(1)));
+}
+
+#[test]
+fn an_overlay_asked_for_borderless_is_born_without_a_frame() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        borderless_coordinates(true),
+    );
+    let pane = panes.get(&PaneId::Terminal(1)).unwrap();
+    assert!(
+        pane.borderless(),
+        "the coordinate was asked for and honoured"
+    );
+    assert_eq!(
+        pane.get_content_offset(),
+        Offset::default(),
+        "a frameless overlay gives its whole geometry to its contents"
+    );
+}
+
+#[test]
+fn an_overlay_that_said_nothing_about_borders_gets_a_frame() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let pane = panes.get(&PaneId::Terminal(1)).unwrap();
+    assert!(!pane.borderless());
+    assert_eq!(pane.get_content_offset(), Offset::frame(1));
+}
+
+#[test]
+fn setting_an_overlay_borderless_travels_with_its_placement() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    assert!(panes.set_borderless(&PaneId::Terminal(1), true));
+    let pane = panes.get(&PaneId::Terminal(1)).unwrap();
+    assert!(pane.borderless());
+    assert_eq!(pane.get_content_offset(), Offset::default());
+    assert_eq!(
+        panes
+            .placement_of(&PaneId::Terminal(1))
+            .and_then(|placement| placement.coordinates)
+            .and_then(|coordinates| coordinates.borderless),
+        Some(true),
+        "the placement is what follows the pane to another tab"
+    );
+
+    assert!(panes.toggle_borderless(&PaneId::Terminal(1)));
+    let pane = panes.get(&PaneId::Terminal(1)).unwrap();
+    assert!(!pane.borderless());
+    assert_eq!(pane.get_content_offset(), Offset::frame(1));
+
+    assert!(
+        !panes.set_borderless(&PaneId::Terminal(7), true),
+        "a pane that is not here is reported as not here, so the caller can look elsewhere"
+    );
+}
+
+#[test]
+fn a_borderless_overlay_stays_borderless_when_its_pane_is_replaced() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Modal,
+        borderless_coordinates(true),
+    );
+
+    let replacement = PaneId::Terminal(9);
+    panes
+        .replace_pane(PaneId::Terminal(1), mock_pane(replacement))
+        .unwrap();
+
+    let pane = panes.get(&replacement).unwrap();
+    assert!(pane.borderless());
+    assert_eq!(pane.get_content_offset(), Offset::default());
+}
+
+#[test]
+fn a_rounded_corners_update_reaches_the_style_the_overlay_frames_are_drawn_with() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+    assert!(
+        !panes.style.rounded_corners,
+        "sanity: the collection starts with square corners"
+    );
+
+    panes.update_pane_rounded_corners(true);
+
+    // `render` draws every overlay frame with `self.style`, so a pane-only update would leave
+    // the frames square while the rest of the session went round.
+    assert!(panes.style.rounded_corners);
 }

@@ -233,13 +233,41 @@ documented compatibility shim for the `overlay`/`modal` keys that keybindings, l
 third-party plugins still write, and they go in a later release once those are out of
 circulation.
 
+### Phase 5 — the two things that did not travel
+
+Found by review rather than by the suite, which is the point: both are behaviors the floating
+path had, that a reader of `OverlayPanes` alone would not notice were missing.
+
+**`coordinates.borderless` was dropped on the way in.** `Tab::add_floating_pane` applies it to
+the pane before handing it over, and `OverlayPanes::change_pane_coordinates` applies it too — but
+`OverlayPanes::add_pane` only resolved the geometry, and `PaneGeom::adjust_coordinates` touches
+x/y/cols/rows and nothing else. `set_pane_frames` then read the pane's untouched default and gave
+the overlay a frame it had explicitly asked not to have. `Tab::toggle_pane_borderless` and
+`Tab::set_pane_borderless` searched tiled, floating and suppressed panes only, so there was no way
+to correct it afterwards either — and because `Screen` picks the tab with `has_pane_with_pid`,
+which *does* know about overlays, the request found the right tab and then silently did nothing.
+
+`add_pane` now applies the coordinate the way `change_pane_coordinates` does, `replace_pane`
+carries the slot's borderless-ness onto the replacement instead of hardcoding `Offset::frame(1)`,
+and `OverlayPanes::set_borderless`/`toggle_borderless` give `Tab` an overlay branch. Those two
+update the *stored coordinates* as well as the pane: `placement_of` hands them over when an
+overlay follows a client to another tab, so an overlay that only changed its own flag would get
+its frame back on the way across.
+
+**`GetPaneInfo` returned `None` for an overlay.** `Tab::pane_infos` gained its overlay branch
+when the collection landed; the singular `Tab::get_pane_info` behind the plugin API did not, so a
+plugin that opened an overlay command pane and asked about the ID it had just been handed got
+nothing — where the same call worked while overlays lived in `floating_panes`. It now answers with
+the same fields `OverlayPanes::pane_info` sets: `is_floating` true (read everywhere as "not
+tiled"), `is_fullscreen` false.
+
 ---
 
 ## Findings that the remaining work depends on
 
 Discovered while writing Phase 0. Each was pinned by a test asserting the pre-refactor
 behavior. **1–4 and 9 were resolved by Phase 3, and 7, 8 and 10 by Phase 4**; 5 and 6 still
-describe the code.
+describe the code. 11 and 12 were found by review after Phase 4 and are resolved.
 
 1. **RESOLVED (`017977bc5`). An overlay was re-resolved against the stale surface on
    resize.**
@@ -300,6 +328,39 @@ describe the code.
     `self.overlay_panes.has_panes()`. Pinned by
     `an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane` and the new snapshot
     `frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane`.
+
+11. **RESOLVED. A client that joined after an overlay opened had no overlay focus at all.**
+    `focus_pane_for_all_clients` snapshots `connected_clients` at the moment the overlay opens, so
+    a client attaching - or merely switching into the tab - afterwards fell through
+    `Tab::get_active_pane_id` to the pane behind the modal: it saw the dialog drawn over its whole
+    surface and typed underneath it, and a modal has no way to learn that. `Tab::add_client` now
+    initializes overlay focus first, before the branch that returns early for a tab with no tiled
+    panes: **the topmost selectable modal if there is one, otherwise whatever overlay another
+    client is already on**. Both doors are covered, since tab switching reaches `add_client`
+    through `move_clients_between_tabs`. The second half of the rule matters as much as the first -
+    a dismissible overlay that gave its focus up reads as "nobody is on it" and stays given up,
+    rather than being resurrected for the joining client.
+    `OverlayPanes::focus_pane_for_joining_client` deliberately leaves `z_indices`, `last_panes` and
+    `set_active_at` alone: the occlusion stack is shared, and joining is not activity. Pinned by
+    `a_client_joining_while_a_modal_is_open_lands_on_the_modal`,
+    `a_client_switching_into_a_tab_with_a_modal_lands_on_it` and
+    `a_joining_client_does_not_pick_up_a_dismissible_overlay_that_gave_up_focus`.
+
+12. **RESOLVED. Scrolling a terminal overlay moved the pane underneath it.**
+    The scroll path resolved the position under the cursor twice.
+    `MouseHandler::get_pane_at` hit-tested the overlay collection first and correctly returned the
+    overlay, but the escape sequence it generated - an SGR mouse report, or the cursor keys an
+    alternate screen scrolls with - was handed back as a *position* to
+    `Tab::write_to_terminal_at`, which resolved it again through the floating and tiled layers
+    only. It had never heard of overlays, so it delivered to the tiled pane beneath: the user
+    scrolled a dialog and a shell behind it moved. The two resolvers also disagreed about pinned
+    panes and about a floating layer that is down.
+    Fixed by not resolving twice. The scroll handlers already hold the pane, so they take its
+    `pid()` and go through `MouseHandler::write_to_pane` -> `Tab::write_to_pane_id`, and
+    `write_to_terminal_at` - whose only callers those were - is gone with the second resolver
+    rather than being taught about overlays. Pinned by
+    `scrolling_a_terminal_overlay_in_alternate_mode_writes_to_the_overlay` and
+    `scrolling_a_terminal_overlay_that_tracks_the_mouse_writes_to_the_overlay`, one per branch.
 
 ---
 

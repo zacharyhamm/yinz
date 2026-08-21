@@ -42,6 +42,7 @@ use zellij_utils::{
     position::Position,
 };
 
+use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
 use crate::tab::{pane_info_for_pane, Pane};
 use crate::{
@@ -167,6 +168,11 @@ impl OverlayPanes {
         coordinates: FloatingPaneCoordinates,
     ) {
         let (surface, origin) = self.surface();
+        // `adjust_coordinates` resolves the geometry and nothing else, so a coordinate that is
+        // not geometry has to be applied by hand - as `change_pane_coordinates` does.
+        if let Some(borderless) = coordinates.borderless {
+            pane.set_borderless(borderless);
+        }
         let mut geom = pane.position_and_size();
         geom.adjust_coordinates(coordinates.clone(), surface, origin);
         pane.set_geom(geom);
@@ -206,7 +212,13 @@ impl OverlayPanes {
             .with_context(|| format!("no overlay pane with ID {pane_id:?}"))
             .with_context(err_context)?;
 
-        with_pane.set_content_offset(Offset::frame(1));
+        // the slot's borderless-ness travels with the slot; the `set_pane_frames` below turns
+        // that into a frame and a content offset
+        if let Some(borderless) = removed.coordinates.borderless {
+            with_pane.set_borderless(borderless);
+        } else {
+            with_pane.set_content_offset(Offset::frame(1));
+        }
         with_pane.set_geom(removed.pane.current_geom());
         self.panes.insert(
             with_pane_id,
@@ -374,6 +386,36 @@ impl OverlayPanes {
         self.active_pane_id(client_id)
             .and_then(move |pane_id| self.get_mut(&pane_id))
     }
+    /// The overlay a client that was not here when it opened has to be put on, or `None` if there
+    /// is no modal.
+    ///
+    /// A modal is the one pane that must own the keyboard and has no way to learn that it doesn't,
+    /// so it outranks whatever else is in the stack rather than being merely the topmost thing.
+    pub fn topmost_modal_pane_id(&self) -> Option<PaneId> {
+        self.stack_layer_ids().into_iter().rev().find(|pane_id| {
+            self.is_modal(pane_id) && self.get(pane_id).is_some_and(|pane| pane.selectable())
+        })
+    }
+    /// The overlay some other client is already looking at, if any - the overlay counterpart of
+    /// `FloatingPanes::first_active_floating_pane_id`. `None` when nobody here has overlay focus,
+    /// which is also what a dismissible overlay that gave its focus up looks like.
+    pub fn first_active_pane_id(&self) -> Option<PaneId> {
+        self.active_panes.values().next().copied()
+    }
+    /// Put a client that joined after this overlay opened onto it, unless it already has overlay
+    /// focus of its own.
+    ///
+    /// Unlike `focus_pane` this leaves `z_indices` alone: the occlusion stack is shared by every
+    /// client, and a joining client inheriting an overlay that is not the topmost one would
+    /// reorder what everybody else sees. It records no `last_pane` and no `set_active_at` either -
+    /// joining is not activity, and there is no previous overlay to go back to.
+    pub fn focus_pane_for_joining_client(&mut self, pane_id: PaneId, client_id: ClientId) {
+        if self.active_panes.contains_key(&client_id) {
+            return;
+        }
+        self.active_panes.insert(client_id, pane_id, &self.panes);
+        self.set_force_render();
+    }
     /// Give every connected client this overlay.
     ///
     /// Overlays are focused for all clients at once, as floating panes are: the occlusion stack is
@@ -499,6 +541,28 @@ impl OverlayPanes {
         Ok(())
     }
 
+    /// Turn this overlay's frame off or on, reporting whether it was an overlay at all.
+    ///
+    /// The stored coordinates move with the pane, not just the pane's own flag: `placement_of`
+    /// hands them over when an overlay follows a client to another tab, and an overlay that got
+    /// its frame back on the way across would not be the pane the user was looking at.
+    pub fn set_borderless(&mut self, pane_id: &PaneId, borderless: bool) -> bool {
+        let Some(overlay) = self.panes.get_mut(pane_id) else {
+            return false;
+        };
+        overlay.pane.set_borderless(borderless);
+        overlay.coordinates.borderless = Some(borderless);
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        true
+    }
+    pub fn toggle_borderless(&mut self, pane_id: &PaneId) -> bool {
+        match self.get(pane_id).map(|pane| pane.borderless()) {
+            Some(borderless) => self.set_borderless(pane_id, !borderless),
+            None => false,
+        }
+    }
+
     /// Re-resolve every overlay against the surface as it is now.
     ///
     /// An overlay was placed by coordinates, not by an absolute geometry, so a surface that
@@ -546,6 +610,22 @@ impl OverlayPanes {
     pub fn update_pane_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         for overlay in self.panes.values_mut() {
             overlay.pane.update_arrow_fonts(should_support_arrow_fonts);
+        }
+    }
+    pub fn update_pane_kitty_host_support(&mut self, supported: KittyHostSupport) {
+        for overlay in self.panes.values_mut() {
+            overlay.pane.update_kitty_host_support(supported);
+        }
+    }
+    pub fn update_pane_sixel_host_support(&mut self, supported: bool) {
+        for overlay in self.panes.values_mut() {
+            overlay.pane.update_sixel_host_support(supported);
+        }
+    }
+    pub fn update_pane_rounded_corners(&mut self, rounded_corners: bool) {
+        self.style.rounded_corners = rounded_corners;
+        for overlay in self.panes.values_mut() {
+            overlay.pane.update_rounded_corners(rounded_corners);
         }
     }
     pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) {

@@ -1982,11 +1982,13 @@ impl Tab {
             self.tiled_panes.update_pane_kitty_host_support(supported);
             self.floating_panes
                 .update_pane_kitty_host_support(supported);
+            self.overlay_panes.update_pane_kitty_host_support(supported);
         }
         if let Some(supported) = self.sixel_host_support {
             self.tiled_panes.update_pane_sixel_host_support(supported);
             self.floating_panes
                 .update_pane_sixel_host_support(supported);
+            self.overlay_panes.update_pane_sixel_host_support(supported);
         }
         Ok(())
     }
@@ -2413,6 +2415,20 @@ impl Tab {
         Ok(())
     }
     pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>) -> Result<()> {
+        // an overlay is drawn for every client, so a client that joins while one is open must be
+        // focused on it - otherwise it sees the dialog and types into the pane behind it. A modal
+        // first: it is the one pane that must own the keyboard and cannot learn that it doesn't.
+        // Otherwise whatever another client is on - which is `None` for a dismissible overlay that
+        // was deliberately defocused, and that stays defocused. This runs before the branch below
+        // because the tab's first client returns early when there are no tiled panes.
+        if let Some(overlay_to_focus) = self
+            .overlay_panes
+            .topmost_modal_pane_id()
+            .or_else(|| self.overlay_panes.first_active_pane_id())
+        {
+            self.overlay_panes
+                .focus_pane_for_joining_client(overlay_to_focus, client_id);
+        }
         let other_clients_exist_in_tab = { !self.connected_clients.borrow().is_empty() };
         if other_clients_exist_in_tab {
             if let Some(first_active_floating_pane_id) =
@@ -4680,31 +4696,6 @@ impl Tab {
         .with_context(|| format!("failed to write to active terminal for client {client_id}"))
     }
 
-    pub fn write_to_terminal_at(
-        &mut self,
-        input_bytes: Vec<u8>,
-        position: &Position,
-        client_id: ClientId,
-    ) -> Result<()> {
-        let err_context = || format!("failed to write to terminal at position {position:?}");
-
-        if let Some(pane_id) = self.floating_panes.visible_pane_id_at(position) {
-            self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
-                .with_context(err_context)?;
-            return Ok(());
-        }
-
-        let pane_id = self
-            .get_pane_id_at(position, false)
-            .with_context(err_context)?;
-        if let Some(pane_id) = pane_id {
-            self.write_to_pane_id(&None, input_bytes, false, pane_id, Some(client_id), None)
-                .with_context(err_context)?;
-            return Ok(());
-        }
-        Ok(())
-    }
-
     pub fn paste_to_pane_id(
         &mut self,
         bytes: Vec<u8>,
@@ -6199,6 +6190,7 @@ impl Tab {
         let mut pane_ids: HashSet<PaneId> =
             self.tiled_panes.rendered_pane_ids().into_iter().collect();
         pane_ids.extend(self.floating_panes.rendered_pane_ids());
+        pane_ids.extend(self.overlay_panes.rendered_pane_ids());
         pane_ids
     }
     pub fn get_all_pane_ids(&self) -> Vec<PaneId> {
@@ -6245,6 +6237,19 @@ impl Tab {
             let mut info = pane_info_for_pane(&pane_id, pane.as_ref(), &current_pane_group);
             info.is_focused = false;
             info.is_fullscreen = self.floating_panes.fullscreen_pane_id() == Some(pane_id);
+            info.is_floating = true;
+            info.is_suppressed = false;
+            return Some(info);
+        }
+
+        // Check overlay panes - the same fields `OverlayPanes::pane_info` sets for the plural
+        // API, which has included overlays since they got their own collection
+        if let Some(pane) = self.overlay_panes.get_pane(pane_id) {
+            let mut info = pane_info_for_pane(&pane_id, pane.as_ref(), &current_pane_group);
+            info.is_focused = false;
+            // an overlay cannot go fullscreen, and `is_floating` is read everywhere as "not
+            // tiled", which a pane drawn over the session certainly is
+            info.is_fullscreen = false;
             info.is_floating = true;
             info.is_suppressed = false;
             return Some(info);
@@ -8286,6 +8291,8 @@ impl Tab {
         self.style.rounded_corners = rounded_corners;
         self.floating_panes
             .update_pane_rounded_corners(rounded_corners);
+        self.overlay_panes
+            .update_pane_rounded_corners(rounded_corners);
         self.tiled_panes
             .update_pane_rounded_corners(rounded_corners);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
@@ -8295,6 +8302,8 @@ impl Tab {
     pub fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
         self.floating_panes
+            .update_pane_arrow_fonts(should_support_arrow_fonts);
+        self.overlay_panes
             .update_pane_arrow_fonts(should_support_arrow_fonts);
         self.tiled_panes
             .update_pane_arrow_fonts(should_support_arrow_fonts);
@@ -8306,6 +8315,7 @@ impl Tab {
         self.kitty_host_support = Some(supported);
         self.floating_panes
             .update_pane_kitty_host_support(supported);
+        self.overlay_panes.update_pane_kitty_host_support(supported);
         self.tiled_panes.update_pane_kitty_host_support(supported);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
             pane.update_kitty_host_support(supported);
@@ -8315,6 +8325,7 @@ impl Tab {
         self.sixel_host_support = Some(supported);
         self.floating_panes
             .update_pane_sixel_host_support(supported);
+        self.overlay_panes.update_pane_sixel_host_support(supported);
         self.tiled_panes.update_pane_sixel_host_support(supported);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
             pane.update_sixel_host_support(supported);
@@ -8572,6 +8583,12 @@ impl Tab {
             return Ok(());
         }
 
+        // an overlay does its own frame and offset arithmetic, in `set_pane_frames`
+        if self.overlay_panes.toggle_borderless(pane_id) {
+            self.set_force_render();
+            return Ok(());
+        }
+
         log::error!("Pane with id {:?} not found", pane_id);
         Ok(())
     }
@@ -8608,6 +8625,12 @@ impl Tab {
                 pane.pane.set_content_offset(Offset::frame(1));
             }
             pane.pane.set_borderless(borderless);
+            return Ok(());
+        }
+
+        // Try overlays, which do their own frame and offset arithmetic in `set_pane_frames`
+        if self.overlay_panes.set_borderless(pane_id, borderless) {
+            self.set_force_render();
             return Ok(());
         }
 

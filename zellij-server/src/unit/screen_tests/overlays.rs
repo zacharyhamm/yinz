@@ -838,6 +838,39 @@ fn a_new_pane_opened_over_a_modal_plugin_overlay_does_not_steal_its_focus() {
     );
 }
 
+/// `Tab::pane_infos` has listed overlays since they got their own collection; the singular
+/// lookup behind the `GetPaneInfo` plugin API has to answer for the same panes, or a plugin that
+/// opens an overlay and asks about the ID it was handed back gets nothing.
+#[test]
+fn an_overlay_answers_the_singular_pane_info_lookup() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(tab.pane_is_overlay(modal_id));
+
+    let pane_info = tab
+        .get_pane_info(modal_id)
+        .expect("an overlay is a pane the singular API knows about");
+    assert_eq!(pane_info.id, 7);
+    assert!(pane_info.is_plugin);
+    assert!(
+        pane_info.is_floating,
+        "every consumer reads `is_floating` as `not tiled`, which an overlay is"
+    );
+    assert!(!pane_info.is_fullscreen, "an overlay cannot go fullscreen");
+    assert!(!pane_info.is_suppressed);
+
+    assert!(
+        tab.pane_infos()
+            .iter()
+            .any(|info| info.is_plugin && info.id == 7),
+        "and it agrees with the plural API it sits beside"
+    );
+}
+
 /// The other half of the test above: keeping focus is not the end of the story, or the pane the
 /// user asked for would stay unreachable. `hocus-new-agent` submits, focuses the agent pane it
 /// just opened, and only then closes itself - and this is that hand-off. Focusing the tiled pane
@@ -1717,5 +1750,198 @@ fn plugin_configuration_keys_resolve_to_an_overlay_placement() {
         RunPluginOrAlias::RunPlugin(plain).overlay_placement(),
         None,
         "a plugin that asks for neither is not an overlay"
+    );
+}
+
+/// A modal is opened for the client who asked for it, but it is drawn for everybody - and a client
+/// that attaches afterwards was not in `connected_clients` when the overlay took focus. Without
+/// this it sees the dialog over its whole surface and types into the pane behind it, and the modal
+/// has no way to learn that anyone is doing so.
+#[test]
+fn a_client_joining_while_a_modal_is_open_lands_on_the_modal() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    screen.add_client(2, false).expect("TEST");
+
+    let tab = screen.get_active_tab_mut(2).unwrap();
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(modal_id),
+        "the client that just attached must be on the modal it can see, not on the pane under it"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(modal_id),
+        "and the client that opened it is where it was"
+    );
+}
+
+/// The same door, opened the way a user actually opens it: no reattach, just walking into a tab
+/// that has a modal in it. `switch_active_tab` reaches `Tab::add_client` through
+/// `move_clients_between_tabs`, so this is the path that matters in a live session.
+#[test]
+fn a_client_switching_into_a_tab_with_a_modal_lands_on_it() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.add_client(2, false).expect("TEST");
+    screen.switch_active_tab(1, None, true, 2).expect("TEST");
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    screen.switch_active_tab(0, None, true, 2).expect("TEST");
+
+    let tab = screen.get_active_tab_mut(2).unwrap();
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(modal_id),
+        "walking into a tab with a modal in it puts the keyboard on the modal"
+    );
+}
+
+/// The other half of the rule. A dismissible overlay that gave its focus up - which is how
+/// `hocus-ask` learns to close itself - stays given up: a joining client inherits what the other
+/// clients actually have, and nobody has that overlay. Focusing it here would resurrect a dialog
+/// the user already dismissed.
+#[test]
+fn a_joining_client_does_not_pick_up_a_dismissible_overlay_that_gave_up_focus() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_popup(&mut screen, 2, "POPUP");
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the popup gave the keyboard up to the pane the user asked for"
+    );
+
+    screen.add_client(2, false).expect("TEST");
+
+    let tab = screen.get_active_tab_mut(2).unwrap();
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(PaneId::Terminal(3)),
+        "a joining client inherits the tiled focus, not an overlay nobody is on"
+    );
+}
+
+/// The hit-test already knows the overlay is there - the write has to agree with it. Scroll
+/// forwarding used to hand the position to `Tab::write_to_terminal_at`, which resolved it a second
+/// time through the floating and tiled layers only: an overlay in alternate-screen mode had its
+/// cursor keys delivered to the tiled pane underneath, so scrolling a dialog moved a shell behind
+/// it.
+#[test]
+fn scrolling_a_terminal_overlay_in_alternate_mode_writes_to_the_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    // the tab copies the bus senders when it is created, so the capture goes in first
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    new_tab(&mut screen, 1, 0);
+    open_popup(&mut screen, 3, "OVERLAY");
+    // DECSET 1049: the overlay is on the alternate screen, where scrolling is cursor keys
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .handle_pty_bytes(3, b"\x1b[?1049h".to_vec())
+        .expect("TEST");
+    pty_writer_rx.try_iter().for_each(drop);
+
+    // `overlay_coordinates()` puts the overlay at (2, 2), 60% wide and 4 rows tall
+    screen.handle_mouse_event(MouseEvent::new_scroll_up_event(Position::new(3, 4)), 1);
+
+    let writes: Vec<_> = pty_writer_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::Write(bytes, terminal_id, _) => Some((terminal_id, bytes)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        writes.iter().all(|(terminal_id, _)| *terminal_id == 3),
+        "every write goes to the overlay, none to the tiled pane under it: {writes:?}"
+    );
+    assert_eq!(
+        writes
+            .into_iter()
+            .map(|(_, bytes)| bytes)
+            .collect::<Vec<_>>(),
+        vec![b"\x1b[A".to_vec(); 3],
+        "and the overlay got the cursor keys its alternate screen scrolls with"
+    );
+}
+
+/// The same delivery, through the other branch: a terminal overlay that tracks the mouse itself
+/// gets the SGR report rather than cursor keys, and it has to arrive at the overlay too.
+#[test]
+fn scrolling_a_terminal_overlay_that_tracks_the_mouse_writes_to_the_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    // the tab copies the bus senders when it is created, so the capture goes in first
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    new_tab(&mut screen, 1, 0);
+    open_popup(&mut screen, 3, "OVERLAY");
+    // DECSET 1000 + 1006: report mouse buttons, in SGR encoding
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .handle_pty_bytes(3, b"\x1b[?1000h\x1b[?1006h".to_vec())
+        .expect("TEST");
+    pty_writer_rx.try_iter().for_each(drop);
+
+    screen.handle_mouse_event(MouseEvent::new_scroll_up_event(Position::new(3, 4)), 1);
+
+    let writes: Vec<_> = pty_writer_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::Write(bytes, terminal_id, _) => Some((terminal_id, bytes)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !writes.is_empty(),
+        "the overlay tracks the mouse, so the scroll is reported to it"
+    );
+    assert!(
+        writes.iter().all(|(terminal_id, _)| *terminal_id == 3),
+        "and every report goes to the overlay, not to the tiled pane under it: {writes:?}"
+    );
+}
+
+/// `Output` hides and cleans up the kitty image placements of any pane it is not told is visible.
+/// An overlay is drawn for as long as it exists, so it belongs in that set - otherwise a terminal
+/// overlay showing graphics has them wiped out from under it while it is plainly on screen.
+#[test]
+fn an_overlay_counts_as_visible_for_kitty_graphics() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", true);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
+    assert!(
+        tab.kitty_visible_pane_ids().contains(&PaneId::Terminal(2)),
+        "the overlay is on screen, so its kitty placements must not be cleaned up"
     );
 }
