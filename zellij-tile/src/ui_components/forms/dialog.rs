@@ -216,8 +216,8 @@ impl Dialog {
     }
 
     fn render_centered(&self, text: &Text, area: Rect, y: usize) {
-        let x = centered_x(area, text.content());
-        print_text_with_coordinates(text.clone(), x, y, Some(area.columns), None);
+        let (x, width) = centered_span(area, text.content());
+        print_text_with_coordinates(text.clone(), x, y, Some(width), None);
     }
 }
 
@@ -233,8 +233,17 @@ fn tail_rows(show_help: bool, show_status: bool) -> usize {
     }
 }
 
-fn centered_x(area: Rect, text: &str) -> usize {
-    area.x + area.columns.saturating_sub(text.width()) / 2
+/// Where a centered line starts, and how wide it may be drawn.
+///
+/// The width has to stop at the area's right edge rather than being the area's
+/// full width: the host pads every component out to the width it is given, so a
+/// full-width run started at an indented `x` overruns the pane, wraps, and - when
+/// it is the bottom row, which the help line is whenever the dialog was given
+/// exactly the rows it asked for - scrolls the whole frame up by one row. Every
+/// widget then sits one row above the rectangle it hit-tests against.
+fn centered_span(area: Rect, text: &str) -> (usize, usize) {
+    let x = area.x + area.columns.saturating_sub(text.width()) / 2;
+    (x, (area.x + area.columns).saturating_sub(x))
 }
 
 #[cfg(test)]
@@ -367,7 +376,30 @@ mod tests {
 
     #[test]
     fn centering_uses_terminal_columns() {
-        assert_eq!(centered_x(Rect::new(4, 0, 10, 1), "界界"), 7);
-        assert_eq!(centered_x(Rect::new(4, 0, 2, 1), "界界"), 4);
+        assert_eq!(centered_span(Rect::new(4, 0, 10, 1), "界界").0, 7);
+        assert_eq!(centered_span(Rect::new(4, 0, 2, 1), "界界").0, 4);
+    }
+
+    /// A centered line padded out to the area's *full* width starts indented and
+    /// so ends past the pane, where it wraps and scrolls the frame. It has to
+    /// end exactly at the right edge instead.
+    #[test]
+    fn a_centered_line_never_reaches_past_the_area() {
+        let area = Rect::new(4, 0, 20, 1);
+        for text in [
+            "",
+            "x",
+            "New agent",
+            "界界",
+            &"x".repeat(19),
+            &"x".repeat(40),
+        ] {
+            let (x, width) = centered_span(area, text);
+            assert_eq!(
+                x + width,
+                area.x + area.columns,
+                "{text:?} is drawn from {x} for {width} columns"
+            );
+        }
     }
 }

@@ -151,8 +151,20 @@ impl<'a> UiComponentParser<'a> {
                     coordinates
                 )
             })?;
-            let width = captures[3].parse::<usize>().ok();
-            let height = captures[4].parse::<usize>().ok();
+            // Clamped to the room left in the pane. A component placed with
+            // coordinates is absolute, and the host pads it out to the width it
+            // was given: a full-width run asked for at an indented `x` would
+            // otherwise spill past the right edge, wrap, and - on the bottom row
+            // - scroll the pane's whole frame up by one line underneath the
+            // plugin, which then hit-tests a row off.
+            let width = captures[3]
+                .parse::<usize>()
+                .ok()
+                .map(|width| width.min(self.grid.width.saturating_sub(x)));
+            let height = captures[4]
+                .parse::<usize>()
+                .ok()
+                .map(|height| height.min(self.grid.height.saturating_sub(y)));
             Ok(Some(Coordinates {
                 x,
                 y,

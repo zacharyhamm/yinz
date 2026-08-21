@@ -1104,6 +1104,51 @@ mod tests {
         );
     }
 
+    fn ztext(x: usize, y: usize, width: usize, text: &str) -> String {
+        let bytes = text
+            .as_bytes()
+            .iter()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("\u{1b}Pztext;{x}/{y}/{width}/;{bytes}\u{1b}\\")
+    }
+
+    // regression test: the host pads a component out to the width it is given, so a
+    // component asked for at an indented `x` with the pane's full width used to run past
+    // the right edge and wrap. On the bottom row - where a dialog sized to exactly the
+    // rows it asked for draws its help line - the wrap scrolled the whole frame up by
+    // one line, and every widget then sat one row above the rectangle the plugin
+    // hit-tests clicks against.
+    #[test]
+    fn a_component_wider_than_the_room_to_its_right_does_not_scroll_the_pane() {
+        let mut pane = test_plugin_pane(5, 20, Offset::default());
+        let rows = pane.get_content_rows();
+        let columns = pane.get_content_columns();
+        let frame = format!(
+            "{}{}",
+            ztext(0, 0, columns, "top"),
+            ztext(5, rows - 1, columns, "bottom"),
+        );
+        pane.handle_plugin_bytes(1, frame.into_bytes());
+
+        // `Grid`'s `Debug` prints one viewport row per line, each behind a `00 (C): `
+        // index prefix.
+        let rendered = format!("{:?}", pane.grids.get(&1).expect("the grid was created"));
+        let row_content = |line: &str| {
+            line.split_once("): ")
+                .map(|(_, content)| content.trim_end().to_owned())
+                .unwrap_or_default()
+        };
+        let lines: Vec<String> = rendered.lines().map(row_content).collect();
+        assert_eq!(lines.first().map(String::as_str), Some("top"), "{rendered}");
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("     bottom"),
+            "{rendered}"
+        );
+    }
+
     #[test]
     fn cursor_coordinates_are_none_past_the_content_area() {
         let mut pane = test_plugin_pane(
