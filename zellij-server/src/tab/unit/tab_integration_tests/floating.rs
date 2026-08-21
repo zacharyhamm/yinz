@@ -256,15 +256,17 @@ fn default_new_pane_from_overlay_is_tiled_and_visible() {
     );
 }
 
+/// A UI-covering fullscreen tiled pane used to hide overlays, and focus followed - which left a
+/// modal focused and invisible, with no way out: the thing holding the keyboard was the thing that
+/// could not be seen. An overlay now outranks fullscreen, as it outranks a pinned pane.
 #[test]
-fn overlay_focus_tracks_whether_the_overlay_is_rendered() {
+fn an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane() {
     let size = Size {
         cols: 121,
         rows: 20,
     };
     let client_id = 1;
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let tiled_pane_id = PaneId::Terminal(1);
     let overlay_pane_id = PaneId::Terminal(2);
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
@@ -283,15 +285,86 @@ fn overlay_focus_tracks_whether_the_overlay_is_rendered() {
     .unwrap();
 
     assert!(tab.fullscreen_covers_ui());
-    assert!(!tab.overlays_are_rendered());
-    assert_eq!(tab.get_active_pane_id(client_id), Some(tiled_pane_id));
-
-    tab.toggle_active_pane_no_ui_fullscreen(client_id);
-
-    assert!(!tab.fullscreen_covers_ui());
     assert!(tab.overlays_are_rendered());
     assert_eq!(tab.overlay_panes.rendered_pane_ids(), vec![overlay_pane_id]);
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+
+    assert!(
+        tab.fullscreen_covers_ui(),
+        "the fullscreen keystroke was about the overlay, which cannot go fullscreen, so the \
+         tiled pane behind it is left exactly as it was"
+    );
+    assert!(tab.overlays_are_rendered());
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+}
+
+/// The by-id fullscreen paths used to fall through to the tiled collection and log "no tiled pane
+/// with id", which reads as a lookup failure rather than a refusal. An overlay is refused.
+#[test]
+fn an_overlay_cannot_be_fullscreened_by_id() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    tab.toggle_pane_fullscreen(overlay_pane_id);
+    assert!(!tab.is_fullscreen_active(), "nothing went fullscreen");
+
+    tab.toggle_pane_no_ui_fullscreen(overlay_pane_id);
+    assert!(!tab.is_fullscreen_active(), "nothing went fullscreen");
+
+    assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
+}
+
+/// The active-pane paths never consulted `get_active_pane_id`, so with an overlay focused the
+/// keystroke fullscreened the tiled pane *behind* it - a pane the user was not looking at.
+#[test]
+fn a_fullscreen_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert!(
+        !tab.is_fullscreen_active(),
+        "the tiled pane behind the modal must not be fullscreened by a keystroke aimed at it"
+    );
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+    assert!(!tab.is_fullscreen_active());
 }
 
 #[test]

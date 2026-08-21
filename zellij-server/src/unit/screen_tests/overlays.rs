@@ -1369,6 +1369,41 @@ fn frame_of_an_overlay_with_a_pinned_and_a_plain_floating_pane() {
     assert_snapshot!(rendered_frame(&mut screen, size));
 }
 
+/// A modal over a tiled pane fullscreened across the whole UI. This combination had no test
+/// before Phase 4 because the overlay was simply not drawn - which left the modal focused and
+/// invisible.
+///
+/// It is also the sharpest test of the flat-list discipline: `Tab::occlusion_stack` and
+/// `render_floating_panes_after_global_panes` index into one list, and a fullscreen tiled pane is
+/// the case where the floating half of that list is not drawn while the overlay half is. A pane
+/// handed an index that is not its own is clipped against its own geometry and erases itself, so
+/// an empty box here is the failure this pins.
+#[test]
+fn frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .handle_pty_bytes(1, b"TILED".to_vec())
+        .expect("TEST");
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_no_ui_fullscreen(1);
+    assert!(screen.get_active_tab_mut(1).unwrap().fullscreen_covers_ui());
+
+    open_popup(&mut screen, 2, "OVERLAY");
+
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("OVERLAY"),
+        "the overlay must be drawn over the fullscreen pane, got:\n{frame}"
+    );
+    assert_snapshot!(frame);
+}
+
 // ---------------------------------------------------------------------------
 // Structural invariants.
 //

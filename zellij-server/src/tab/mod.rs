@@ -4097,11 +4097,11 @@ impl Tab {
     }
     /// Where this client's keyboard goes.
     ///
-    /// An overlay comes first, and the only thing that can take focus from it is not being drawn
-    /// at all - a tiled pane fullscreened over the whole UI covers it, and focus follows what the
-    /// user can see. There is deliberately no layer-visibility test: an overlay is not on the
-    /// floating layer, and it was the exception carved into that test - and every path that forgot
-    /// the exception - that this collection exists to remove.
+    /// An overlay comes first, and nothing takes focus from it while it exists. There is
+    /// deliberately no layer-visibility test: an overlay is not on the floating layer, and it was
+    /// the exception carved into that test - and every path that forgot the exception - that this
+    /// collection exists to remove. `overlays_are_rendered` is still consulted so that focus and
+    /// what is drawn cannot disagree, but it no longer has a way to be false for a live overlay.
     pub fn get_active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
         self.overlay_panes
             .active_pane_id(client_id)
@@ -4943,7 +4943,30 @@ impl Tab {
             },
         )
     }
+    /// An overlay cannot go fullscreen, and says so rather than falling through.
+    ///
+    /// `OverlayPanes` has no `fullscreen_pane_id` - what a fullscreen overlay would even mean is
+    /// undefined, since it is drawn over the whole session surface already. Before this refusal
+    /// existed the by-id paths logged "no tiled pane with id", and the active-pane paths, which
+    /// never consulted `get_active_pane_id`, silently fullscreened the tiled pane *behind* the
+    /// overlay the user was looking at.
+    fn refuses_fullscreen(&self, pane_id: &PaneId) -> bool {
+        if self.overlay_panes.panes_contain(pane_id) {
+            log::error!("{pane_id:?} is an overlay - overlays cannot be fullscreened");
+            return true;
+        }
+        false
+    }
+    /// Whether this client's keyboard is on an overlay, in which case a fullscreen keystroke is
+    /// about the overlay and there is nothing to do.
+    fn active_pane_refuses_fullscreen(&self, client_id: ClientId) -> bool {
+        self.get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.refuses_fullscreen(&pane_id))
+    }
     pub fn toggle_active_pane_fullscreen(&mut self, client_id: ClientId) {
+        if self.active_pane_refuses_fullscreen(client_id) {
+            return;
+        }
         if self.floating_panes.fullscreen_is_active()
             || (self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
         {
@@ -4959,6 +4982,9 @@ impl Tab {
         self.tiled_panes.toggle_active_pane_fullscreen(client_id);
     }
     pub fn toggle_pane_fullscreen(&mut self, pane_id: PaneId) {
+        if self.refuses_fullscreen(&pane_id) {
+            return;
+        }
         if self.floating_panes.panes_contain(&pane_id) {
             self.floating_panes.toggle_pane_fullscreen(pane_id);
             self.set_force_render();
@@ -4976,6 +5002,9 @@ impl Tab {
         }
     }
     pub fn toggle_active_pane_no_ui_fullscreen(&mut self, client_id: ClientId) {
+        if self.active_pane_refuses_fullscreen(client_id) {
+            return;
+        }
         if self.floating_panes.fullscreen_is_active()
             || (self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes())
         {
@@ -4993,6 +5022,9 @@ impl Tab {
             .toggle_active_pane_no_ui_fullscreen(client_id);
     }
     pub fn toggle_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) {
+        if self.refuses_fullscreen(&pane_id) {
+            return;
+        }
         if self.floating_panes.panes_contain(&pane_id) {
             self.floating_panes.toggle_pane_no_ui_fullscreen(pane_id);
             self.set_force_render();
@@ -5378,16 +5410,16 @@ impl Tab {
 
     /// Whether the overlays contribute to this frame at all.
     ///
-    /// An overlay is drawn for as long as it exists - there is no layer to raise and no visibility
-    /// to check. The one thing that still hides it is a tiled pane fullscreened over the whole UI,
-    /// which today paints over the floating layer too. That is arguably wrong for a *modal* (it is
-    /// focused and invisible), but it is what the code does now and changing it is not this move;
-    /// see the Phase 4 notes in `docs/MODAL_OVERLAY_REFACTOR.md`.
+    /// An overlay is drawn for as long as it exists. There is no layer to raise, no visibility to
+    /// check, and - since Phase 4 - not even a fullscreen tiled pane to yield to: a UI-covering
+    /// fullscreen used to hide overlays, which left a modal focused and invisible, a state the
+    /// user has no way out of because the modal is the thing that has the keyboard. An overlay
+    /// outranks fullscreen for the same reason it outranks a pinned pane.
     ///
     /// `occlusion_stack` and `render_floating_panes_after_global_panes` both gate on this, and
     /// must keep doing so together.
     pub fn overlays_are_rendered(&self) -> bool {
-        !self.tiled_panes.fullscreen_covers_ui() && self.overlay_panes.has_panes()
+        self.overlay_panes.has_panes()
     }
 
     /// Position this tab's cursor, once every pane that contributes to the frame (including the
