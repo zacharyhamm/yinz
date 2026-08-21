@@ -189,6 +189,26 @@ index 0 and clipped by every layer in the stack. Five lookup chains had the same
 reached past the overlay collection — they use `.get(&id)` rather than `.get_pane_mut(id)`,
 which is why the bulk pass over the `.or_else` chains missed them.
 
+**What the unit suite could not see** (`0136c611a`). With all 2500 unit tests green,
+`cargo x integration-test` put 18 failures on the board, every one of them a *plugin*
+overlay: `file-finder`, `hocus-ask` and `quit-confirmation` drew an empty box. Terminal
+overlays were fine throughout, which is exactly why nothing caught it — the unit suite's
+plugin panes are mocks that never render, so the whole plugin-output path is untested
+there.
+
+The cause was `Tab::has_plugin`, which `Screen::handle_plugin_render_assets` asks before
+handing a tab the bytes a plugin just rendered. It did not know about `overlay_panes`, so
+every popup's output was logged as belonging to no pane and dropped. Four smaller sites had
+the same shape: `Tab::set_force_render`, `rename_pane` (how a plugin titles its own pane),
+`set_pane_active_at` (what the mouse handler calls after focusing one), and
+`undo_active_rename_pane`, which picked its collection from whether the floating layer
+happens to be visible.
+
+**The lesson for Phase 4:** a change to how panes are stored is not verified by the unit
+suite. Run `cargo x integration-test`, and drive the real binary — the fastest reproduction
+here was `zellij action new-pane --plugin zellij:about --floating --overlay true` against a
+live session, which showed an empty frame in one command.
+
 ---
 
 ## Findings that the remaining work depends on
@@ -410,10 +430,16 @@ cargo x assets --check && cargo x format --check
 Notes from running these on this branch:
 
 - **Use `-j 4` for `integration-test`.** At default parallelism on a 64-core machine the
-  suite produced ~105 timeouts purely from contention; the same tests pass at `-j 4`.
+  suite produced ~105 timeouts purely from contention; the same tests pass at `-j 4`. Even
+  at `-j 4` a handful still time out at 60s (`no_focus`, `no_ui_fullscreen`) and pass when
+  run alone — check a timeout in isolation before believing it.
 - **Pre-existing failures**, confirmed by stashing the branch and re-running:
-  `misc::quit_with_keybinding`, and the `nested_guest_modal` / `nested_hardening` group.
-  Not caused by this work.
+  `misc::quit_with_keybinding`, the `nested_guest_modal` / `nested_hardening` /
+  `nested_sessions` / `nested_session_handling_config` group, and
+  `stacked_pane_list::a_stack_list_survives_session_resurrection`. Not caused by this work.
+  `quit_with_keybinding` is worth understanding rather than ignoring: it sends Ctrl-q and
+  waits for "Bye from Zellij!", but this fork put a quit-confirmation modal in the way, so
+  the test is stale against the fork's own feature.
 - **The `zellij-server` lib suite is flaky under parallel load, and the failing set changes
   from run to run.** Four runs on the same tree produced four different one- or two-test
   failure sets, drawn from
