@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use hocus_proto::location::Location;
 use hocus_proto::{
     agents::{self, AgentPane},
     projects::{self, Registry},
@@ -338,7 +339,9 @@ impl State {
 ///   repository root" - and the caller's own folder, which may well be a
 ///   repository, is one option away.
 fn project_options(projects: &Registry, caller_cwd: &Path) -> (Vec<String>, usize) {
-    let selected = projects::for_cwd(projects, &caller_cwd.to_string_lossy())
+    // The caller is a pane in this session asking about its own folder, which
+    // is on this machine by construction.
+    let selected = projects::for_cwd(projects, &Location::local(caller_cwd.to_string_lossy()))
         .and_then(|active| {
             projects
                 .values()

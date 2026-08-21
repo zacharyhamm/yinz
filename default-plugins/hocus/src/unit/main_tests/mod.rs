@@ -208,9 +208,12 @@ fn state_with_worktrees() -> State {
         agent_in(5, "/work/trees/topic", 2),
     ]);
     state.repositories = BTreeMap::from([
-        ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
         (
-            "/work/trees/topic".to_owned(),
+            Location::local("/work/hocus"),
+            on_branch("/work/hocus", "main"),
+        ),
+        (
+            Location::local("/work/trees/topic"),
             on_branch("/work/trees/topic", "topic"),
         ),
     ]);
@@ -232,9 +235,12 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
                 repositories: BTreeMap::from([
-                    ("/work/hocus".to_owned(), on_branch("/work/hocus", branch)),
                     (
-                        "/work/trees/topic".to_owned(),
+                        Location::local("/work/hocus"),
+                        on_branch("/work/hocus", branch),
+                    ),
+                    (
+                        Location::local("/work/trees/topic"),
                         on_branch("/work/trees/topic", "topic"),
                     ),
                 ]),
@@ -314,6 +320,7 @@ fn on_branch(root: &str, branch: &str) -> projects::Repository {
         worktree_status: Some(projects::WorktreeStatus::Primary),
         common_dir: Some(format!("{root}/.git")),
         branch: Some(branch.to_owned()),
+        host: None,
     }
 }
 
@@ -329,6 +336,7 @@ fn worktree_of(root: &str, primary: &str, branch: &str) -> projects::Repository 
         worktree_status: Some(projects::WorktreeStatus::Linked),
         common_dir: Some(format!("{primary}/.git")),
         branch: Some(branch.to_owned()),
+        host: None,
     }
 }
 
@@ -371,13 +379,13 @@ fn poll_focus(
     probe: fn(&str) -> projects::Repository,
     focused: Option<u32>,
 ) {
-    let probed: Vec<(String, projects::Repository)> = panes
+    let probed: Vec<(Location, projects::Repository)> = panes
         .iter()
         .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
         .filter_map(|pane| {
             let cwd = pane.cwd.clone()?;
             let repository = probe(&cwd);
-            Some((cwd, repository))
+            Some((Location::new(pane.host.clone(), &cwd), repository))
         })
         .collect();
     // Keyed by the pane's folder, which is what the daemon keys it by —
@@ -571,9 +579,12 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
                 repositories: BTreeMap::from([
-                    ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
                     (
-                        NESTED_WORKTREE.to_owned(),
+                        Location::local("/work/hocus"),
+                        on_branch("/work/hocus", "main"),
+                    ),
+                    (
+                        Location::local(NESTED_WORKTREE),
                         worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
                     ),
                 ]),

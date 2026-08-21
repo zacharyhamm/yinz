@@ -27,6 +27,7 @@
 
 mod ops;
 
+use hocus_proto::location::Location;
 use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, projects, store, todos};
@@ -134,7 +135,15 @@ fn discover_from(backend: &impl Backend, payload: &str) {
     let repositories: Vec<projects::Repository> = panes
         .iter()
         .filter(|pane| agents::classify(pane, &reply.manual_kinds).is_some())
-        .filter_map(|pane| reply.repositories.get(pane.cwd.as_deref()?).cloned())
+        .filter_map(|pane| {
+            let location = Location::new(pane.host.clone(), pane.cwd.as_deref()?);
+            reply.repositories.get(&location).cloned()
+        })
+        // A checkout on another machine makes no project: every path a project
+        // row holds is a path on *this* one. `projects::discover` refuses these
+        // too, and is the guarantee; this is the same rule said where the panes
+        // are, so a reader here is not left wondering.
+        .filter(|repository| repository.host.is_none())
         .collect();
 
     let Ok(rows) = backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
@@ -277,6 +286,7 @@ mod tests {
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: Some(format!("{root}/.git")),
             branch: Some("main".to_owned()),
+            host: None,
         }
     }
 
@@ -296,11 +306,13 @@ mod tests {
     /// A snapshot with one pane in one checkout, as the daemon sends it.
     fn snapshot(pane: agents::AgentPane, manual_kinds: BTreeMap<u32, String>) -> String {
         let cwd = pane.cwd.clone().expect("the pane is somewhere");
+        let location = Location::new(pane.host.clone(), &cwd);
+        let repository = checkout(&cwd).on_host(pane.host.clone());
         serde_json::to_string(&PollReply {
             panes: Some(vec![pane]),
             activity: agents::Activity::new(),
             manual_kinds,
-            repositories: BTreeMap::from([(cwd.clone(), checkout(&cwd))]),
+            repositories: BTreeMap::from([(location, repository)]),
             // Discovery does not read it; which pane has focus says nothing
             // about which folders are projects.
             focused: None,
@@ -333,6 +345,29 @@ mod tests {
             ),
         );
         assert_eq!(project_names(&backend), vec!["coded"]);
+    }
+
+    /// A checkout on another machine makes no project. Every path a project row
+    /// holds is a path on *this* machine, so a remote one would name a folder
+    /// here that is missing — or, on a build box laid out like the laptop,
+    /// somebody else's.
+    ///
+    /// Attributing a remote agent to a project that already exists is hocus's
+    /// job and works by remote url; *creating* one from a folder over there is
+    /// deliberately not something discovery does.
+    #[test]
+    fn a_checkout_on_another_machine_makes_no_project() {
+        let backend = backend();
+        let mut pane = pane_in(3, "codex", Some("codex"), "/tmp/work");
+        pane.host = Some("build-box".to_owned());
+
+        discover_from(&backend, &snapshot(pane, BTreeMap::new()));
+
+        assert!(
+            project_names(&backend).is_empty(),
+            "{:?}",
+            project_names(&backend)
+        );
     }
 
     /// A worktree nested inside the checkout it came from makes no second

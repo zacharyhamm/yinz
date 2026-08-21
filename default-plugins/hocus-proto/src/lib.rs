@@ -12,6 +12,7 @@
 
 pub mod agents;
 pub mod llm;
+pub mod location;
 pub mod panes;
 pub mod paths;
 pub mod projects;

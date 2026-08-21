@@ -55,7 +55,7 @@ fn project_agent_lists_use_pane_folders() {
     state.panes[1].cwd = Some("/work/other".to_owned());
     state.repositories = ["/work/hocus/src", "/work/other"]
         .into_iter()
-        .map(|cwd| (cwd.to_owned(), checkout(cwd)))
+        .map(|cwd| (Location::local(cwd), checkout(cwd)))
         .collect();
     state.manual_kinds.insert(4, "reviewer".to_owned());
 
@@ -77,13 +77,14 @@ fn project_agent_lists_include_matching_remote_worktrees() {
     state.projects.insert("hocus".to_owned(), project);
     state.panes[0].cwd = Some("/worktrees/topic/src".to_owned());
     state.repositories.insert(
-        "/worktrees/topic/src".to_owned(),
+        Location::local("/worktrees/topic/src"),
         projects::Repository {
             root: "/worktrees/topic".to_owned(),
             remote: Some("git@example.com:hocus.git".to_owned()),
             worktree_status: Some(projects::WorktreeStatus::Linked),
             common_dir: Some("/work/hocus/.git".to_owned()),
             branch: Some("topic".to_owned()),
+            host: None,
         },
     );
 
@@ -110,9 +111,10 @@ fn an_agent_in_a_subdirectory_keeps_the_project_of_its_checkout() {
         projects::validate("hocus", "/work/hocus").unwrap(),
     );
     state.panes[0].cwd = Some("/work/hocus/src/deep".to_owned());
-    state
-        .repositories
-        .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "topic"));
+    state.repositories.insert(
+        Location::local("/work/hocus"),
+        on_branch("/work/hocus", "topic"),
+    );
 
     assert_eq!(
         state.pane_projects().get(&3).map(String::as_str),
@@ -133,9 +135,10 @@ fn an_agent_in_a_subdirectory_keeps_the_project_of_its_checkout() {
 fn a_worktree_nested_in_its_checkout_never_shows_the_primary_branch() {
     let mut state = state_with_panes();
     state.panes[0].cwd = Some(NESTED_WORKTREE.to_owned());
-    state
-        .repositories
-        .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "main"));
+    state.repositories.insert(
+        Location::local("/work/hocus"),
+        on_branch("/work/hocus", "main"),
+    );
 
     assert_eq!(
         state.pane_branches().get(&3),
@@ -146,7 +149,7 @@ fn a_worktree_nested_in_its_checkout_never_shows_the_primary_branch() {
     // And once the daemon has asked about the folder the pane is actually
     // in, the real answer lands.
     state.repositories.insert(
-        NESTED_WORKTREE.to_owned(),
+        Location::local(NESTED_WORKTREE),
         worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
     );
     assert_eq!(
@@ -166,9 +169,10 @@ fn a_nested_worktree_keeps_the_project_of_the_repository_above_it() {
         projects::validate("hocus", "/work/hocus").unwrap(),
     );
     state.panes[0].cwd = Some(NESTED_WORKTREE.to_owned());
-    state
-        .repositories
-        .insert("/work/hocus".to_owned(), on_branch("/work/hocus", "main"));
+    state.repositories.insert(
+        Location::local("/work/hocus"),
+        on_branch("/work/hocus", "main"),
+    );
 
     assert_eq!(
         state.pane_projects().get(&3).map(String::as_str),
@@ -191,9 +195,12 @@ fn nested_worktree_agents_group_under_their_own_branches() {
         projects::validate("hocus", "/work/hocus").unwrap(),
     );
     state.repositories = BTreeMap::from([
-        ("/work/hocus".to_owned(), on_branch("/work/hocus", "main")),
         (
-            NESTED_WORKTREE.to_owned(),
+            Location::local("/work/hocus"),
+            on_branch("/work/hocus", "main"),
+        ),
+        (
+            Location::local(NESTED_WORKTREE),
             worktree_of(NESTED_WORKTREE, "/work/hocus", "topic"),
         ),
     ]);
@@ -222,7 +229,7 @@ fn a_sibling_folder_with_a_common_prefix_is_not_an_ancestor() {
     state.panes[0].cwd = Some("/work/hocus-old/src".to_owned());
     state
         .repositories
-        .insert("/work/hocus".to_owned(), checkout("/work/hocus"));
+        .insert(Location::local("/work/hocus"), checkout("/work/hocus"));
 
     assert!(!state.pane_projects().contains_key(&3));
 }
@@ -245,13 +252,14 @@ fn git_identity_beats_a_project_root_that_merely_contains_the_folder() {
 
     state.panes[0].cwd = Some("/work/checkout".to_owned());
     state.repositories.insert(
-        "/work/checkout".to_owned(),
+        Location::local("/work/checkout"),
         projects::Repository {
             root: "/work/checkout".to_owned(),
             remote: Some("git@example.com:hocus.git".to_owned()),
             worktree_status: Some(projects::WorktreeStatus::Linked),
             common_dir: Some("/elsewhere/hocus/.git".to_owned()),
             branch: Some("topic".to_owned()),
+            host: None,
         },
     );
 
@@ -277,13 +285,14 @@ fn two_projects_on_one_remote_fall_back_to_the_containing_root() {
     }
     state.panes[0].cwd = Some("/work/topic/src".to_owned());
     state.repositories.insert(
-        "/work/topic/src".to_owned(),
+        Location::local("/work/topic/src"),
         projects::Repository {
             root: "/work/topic".to_owned(),
             remote: Some("git@example.com:hocus.git".to_owned()),
             worktree_status: Some(projects::WorktreeStatus::Linked),
             common_dir: Some("/work/main/.git".to_owned()),
             branch: Some("topic".to_owned()),
+            host: None,
         },
     );
 
@@ -427,4 +436,100 @@ fn a_project_tab_uses_the_stable_id_from_zellij() {
     assert_eq!(result, r#"{"opened":true,"tab_id":47}"#);
     assert_eq!(state.tab_projects[&47], "hocus");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
+}
+
+// -- agents on another machine ------------------------------------------
+
+/// A build box is usually laid out like the laptop, so a remote agent's folder
+/// spells a path a local project owns. Reading that as containment files the
+/// agent under work it is not doing — and it would be the *normal* case, not a
+/// corner one.
+#[test]
+fn an_agent_on_another_machine_does_not_join_a_local_project_by_path() {
+    let mut state = state_with_panes();
+    state.projects.insert(
+        "hocus".to_owned(),
+        projects::validate("hocus", "/work/hocus").unwrap(),
+    );
+    state.panes[0].cwd = Some("/work/hocus".to_owned());
+    state.panes[0].host = Some("build-box".to_owned());
+    state.repositories = BTreeMap::from([(
+        Location::new(Some("build-box"), "/work/hocus"),
+        checkout("/work/hocus").on_host(Some("build-box".to_owned())),
+    )]);
+
+    assert!(
+        state.pane_projects().is_empty(),
+        "the remote agent was filed under a local project: {:?}",
+        state.pane_projects(),
+    );
+}
+
+/// What a remote checkout *may* match on. The same repository on two machines is
+/// the same work, and its remote url is the one identity that says so.
+#[test]
+fn an_agent_on_another_machine_joins_the_project_its_remote_url_names() {
+    let mut state = state_with_panes();
+    let mut project = projects::validate("hocus", "/work/hocus").unwrap();
+    project.remote = Some("git@example.com:me/hocus".to_owned());
+    state.projects.insert("hocus".to_owned(), project);
+
+    state.panes[0].cwd = Some("/srv/hocus".to_owned());
+    state.panes[0].host = Some("build-box".to_owned());
+    let mut repository = checkout("/srv/hocus").on_host(Some("build-box".to_owned()));
+    repository.remote = Some("git@example.com:me/hocus".to_owned());
+    state.repositories =
+        BTreeMap::from([(Location::new(Some("build-box"), "/srv/hocus"), repository)]);
+
+    assert_eq!(
+        state.pane_projects().get(&3).map(String::as_str),
+        Some("hocus"),
+    );
+}
+
+/// The stand-in `repository_for_cwd` offers for a folder not yet probed is the
+/// nearest folder above it — which must not be a folder on a different machine,
+/// or a remote agent inherits a local checkout's branch and project.
+#[test]
+fn the_nearest_probed_folder_is_never_one_on_another_machine() {
+    let mut state = state_with_panes();
+    state.panes[0].cwd = Some("/work/hocus/src".to_owned());
+    state.panes[0].host = Some("build-box".to_owned());
+    // Probed here, at a folder that contains the remote pane's path.
+    state.repositories = BTreeMap::from([(
+        Location::local("/work/hocus"),
+        on_branch("/work/hocus", "main"),
+    )]);
+
+    assert!(
+        state.pane_branches().is_empty(),
+        "a branch was borrowed across machines: {:?}",
+        state.pane_branches(),
+    );
+    assert!(state.pane_projects().is_empty());
+}
+
+/// Two agents in the same path on different machines are doing different work,
+/// and each has to answer with its own checkout's branch.
+#[test]
+fn two_agents_in_the_same_path_on_different_machines_keep_their_own_branches() {
+    let mut state = state_with_panes();
+    state.panes[0].cwd = Some("/work/hocus".to_owned());
+    state.panes[1].cwd = Some("/work/hocus".to_owned());
+    state.panes[1].host = Some("build-box".to_owned());
+    state.manual_kinds.insert(4, "reviewer".to_owned());
+    state.repositories = BTreeMap::from([
+        (
+            Location::local("/work/hocus"),
+            on_branch("/work/hocus", "main"),
+        ),
+        (
+            Location::new(Some("build-box"), "/work/hocus"),
+            on_branch("/work/hocus", "topic").on_host(Some("build-box".to_owned())),
+        ),
+    ]);
+
+    let branches = state.pane_branches();
+    assert_eq!(branches.get(&3).map(String::as_str), Some("main"));
+    assert_eq!(branches.get(&4).map(String::as_str), Some("topic"));
 }
