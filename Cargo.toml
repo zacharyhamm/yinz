@@ -99,6 +99,7 @@ kdl = { version = "4.5.0", default-features = false, features = ["span"] }
 lazy_static = { version = "1.4.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["std"] }
 log = { version = "0.4.17", default-features = false }
+mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored", "serialize", "send"] }
 miette = { version = "7.6", default-features = false, features = ["derive", "fancy"] }
 nix = { version = "0.30", default-features = false }
 notify-debouncer-full = { version = "0.5", default-features = false }

@@ -1,6 +1,8 @@
 #![allow(clippy::type_complexity)]
+use crate::plugins::lua::LuaPlugin;
 use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_worker::MessageToWorker;
+use crate::plugins::zellij_exports::{wasi_read_string, wasi_write_object};
 use crate::plugins::PluginId;
 use std::io::Write;
 use std::{
@@ -13,7 +15,11 @@ use wasmi_wasi::WasiCtx;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
 
+use prost::Message;
 use tokio::sync::mpsc::UnboundedSender;
+use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
+use zellij_utils::plugin_api::event::ProtobufEvent;
+use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
     data::EventType,
@@ -23,7 +29,10 @@ use zellij_utils::{
     input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
     input::plugins::{PluginAliases, PluginConfig},
 };
-use zellij_utils::{data::PermissionType, errors::prelude::*};
+use zellij_utils::{
+    data::{Event, PermissionType, PipeMessage},
+    errors::prelude::*,
+};
 
 // the idea here is to provide atomicity when adding/removing plugins from the map (eg. when a new
 // client connects) but to also allow updates/renders not to block each other
@@ -179,7 +188,7 @@ impl PluginMap {
             .iter()
             .filter(|(_, (running_plugin, _subscriptions, _workers))| {
                 let running_plugin = running_plugin.lock().unwrap();
-                let plugin_config = &running_plugin.store.data().plugin;
+                let plugin_config = &running_plugin.env().plugin;
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
                 running_plugin_location == plugin_location
@@ -205,7 +214,7 @@ impl PluginMap {
         > = HashMap::new();
         for ((plugin_id, client_id), (running_plugin, _, _)) in self.plugin_assets.iter() {
             let running_plugin = running_plugin.lock().unwrap();
-            let plugin_config = &running_plugin.store.data().plugin;
+            let plugin_config = &running_plugin.env().plugin;
             let running_plugin_location = &plugin_config.location;
             let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
             match cloned_plugin_assets.get_mut(running_plugin_location) {
@@ -261,7 +270,7 @@ impl PluginMap {
             Some(plugin_asset) => {
                 {
                     let mut running_plugin = plugin_asset.0.lock().unwrap();
-                    let plugin_env = running_plugin.store.data_mut();
+                    let plugin_env = running_plugin.env_mut();
                     plugin_env.owner_client_id = to;
                     plugin_env.client_id = to;
                 }
@@ -284,7 +293,7 @@ impl PluginMap {
             .find_map(|((p_id, _), (running_plugin, _, _))| {
                 if *p_id == plugin_id {
                     let running_plugin = running_plugin.lock().unwrap();
-                    let plugin_config = &running_plugin.store.data().plugin;
+                    let plugin_config = &running_plugin.env().plugin;
                     let run_plugin_location = plugin_config.location.clone();
                     let run_plugin_configuration =
                         plugin_config.initial_userspace_configuration.clone();
@@ -322,12 +331,41 @@ impl PluginMap {
 
 pub type Subscriptions = HashSet<EventType>;
 
+/// Where a host command's reply goes.
+///
+/// A wasm plugin reads replies off its WASI stdin pipe: the host writes the response there
+/// during the host call, and the guest reads it the moment the call returns. A Lua plugin has no
+/// such pipe - it gets the value back as the return of the function it called - so its dispatcher
+/// swaps in `Capture` for the duration of one command and takes the bytes afterwards.
+///
+/// Routing both through here is what lets all ~200 command handlers stay runtime-agnostic: they
+/// call `wasi_write_object` exactly as before and never learn which runtime they are serving.
+pub enum ResponseSink {
+    /// Write into the plugin's WASI stdin pipe (wasm).
+    WasiStdin,
+    /// Collect the reply for the caller to take (Lua).
+    Capture(Option<String>),
+}
+
+impl ResponseSink {
+    /// Take whatever reply was captured, resetting the sink. Always `None` for `WasiStdin`,
+    /// whose replies went to the pipe instead.
+    pub fn take(&mut self) -> Option<String> {
+        match self {
+            ResponseSink::WasiStdin => None,
+            ResponseSink::Capture(captured) => captured.take(),
+        }
+    }
+}
+
 pub struct PluginEnv {
     pub plugin_id: PluginId,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     pub senders: ThreadSenders,
-    pub wasi_ctx: WasiCtx,
+    /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
+    /// have no WASI layer at all, such as Lua.
+    pub wasi_ctx: Option<WasiCtx>,
     pub tab_index: Option<usize>,
     /// The client this instance is currently acting on behalf of. For a shared plugin (one
     /// instance for the whole session) this is set to the client whose event is being handled, so
@@ -361,6 +399,8 @@ pub struct PluginEnv {
     pub keybinds: Keybinds,
     pub intercepting_key_presses: bool,
     pub store_limits: PluginResourceLimits,
+    /// Where replies to host commands are delivered. See [`ResponseSink`].
+    pub response_sink: ResponseSink,
 }
 
 #[derive(Clone)]
@@ -413,9 +453,24 @@ pub enum AtomicEvent {
     Resize,
 }
 
+/// The runtime actually executing a plugin. Zellij runs plugins compiled to wasm and plugins
+/// written in Lua; everything above this enum - pane sizes, subscriptions, event routing,
+/// rendering - is common to both, so the runtime difference is confined to here and to the
+/// entrypoint methods on `RunningPlugin`.
+///
+/// This is an enum rather than a `Box<dyn Trait>` deliberately: there will only ever be a
+/// couple of runtimes, and an enum keeps the wasm variant free of object-safety and `Send`
+/// gymnastics.
+pub enum PluginBackend {
+    Wasm {
+        store: Store<PluginEnv>,
+        instance: Instance,
+    },
+    Lua(LuaPlugin),
+}
+
 pub struct RunningPlugin {
-    pub store: Store<PluginEnv>,
-    pub instance: Instance,
+    backend: PluginBackend,
     pub rows: usize,
     pub columns: usize,
     next_event_ids: HashMap<AtomicEvent, usize>,
@@ -425,14 +480,151 @@ pub struct RunningPlugin {
 impl RunningPlugin {
     pub fn new(store: Store<PluginEnv>, instance: Instance, rows: usize, columns: usize) -> Self {
         RunningPlugin {
-            store,
-            instance,
+            backend: PluginBackend::Wasm { store, instance },
             rows,
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
         }
     }
+    /// The plugin's environment - the per-instance state every host command acts on. Reached
+    /// through here rather than through the wasm `Store` so that call sites don't need to know
+    /// which runtime is backing this plugin.
+    pub fn new_lua(lua_plugin: LuaPlugin, rows: usize, columns: usize) -> Self {
+        RunningPlugin {
+            backend: PluginBackend::Lua(lua_plugin),
+            rows,
+            columns,
+            next_event_ids: HashMap::new(),
+            last_applied_event_ids: HashMap::new(),
+        }
+    }
+    pub fn env(&self) -> &PluginEnv {
+        match &self.backend {
+            PluginBackend::Wasm { store, .. } => store.data(),
+            PluginBackend::Lua(lua) => lua.env(),
+        }
+    }
+    pub fn env_mut(&mut self) -> &mut PluginEnv {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, .. } => store.data_mut(),
+            PluginBackend::Lua(lua) => lua.env_mut(),
+        }
+    }
+
+    /// Run the plugin's module-level initialization (wasm's `_start`). Called once, after the
+    /// plugin is in the `PluginMap`, so that host commands it issues can find it.
+    /// Run the plugin's module-level initialization (wasm's `_start`). Called once, after the
+    /// plugin is in the `PluginMap`, so that host commands it issues can find it.
+    pub fn start(&mut self) -> Result<()> {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, instance } => {
+                let start = instance
+                    .get_typed_func::<(), ()>(&mut *store, "_start")
+                    .map_err(|e| anyhow!(e))?;
+                start.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
+                Ok(())
+            },
+            // A Lua plugin's source has already run by the time it gets here; running it is how
+            // we obtained the table holding its entrypoints.
+            PluginBackend::Lua(_) => Ok(()),
+        }
+    }
+
+    /// Call the plugin's `load` entrypoint with its user configuration.
+    ///
+    /// Takes the `PluginUserConfiguration` rather than its inner map on purpose:
+    /// `PluginUserConfiguration::new` strips reserved keys, so rebuilding one here would quietly
+    /// drop configuration the plugin was meant to receive.
+    pub fn load(&mut self, configuration: &PluginUserConfiguration) -> Result<()> {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, instance } => {
+                let protobuf_configuration: ProtobufPluginConfiguration = configuration
+                    .clone()
+                    .try_into()
+                    .map_err(|e| anyhow!("failed to serialize user configuration: {:?}", e))?;
+                let load = instance
+                    .get_typed_func::<(), ()>(&mut *store, "load")
+                    .map_err(|e| anyhow!(e))?;
+                wasi_write_object(store.data_mut(), &protobuf_configuration.encode_to_vec())?;
+                load.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
+                Ok(())
+            },
+            PluginBackend::Lua(lua) => lua.load(configuration.inner()),
+        }
+    }
+
+    /// Call the plugin's `update` entrypoint, returning whether it asked to be re-rendered.
+    ///
+    /// An event the host cannot encode is deliberately non-fatal: it is logged and dropped
+    /// rather than returned as an error, because the caller turns any error here into a plugin
+    /// crash and the plugin is not the thing that failed.
+    pub fn update(&mut self, event: &Event) -> Result<bool> {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, instance } => {
+                let protobuf_event: ProtobufEvent = match event.clone().try_into() {
+                    Ok(protobuf_event) => protobuf_event,
+                    Err(e) => {
+                        // the host could not encode this event; the plugin itself is fine, so
+                        // skip the event rather than kill it
+                        Err::<(), _>(anyhow!(
+                            "plugin {}: failed to serialize {}: {:?}",
+                            self.env().plugin_id,
+                            event,
+                            e
+                        ))
+                        .non_fatal();
+                        return Ok(false);
+                    },
+                };
+                let update = instance
+                    .get_typed_func::<(), i32>(&mut *store, "update")
+                    .map_err(|e| anyhow!(e))?;
+                wasi_write_object(store.data_mut(), &protobuf_event.encode_to_vec())?;
+                let should_render = update.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
+                Ok(should_render == 1)
+            },
+            PluginBackend::Lua(lua) => lua.update(event),
+        }
+    }
+
+    /// Call the plugin's `pipe` entrypoint, returning whether it asked to be re-rendered.
+    /// `Ok(None)` means the plugin does not implement `pipe` at all, which is not an error.
+    pub fn pipe(&mut self, message: &PipeMessage) -> Result<Option<bool>> {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, instance } => {
+                let Ok(pipe) = instance.get_typed_func::<(), i32>(&mut *store, "pipe") else {
+                    return Ok(None);
+                };
+                let protobuf_message: ProtobufPipeMessage = message
+                    .clone()
+                    .try_into()
+                    .map_err(|e| anyhow!("failed to serialize pipe message: {:?}", e))?;
+                wasi_write_object(store.data_mut(), &protobuf_message.encode_to_vec())?;
+                let should_render = pipe.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
+                Ok(Some(should_render == 1))
+            },
+            PluginBackend::Lua(lua) => lua.pipe(message).map(Some),
+        }
+    }
+
+    /// Call the plugin's `render` entrypoint and collect the frame it produced. The bytes are a
+    /// full-screen ANSI frame - the pane replaces its whole viewport with them.
+    pub fn render(&mut self, rows: usize, columns: usize) -> Result<Vec<u8>> {
+        match &mut self.backend {
+            PluginBackend::Wasm { store, instance } => {
+                let render = instance
+                    .get_typed_func::<(i32, i32), ()>(&mut *store, "render")
+                    .map_err(|e| anyhow!(e))?;
+                render
+                    .call(&mut *store, (rows as i32, columns as i32))
+                    .map_err(|e| anyhow!(e))?;
+                Ok(wasi_read_string(store.data())?.into_bytes())
+            },
+            PluginBackend::Lua(lua) => lua.render(rows, columns),
+        }
+    }
+
     pub fn next_event_id(&mut self, atomic_event: AtomicEvent) -> usize {
         let current_event_id = *self.next_event_ids.get(&atomic_event).unwrap_or(&0);
         if current_event_id < usize::MAX {
@@ -456,19 +648,19 @@ impl RunningPlugin {
         }
     }
     pub fn update_keybinds(&mut self, keybinds: Keybinds) {
-        self.store.data_mut().keybinds = keybinds;
+        self.env_mut().keybinds = keybinds;
     }
     pub fn update_default_mode(&mut self, default_mode: InputMode) {
-        self.store.data_mut().default_mode = default_mode;
+        self.env_mut().default_mode = default_mode;
     }
     pub fn update_default_shell(&mut self, default_shell: Option<TerminalAction>) {
-        self.store.data_mut().default_shell = default_shell;
+        self.env_mut().default_shell = default_shell;
     }
     pub fn update_layout_dir(&mut self, layout_dir: Option<PathBuf>) {
-        self.store.data_mut().layout_dir = layout_dir;
+        self.env_mut().layout_dir = layout_dir;
     }
     pub fn intercepting_key_presses(&self) -> bool {
-        self.store.data().intercepting_key_presses
+        self.env().intercepting_key_presses
     }
 }
 
