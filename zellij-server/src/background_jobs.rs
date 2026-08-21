@@ -160,6 +160,7 @@ pub enum BackgroundJob {
         Vec<u8>,                  // body
         BTreeMap<String, String>, // context
         Option<String>,           // stream_id, when set the response body is streamed back
+        Option<String>,           // proxy, when set the request is sent through this proxy URL
     ),
     CancelWebRequest(PluginId, ClientId, String), // String - stream_id
     /// Sent by a streaming request task back to this thread when its body ends, so that the
@@ -502,6 +503,7 @@ pub(crate) fn background_jobs_main(
                 body,
                 context,
                 stream_id,
+                proxy,
             ) => {
                 let Some(http_client) = http_client.clone() else {
                     log::error!(
@@ -513,23 +515,29 @@ pub(crate) fn background_jobs_main(
                 match stream_id {
                     None => {
                         runtime.spawn(async move {
-                            let event =
-                                match buffered_web_request(url, verb, headers, body, http_client)
-                                    .await
-                                {
-                                    Ok((status, headers, body)) => {
-                                        Event::WebRequestResult(status, headers, body, context)
-                                    },
-                                    Err(e) => {
-                                        log::error!("Failed to send web request: {}", e);
-                                        Event::WebRequestResult(
-                                            400,
-                                            BTreeMap::new(),
-                                            e.to_string().into_bytes(),
-                                            context,
-                                        )
-                                    },
-                                };
+                            let event = match buffered_web_request(
+                                url,
+                                verb,
+                                headers,
+                                body,
+                                http_client,
+                                proxy,
+                            )
+                            .await
+                            {
+                                Ok((status, headers, body)) => {
+                                    Event::WebRequestResult(status, headers, body, context)
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to send web request: {}", e);
+                                    Event::WebRequestResult(
+                                        400,
+                                        BTreeMap::new(),
+                                        e.to_string().into_bytes(),
+                                        context,
+                                    )
+                                },
+                            };
                             let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
                                 Some(plugin_id),
                                 Some(client_id),
@@ -562,6 +570,7 @@ pub(crate) fn background_jobs_main(
                             body,
                             context.clone(),
                             http_client,
+                            proxy,
                         ));
                         // ponytail: unloading a plugin does not cancel its in-flight streams -
                         // they drain to completion and the events are dropped by
@@ -864,6 +873,7 @@ async fn send_web_request(
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     http_client: HttpClient,
+    proxy: Option<String>,
 ) -> Result<isahc::Response<isahc::AsyncBody>, isahc::Error> {
     let mut request = match verb {
         HttpVerb::Get => Request::get(url),
@@ -873,6 +883,12 @@ async fn send_web_request(
     };
     for (header, value) in headers {
         request = request.header(header.as_str(), value);
+    }
+    if let Some(proxy) = proxy {
+        match proxy.parse::<isahc::http::Uri>() {
+            Ok(uri) => request = request.proxy(Some(uri)),
+            Err(e) => log::error!("Ignoring invalid web request proxy {:?}: {}", proxy, e),
+        }
     }
     request = request.low_speed_timeout(1, WEB_REQUEST_IDLE_TIMEOUT);
     if !body.is_empty() {
@@ -902,8 +918,9 @@ async fn buffered_web_request(
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     http_client: HttpClient,
+    proxy: Option<String>,
 ) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), isahc::Error> {
-    let mut res = send_web_request(url, verb, headers, body, http_client).await?;
+    let mut res = send_web_request(url, verb, headers, body, http_client, proxy).await?;
     let status_code = res.status().as_u16();
     let headers = response_headers(&res);
     let body = res.bytes().await?;
@@ -927,6 +944,7 @@ async fn streamed_web_request(
     body: Vec<u8>,
     context: BTreeMap<String, String>,
     http_client: HttpClient,
+    proxy: Option<String>,
 ) {
     let (plugin_id, client_id, stream_id) = key.clone();
     let send_event = |event: Event| {
@@ -954,7 +972,7 @@ async fn streamed_web_request(
             }
         };
 
-    let mut res = match send_web_request(url, verb, headers, body, http_client).await {
+    let mut res = match send_web_request(url, verb, headers, body, http_client, proxy).await {
         Ok(res) => res,
         Err(e) => {
             log::error!("Failed to send web request: {}", e);
@@ -1472,6 +1490,7 @@ mod web_request_stream_tests {
             vec![],
             BTreeMap::new(),
             HttpClient::new().unwrap(),
+            None,
         )
         .await;
         let events = drain_events(&plugin_rx);

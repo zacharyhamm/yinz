@@ -253,7 +253,11 @@ impl State {
             return true;
         };
         // Cloned so the request can be issued without holding a borrow of self.
-        let Ok(search_url) = self.cfg.as_ref().map(|cfg| cfg.search_url.clone()) else {
+        let Ok((search_url, search_proxy)) = self
+            .cfg
+            .as_ref()
+            .map(|cfg| (cfg.search_url.clone(), cfg.search_proxy.clone()))
+        else {
             self.finish_head("hocus is not configured");
             return true;
         };
@@ -266,6 +270,7 @@ impl State {
             // Round-trips through the host, which is how the result is matched
             // back to the call that made it.
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+            search_proxy,
         );
         self.status = Status::AwaitingSearch;
         self.pin_to_bottom();
@@ -325,6 +330,7 @@ impl State {
             // Round-trips through the host, which is how the result is matched
             // back to the call that made it.
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+            None,
         );
         self.status = Status::AwaitingLinear;
         self.pin_to_bottom();

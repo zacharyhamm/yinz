@@ -188,6 +188,35 @@ fn resolve_prefers_kdl_search_url_over_env_over_the_default() {
 }
 
 #[test]
+fn resolve_prefers_kdl_search_proxy_over_env_and_defaults_to_unset() {
+    let key = ("OPENAI_API_KEY", "sk-1");
+    assert_eq!(
+        Config::resolve(&map(&[]), &map(&[key]))
+            .unwrap()
+            .search_proxy,
+        None
+    );
+    assert_eq!(
+        Config::resolve(
+            &map(&[]),
+            &map(&[key, ("SEARXNG_PROXY", "socks5://env:1080")]),
+        )
+        .unwrap()
+        .search_proxy,
+        Some("socks5://env:1080".to_owned())
+    );
+    assert_eq!(
+        Config::resolve(
+            &map(&[("search_proxy", "socks5://kdl:1080")]),
+            &map(&[key, ("SEARXNG_PROXY", "socks5://env:1080")]),
+        )
+        .unwrap()
+        .search_proxy,
+        Some("socks5://kdl:1080".to_owned())
+    );
+}
+
+#[test]
 fn resolve_prefers_kdl_dobbs_path_over_env_over_the_default() {
     let key = ("OPENAI_API_KEY", "sk-1");
     assert_eq!(

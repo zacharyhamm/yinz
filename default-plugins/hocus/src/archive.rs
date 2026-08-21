@@ -178,6 +178,7 @@ impl State {
             // Round-trips through the host: this is what tells the response
             // apart from the one that leads a chat stream.
             BTreeMap::from([("models".to_owned(), "1".to_owned())]),
+            None,
         );
         self.picker = Some(Picker {
             entries: Vec::new(),

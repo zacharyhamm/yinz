@@ -3919,7 +3919,9 @@ pub enum PluginCommand {
         Vec<u8>,                  // body
         BTreeMap<String, String>, // context
         Option<String>,           // stream_id: Some(_) => stream the response body back as
-                                  // WebRequestStreamChunk events under this id
+        // WebRequestStreamChunk events under this id
+        Option<String>, // proxy: Some(_) => send this request through the given
+                        // proxy URL (e.g. "socks5://host:port") instead of direct
     ),
     CancelWebRequest(String),       // String -> stream_id
     RenameSession(String),          // String -> new session name

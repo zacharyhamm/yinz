@@ -1571,6 +1571,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         web_request_payload.body,
                         context,
                         web_request_payload.stream_id,
+                        web_request_payload.proxy,
                     ))
                 },
                 _ => Err("Mismatched payload for WebRequest"),
@@ -3810,7 +3811,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     })),
                 })
             },
-            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
+            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id, proxy) => {
                 let context: Vec<_> = context
                     .into_iter()
                     .map(|(name, value)| ContextItem { name, value })
@@ -3829,6 +3830,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         headers,
                         context,
                         stream_id,
+                        proxy,
                     })),
                 })
             },
@@ -6472,37 +6474,51 @@ mod tests {
     #[test]
     fn web_request_protobuf_round_trip() {
         use crate::data::HttpVerb;
-        // None must survive as None: it is what keeps a plain web_request buffered
+        // None must survive as None: it is what keeps a plain web_request buffered,
+        // and what keeps a request unproxied.
         for stream_id in [None, Some("stream-1".to_owned())] {
-            let original = PluginCommand::WebRequest(
-                "https://example.com/v1/chat/completions".to_owned(),
-                HttpVerb::Post,
-                BTreeMap::from([("authorization".to_owned(), "Bearer sk-test".to_owned())]),
-                b"{\"stream\":true}".to_vec(),
-                BTreeMap::from([("request_id".to_owned(), "7".to_owned())]),
-                stream_id.clone(),
-            );
-            let protobuf: ProtobufPluginCommand = original.clone().try_into().expect("encode");
-            let decoded: PluginCommand = protobuf.try_into().expect("decode");
-            match (decoded, original) {
-                (
-                    PluginCommand::WebRequest(url, _, headers, body, context, decoded_stream_id),
-                    PluginCommand::WebRequest(
-                        expected_url,
-                        _,
-                        expected_headers,
-                        expected_body,
-                        expected_context,
-                        _,
-                    ),
-                ) => {
-                    assert_eq!(url, expected_url);
-                    assert_eq!(headers, expected_headers);
-                    assert_eq!(body, expected_body);
-                    assert_eq!(context, expected_context);
-                    assert_eq!(decoded_stream_id, stream_id);
-                },
-                (other, _) => panic!("expected WebRequest, got {:?}", other),
+            for proxy in [None, Some("socks5://127.0.0.1:1080".to_owned())] {
+                let original = PluginCommand::WebRequest(
+                    "https://example.com/v1/chat/completions".to_owned(),
+                    HttpVerb::Post,
+                    BTreeMap::from([("authorization".to_owned(), "Bearer sk-test".to_owned())]),
+                    b"{\"stream\":true}".to_vec(),
+                    BTreeMap::from([("request_id".to_owned(), "7".to_owned())]),
+                    stream_id.clone(),
+                    proxy.clone(),
+                );
+                let protobuf: ProtobufPluginCommand = original.clone().try_into().expect("encode");
+                let decoded: PluginCommand = protobuf.try_into().expect("decode");
+                match (decoded, original) {
+                    (
+                        PluginCommand::WebRequest(
+                            url,
+                            _,
+                            headers,
+                            body,
+                            context,
+                            decoded_stream_id,
+                            decoded_proxy,
+                        ),
+                        PluginCommand::WebRequest(
+                            expected_url,
+                            _,
+                            expected_headers,
+                            expected_body,
+                            expected_context,
+                            _,
+                            _,
+                        ),
+                    ) => {
+                        assert_eq!(url, expected_url);
+                        assert_eq!(headers, expected_headers);
+                        assert_eq!(body, expected_body);
+                        assert_eq!(context, expected_context);
+                        assert_eq!(decoded_stream_id, stream_id);
+                        assert_eq!(decoded_proxy, proxy);
+                    },
+                    (other, _) => panic!("expected WebRequest, got {:?}", other),
+                }
             }
         }
     }

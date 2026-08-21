@@ -15,6 +15,7 @@ fn test_config() -> Config {
         base_url: DEFAULT_BASE_URL.into(),
         api_key_env: DEFAULT_API_KEY_ENV.into(),
         search_url: DEFAULT_SEARCH_URL.into(),
+        search_proxy: None,
         dobbs: DEFAULT_DOBBS.into(),
         dobbs_addr: None,
         dobbs_token: None,

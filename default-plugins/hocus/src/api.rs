@@ -54,6 +54,10 @@ pub struct Config {
     /// Base URL of the SearxNG that backs `web_search`. Any instance on the
     /// network will do; it is a plain HTTP GET against its JSON API.
     pub search_url: String,
+    /// A SOCKS5 proxy (`socks5://host:port`) that `web_search` requests are
+    /// sent through, e.g. to reach a sandboxed agent's tailscale sidecar.
+    /// Applies only to `web_search`; every other hocus request is direct.
+    pub search_proxy: Option<String>,
     /// The `dobbs` binary the Slack tools shell out to. dobbs speaks raw TCP to
     /// its daemon, which a wasm plugin cannot, so the CLI is the only way in.
     /// Defaults to `dobbs`, i.e. whatever is on PATH.
@@ -118,6 +122,8 @@ impl Config {
         let search_url = non_empty(kdl, "search_url")
             .or_else(|| non_empty(env, "SEARXNG_URL"))
             .unwrap_or_else(|| DEFAULT_SEARCH_URL.to_owned());
+        let search_proxy =
+            non_empty(kdl, "search_proxy").or_else(|| non_empty(env, "SEARXNG_PROXY"));
         let dobbs = expand_home(
             &non_empty(kdl, "dobbs_path")
                 .or_else(|| non_empty(env, "DOBBS_BIN"))
@@ -157,6 +163,7 @@ impl Config {
                 base_url,
                 api_key_env,
                 search_url,
+                search_proxy,
                 dobbs,
                 dobbs_addr,
                 dobbs_token,

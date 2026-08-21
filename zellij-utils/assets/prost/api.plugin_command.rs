@@ -1385,6 +1385,10 @@ pub struct WebRequestPayload {
     /// can be passed to CancelWebRequest
     #[prost(string, optional, tag="6")]
     pub stream_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// when set, send this request through the given proxy URL (e.g. "socks5://host:port")
+    /// instead of direct
+    #[prost(string, optional, tag="7")]
+    pub proxy: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

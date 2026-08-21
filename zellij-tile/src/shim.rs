@@ -977,11 +977,12 @@ pub fn web_request<S>(
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     context: BTreeMap<String, String>,
+    proxy: Option<String>,
 ) where
     S: AsRef<str> + ToString,
 {
     let plugin_command =
-        PluginCommand::WebRequest(url.to_string(), verb, headers, body, context, None);
+        PluginCommand::WebRequest(url.to_string(), verb, headers, body, context, None, proxy);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -1011,6 +1012,7 @@ pub fn web_request_stream<I: ToString, S: ToString>(
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
     context: BTreeMap<String, String>,
+    proxy: Option<String>,
 ) {
     let plugin_command = PluginCommand::WebRequest(
         url.to_string(),
@@ -1019,6 +1021,7 @@ pub fn web_request_stream<I: ToString, S: ToString>(
         body,
         context,
         Some(stream_id.to_string()),
+        proxy,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

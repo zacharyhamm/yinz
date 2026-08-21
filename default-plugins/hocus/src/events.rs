@@ -406,6 +406,7 @@ impl State {
             // so without this there is no telling which chat a non-2xx belongs
             // to once more than one is in flight.
             BTreeMap::from([(STREAM_CONTEXT.to_owned(), stream_id.clone())]),
+            None,
         );
 
         self.stream = Some(StreamState {

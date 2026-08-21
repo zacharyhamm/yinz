@@ -351,6 +351,7 @@ impl ZellijPlugin for State {
                         headers,
                         body,
                         context,
+                        None,
                     );
                 },
                 BareKey::Char('5') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
