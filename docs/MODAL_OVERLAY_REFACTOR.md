@@ -404,6 +404,107 @@ Nothing new was added to `OverlayPanes` — no resize, no drag state, no room ch
 caller learning that the collection exists, which is what the four deliberate absences in its
 module doc predicted would be the shape of this work.
 
+### Phase 8 — a live modal owns the keyboard and the top of the stack
+
+Found by review. `OverlayKind::Modal` exists because such an overlay has no way to learn it lost
+focus, and `Tab::new_pane` already honoured that for a *tiled* pane opened over one — it comes up
+unfocused rather than stealing the keyboard. Nothing enforced the same for another **overlay**.
+Three doors reached `OverlayPanes::focus_pane` / `focus_pane_for_all_clients` with a pane that was
+not the modal: `Tab::add_overlay_pane`, `MouseHandler::focus_pane_at`, and `focus_pane_with_id`.
+Both of those methods insert into `active_panes` *and* raise the pane, so a dismissible overlay
+opening over a live modal took the keyboard *and* drew over it. If it then gave that focus up
+(`defocus_pane`, from the tiled-pane path at `tab/mod.rs`), focus fell through the whole stack and
+the modal was left on screen owning nothing.
+
+**The rule now lives in the collection, not at the three call sites.** `may_be_focused` is false for
+a non-modal while any modal is open, and `focus_pane`/`focus_pane_for_all_clients` return early on
+it. One guard closes all three doors, which is why none of them needed a change.
+
+**Two decisions, both deliberate:**
+
+- **Newest modal wins.** The guard exempts modals, so a second modal does take focus and the top of
+  the stack. It has to: `quit-confirmation` and `hocus-new-agent` are both `Modal`, and a quit
+  prompt raised over an open modal would otherwise come up unfocused with no way to close itself.
+  Nothing new was needed to unwind it — `move_clients_out_of_pane` already walks focus down to the
+  modal underneath when the top one closes.
+- **`z_indices` is partitioned: every modal above every non-modal**, plain raise order within each
+  class, via the new `raise_within_class` replacing the three open-coded `retain`/`push` pairs in
+  `add_pane`, `focus_pane` and `focus_pane_for_all_clients`. Blocking focus alone was not enough:
+  `add_pane` pushes to the top unconditionally, so the modal would have kept a keyboard the user
+  could not see it holding. This also makes `topmost_modal_pane_id` literally the top of the stack
+  rather than merely the thing that outranks it, which is what its own doc comment already claimed.
+
+**Explicitly not done, and each is a decision rather than an omission:**
+
+- **No pending/deferred-overlay queue.** The review suggested "defer the new overlay". That means
+  state this collection does not have — a queue, an ordering policy, a drain point, and an answer
+  for a modal that never closes. The four deliberate absences in the module doc say new state here
+  is a signal the concept is wrong; the tiled precedent is "open it, don't focus it", and that is
+  what this does.
+- **`defocus_pane` still falls all the way through** rather than landing on a live modal. It is the
+  other half of the stranding path and belongs to its own change.
+
+**On the tests.** Each half was re-run with only itself reverted, as Phase 7 did. It matters here:
+neutering the focus guard fails two tests, neutering the z-order partition fails four, and only one
+test fails under both. A suite green after fixing one half of a two-half bug is not evidence.
+`replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates` moved — it added a modal then a
+dismissible, so the replaced slot became the top of the stack and "kept its slot" stopped being
+distinguishable from "was pushed on top". A second modal above it restores the distinction.
+
+One snapshot is new
+(`an_overlay_opened_over_a_modal_takes_neither_the_keyboard_nor_the_top_of_the_stack`); none moved.
+
+### Phase 9 — the keyboard follows the pane the user just asked for
+
+Two review findings, both in the same seam: `Tab::get_active_pane_id` prefers an active overlay
+over the floating and tiled layers, so overlay focus is not one opinion among three — it is the
+answer. Anything that leaves stale focus in `OverlayPanes` therefore silently overrides every
+other layer.
+
+- **A focused floating pane opened over a dismissible overlay came up behind it.** Phase 7 taught
+  the *tiled* path in `Tab::new_pane` to make a dismissible overlay give the keyboard up; the
+  floating path never learned it. `add_floating_pane` raised and focused `floating_panes` and left
+  `overlay_panes.active_panes` alone, so `new-pane --floating` landed behind the popup, input kept
+  going to the popup, and the popup — which learns to close by seeing itself unfocused — never
+  found out.
+- **`FocusPaneWithId` could focus a non-selectable overlay.** `Tab::set_pane_selectable` marks the
+  pane and moves clients off it, but `may_be_focused` only asked about modals, so a later focus
+  request re-inserted it as active: input routed to a pane that had explicitly asked for none, and
+  the tab's own invariant that active panes are selectable broken.
+  `FloatingPanes::focus_pane` has always refused this; the overlay twin now does too.
+
+**Both fixes are one line of policy each, placed in the collection rather than at the call sites**,
+which is the shape Phase 8 settled on. `may_be_focused` gained the selectability clause — that
+covers `focus_pane`, `focus_pane_for_all_clients`, `focus_pane_if_exists` and the mouse path
+without any of them changing — and `focus_pane_for_joining_client`, which bypassed the guard
+entirely, now routes through it as well.
+
+The dismissible release became `defocus_pane_if_dismissible` (plus `defocus_dismissible_panes` for
+the all-clients paths), replacing the hand-rolled `active_pane_id` + `is_modal` + `defocus_pane`
+match that Phase 7 left inline in `new_pane`. It returns whether the keyboard is free, so the two
+call sites read as the rule rather than re-deriving it. It went into `add_floating_pane` rather
+than `new_floating_pane`, where review pointed: that is where the focusing actually happens, it is
+the funnel every entry point reaches, and `new_floating_pane` passes no `client_id` at all — the
+all-clients form was needed regardless.
+
+**Explicitly not done.** The same gap exists on `MouseHandler::focus_pane_at` (clicking a floating
+or tiled pane under a dismissible overlay) and on the keyboard focus-move family
+(`focus_next_pane`, `move_focus_left/down/up/right`, …). Neither is one of these findings, and
+both are a different question — *moving* focus rather than *opening* something with it. The new
+helper is the piece they would reuse.
+
+**On the tests.** Three added, in `screen_tests/overlays.rs`. Each of the two bug-pinning ones was
+re-run with only its own fix reverted and failed, as Phases 7 and 8 did; the modal counterpart
+(`a_focused_floating_pane_opened_over_a_modal_leaves_the_keyboard_alone`) passes either way by
+design — it guards the half of the rule that was already right. No snapshots added or moved: this
+changes who holds the keyboard, not how anything is drawn.
+
+**Run figures.** `cargo x test`: 2542 passed in `zellij-server`, 0 failed, whole suite green.
+`cargo x integration-test` at default parallelism reproduced the contention collapse this document
+already warns about (112 timeouts); RUNFIGURES `global_panes_focus` was checked the way the note
+above prescribes — 8 runs alone on this tree (5 pass, 3 fail) against 8 runs alone on a clean HEAD
+worktree (3 pass, 5 fail). Same both-outcomes behaviour on both trees, so not a regression.
+
 ---
 
 ## Findings that the remaining work depends on

@@ -367,6 +367,9 @@ fn replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates() {
         OverlayKind::Dismissible,
         coordinates("50%", "50%"),
     );
+    // a second modal above the one being replaced, so that its slot is not the top of the stack
+    // and "kept its slot" is distinguishable from "was pushed on top"
+    add(&mut panes, 3, OverlayKind::Modal, coordinates("40%", "30%"));
 
     let replacement = PaneId::Terminal(9);
     panes
@@ -375,7 +378,7 @@ fn replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates() {
 
     assert_eq!(
         panes.stack_layer_ids(),
-        vec![replacement, PaneId::Terminal(2)],
+        vec![PaneId::Terminal(2), replacement, PaneId::Terminal(3)],
         "the replacement takes the slot rather than being pushed on top"
     );
     assert_eq!(panes.kind_of(&replacement), Some(OverlayKind::Modal));
@@ -556,4 +559,129 @@ fn a_rounded_corners_update_reaches_the_style_the_overlay_frames_are_drawn_with(
     // `render` draws every overlay frame with `self.style`, so a pane-only update would leave
     // the frames square while the rest of the session went round.
     assert!(panes.style.rounded_corners);
+}
+
+#[test]
+fn an_overlay_opened_over_a_live_modal_neither_takes_focus_nor_covers_it() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+    panes.focus_pane(PaneId::Terminal(1), 1);
+
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "the modal keeps the keyboard - it has no way to learn it lost it"
+    );
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(2), PaneId::Terminal(1)],
+        "and stays drawn over the overlay that opened after it, rather than under it"
+    );
+}
+
+#[test]
+fn focusing_an_overlay_under_a_live_modal_leaves_the_keyboard_where_it_is() {
+    // the mouse-click and focus-by-id door onto the same rule: the overlay was added first, so
+    // this is not the add path declining but `focus_pane` itself
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("60%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(2)));
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(1), PaneId::Terminal(2)],
+        "a declined focus raises nothing either"
+    );
+
+    panes.focus_pane_for_all_clients(PaneId::Terminal(1));
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(2)));
+
+    assert!(panes.focus_pane_if_exists(PaneId::Terminal(1), 1).is_ok());
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "`focus_pane_if_exists` reports the pane is ours even when focus was declined - an Err \
+         would send `Tab::focus_pane_with_id` on to focus a floating pane instead"
+    );
+}
+
+#[test]
+fn a_modal_opened_over_a_modal_takes_focus_and_gives_it_back_when_it_closes() {
+    // the one thing that may outrank a live modal, and the reason it may: closing it walks focus
+    // back down to the modal underneath, so a quit-confirmation over an open modal stays usable
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+    panes.focus_pane(PaneId::Terminal(1), 1);
+
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("40%", "30%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(2)));
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(1), PaneId::Terminal(2)]
+    );
+
+    panes.move_clients_out_of_pane(PaneId::Terminal(2));
+    panes.remove_pane(PaneId::Terminal(2));
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("60%", "50%"));
+    add(
+        &mut panes,
+        3,
+        OverlayKind::Dismissible,
+        coordinates("30%", "30%"),
+    );
+    add(&mut panes, 4, OverlayKind::Modal, coordinates("40%", "30%"));
+    add(
+        &mut panes,
+        5,
+        OverlayKind::Dismissible,
+        coordinates("20%", "20%"),
+    );
+
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![
+            PaneId::Terminal(1),
+            PaneId::Terminal(3),
+            PaneId::Terminal(5),
+            PaneId::Terminal(2),
+            PaneId::Terminal(4),
+        ],
+        "modals above non-modals, add order within each class"
+    );
+    assert_eq!(panes.topmost_modal_pane_id(), Some(PaneId::Terminal(4)));
+    for (index, pane_id) in panes.stack_layer_ids().iter().enumerate() {
+        assert_eq!(panes.get_pane_z_index(*pane_id), Some(index));
+    }
 }

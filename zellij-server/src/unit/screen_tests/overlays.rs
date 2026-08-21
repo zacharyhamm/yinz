@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
-use zellij_utils::data::{OverlayPlacement, Resize, ResizeStrategy};
+use zellij_utils::data::{OverlayKind, OverlayPlacement, Resize, ResizeStrategy};
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
@@ -2585,5 +2585,167 @@ fn focus_follows_mouse_lands_on_an_overlay_over_a_visible_floating_layer() {
         screen.active_pane_id(1),
         Some(PaneId::Terminal(3)),
         "the hover focused the overlay under the cursor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A live modal owns the keyboard and the top of the stack.
+//
+// A modal has no way to learn that it lost focus, so an overlay opened after it must not take
+// either. Both halves matter: focus alone would leave the modal holding a keyboard the user
+// cannot see it holding, buried under whatever opened last.
+// ---------------------------------------------------------------------------
+
+/// Open an overlay of an explicit kind, overlapping the region `open_popup` uses so that whichever
+/// one is on top is the one that shows.
+fn open_overlay_of_kind(screen: &mut Screen, pane_id: u32, contents: &str, kind: OverlayKind) {
+    let coordinates = FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(2)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Percent(60)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        ..Default::default()
+    };
+    let placement = match kind {
+        OverlayKind::Modal => OverlayPlacement::modal(Some(coordinates)),
+        OverlayKind::Dismissible => OverlayPlacement::dismissible(Some(coordinates)),
+    };
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.new_pane(
+        PaneId::Terminal(pane_id),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(placement),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+    tab.handle_pty_bytes(pane_id, contents.as_bytes().to_vec())
+        .expect("TEST");
+}
+
+#[test]
+fn an_overlay_opened_over_a_modal_takes_neither_the_keyboard_nor_the_top_of_the_stack() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "THEMODAL", OverlayKind::Modal);
+    open_overlay_of_kind(&mut screen, 3, "LATEROVERLAY", OverlayKind::Dismissible);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal keeps the keyboard"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("THEMODAL"),
+        "and stays visible, rather than being buried under the overlay that opened after it, \
+         got:\n{frame}"
+    );
+    assert!(
+        !frame.contains("LATEROVERLAY"),
+        "the later overlay is behind the modal, which covers it entirely, got:\n{frame}"
+    );
+    assert_snapshot!(frame);
+}
+
+#[test]
+fn a_modal_opened_over_a_modal_takes_both_and_hands_them_back_when_it_closes() {
+    // the deliberate exception: without it a quit-confirmation raised over an already open modal
+    // would come up unfocused and unable to close itself
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "FIRSTMODAL", OverlayKind::Modal);
+    open_overlay_of_kind(&mut screen, 3, "SECONDMODAL", OverlayKind::Modal);
+
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(3)));
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("SECONDMODAL"),
+        "the newer modal is the one on top, got:\n{frame}"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .close_pane(PaneId::Terminal(3), false, None);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "closing it walks the keyboard back down to the modal underneath"
+    );
+}
+
+/// An overlay outranks the floating layer in `get_active_pane_id`, so a dismissible overlay that
+/// keeps its focus when a floating pane opens leaves that pane behind the popup, with the keyboard
+/// still on the popup - and the popup, which learns it should close by seeing itself unfocused,
+/// never finds out.
+#[test]
+fn a_focused_floating_pane_opened_over_a_dismissible_overlay_takes_the_keyboard() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "THEPOPUP", OverlayKind::Dismissible);
+    open_floating_pane(&mut screen, 0, 3, "THEFLOATER", false);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the floating pane the user just asked for has the keyboard, rather than the popup \
+         it opened over - an overlay that still held focus would win this lookup"
+    );
+}
+
+/// The modal half of the same rule: a modal has no way to learn it lost focus, so a floating pane
+/// opened over it comes up behind it rather than stranding it on screen with the input elsewhere.
+#[test]
+fn a_focused_floating_pane_opened_over_a_modal_leaves_the_keyboard_alone() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "THEMODAL", OverlayKind::Modal);
+    open_floating_pane(&mut screen, 0, 3, "THEFLOATER", false);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal keeps the keyboard"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("THEMODAL"),
+        "and stays visible over the floating pane that opened under it, got:\n{frame}"
+    );
+}
+
+/// `set_pane_selectable(false)` moves clients off an overlay; a later `FocusPaneWithId` used to
+/// walk straight past that and re-insert it as the active pane, routing input to a pane that had
+/// explicitly asked for none.
+#[test]
+fn a_non_selectable_overlay_cannot_be_focused_again() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "THEPOPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.set_pane_selectable(PaneId::Terminal(2), false);
+    assert_ne!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "making it non-selectable moved the client off it"
+    );
+
+    tab.focus_pane_with_id(PaneId::Terminal(2), false, false, 1)
+        .expect("TEST");
+    assert_ne!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and focusing it by id does not put the client back onto a pane that wants no input - \
+         an active overlay would outrank every other layer in this lookup"
     );
 }

@@ -10,6 +10,15 @@
 //! and every caller that rebuilt a pane's coordinates dropped it. Here a pane's `OverlayKind` and
 //! the coordinates it resolves against sit beside the pane itself, so neither can be lost.
 //!
+//! **A live modal owns the keyboard and the top of the stack until it closes.** `z_indices` is
+//! partitioned - every modal above every non-modal, plain raise order within each class - and
+//! `focus_pane`/`focus_pane_for_all_clients` decline to move focus onto a non-modal while a modal
+//! is open (`may_be_focused`, which also refuses an overlay the tab has marked non-selectable).
+//! Both halves are needed: blocking focus alone would leave the modal holding a keyboard the user
+//! cannot see it holding, underneath whatever opened last. The one exception is another modal, which does take both, because closing it walks focus back down to
+//! the modal underneath (`move_clients_out_of_pane`) - without that a quit-confirmation opened
+//! over an already open modal would come up unfocused and unable to close itself.
+//!
 //! Deliberately absent, and each absence is load-bearing rather than an oversight:
 //!
 //! - **No `show_panes`.** There is no layer to raise or lower: an overlay is drawn for as long as
@@ -216,9 +225,28 @@ impl OverlayPanes {
                 coordinates,
             },
         );
-        self.z_indices.retain(|p_id| *p_id != pane_id);
-        self.z_indices.push(pane_id);
+        self.raise_within_class(pane_id);
         self.set_pane_frames().non_fatal();
+    }
+
+    /// Put `pane_id` at the top of its class in the occlusion stack: a modal at the very top,
+    /// anything else directly below the lowest modal.
+    ///
+    /// A modal owns the keyboard until it closes and has no way to learn otherwise, so an overlay
+    /// that opens - or is clicked - later must not draw over it. A dialog the user cannot see is
+    /// worse than one that is merely not topmost. Within a class this is still plain raise order,
+    /// which is what it was for every overlay before modals were partitioned out.
+    fn raise_within_class(&mut self, pane_id: PaneId) {
+        self.z_indices.retain(|p_id| *p_id != pane_id);
+        let lowest_modal = if self.is_modal(&pane_id) {
+            None
+        } else {
+            self.z_indices.iter().position(|p_id| self.is_modal(p_id))
+        };
+        match lowest_modal {
+            Some(index) => self.z_indices.insert(index, pane_id),
+            None => self.z_indices.push(pane_id),
+        }
     }
 
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
@@ -441,7 +469,7 @@ impl OverlayPanes {
     /// reorder what everybody else sees. It records no `last_pane` and no `set_active_at` either -
     /// joining is not activity, and there is no previous overlay to go back to.
     pub fn focus_pane_for_joining_client(&mut self, pane_id: PaneId, client_id: ClientId) {
-        if self.active_panes.contains_key(&client_id) {
+        if self.active_panes.contains_key(&client_id) || !self.may_be_focused(&pane_id) {
             return;
         }
         self.active_panes.insert(client_id, pane_id, &self.panes);
@@ -452,15 +480,38 @@ impl OverlayPanes {
     /// Overlays are focused for all clients at once, as floating panes are: the occlusion stack is
     /// shared, so a per-client focus would draw one client's overlay over another's anyway.
     pub fn focus_pane_for_all_clients(&mut self, pane_id: PaneId) {
+        if !self.may_be_focused(&pane_id) {
+            return;
+        }
         let connected_clients: Vec<ClientId> =
             self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
             self.active_panes.insert(client_id, pane_id, &self.panes);
             self.set_pane_active_at(pane_id);
         }
-        self.z_indices.retain(|p_id| *p_id != pane_id);
-        self.z_indices.push(pane_id);
+        self.raise_within_class(pane_id);
         self.set_force_render();
+    }
+    /// Whether focus may move onto this overlay right now.
+    ///
+    /// A live modal owns the keyboard until it closes: it has no way to learn that it lost focus,
+    /// so an overlay that opened later - or that the mouse landed on - does not take it. This is
+    /// the overlay twin of what `Tab::new_pane` already does for a tiled pane opened over a modal,
+    /// which comes up unfocused rather than stealing the keyboard.
+    ///
+    /// Another modal may take it, because closing that one walks focus back down to this one
+    /// (`move_clients_out_of_pane`); that is what keeps a quit-confirmation opened over an already
+    /// open modal usable rather than stranding it unfocused with no way to close itself.
+    ///
+    /// An overlay the tab has marked non-selectable has already had its clients moved off it
+    /// (`Tab::set_pane_selectable`), and putting one back would break the invariant that an active
+    /// pane is selectable - a later `FocusPaneWithId` would route input to a pane that asked not
+    /// to receive any. `FloatingPanes::focus_pane` refuses the same thing.
+    pub fn may_be_focused(&self, pane_id: &PaneId) -> bool {
+        if !self.get(pane_id).is_some_and(|pane| pane.selectable()) {
+            return false;
+        }
+        self.is_modal(pane_id) || self.topmost_modal_pane_id().is_none()
     }
     /// Focus this overlay for one client, leaving every other client where it was.
     ///
@@ -468,16 +519,22 @@ impl OverlayPanes {
     /// looking at a tiled pane keeps looking at it. Raising the pane in the occlusion stack *is*
     /// shared, because the stack is.
     pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
+        if !self.may_be_focused(&pane_id) {
+            return;
+        }
         if let Some(previously_active) = self.active_pane_id(client_id) {
             self.active_panes
                 .set_last_pane(client_id, previously_active);
         }
         self.active_panes.insert(client_id, pane_id, &self.panes);
         self.set_pane_active_at(pane_id);
-        self.z_indices.retain(|p_id| *p_id != pane_id);
-        self.z_indices.push(pane_id);
+        self.raise_within_class(pane_id);
         self.set_force_render();
     }
+    /// `Ok` means "this overlay is mine", not "it is now focused" - a live modal may have declined
+    /// to hand the keyboard over. `Tab::focus_pane_with_id` chains this through `.or_else` into the
+    /// floating and suppressed collections, so an `Err` here would go on to focus some *other*
+    /// pane rather than leaving focus where the modal wants it.
     pub fn focus_pane_if_exists(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
         if self.panes.contains_key(&pane_id) {
             self.focus_pane(pane_id, client_id);
@@ -492,6 +549,38 @@ impl OverlayPanes {
     pub fn defocus_pane(&mut self, client_id: ClientId) {
         self.active_panes.remove(&client_id, &self.panes);
         self.set_force_render();
+    }
+    /// Hand this client's overlay focus over to a pane that is about to open, unless a modal is
+    /// holding it. `true` means the keyboard is free to move - including when this client held no
+    /// overlay focus to begin with.
+    ///
+    /// A dismissible overlay (hocus-ask and friends) watches `PaneUpdate` and closes itself once
+    /// it sees it is no longer focused; giving the focus up is how it learns. A modal
+    /// (hocus-new-agent) only closes on Esc/submit/`Visible(false)` and has no such channel, so
+    /// taking the keyboard from it would leave it on screen while input went elsewhere. It keeps
+    /// focus, and whatever opened comes up unfocused behind it.
+    pub fn defocus_pane_if_dismissible(&mut self, client_id: ClientId) -> bool {
+        match self.active_pane_id(client_id) {
+            Some(pane_id) if self.is_modal(&pane_id) => false,
+            Some(_) => {
+                self.defocus_pane(client_id);
+                true
+            },
+            None => true,
+        }
+    }
+    /// The every-client form of `defocus_pane_if_dismissible`, for the paths that focus a new pane
+    /// for everybody rather than for one client.
+    pub fn defocus_dismissible_panes(&mut self) {
+        let dismissible_clients: Vec<ClientId> = self
+            .active_panes
+            .iter()
+            .filter(|(_, pane_id)| !self.is_modal(pane_id))
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        for client_id in dismissible_clients {
+            self.defocus_pane(client_id);
+        }
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.active_panes.remove(&client_id, &self.panes);
