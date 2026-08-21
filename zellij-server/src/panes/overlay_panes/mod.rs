@@ -26,10 +26,6 @@
 //! If one of these turns out to be needed, that is a signal that the concept is not as clean as
 //! assumed. Say so rather than adding it quietly.
 
-// Phase 2 of the modals/overlays refactor builds this collection and wires it into `Tab` without
-// routing anything to it; Phase 3 moves the behavior across and this attribute comes off.
-#![allow(dead_code)]
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
