@@ -1646,10 +1646,14 @@ impl MouseHandler {
         // an overlay is painted over everything and takes the mouse wherever it is painted, with
         // no layer-visibility precondition - which is the whole reason it is not a floating pane
         if let Some(clicked_pane) = tab.overlay_panes.visible_pane_id_at(point) {
+            // `may_be_focused` is false while a modal that is not this pane is open: the click is
+            // still the overlay's, but the keyboard stays with the modal, so nothing about this
+            // pane became active
             if tab
                 .overlay_panes
                 .get(&clicked_pane)
                 .is_some_and(|pane| pane.selectable())
+                && tab.overlay_panes.may_be_focused(&clicked_pane)
             {
                 tab.overlay_panes.focus_pane(clicked_pane, client_id);
                 tab.set_pane_active_at(clicked_pane);

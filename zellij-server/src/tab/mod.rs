@@ -2953,22 +2953,16 @@ impl Tab {
                 // an overlay holds this client's focus while the floating layer is down, and
                 // `get_active_pane_id` would keep preferring it over the pane we are about to
                 // focus. The new pane is what the user just asked for, so a dismissible overlay
-                // (one that watches PaneUpdate and closes itself once it sees it isn't focused,
-                // e.g. hocus-ask) gives the keyboard up - which is also how it finds out. A modal
-                // overlay (e.g. hocus-new-agent) only closes on Esc/submit/Visible(false) and has
-                // no way to learn it lost focus, so stealing it would leave the modal stuck on
-                // screen while input goes to the pane underneath - it keeps focus instead, and the
-                // new pane opens tiled but unfocused behind it.
-                let active_overlay =
-                    client_id.and_then(|client_id| self.overlay_panes.active_pane_id(client_id));
-                match active_overlay.map(|pane_id| self.overlay_panes.is_modal(&pane_id)) {
-                    Some(true) => self.add_tiled_pane(new_pane, pid, false, None),
-                    Some(false) => {
-                        self.overlay_panes
-                            .defocus_pane(client_id.expect("active_overlay implies client_id"));
-                        self.add_tiled_pane(new_pane, pid, false, client_id)
-                    },
-                    None => self.add_tiled_pane(new_pane, pid, false, client_id),
+                // gives the keyboard up here and a modal keeps it - see
+                // `defocus_pane_if_dismissible` for why the two differ. When the modal keeps it,
+                // the new pane opens tiled but unfocused behind it.
+                let keyboard_is_free = client_id.is_none_or(|client_id| {
+                    self.overlay_panes.defocus_pane_if_dismissible(client_id)
+                });
+                if keyboard_is_free {
+                    self.add_tiled_pane(new_pane, pid, false, client_id)
+                } else {
+                    self.add_tiled_pane(new_pane, pid, false, None)
                 }
             } else if should_add_floating {
                 self.add_floating_pane(new_pane, pid, None, false, client_id)
@@ -8044,10 +8038,21 @@ impl Tab {
                 .with_context(err_context)?;
             self.floating_panes.add_pane(pane_id, pane);
             if should_focus_new_pane {
-                if let Some(client_id) = client_id {
-                    self.floating_panes.focus_pane(pane_id, client_id);
-                } else {
-                    self.floating_panes.focus_pane_for_all_clients(pane_id);
+                // an overlay outranks the floating layer in `get_active_pane_id`, so unless a
+                // dismissible one gives the keyboard up here the new pane opens *behind* the
+                // popup, input keeps going to the popup, and the popup goes on reporting itself
+                // focused rather than dismissing. A modal keeps focus - see
+                // `defocus_pane_if_dismissible` - and the new pane comes up behind it, as it does
+                // on the tiled path in `new_pane`.
+                match client_id {
+                    Some(client_id) => {
+                        self.overlay_panes.defocus_pane_if_dismissible(client_id);
+                        self.floating_panes.focus_pane(pane_id, client_id);
+                    },
+                    None => {
+                        self.overlay_panes.defocus_dismissible_panes();
+                        self.floating_panes.focus_pane_for_all_clients(pane_id);
+                    },
                 }
             }
         }
