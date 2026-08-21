@@ -1675,14 +1675,17 @@ impl MouseHandler {
         };
 
         if let Some(pane) = Self::get_pane_at(tab, point, false).with_context(err_context)? {
+            // the pane under the cursor has already been resolved, overlays and all - write to it
+            // by id rather than resolving the position a second time
+            let pane_id = pane.pid();
             let relative_position = pane.relative_position(point);
             if let Some(mouse_event) = pane.mouse_scroll_up(&relative_position) {
-                tab.write_to_terminal_at(mouse_event.into_bytes(), point, client_id)
+                Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;
             } else if pane.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
-                    tab.write_to_terminal_at("\u{1b}[A".as_bytes().to_owned(), point, client_id)
+                    Self::write_to_pane(tab, "\u{1b}[A".as_bytes().to_owned(), pane_id, client_id)
                         .with_context(err_context)?;
                 }
             } else {
@@ -1705,14 +1708,15 @@ impl MouseHandler {
         };
 
         if let Some(pane) = Self::get_pane_at(tab, point, false).with_context(err_context)? {
+            let pane_id = pane.pid();
             let relative_position = pane.relative_position(point);
             if let Some(mouse_event) = pane.mouse_scroll_down(&relative_position) {
-                tab.write_to_terminal_at(mouse_event.into_bytes(), point, client_id)
+                Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;
             } else if pane.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
-                    tab.write_to_terminal_at("\u{1b}[B".as_bytes().to_owned(), point, client_id)
+                    Self::write_to_pane(tab, "\u{1b}[B".as_bytes().to_owned(), pane_id, client_id)
                         .with_context(err_context)?;
                 }
             } else {
@@ -1822,6 +1826,23 @@ impl MouseHandler {
 
         tab.set_force_render();
         Ok(MouseEffect::state_changed())
+    }
+
+    /// Send bytes to a pane the caller has already resolved.
+    ///
+    /// Scroll forwarding used to hand the *position* to `Tab::write_to_terminal_at`, which resolved
+    /// it a second time and knew nothing about overlays: the sequence was generated from the
+    /// overlay under the cursor and written to the tiled pane beneath it. `get_pane_at` is the one
+    /// resolver now, and this only delivers what it found.
+    fn write_to_pane(
+        tab: &mut Tab,
+        bytes: Vec<u8>,
+        pane_id: PaneId,
+        client_id: ClientId,
+    ) -> Result<()> {
+        // the bool is "the UI needs updating", which a scroll sequence never triggers
+        tab.write_to_pane_id(&None, bytes, false, pane_id, Some(client_id), None)
+            .map(|_| ())
     }
 
     fn get_pane_at<'a>(
