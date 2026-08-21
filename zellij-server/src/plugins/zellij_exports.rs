@@ -10,7 +10,7 @@
 use super::PluginInstruction;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime;
-use crate::plugins::plugin_map::PluginEnv;
+use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::plugins::wasm_bridge::handle_plugin_crash;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::route::{route_action, wait_for_action_completion, NotificationEnd};
@@ -1069,7 +1069,7 @@ fn host_display_name() -> String {
         .clone()
 }
 
-fn get_plugin_ids(env: &PluginEnv) {
+fn get_plugin_ids(env: &mut PluginEnv) {
     let ids = PluginIds {
         plugin_id: env.plugin_id,
         zellij_pid: process::id(),
@@ -1092,7 +1092,7 @@ fn get_plugin_ids(env: &PluginEnv) {
         .non_fatal();
 }
 
-fn get_zellij_version(env: &PluginEnv) {
+fn get_zellij_version(env: &mut PluginEnv) {
     let protobuf_zellij_version = ProtobufZellijVersion {
         version: VERSION.to_owned(),
     };
@@ -1106,7 +1106,7 @@ fn get_zellij_version(env: &PluginEnv) {
         .non_fatal();
 }
 
-fn generate_random_name(env: &PluginEnv) {
+fn generate_random_name(env: &mut PluginEnv) {
     let name = generate_random_name_impl();
     let response = ProtobufGenerateRandomNameResponse { name };
     wasi_write_object(env, &response.encode_to_vec())
@@ -1119,7 +1119,7 @@ fn generate_random_name(env: &PluginEnv) {
         .non_fatal();
 }
 
-fn dump_layout(env: &PluginEnv, layout_name: String) {
+fn dump_layout(env: &mut PluginEnv, layout_name: String) {
     let layout_path = PathBuf::from(&layout_name);
 
     let layout_dir = env.layout_dir.clone().or_else(default_layout_dir);
@@ -1137,7 +1137,7 @@ fn dump_layout(env: &PluginEnv, layout_name: String) {
         .non_fatal();
 }
 
-fn get_layout_dir(env: &PluginEnv) {
+fn get_layout_dir(env: &mut PluginEnv) {
     // Get layout dir from env or fall back to default
     let layout_dir = env.layout_dir.clone().or_else(default_layout_dir);
 
@@ -1155,7 +1155,7 @@ fn get_layout_dir(env: &PluginEnv) {
         .non_fatal();
 }
 
-fn get_session_environment_variables(env: &PluginEnv) {
+fn get_session_environment_variables(env: &mut PluginEnv) {
     use zellij_utils::plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
 
     let env_vars: Vec<ProtobufEnvVariable> = env
@@ -1184,7 +1184,7 @@ fn get_session_environment_variables(env: &PluginEnv) {
 /// An alias nobody declared answers with an empty map rather than an error: a plugin has
 /// nothing different to do with "no such alias" than with "that alias configures nothing",
 /// and this command must always write *something* back — the caller is blocked on a read.
-fn get_plugin_alias_configuration(env: &PluginEnv, alias: String) {
+fn get_plugin_alias_configuration(env: &mut PluginEnv, alias: String) {
     let configuration = env
         .plugin_aliases
         .lock()
@@ -1209,7 +1209,7 @@ fn get_plugin_alias_configuration(env: &PluginEnv, alias: String) {
 }
 
 fn open_command_pane_in_new_tab(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
@@ -1267,7 +1267,7 @@ fn open_command_pane_in_new_tab(
 }
 
 fn open_plugin_pane_in_new_tab(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     plugin_url: String,
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
@@ -1321,7 +1321,7 @@ fn open_plugin_pane_in_new_tab(
 }
 
 fn open_plugin_pane_floating(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     plugin_url: String,
     configuration: BTreeMap<String, String>,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
@@ -1370,7 +1370,7 @@ fn open_plugin_pane_floating(
 }
 
 fn open_editor_pane_in_new_tab(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
 ) {
@@ -1412,15 +1412,18 @@ fn open_editor_pane_in_new_tab(
         .non_fatal();
 }
 
-fn get_focused_pane_info(env: &PluginEnv) {
+fn get_focused_pane_info(env: &mut PluginEnv) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
+    // Bound up front rather than captured: the closure would otherwise hold an immutable
+    // borrow of `env` across the `wasi_write_object` that replies to the plugin.
+    let plugin_name = env.name();
+    let client_id = env.client_id;
     let err_context = || {
         format!(
             "failed to get focused pane info for client {:?} from plugin {}",
-            env.client_id,
-            env.name()
+            client_id, plugin_name
         )
     };
 
@@ -1465,7 +1468,7 @@ fn get_focused_pane_info(env: &PluginEnv) {
         .non_fatal();
 }
 
-fn parse_layout(env: &PluginEnv, layout_string: String) {
+fn parse_layout(env: &mut PluginEnv, layout_string: String) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Parse the KDL layout - same parameters as list_available_layouts in layout.rs:1260
@@ -1572,7 +1575,7 @@ fn parse_layout(env: &PluginEnv, layout_string: String) {
         .non_fatal();
 }
 
-fn open_file(env: &PluginEnv, file_to_open: FileToOpen, context: BTreeMap<String, String>) {
+fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<String, String>) {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let floating = false;
     let in_place = false;
@@ -1665,7 +1668,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
 }
 
 fn open_file_floating(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
@@ -1708,7 +1711,7 @@ fn open_file_floating(
 }
 
 fn open_file_in_place(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
 ) {
@@ -1751,7 +1754,7 @@ fn open_file_in_place(
 }
 
 fn open_file_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
 ) {
@@ -1794,7 +1797,7 @@ fn open_file_near_plugin(
 }
 
 fn open_file_floating_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
@@ -1838,7 +1841,7 @@ fn open_file_floating_near_plugin(
 }
 
 fn open_file_in_place_of_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     file_to_open: FileToOpen,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
@@ -1877,7 +1880,7 @@ fn open_file_in_place_of_plugin(
         .non_fatal();
 }
 
-fn open_terminal(env: &PluginEnv, cwd: PathBuf) {
+fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
@@ -1914,7 +1917,7 @@ fn open_terminal(env: &PluginEnv, cwd: PathBuf) {
         .non_fatal();
 }
 
-fn open_terminal_near_plugin(env: &PluginEnv, cwd: PathBuf) {
+fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -1954,7 +1957,7 @@ fn open_terminal_near_plugin(env: &PluginEnv, cwd: PathBuf) {
 }
 
 fn open_terminal_floating(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     cwd: PathBuf,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
 ) {
@@ -1995,7 +1998,7 @@ fn open_terminal_floating(
 }
 
 fn open_terminal_floating_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     cwd: PathBuf,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
 ) {
@@ -2035,7 +2038,7 @@ fn open_terminal_floating_near_plugin(
         .non_fatal();
 }
 
-fn open_terminal_in_place(env: &PluginEnv, cwd: PathBuf) {
+fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
@@ -2074,7 +2077,7 @@ fn open_terminal_in_place(env: &PluginEnv, cwd: PathBuf) {
 }
 
 fn open_terminal_in_place_of_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     cwd: PathBuf,
     close_plugin_after_replace: bool,
 ) {
@@ -2114,7 +2117,7 @@ fn open_terminal_in_place_of_plugin(
 }
 
 fn open_command_pane_in_place_of_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
@@ -2176,7 +2179,7 @@ fn open_command_pane_in_place_of_plugin(
 }
 
 fn open_terminal_pane_in_place_of_pane_id(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id_to_replace: zellij_utils::data::PaneId,
     cwd: FileToOpen,
     close_replaced_pane: bool,
@@ -2220,7 +2223,7 @@ fn open_terminal_pane_in_place_of_pane_id(
 }
 
 fn open_command_pane_in_place_of_pane_id(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id_to_replace: zellij_utils::data::PaneId,
     command_to_run: CommandToRun,
     close_replaced_pane: bool,
@@ -2283,7 +2286,7 @@ fn open_command_pane_in_place_of_pane_id(
 }
 
 fn open_edit_pane_in_place_of_pane_id(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id_to_replace: zellij_utils::data::PaneId,
     file_to_open: FileToOpen,
     close_replaced_pane: bool,
@@ -2322,7 +2325,7 @@ fn open_edit_pane_in_place_of_pane_id(
 }
 
 fn open_command_pane(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
@@ -2379,7 +2382,7 @@ fn open_command_pane(
 }
 
 fn open_command_pane_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
@@ -2447,7 +2450,7 @@ fn spawn_command_pane_near_plugin(
 }
 
 fn open_command_pane_in_git_checkout_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     mut command_to_run: CommandToRun,
     source_directory: PathBuf,
     checkout: GitCheckout,
@@ -2588,7 +2591,7 @@ fn git_error(operation: &str, stderr: &[u8]) -> String {
 }
 
 fn open_command_pane_floating(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
@@ -2645,7 +2648,7 @@ fn open_command_pane_floating(
 }
 
 fn open_command_pane_floating_near_plugin(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
@@ -2712,7 +2715,7 @@ fn open_command_pane_floating_near_plugin(
 }
 
 fn open_command_pane_in_place(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
@@ -2769,7 +2772,7 @@ fn open_command_pane_in_place(
 }
 
 fn open_command_pane_background(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
@@ -3106,7 +3109,7 @@ fn switch_to_mode(env: &PluginEnv, input_mode: InputMode) {
     apply_action!(action, error_msg, env);
 }
 
-fn new_tabs_with_layout(env: &PluginEnv, raw_layout: &str) -> Result<()> {
+fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
     // TODO: cwd
     let layout = Layout::from_str(
         raw_layout,
@@ -3119,7 +3122,7 @@ fn new_tabs_with_layout(env: &PluginEnv, raw_layout: &str) -> Result<()> {
     Ok(())
 }
 
-fn new_tabs_with_layout_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result<()> {
+fn new_tabs_with_layout_info(env: &mut PluginEnv, layout_info: LayoutInfo) -> Result<()> {
     // TODO: cwd
     let layout = Layout::from_layout_info(&env.layout_dir, layout_info)
         .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
@@ -3127,7 +3130,7 @@ fn new_tabs_with_layout_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result
     Ok(())
 }
 
-fn apply_layout(env: &PluginEnv, layout: Layout) {
+fn apply_layout(env: &mut PluginEnv, layout: Layout) {
     let mut tabs_to_open = vec![];
     let tabs = layout.tabs();
     let cwd = None; // TODO: add this to the plugin API
@@ -3187,7 +3190,7 @@ fn apply_layout(env: &PluginEnv, layout: Layout) {
         .non_fatal();
 }
 
-fn new_tab(env: &PluginEnv, name: Option<String>, cwd: Option<String>) {
+fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
         tiled_layout: None,
@@ -3213,7 +3216,7 @@ fn new_tab(env: &PluginEnv, name: Option<String>, cwd: Option<String>) {
         .non_fatal();
 }
 
-fn new_tab_unfocused(env: &PluginEnv, name: Option<String>, cwd: Option<String>) {
+fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
         tiled_layout: None,
@@ -3237,7 +3240,7 @@ fn new_tab_unfocused(env: &PluginEnv, name: Option<String>, cwd: Option<String>)
         .non_fatal();
 }
 
-fn new_tiled_pane_in_tab(env: &PluginEnv, tab_position: usize) {
+fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: usize) {
     let error_msg = || format!("failed to open new tiled pane in tab {}", tab_position);
     let default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -3651,7 +3654,7 @@ fn go_to_tab_name(env: &PluginEnv, tab_name: String) {
     apply_action!(action, error_msg, env);
 }
 
-fn focus_or_create_tab(env: &PluginEnv, tab_name: String) {
+fn focus_or_create_tab(env: &mut PluginEnv, tab_name: String) {
     let error_msg = || format!("failed to change or create tab in plugin {}", env.name());
     let create = true;
     let action = Action::GoToTabName {
@@ -3827,7 +3830,7 @@ fn kill_sessions(session_names: Vec<String>) {
 // concurrently so killing many sessions does not multiply the wait.
 const KILL_WEDGE_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn kill_sessions_and_reply(env: &PluginEnv, session_names: Vec<String>) {
+fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<String>) {
     use tokio::task::JoinSet;
     let runtime = get_tokio_runtime();
     let result: Result<(), String> = runtime.block_on(async {
@@ -3894,7 +3897,7 @@ fn kill_sessions_and_reply(env: &PluginEnv, session_names: Vec<String>) {
 // — a session name that does not exist — costs a `connect(2)`.
 
 fn warp_pane_to_session(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id: PaneId,
     to_session: String,
     placement: WarpPlacement,
@@ -3915,7 +3918,7 @@ fn warp_pane_to_session(
 }
 
 fn warp_pane_from_session(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id: PaneId,
     from_session: String,
     placement: WarpPlacement,
@@ -3930,7 +3933,7 @@ fn warp_pane_from_session(
     write_warp_response(env, result);
 }
 
-fn warp_tab_to_session(env: &PluginEnv, tab_index: usize, to_session: String) {
+fn warp_tab_to_session(env: &mut PluginEnv, tab_index: usize, to_session: String) {
     let result = crate::warp::warp_tab_to_session(
         &env.senders,
         env.client_id,
@@ -3944,7 +3947,7 @@ fn warp_tab_to_session(env: &PluginEnv, tab_index: usize, to_session: String) {
     write_warp_response(env, result);
 }
 
-fn warp_tab_from_session(env: &PluginEnv, tab_index: usize, from_session: String) {
+fn warp_tab_from_session(env: &mut PluginEnv, tab_index: usize, from_session: String) {
     let result = crate::warp::warp_tab_from_session(
         &crate::warp::current_session_name(),
         &from_session,
@@ -3955,7 +3958,7 @@ fn warp_tab_from_session(env: &PluginEnv, tab_index: usize, from_session: String
 }
 
 #[cfg(unix)]
-fn adopt_orphaned_pane(env: &PluginEnv, host_id: String, placement: WarpPlacement) {
+fn adopt_orphaned_pane(env: &mut PluginEnv, host_id: String, placement: WarpPlacement) {
     let result = crate::pty_host::cli::adopt_payload(&host_id)
         .map_err(|e| format!("{e:#}"))
         .and_then(|payload| {
@@ -3976,7 +3979,7 @@ fn adopt_orphaned_pane(env: &PluginEnv, _host_id: String, _placement: WarpPlacem
 }
 
 #[cfg(unix)]
-fn list_orphaned_panes(env: &PluginEnv) {
+fn list_orphaned_panes(env: &mut PluginEnv) {
     let response = match crate::pty_host::cli::statuses() {
         Ok(statuses) => ListOrphanedPanesResponse::Ok(
             statuses
@@ -4015,7 +4018,7 @@ fn list_orphaned_panes(env: &PluginEnv) {
 #[cfg(not(unix))]
 const NO_DETACHABLE_PANES: &str = "detachable panes are not supported on this platform";
 
-fn write_warp_response(env: &PluginEnv, result: Result<String, String>) {
+fn write_warp_response(env: &mut PluginEnv, result: Result<String, String>) {
     let response = match result {
         Ok(message) => WarpPaneResponse::Ok(message),
         Err(message) => WarpPaneResponse::Err(message),
@@ -4028,7 +4031,7 @@ fn write_warp_response(env: &PluginEnv, result: Result<String, String>) {
     .non_fatal();
 }
 
-fn write_orphaned_pane_list(env: &PluginEnv, response: ListOrphanedPanesResponse) {
+fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResponse) {
     wasi_write_object(
         env,
         &ProtobufListOrphanedPanesResponse::from(response).encode_to_vec(),
@@ -4082,7 +4085,7 @@ fn resolve_fetch_namespace(env: &PluginEnv, request: &FetchRequest) -> Result<St
 }
 
 fn data_define_entity(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     namespace: Option<String>,
     def: EntityDef,
     allow_destructive: bool,
@@ -4102,7 +4105,7 @@ fn data_define_entity(
     );
 }
 
-fn data_apply(env: &PluginEnv, namespace: Option<String>, mutations: Vec<Mutation>) {
+fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutations: Vec<Mutation>) {
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
         Ok((
             namespace.clone(),
@@ -4122,7 +4125,7 @@ fn data_apply(env: &PluginEnv, namespace: Option<String>, mutations: Vec<Mutatio
     );
 }
 
-fn data_fetch(env: &PluginEnv, request: FetchRequest) {
+fn data_fetch(env: &mut PluginEnv, request: FetchRequest) {
     let response = match resolve_fetch_namespace(env, &request)
         .and_then(|namespace| env.plugin_data_store.fetch(&namespace, &request))
     {
@@ -4136,7 +4139,7 @@ fn data_fetch(env: &PluginEnv, request: FetchRequest) {
     );
 }
 
-fn data_count(env: &PluginEnv, request: FetchRequest) {
+fn data_count(env: &mut PluginEnv, request: FetchRequest) {
     let response = match resolve_fetch_namespace(env, &request)
         .and_then(|namespace| env.plugin_data_store.count(&namespace, &request))
     {
@@ -4150,7 +4153,7 @@ fn data_count(env: &PluginEnv, request: FetchRequest) {
     );
 }
 
-fn data_watch(env: &PluginEnv, request: FetchRequest, mode: WatchMode) {
+fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
         env.plugin_data_store.register_watch(
             &namespace,
@@ -4179,7 +4182,7 @@ fn data_watch(env: &PluginEnv, request: FetchRequest, mode: WatchMode) {
     );
 }
 
-fn data_unwatch(env: &PluginEnv, watch_id: u64) {
+fn data_unwatch(env: &mut PluginEnv, watch_id: u64) {
     let response = match env
         .plugin_data_store
         .unregister_watch(env.plugin_id, watch_id)
@@ -4229,13 +4232,13 @@ fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet
     }
 }
 
-fn write_data_response(env: &PluginEnv, encoded: Vec<u8>, what: &str) {
+fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
     wasi_write_object(env, &encoded)
         .with_context(|| format!("failed to write the data store {}", what))
         .non_fatal();
 }
 
-fn delete_dead_session_and_reply(env: &PluginEnv, session_name: String) {
+fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: String) {
     let response =
         match std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name)) {
             Ok(()) => DeleteDeadSessionResponse::Ok,
@@ -4250,7 +4253,7 @@ fn delete_dead_session_and_reply(env: &PluginEnv, session_name: String) {
         .non_fatal();
 }
 
-fn delete_all_dead_sessions_and_reply(env: &PluginEnv) {
+fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
     // Same budget as kill-all so the UX of "y to confirm" is consistent: the
     // host-side fs work for many dead sessions is bounded in wall time.
     let runtime = get_tokio_runtime();
@@ -4282,7 +4285,7 @@ fn watch_filesystem(env: &PluginEnv) {
 }
 
 // note this removes the requesting plugin
-fn dump_session_layout(env: &PluginEnv, tab_index: Option<usize>) {
+fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<usize>) {
     use crate::plugins::DumpSessionLayoutResponse;
 
     // Create oneshot channel for response
@@ -4356,7 +4359,7 @@ fn dump_session_layout(env: &PluginEnv, tab_index: Option<usize>) {
         .with_context(|| format!("failed to send session layout to plugin {}", env.name()));
 }
 
-fn save_session(env: &PluginEnv) {
+fn save_session(env: &mut PluginEnv) {
     use save_session_response::Result as SaveSessionResult;
     let (completion_tx, completion_rx) = oneshot::channel();
 
@@ -4383,7 +4386,7 @@ fn save_session(env: &PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn show_floating_panes(env: &PluginEnv, tab_id: Option<usize>) {
+fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
     use show_floating_panes_response::Result as ShowResult;
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
@@ -4414,7 +4417,7 @@ fn show_floating_panes(env: &PluginEnv, tab_id: Option<usize>) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn hide_floating_panes(env: &PluginEnv, tab_id: Option<usize>) {
+fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
     use hide_floating_panes_response::Result as HideResult;
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
@@ -4474,7 +4477,7 @@ fn clear_pane_highlights(env: &PluginEnv, pane_id: zellij_utils::data::PaneId) {
         .non_fatal();
 }
 
-fn current_session_last_saved_time(env: &PluginEnv) {
+fn current_session_last_saved_time(env: &mut PluginEnv) {
     use zellij_utils::plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse;
 
     let (response_tx, response_rx) = crossbeam::channel::bounded(1);
@@ -4505,7 +4508,7 @@ fn current_session_last_saved_time(env: &PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn get_pane_info(env: &PluginEnv, pane_id: zellij_utils::data::PaneId) {
+fn get_pane_info(env: &mut PluginEnv, pane_id: zellij_utils::data::PaneId) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -4570,7 +4573,7 @@ fn get_pane_info(env: &PluginEnv, pane_id: zellij_utils::data::PaneId) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn get_tab_info(env: &PluginEnv, tab_id: usize) {
+fn get_tab_info(env: &mut PluginEnv, tab_id: usize) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -4632,7 +4635,7 @@ fn get_tab_info(env: &PluginEnv, tab_id: usize) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn list_recordings(env: &PluginEnv) {
+fn list_recordings(env: &mut PluginEnv) {
     let recordings = zellij_utils::session_recording::list_recordings(&env.zellij_data_dir)
         .unwrap_or_else(|e| {
             log::error!("Failed to list recordings for plugin {}: {}", env.name(), e);
@@ -4644,7 +4647,7 @@ fn list_recordings(env: &PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn list_notifications(env: &PluginEnv) {
+fn list_notifications(env: &mut PluginEnv) {
     let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
     let notifications = if env
         .senders
@@ -4681,7 +4684,7 @@ fn list_notifications(env: &PluginEnv) {
 
 // ponytail: search indexes FTS inline on the plugin thread; move to a worker if large recordings
 // stall plugin calls
-fn search_recordings(env: &PluginEnv, query: String, limit: usize) {
+fn search_recordings(env: &mut PluginEnv, query: String, limit: usize) {
     let hits =
         zellij_utils::session_recording::search_recordings(&env.zellij_data_dir, &query, limit)
             .unwrap_or_else(|e| {
@@ -4861,15 +4864,17 @@ fn edit_scrollback_for_pane_with_id(env: &PluginEnv, pane_id: PaneId) {
         ));
 }
 
-fn get_pane_scrollback(env: &PluginEnv, pane_id: PaneId, get_full_scrollback: bool) {
+fn get_pane_scrollback(env: &mut PluginEnv, pane_id: PaneId, get_full_scrollback: bool) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
+    // See the note in `get_focused_pane_info`: bound up front so the closure does not hold a
+    // borrow of `env` across the reply.
+    let plugin_name = env.name();
     let err_context = || {
         format!(
             "failed to get pane scrollback for pane {:?} from plugin {}",
-            pane_id,
-            env.name()
+            pane_id, plugin_name
         )
     };
 
@@ -4982,15 +4987,17 @@ fn send_sigkill_to_pane_id(env: &PluginEnv, pane_id: PaneId) {
         .non_fatal();
 }
 
-fn get_pane_pid(env: &PluginEnv, pane_id: PaneId) {
+fn get_pane_pid(env: &mut PluginEnv, pane_id: PaneId) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
+    // See the note in `get_focused_pane_info`: bound up front so the closure does not hold a
+    // borrow of `env` across the reply.
+    let plugin_name = env.name();
     let err_context = || {
         format!(
             "failed to get PID for pane {:?} from plugin {}",
-            pane_id,
-            env.name()
+            pane_id, plugin_name
         )
     };
 
@@ -5038,7 +5045,7 @@ fn get_pane_pid(env: &PluginEnv, pane_id: PaneId) {
         .non_fatal();
 }
 
-fn get_pane_running_command(env: &PluginEnv, pane_id: PaneId) {
+fn get_pane_running_command(env: &mut PluginEnv, pane_id: PaneId) {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     send_get_pane_running_command_request(env, pane_id, sender);
@@ -5046,7 +5053,7 @@ fn get_pane_running_command(env: &PluginEnv, pane_id: PaneId) {
     write_pane_running_command_response(env, pane_id, response);
 }
 
-fn get_session_list(env: &PluginEnv) {
+fn get_session_list(env: &mut PluginEnv) {
     use crate::background_jobs::{scan_session_list_default_dirs, session_scan_state};
     use zellij_utils::data::{GetSessionListResponse, SessionListSnapshot};
 
@@ -5134,7 +5141,7 @@ fn await_pane_running_command_response(
 }
 
 fn write_pane_running_command_response(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_id: PaneId,
     response: GetPaneRunningCommandResponse,
 ) {
@@ -5144,7 +5151,7 @@ fn write_pane_running_command_response(
         .non_fatal();
 }
 
-fn get_pane_cwd(env: &PluginEnv, pane_id: PaneId) {
+fn get_pane_cwd(env: &mut PluginEnv, pane_id: PaneId) {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     send_get_pane_cwd_request(env, pane_id, sender);
@@ -5198,14 +5205,14 @@ fn await_pane_cwd_response(
     }
 }
 
-fn write_pane_cwd_response(env: &PluginEnv, pane_id: PaneId, response: GetPaneCwdResponse) {
+fn write_pane_cwd_response(env: &mut PluginEnv, pane_id: PaneId, response: GetPaneCwdResponse) {
     let protobuf_response = ProtobufGetPaneCwdResponse::from(response);
     wasi_write_object(env, &protobuf_response.encode_to_vec())
         .with_context(|| format!("Failed to get CWD for pane {:?}", pane_id))
         .non_fatal();
 }
 
-fn save_layout(env: &PluginEnv, layout_name: String, layout_kdl: String, overwrite: bool) {
+fn save_layout(env: &mut PluginEnv, layout_name: String, layout_kdl: String, overwrite: bool) {
     let err_context = || format!("Failed to save layout '{}'", layout_name);
 
     let response = try_save_layout(env, &layout_name, &layout_kdl, overwrite)
@@ -5277,7 +5284,7 @@ fn try_save_layout(
     Ok(())
 }
 
-fn delete_layout(env: &PluginEnv, layout_name: String) {
+fn delete_layout(env: &mut PluginEnv, layout_name: String) {
     let err_context = || format!("Failed to delete layout '{}'", layout_name);
 
     let response = try_delete_layout(env, &layout_name)
@@ -5291,7 +5298,7 @@ fn delete_layout(env: &PluginEnv, layout_name: String) {
         .non_fatal();
 }
 
-fn rename_layout(env: &PluginEnv, old_layout_name: String, new_layout_name: String) {
+fn rename_layout(env: &mut PluginEnv, old_layout_name: String, new_layout_name: String) {
     let err_context = || {
         format!(
             "Failed to rename layout '{}' to '{}'",
@@ -5379,7 +5386,7 @@ fn try_rename_layout(
     Ok(())
 }
 
-fn edit_layout(env: &PluginEnv, layout_name: String, context: BTreeMap<String, String>) {
+fn edit_layout(env: &mut PluginEnv, layout_name: String, context: BTreeMap<String, String>) {
     let err_context = || format!("Failed to edit layout '{}'", layout_name);
 
     let response = try_edit_layout(env, &layout_name, context)
@@ -5571,7 +5578,7 @@ fn close_tab_with_index(env: &PluginEnv, tab_index: usize) {
 }
 
 fn break_panes_to_new_tab(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_ids: Vec<PaneId>,
     new_tab_name: Option<String>,
     should_change_focus_to_new_tab: bool,
@@ -5610,7 +5617,7 @@ fn break_panes_to_new_tab(
 }
 
 fn break_panes_to_tab_with_index(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_ids: Vec<PaneId>,
     should_change_focus_to_new_tab: bool,
     tab_index: usize,
@@ -5698,7 +5705,7 @@ fn rename_tab_with_id(env: &PluginEnv, tab_id: u64, new_name: &str) {
 }
 
 fn break_panes_to_tab_with_id(
-    env: &PluginEnv,
+    env: &mut PluginEnv,
     pane_ids: Vec<PaneId>,
     should_change_focus_to_target_tab: bool,
     tab_id: u64,
@@ -5941,7 +5948,7 @@ fn embed_multiple_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
 }
 
 #[cfg(feature = "web_server_capability")]
-fn generate_web_login_token(env: &PluginEnv, token_label: Option<String>, read_only: bool) {
+fn generate_web_login_token(env: &mut PluginEnv, token_label: Option<String>, read_only: bool) {
     let serialized = match create_token(token_label, read_only) {
         Ok((token, token_label)) => CreateTokenResponse {
             token: Some(token),
@@ -5958,14 +5965,14 @@ fn generate_web_login_token(env: &PluginEnv, token_label: Option<String>, read_o
 }
 
 #[cfg(not(feature = "web_server_capability"))]
-fn generate_web_login_token(env: &PluginEnv, _token_label: Option<String>, _read_only: bool) {
+fn generate_web_login_token(env: &mut PluginEnv, _token_label: Option<String>, _read_only: bool) {
     log::error!("This version of Zellij was compiled without the web server capabilities!");
     let empty_vec: Vec<&str> = vec![];
     let _ = wasi_write_object(env, &empty_vec);
 }
 
 #[cfg(feature = "web_server_capability")]
-fn revoke_web_login_token(env: &PluginEnv, token_label: String) {
+fn revoke_web_login_token(env: &mut PluginEnv, token_label: String) {
     let serialized = match revoke_token(&token_label) {
         Ok(true) => RevokeTokenResponse {
             successfully_revoked: true,
@@ -5984,14 +5991,14 @@ fn revoke_web_login_token(env: &PluginEnv, token_label: String) {
 }
 
 #[cfg(not(feature = "web_server_capability"))]
-fn revoke_web_login_token(env: &PluginEnv, _token_label: String) {
+fn revoke_web_login_token(env: &mut PluginEnv, _token_label: String) {
     log::error!("This version of Zellij was compiled without the web server capabilities!");
     let empty_vec: Vec<&str> = vec![];
     let _ = wasi_write_object(env, &empty_vec);
 }
 
 #[cfg(feature = "web_server_capability")]
-fn revoke_all_web_login_tokens(env: &PluginEnv) {
+fn revoke_all_web_login_tokens(env: &mut PluginEnv) {
     let serialized = match revoke_all_tokens() {
         Ok(_) => RevokeAllWebTokensResponse {
             successfully_revoked: true,
@@ -6006,14 +6013,14 @@ fn revoke_all_web_login_tokens(env: &PluginEnv) {
 }
 
 #[cfg(not(feature = "web_server_capability"))]
-fn revoke_all_web_login_tokens(env: &PluginEnv) {
+fn revoke_all_web_login_tokens(env: &mut PluginEnv) {
     log::error!("This version of Zellij was compiled without the web server capabilities!");
     let empty_vec: Vec<&str> = vec![];
     let _ = wasi_write_object(env, &empty_vec);
 }
 
 #[cfg(feature = "web_server_capability")]
-fn rename_web_login_token(env: &PluginEnv, old_name: String, new_name: String) {
+fn rename_web_login_token(env: &mut PluginEnv, old_name: String, new_name: String) {
     let serialized = match rename_token(&old_name, &new_name) {
         Ok(_) => RenameWebTokenResponse {
             successfully_renamed: true,
@@ -6028,14 +6035,14 @@ fn rename_web_login_token(env: &PluginEnv, old_name: String, new_name: String) {
 }
 
 #[cfg(not(feature = "web_server_capability"))]
-fn rename_web_login_token(env: &PluginEnv, _old_name: String, _new_name: String) {
+fn rename_web_login_token(env: &mut PluginEnv, _old_name: String, _new_name: String) {
     log::error!("This version of Zellij was compiled without the web server capabilities!");
     let empty_vec: Vec<&str> = vec![];
     let _ = wasi_write_object(env, &empty_vec);
 }
 
 #[cfg(feature = "web_server_capability")]
-fn list_web_login_tokens(env: &PluginEnv) {
+fn list_web_login_tokens(env: &mut PluginEnv) {
     let serialized = match list_tokens() {
         Ok(token_list) => ListTokensResponse {
             tokens: token_list.iter().map(|t| t.name.clone()).collect(),
@@ -6054,7 +6061,7 @@ fn list_web_login_tokens(env: &PluginEnv) {
 }
 
 #[cfg(not(feature = "web_server_capability"))]
-fn list_web_login_tokens(env: &PluginEnv) {
+fn list_web_login_tokens(env: &mut PluginEnv) {
     log::error!("This version of Zellij was compiled without the web server capabilities!");
     let empty_vec: Vec<&str> = vec![];
     let _ = wasi_write_object(env, &empty_vec);
@@ -6191,14 +6198,21 @@ pub fn wasi_read_string(plugin_env: &PluginEnv) -> Result<String> {
     Ok(buf.replace("\n", "\n\r"))
 }
 
-pub fn wasi_write_string(plugin_env: &PluginEnv, buf: &str) -> Result<()> {
+pub fn wasi_write_string(plugin_env: &mut PluginEnv, buf: &str) -> Result<()> {
+    if let ResponseSink::Capture(captured) = &mut plugin_env.response_sink {
+        *captured = Some(buf.to_owned());
+        return Ok(());
+    }
     let mut stdin = plugin_env.stdin_pipe.lock().unwrap();
     writeln!(stdin, "{}\r", buf)
         .map_err(anyError::new)
         .with_context(|| "failed to write string to WASI env".to_string())
 }
 
-pub fn wasi_write_object(plugin_env: &PluginEnv, object: &(impl Serialize + ?Sized)) -> Result<()> {
+pub fn wasi_write_object(
+    plugin_env: &mut PluginEnv,
+    object: &(impl Serialize + ?Sized),
+) -> Result<()> {
     serde_json::to_string(&object)
         .map_err(anyError::new)
         .and_then(|string| wasi_write_string(plugin_env, &string))

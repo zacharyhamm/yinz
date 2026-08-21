@@ -1,10 +1,10 @@
 use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{
-    PluginEnv, PluginMap, RunningPlugin, VecDequeInputStream, WriteOutputStream,
+    PluginEnv, PluginMap, ResponseSink, RunningPlugin, VecDequeInputStream, WriteOutputStream,
 };
 use crate::plugins::plugin_worker::{plugin_worker, RunningWorker};
 use crate::plugins::wasm_bridge::{LoadingContext, PluginCache, PluginCacheKey};
-use crate::plugins::zellij_exports::{wasi_write_object, zellij_exports};
+use crate::plugins::zellij_exports::zellij_exports;
 use crate::plugins::PluginId;
 use prost::Message;
 use std::{
@@ -192,10 +192,13 @@ impl<'a> PluginLoader<'a> {
     ) -> Result<()> {
         let err_context = || format!("failed to load plugin from instance {instance:#?}");
         let main_user_instance = *instance;
-        let start_function = instance
+        // Resolved here only to fail early: a module missing either export is not a plugin, and
+        // we would rather find that out before it is inserted into the `PluginMap`. The calls
+        // themselves happen through `RunningPlugin` once it is in the map.
+        instance
             .get_typed_func::<(), ()>(&mut store, "_start")
             .with_context(err_context)?;
-        let load_function = instance
+        instance
             .get_typed_func::<(), ()>(&mut store, "load")
             .with_context(err_context)?;
         let mut workers = HashMap::new();
@@ -238,9 +241,7 @@ impl<'a> PluginLoader<'a> {
             workers,
         );
 
-        start_function
-            .call(&mut plugin.lock().unwrap().store, ())
-            .with_context(err_context)?;
+        plugin.lock().unwrap().start().with_context(err_context)?;
 
         let protobuf_plugin_configuration: ProtobufPluginConfiguration = self
             .plugin_config
@@ -249,10 +250,10 @@ impl<'a> PluginLoader<'a> {
             .try_into()
             .map_err(|e| anyhow!("Failed to serialize user configuration: {:?}", e))?;
         let protobuf_bytes = protobuf_plugin_configuration.encode_to_vec();
-        wasi_write_object(plugin.lock().unwrap().store.data(), &protobuf_bytes)
-            .with_context(err_context)?;
-        load_function
-            .call(&mut plugin.lock().unwrap().store, ())
+        plugin
+            .lock()
+            .unwrap()
+            .load(&protobuf_bytes)
             .with_context(err_context)?;
 
         Ok(())
@@ -283,6 +284,7 @@ impl<'a> PluginLoader<'a> {
         let plugin_cache_key =
             plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref());
         let plugin_env = PluginEnv {
+            response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             client_id: self.client_id,
             owner_client_id: self.client_id,
@@ -407,6 +409,7 @@ impl<'a> PluginLoader<'a> {
         )?;
         let plugin_config = self.plugin_config.clone();
         let plugin_env = PluginEnv {
+            response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             client_id: self.client_id,
             owner_client_id: self.client_id,
