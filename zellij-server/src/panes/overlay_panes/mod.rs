@@ -49,6 +49,7 @@ use crate::{
     global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
+    panes::floating_panes::floating_pane_grid::half_size_middle_geom,
     panes::{geom_is_outside_viewport, ActivePanes, PaneId, PaneLookup},
     plugins::PluginInstruction,
     thread_bus::ThreadSenders,
@@ -152,6 +153,34 @@ impl OverlayPanes {
         (surface, (surface.x, surface.y))
     }
 
+    /// The geometry an overlay resolves its coordinates against, before the coordinates are
+    /// applied on top.
+    ///
+    /// `PaneGeom::adjust_coordinates` writes only the fields the coordinates actually name, so
+    /// whatever this returns *is* what a coordinate that said nothing means. Half the surface,
+    /// centered, is what a floating pane with no coordinates gets from
+    /// `FloatingPanes::find_room_for_new_pane`, and it is what `OverlayPlacement::coordinates`
+    /// has always documented `None` to mean.
+    ///
+    /// Deliberately *not* the pane's current geometry, which is what all three resolution points
+    /// used to start from. An overlay has no positional history to preserve - it is re-resolved
+    /// against the surface whenever the surface changes - and a pane built for this path arrives
+    /// with `PaneGeom::default()`, whose 100%-constraint dimensions have an `inner` of 1: an
+    /// overlay that named no size was born one cell square, and a framed one has no content area
+    /// at all. Seeding here rather than at `add_pane` alone is what makes an overlay's geometry
+    /// the pure function of its coordinates and the surface that this module claims it is.
+    fn base_geom(surface: &Viewport, current: PaneGeom) -> PaneGeom {
+        let mut geom = half_size_middle_geom(surface, 0);
+        // `is_pinned` lives inside the geom rather than beside it, and `Tab::add_overlay_pane`
+        // sets it on the pane before handing it over - seeding without carrying it across would
+        // silently drop a flag the caller explicitly asked for. `stacked` is left at
+        // `half_size_middle_geom`'s `None`, which is both correct and defensive: an overlay does
+        // not tile, so it is never a member of a stack.
+        geom.is_pinned = current.is_pinned;
+        geom.logical_position = current.logical_position;
+        geom
+    }
+
     // ---- membership -----------------------------------------------------------------------
 
     /// Put `pane` on the surface as an overlay of `kind`, resolving `coordinates` against the
@@ -159,7 +188,9 @@ impl OverlayPanes {
     ///
     /// Unlike `FloatingPanes::add_pane` this does the geometry itself rather than leaving it to
     /// the caller: an overlay's geometry is entirely a function of its coordinates and the
-    /// surface, and letting a caller supply it is exactly how overlay-ness used to get lost.
+    /// surface, and letting a caller supply it is exactly how overlay-ness used to get lost. The
+    /// geometry the pane arrives with is therefore not consulted - see `base_geom`, which is what
+    /// an overlay whose coordinates named no size resolves against.
     pub fn add_pane(
         &mut self,
         pane_id: PaneId,
@@ -173,7 +204,7 @@ impl OverlayPanes {
         if let Some(borderless) = coordinates.borderless {
             pane.set_borderless(borderless);
         }
-        let mut geom = pane.position_and_size();
+        let mut geom = Self::base_geom(&surface, pane.position_and_size());
         geom.adjust_coordinates(coordinates.clone(), surface, origin);
         pane.set_geom(geom);
         pane.set_should_render(true);
@@ -531,7 +562,11 @@ impl OverlayPanes {
         if let Some(borderless) = new_coordinates.borderless {
             overlay.pane.set_borderless(borderless);
         }
-        let mut geom = overlay.pane.position_and_size();
+        // the new coordinates *replace* the stored ones rather than merging into them, so an axis
+        // this call does not name is resolved from the surface default rather than from whatever
+        // a previous call happened to leave behind - which is also what the next
+        // `reapply_coordinates` would do with it anyway
+        let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
         geom.adjust_coordinates(new_coordinates.clone(), surface, origin);
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
@@ -574,7 +609,7 @@ impl OverlayPanes {
         }
         let (surface, origin) = self.surface();
         for overlay in self.panes.values_mut() {
-            let mut geom = overlay.pane.position_and_size();
+            let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
             geom.adjust_coordinates(overlay.coordinates.clone(), surface, origin);
             overlay.pane.set_geom(geom);
         }

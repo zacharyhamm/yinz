@@ -139,8 +139,8 @@ use crate::{
     },
     pty_writer::PtyWriteInstruction,
     tab::{
-        pane_info_for_pane, AcceptedPane, AdjustedInput, GuestChoiceIndicator, Pane,
-        SuppressedPanes, Tab,
+        pane_info_for_pane, AcceptedPane, AdjustedInput, ExtractedPanePlacement,
+        GuestChoiceIndicator, Pane, SuppressedPanes, Tab,
     },
     thread_bus::Bus,
     ui::loading_indication::LoadingIndication,
@@ -9289,13 +9289,18 @@ impl Screen {
         let err_context = || "failed break multiple panes to a new tab".to_string();
 
         let all_tabs = self.get_tabs_mut();
-        let mut extracted_panes = vec![];
+        let mut extracted_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)> = vec![];
         for pane_id in pane_ids {
             for tab in all_tabs.values_mut() {
+                if !tab.has_pane_with_pid(&pane_id) {
+                    continue;
+                }
+                // read before the extraction, which forgets that this was an overlay
+                let placement = tab.placement_for_extraction(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
                 // necessarily trigger a relayout for this tab
                 if let Some(pane) = tab.extract_pane(pane_id, true).take() {
-                    extracted_panes.push(pane);
+                    extracted_panes.push((placement, pane));
                     break;
                 }
             }
@@ -9317,17 +9322,31 @@ impl Screen {
             tab.name = new_tab_name.clone();
         }
         let tab_size = tab.size;
-        for mut pane in extracted_panes {
+        for (placement, mut pane) in extracted_panes {
             let run_instruction = pane.invoked_with().clone();
             let pane_id = pane.pid();
             let without_relayout = true;
 
-            let new_geom = PaneGeom::from(&tab_size);
-            pane.set_geom(new_geom);
+            if let ExtractedPanePlacement::Overlay(overlay_placement) = placement {
+                // no geom: an overlay's geometry is resolved from its coordinates against the
+                // new tab's surface, which is exactly what carrying the placement is for. Not
+                // focused, for the same reason the tiled arm below is not.
+                tab.add_overlay_pane(
+                    pane,
+                    pane_id,
+                    overlay_placement.kind,
+                    overlay_placement.coordinates.unwrap_or_default(),
+                    false,
+                    None,
+                )?;
+            } else {
+                let new_geom = PaneGeom::from(&tab_size);
+                pane.set_geom(new_geom);
 
-            // here we pass None instead of the ClientId, because we do not want this pane to be
-            // necessarily focused
-            tab.add_tiled_pane(pane, pane_id, without_relayout, None)?;
+                // here we pass None instead of the ClientId, because we do not want this pane to be
+                // necessarily focused
+                tab.add_tiled_pane(pane, pane_id, without_relayout, None)?;
+            }
             tiled_panes_layout.ignore_run_instruction(run_instruction.clone());
         }
         let is_web_client = self
@@ -9357,16 +9376,24 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         if self.tabs.len() > 1 {
-            let (active_pane_id, active_pane, pane_to_break_is_floating) = {
+            let (active_pane_id, active_pane, pane_to_break_is_floating, overlay_placement) = {
                 let active_tab = self.get_active_tab_mut(client_id)?;
                 let active_pane_id = active_tab
                     .get_active_pane_id(client_id)
                     .with_context(err_context)?;
                 let pane_to_break_is_floating = active_tab.are_floating_panes_visible();
+                // the active pane *is* the overlay whenever one is up, and the extraction below
+                // is what forgets that - so ask first
+                let overlay_placement = active_tab.overlay_placement_for(active_pane_id);
                 let active_pane = active_tab
                     .extract_pane(active_pane_id, false)
                     .with_context(err_context)?;
-                (active_pane_id, active_pane, pane_to_break_is_floating)
+                (
+                    active_pane_id,
+                    active_pane,
+                    pane_to_break_is_floating,
+                    overlay_placement,
+                )
             };
             let update_mode_infos = false;
             match direction {
@@ -9379,7 +9406,17 @@ impl Screen {
             };
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
-            if pane_to_break_is_floating {
+            if let Some(placement) = overlay_placement {
+                // an overlay is not on the floating layer, so arriving here must not raise it
+                new_active_tab.add_overlay_pane(
+                    active_pane,
+                    active_pane_id,
+                    placement.kind,
+                    placement.coordinates.unwrap_or_default(),
+                    true,
+                    Some(client_id),
+                )?;
+            } else if pane_to_break_is_floating {
                 new_active_tab.show_floating_panes();
                 new_active_tab.add_floating_pane(
                     active_pane,
@@ -9485,7 +9522,8 @@ impl Screen {
 
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
-        let mut extracted: Vec<(usize, bool, Box<dyn Pane>)> = Vec::with_capacity(to_extract.len());
+        let mut extracted: Vec<(usize, ExtractedPanePlacement, Box<dyn Pane>)> =
+            Vec::with_capacity(to_extract.len());
         {
             let all_tabs = self.get_tabs_mut();
             'panes: for pane_id in to_extract {
@@ -9494,11 +9532,13 @@ impl Screen {
                         continue;
                     }
                     let source_tab_id = tab.id;
-                    let was_floating = tab.pane_id_is_floating(&pane_id);
+                    // *before* the extraction: it is what drops an overlay's kind and
+                    // coordinates, and "not floating" would land a modal here as a tiled pane
+                    let placement = tab.placement_for_extraction(pane_id);
                     // dont_swap_if_suppressed, and no client_id: we do not need to
                     // necessarily trigger a relayout for the source tab
                     if let Some(pane) = tab.extract_pane(pane_id, true) {
-                        extracted.push((source_tab_id, was_floating, pane));
+                        extracted.push((source_tab_id, placement, pane));
                         continue 'panes;
                     }
                 }
@@ -9506,15 +9546,15 @@ impl Screen {
             }
         }
 
-        let mut refused: Vec<(usize, bool, Box<dyn Pane>)> = vec![];
+        let mut refused: Vec<(usize, ExtractedPanePlacement, Box<dyn Pane>)> = vec![];
         match self.get_tab_by_id_mut(tab_id) {
             Some(destination) => {
-                for (source_tab_id, was_floating, pane) in extracted {
+                for (source_tab_id, placement, pane) in extracted {
                     let pane_id = pane.pid();
-                    match destination.accept_extracted_pane(pane, was_floating) {
+                    match destination.accept_extracted_pane(pane, placement.clone()) {
                         AcceptedPane::Accepted => outcome.moved.push(pane_id),
                         AcceptedPane::NoRoom(pane) => {
-                            refused.push((source_tab_id, was_floating, pane))
+                            refused.push((source_tab_id, placement, pane))
                         },
                         AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
                     }
@@ -9530,11 +9570,12 @@ impl Screen {
             },
         }
 
-        // put back anything the destination would not take
-        for (source_tab_id, was_floating, pane) in refused {
+        // put back anything the destination would not take - as what it was, so a refusal does
+        // not quietly demote a modal in the tab it never left
+        for (source_tab_id, placement, pane) in refused {
             let pane_id = pane.pid();
             let put_back = match self.get_tab_by_id_mut(source_tab_id) {
-                Some(source) => source.accept_extracted_pane(pane, was_floating),
+                Some(source) => source.accept_extracted_pane(pane, placement),
                 None => AcceptedPane::NoRoom(pane),
             };
             match put_back {

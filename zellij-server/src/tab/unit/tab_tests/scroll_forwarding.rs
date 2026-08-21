@@ -182,7 +182,7 @@ fn accept_extracted_pane_takes_a_tiled_pane_in() {
     let pane = source.extract_pane(PaneId::Terminal(2), true).unwrap();
 
     assert!(matches!(
-        destination.accept_extracted_pane(pane, false),
+        destination.accept_extracted_pane(pane, ExtractedPanePlacement::Tiled),
         AcceptedPane::Accepted
     ));
     assert!(destination.has_pane_with_pid(&PaneId::Terminal(2)));
@@ -212,10 +212,53 @@ fn accept_extracted_pane_keeps_a_floating_pane_floating() {
     let pane = source.extract_pane(PaneId::Terminal(2), true).unwrap();
 
     assert!(matches!(
-        destination.accept_extracted_pane(pane, true),
+        destination.accept_extracted_pane(pane, ExtractedPanePlacement::Floating),
         AcceptedPane::Accepted
     ));
     assert!(destination.pane_id_is_floating(&PaneId::Terminal(2)));
+}
+
+/// A modal that moves between tabs has to arrive as a modal. Overlay-ness lives in the
+/// collection the pane leaves, not on the pane, so it only survives the trip if the caller
+/// reads the placement before extracting and hands it back in here.
+#[test]
+fn accept_extracted_pane_keeps_an_overlay_an_overlay() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut source = create_new_tab(size, true);
+    let mut destination = create_new_tab(size, true);
+    source
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+            Some(1),
+            None,
+        )
+        .unwrap();
+    // read before the extraction, which is what forgets it
+    let placement = source.placement_for_extraction(PaneId::Terminal(2));
+    assert!(matches!(placement, ExtractedPanePlacement::Overlay(_)));
+    let pane = source.extract_pane(PaneId::Terminal(2), true).unwrap();
+
+    assert!(matches!(
+        destination.accept_extracted_pane(pane, placement),
+        AcceptedPane::Accepted
+    ));
+    assert!(destination.pane_is_overlay(PaneId::Terminal(2)));
+    assert!(
+        destination.overlay_panes.is_modal(&PaneId::Terminal(2)),
+        "a modal arrives as a modal, not as a dismissible overlay"
+    );
+    assert!(
+        !destination.are_floating_panes_visible(),
+        "an overlay arriving does not raise the destination's floating layer"
+    );
 }
 
 /// The whole reason this method exists: `add_tiled_pane` would drop the box here and
@@ -241,7 +284,7 @@ fn accept_extracted_pane_hands_the_pane_back_when_the_tab_is_full() {
             .unwrap();
     }
 
-    match destination.accept_extracted_pane(pane, false) {
+    match destination.accept_extracted_pane(pane, ExtractedPanePlacement::Tiled) {
         AcceptedPane::NoRoom(pane) => assert_eq!(
             pane.pid(),
             PaneId::Terminal(2),
