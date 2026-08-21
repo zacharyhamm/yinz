@@ -23,6 +23,12 @@ Requires `protoc` (protobufs cross the plugin wasm boundary).
 plugins from `<repo>/target/wasm32-wasip1/debug`, resolved at compile time; moving the
 target dir breaks debug builds. Symlink `target/` instead. See CONTRIBUTING.md.
 
+Every build rewrites the checked-in `.wasm` files under `zellij-utils/assets/plugins/`,
+so `git status` shows a pile of modified binaries after any `cargo x build` or test run.
+This is normal and expected — wasm builds are not byte-reproducible. Restore them with
+`git checkout -- zellij-utils/assets/plugins` before committing unless the plugin sources
+actually changed, and don't report the churn.
+
 CI runs: `cargo x build`, `cargo x test`, `cargo x test --no-web`,
 `cargo x integration-test`, `cargo x assets --check`, `cargo x format --check`,
 `cargo test -p xtask` — on Linux and macOS.
