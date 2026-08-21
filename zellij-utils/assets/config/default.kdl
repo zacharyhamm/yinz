@@ -337,6 +337,11 @@ plugins {
     // started from). See the plugin's own docs for `system_prompt`, `tools`,
     // `max_tool_rounds`, `search_url` and the `dobbs_*` keys.
     //
+    //   search_proxy   a SOCKS5 proxy (e.g. "socks5://127.0.0.1:1080") that
+    //                  `web_search` requests are sent through - nothing else hocus
+    //                  does. Useful when the agent only reaches the network via a
+    //                  sidecar, e.g. tailscale. Unset sends `web_search` direct.
+    //
     //   reasoning_echo  "false" stops hocus handing a thinking model its own
     //                   `reasoning_content` back on the tool-calling turns of the
     //                   transcript. On otherwise, because DeepSeek's thinking mode

@@ -301,8 +301,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 context,
                 max_output_bytes,
             ),
-            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
-                web_request(env, url, verb, headers, body, context, stream_id)
+            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id, proxy) => {
+                web_request(env, url, verb, headers, body, context, stream_id, proxy)
             },
             PluginCommand::CancelWebRequest(stream_id) => cancel_web_request(env, stream_id),
             PluginCommand::PostMessageTo(plugin_message) => post_message_to(env, plugin_message)?,
@@ -3075,6 +3075,7 @@ fn web_request(
     body: Vec<u8>,
     context: BTreeMap<String, String>,
     stream_id: Option<String>,
+    proxy: Option<String>,
 ) {
     let _ = env
         .senders
@@ -3087,6 +3088,7 @@ fn web_request(
             body,
             context,
             stream_id,
+            proxy,
         ));
 }
 

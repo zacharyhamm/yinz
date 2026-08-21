@@ -1273,7 +1273,9 @@ impl State {
             pane_id,
             text,
             &endpoint,
-            |url, verb, headers, body, context| web_request(url, verb, headers, body, context),
+            |url, verb, headers, body, context| {
+                web_request(url, verb, headers, body, context, None)
+            },
         );
         true
     }
