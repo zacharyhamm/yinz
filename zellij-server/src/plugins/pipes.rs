@@ -1,12 +1,9 @@
 use super::{PluginId, PluginInstruction};
 use crate::plugins::plugin_map::RunningPlugin;
 use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
-use crate::plugins::zellij_exports::wasi_write_object;
 use std::collections::{HashMap, HashSet};
 use zellij_utils::data::{PipeMessage, PipeSource};
-use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 
-use prost::Message;
 use zellij_utils::errors::prelude::*;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
@@ -142,27 +139,16 @@ pub fn apply_pipe_message_to_plugin(
 ) -> Result<()> {
     // host commands issued while handling this message act on behalf of the client it was directed
     // at (this only differs from the instance's owner for shared plugins)
-    running_plugin.store.data_mut().client_id = client_id;
-    let instance = &running_plugin.instance;
+    running_plugin.env_mut().client_id = client_id;
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
 
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
-    let protobuf_pipe_message: ProtobufPipeMessage = pipe_message
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow!("Failed to convert to protobuf: {:?}", e))?;
-    match instance.get_typed_func::<(), i32>(&mut running_plugin.store, "pipe") {
-        Ok(pipe) => {
-            wasi_write_object(
-                running_plugin.store.data(),
-                &protobuf_pipe_message.encode_to_vec(),
-            )
-            .with_context(err_context)?;
-            let should_render = pipe
-                .call(&mut running_plugin.store, ())
-                .with_context(err_context)?;
-            let should_render = should_render == 1;
+    match running_plugin
+        .pipe(pipe_message)
+        .with_context(err_context)?
+    {
+        Some(should_render) => {
             if rows > 0 && columns > 0 && should_render {
                 plugin_render_assets.append(&mut render_plugin_for_clients(
                     plugin_id,
@@ -173,12 +159,9 @@ pub fn apply_pipe_message_to_plugin(
             } else {
                 let pipes_to_block_or_unblock =
                     pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
-                let plugin_render_asset = PluginRenderAsset::new(
-                    plugin_id,
-                    running_plugin.store.data().owner_client_id,
-                    vec![],
-                )
-                .with_pipes(pipes_to_block_or_unblock);
+                let plugin_render_asset =
+                    PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
+                        .with_pipes(pipes_to_block_or_unblock);
                 let _ = senders
                     .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
                         plugin_render_asset,
@@ -186,14 +169,14 @@ pub fn apply_pipe_message_to_plugin(
                     .context("failed to unblock input pipe");
             }
         },
-        Err(_e) => {
+        None => {
             // no-op, this is probably an old plugin that does not have this interface
             // we don't log this error because if we do the logs will be super crowded
             let pipes_to_block_or_unblock =
                 pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
             let plugin_render_asset = PluginRenderAsset::new(
                 plugin_id,
-                running_plugin.store.data().owner_client_id,
+                running_plugin.env().owner_client_id,
                 vec![], // nothing to render
             )
             .with_pipes(pipes_to_block_or_unblock);
@@ -213,16 +196,14 @@ pub fn pipes_to_block_or_unblock(
 ) -> HashMap<String, PipeStateChange> {
     let mut pipe_state_changes = HashMap::new();
     let mut input_pipes_to_unblock: HashSet<String> = running_plugin
-        .store
-        .data()
+        .env()
         .input_pipes_to_unblock
         .lock()
         .unwrap()
         .drain()
         .collect();
     let mut input_pipes_to_block: HashSet<String> = running_plugin
-        .store
-        .data()
+        .env()
         .input_pipes_to_block
         .lock()
         .unwrap()

@@ -24,6 +24,8 @@ inside the repository, so you don't have to install additional dependencies.
 
 To build zellij, you'll need [`protoc`](https://github.com/protocolbuffers/protobuf#protobuf-compiler-installation) installed. This is used to compile the .proto files into Rust assets. These protocol buffers are used for communication between Zellij and its plugins across the wasm boundary.
 
+You'll also need a **C compiler** (`cc`/`gcc`/`clang`). Zellij embeds a Lua interpreter for its Lua plugins, and it is built from vendored source rather than linked against a system Lua, so the build needs a working C toolchain. See `docs/LUA_PLUGINS.md`.
+
 Here are some of the commands currently supported by the build system:
 
 ```sh
