@@ -1,4 +1,5 @@
 use super::*;
+use zellij_utils::input::layout::{Run, RunPlugin};
 
 #[test]
 fn new_floating_pane() {
@@ -365,6 +366,73 @@ fn a_fullscreen_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
     assert!(!tab.is_fullscreen_active());
+}
+
+/// A modal that goes into the suppressed panes and comes back out lands in `overlay_panes`,
+/// because `add_floating_pane` redirects it there by configuration. The focus call that follows
+/// must not name `floating_panes`: that collection does not hold the pane, and `ActivePanes` and
+/// `z_indices` take an id without checking, so the entry would be a phantom that outlives the
+/// overlay - leaving `has_active_panes()` true over an empty collection, which is what decides
+/// whether a fullscreen keystroke is routed to the floating layer.
+#[test]
+fn a_suppressed_modal_coming_back_out_leaves_no_phantom_in_the_floating_collection() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    // a plugin pane needs somewhere to send to before it can be built
+    let (plugin_sender, _plugin_receiver): ChannelWithContext<PluginInstruction> =
+        channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    let modal_pane_id = PaneId::Plugin(2);
+
+    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    modal.configuration.insert("modal", "true");
+    let modal = Run::Plugin(RunPluginOrAlias::RunPlugin(modal));
+
+    tab.new_pane(
+        modal_pane_id,
+        None,
+        Some(modal),
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    assert!(tab.overlay_panes.panes_contain(&modal_pane_id));
+
+    // the modal hides itself, as a plugin does with `hide_self()`
+    tab.suppress_pane(modal_pane_id, Some(client_id));
+    assert!(
+        tab.suppressed_panes.contains_key(&modal_pane_id),
+        "the modal is suppressed"
+    );
+    assert!(!tab.overlay_panes.panes_contain(&modal_pane_id));
+
+    tab.focus_suppressed_pane_for_all_clients(modal_pane_id);
+
+    assert!(
+        tab.overlay_panes.panes_contain(&modal_pane_id),
+        "the modal comes back out as an overlay"
+    );
+    assert_eq!(
+        tab.overlay_panes.active_pane_id(client_id),
+        Some(modal_pane_id),
+        "and it is focused there"
+    );
+    assert!(
+        !tab.floating_panes.has_active_panes(),
+        "the floating collection holds no pane, so it must claim no active one either"
+    );
+    assert!(
+        !tab.floating_panes.panes_contain(&modal_pane_id),
+        "the modal is not a floating pane"
+    );
 }
 
 #[test]
