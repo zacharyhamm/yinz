@@ -81,7 +81,6 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
-        overlay: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -91,7 +90,6 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
-        overlay: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -307,7 +305,6 @@ fn focus_follows_mouse_ignores_tiled_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
-            overlay: None,
         })),
         Some(client_id),
         None,
@@ -358,7 +355,6 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
-            overlay: None,
         })),
         Some(client_id),
         None,
@@ -377,7 +373,6 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
-            overlay: None,
         })),
         Some(client_id),
         None,

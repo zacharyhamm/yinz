@@ -1,4 +1,5 @@
 use super::*;
+use zellij_utils::data::OverlayPlacement;
 
 #[test]
 fn gp01_fixed_size_global_pane_keeps_rendering_when_terminal_shrinks() {
@@ -230,18 +231,20 @@ fn gp03_floating_pane_dragged_off_a_global_pane_leaves_no_ghost() {
     // squarely over the global pane's columns
     {
         let tab = screen.get_active_tab_mut(1).unwrap();
-        tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
-            .expect("TEST");
-        tab.change_floating_pane_coordinates(
-            &PaneId::Terminal(2),
-            FloatingPaneCoordinates {
+        tab.new_overlay_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
                 x: Some(PercentOrFixed::Fixed(0)),
                 y: Some(PercentOrFixed::Fixed(0)),
                 width: Some(PercentOrFixed::Fixed(8)),
                 height: Some(PercentOrFixed::Fixed(5)),
-                overlay: Some(true),
                 ..Default::default()
-            },
+            })),
+            None,
         )
         .expect("TEST");
     }
@@ -256,14 +259,13 @@ fn gp03_floating_pane_dragged_off_a_global_pane_leaves_no_ghost() {
     screen
         .get_active_tab_mut(1)
         .unwrap()
-        .change_floating_pane_coordinates(
+        .change_overlay_coordinates(
             &PaneId::Terminal(2),
             FloatingPaneCoordinates {
                 x: Some(PercentOrFixed::Fixed(20)),
                 y: Some(PercentOrFixed::Fixed(0)),
                 width: Some(PercentOrFixed::Fixed(8)),
                 height: Some(PercentOrFixed::Fixed(5)),
-                overlay: Some(true),
                 ..Default::default()
             },
         )

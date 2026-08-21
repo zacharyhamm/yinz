@@ -19,7 +19,6 @@ fn borderless_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(true),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -67,7 +66,6 @@ fn borderless_pane_content_fills_edges() {
         height: Some(PercentOrFixed::Fixed(5)),
         pinned: None,
         borderless: Some(true),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -116,7 +114,6 @@ fn borderless_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(true),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -169,7 +166,6 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -191,7 +187,6 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -268,10 +263,11 @@ fn hidden_panes_do_not_inflate_overlay_cursor_z_index() {
         None,
         false,
         true,
-        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-            overlay: Some(true),
-            ..coordinates.clone()
-        })),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                ..coordinates.clone()
+            },
+        ))),
         Some(client_id),
         None,
     )
@@ -335,7 +331,6 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
-        overlay: None,
     };
 
     tab.new_floating_pane(
@@ -357,7 +352,6 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
-        overlay: None,
     };
 
     tab.new_floating_pane(

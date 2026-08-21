@@ -167,7 +167,6 @@ impl PaneGroups {
                 height: Some(PercentOrFixed::Fixed(height)),
                 pinned: Some(true),
                 borderless: Some(false),
-                overlay: None,
             };
             let _ = self.senders.send_to_pty(PtyInstruction::FillPluginCwd(
                 should_float,
@@ -183,6 +182,7 @@ impl PaneGroups {
                 cwd,
                 should_focus_plugin,
                 Some(floating_pane_coordinates),
+                None,
                 None,
                 None,
             ));

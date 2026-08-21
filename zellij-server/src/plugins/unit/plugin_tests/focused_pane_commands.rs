@@ -53,6 +53,7 @@ pub fn resize_focused_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -126,6 +127,7 @@ pub fn resize_focused_pane_with_direction_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -207,6 +209,7 @@ pub fn focus_next_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -284,6 +287,7 @@ pub fn focus_previous_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -357,6 +361,7 @@ pub fn focus_last_pane_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -442,6 +447,7 @@ pub fn move_focus_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -515,6 +521,7 @@ pub fn move_focus_or_tab_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -596,6 +603,7 @@ pub fn edit_scrollback_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -669,6 +677,7 @@ pub fn write_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -750,6 +759,7 @@ pub fn write_chars_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -823,6 +833,7 @@ pub fn toggle_tab_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -904,6 +915,7 @@ pub fn move_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -977,6 +989,7 @@ pub fn move_pane_with_direction_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1059,6 +1072,7 @@ pub fn clear_screen_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1133,6 +1147,7 @@ pub fn scroll_up_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1214,6 +1229,7 @@ pub fn scroll_down_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1287,6 +1303,7 @@ pub fn scroll_to_top_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1368,6 +1385,7 @@ pub fn scroll_to_bottom_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1441,6 +1459,7 @@ pub fn page_scroll_up_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1522,6 +1541,7 @@ pub fn page_scroll_down_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1595,6 +1615,7 @@ pub fn toggle_focus_fullscreen_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1676,6 +1697,7 @@ pub fn toggle_pane_frames_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1749,6 +1771,7 @@ pub fn toggle_pane_embed_or_eject_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1836,6 +1859,7 @@ pub fn new_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1912,6 +1936,7 @@ pub fn toggle_floating_panes_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1984,6 +2009,7 @@ pub fn toggle_floating_panes_with_tab_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -2065,6 +2091,7 @@ pub fn undo_rename_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -2138,6 +2165,7 @@ pub fn close_focus_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

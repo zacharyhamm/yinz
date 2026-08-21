@@ -31,10 +31,11 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
         CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload, ChangeHostFolderPayload,
-        ClearPaneHighlightsPayload, ClearScreenForPaneIdPayload, CliPipeOutputPayload,
-        CloseMultiplePanesPayload, CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName,
-        ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
-        CreateTokenResponse, CurrentSessionLastSavedTimePayload,
+        ChangeOverlayCoordinatesPayload, ClearPaneHighlightsPayload, ClearScreenForPaneIdPayload,
+        CliPipeOutputPayload, CloseMultiplePanesPayload, CloseTabWithIdPayload,
+        CloseTabWithIndexPayload, CommandName, ContextItem, CopyToClipboardPayload,
+        CreateTokenResponse as ProtobufCreateTokenResponse, CreateTokenResponse,
+        CurrentSessionLastSavedTimePayload,
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
         CustomRgbHighlight as ProtobufCustomRgbHighlight, DataApplyPayload,
@@ -107,6 +108,8 @@ pub use super::generated_api::api::{
         OpenCommandPaneInPlaceResponse as ProtobufOpenCommandPaneInPlaceResponse,
         OpenCommandPaneNearPluginPayload,
         OpenCommandPaneNearPluginResponse as ProtobufOpenCommandPaneNearPluginResponse,
+        OpenCommandPaneOverlayPayload,
+        OpenCommandPaneOverlayResponse as ProtobufOpenCommandPaneOverlayResponse,
         OpenCommandPanePayload, OpenCommandPaneResponse as ProtobufOpenCommandPaneResponse,
         OpenEditPaneInPlaceOfPaneIdPayload,
         OpenEditPaneInPlaceOfPaneIdResponse as ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
@@ -182,9 +185,10 @@ use crate::data::{
     GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
     HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
     ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
-    OpenCommandPaneInGitCheckoutResponse, OrphanedPane, PaneGitProbe, PaneId, PermissionType,
-    PluginCommand, RecordingSummary, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse,
-    SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse, WarpPlacement,
+    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
+    OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, RecordingSummary,
+    RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit, SessionInfo,
+    SessionListSnapshot, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -243,7 +247,6 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
             }),
             pinned: self.pinned,
             borderless: self.borderless,
-            overlay: self.overlay,
         }
     }
 }
@@ -298,7 +301,6 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
             },
             pinned: self.pinned,
             borderless: self.borderless,
-            overlay: self.overlay,
         }
     }
 }
@@ -950,6 +952,30 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     }
                 },
                 _ => Err("Mismatched payload for OpenCommandPaneFloating"),
+            },
+            Some(CommandName::OpenCommandPaneOverlay) => match protobuf_plugin_command.payload {
+                Some(Payload::OpenCommandPaneOverlayPayload(payload)) => {
+                    let placement: OverlayPlacement = payload
+                        .placement
+                        .ok_or("Malformed open command pane overlay payload")?
+                        .try_into()?;
+                    match payload.command_to_run {
+                        Some(command_to_run) => {
+                            let context: BTreeMap<String, String> = payload
+                                .context
+                                .into_iter()
+                                .map(|e| (e.name, e.value))
+                                .collect();
+                            Ok(PluginCommand::OpenCommandPaneOverlay(
+                                command_to_run.try_into()?,
+                                placement,
+                                context,
+                            ))
+                        },
+                        None => Err("Malformed open command pane overlay payload"),
+                    }
+                },
+                _ => Err("Mismatched payload for OpenCommandPaneOverlay"),
             },
             Some(CommandName::SwitchTabTo) => match protobuf_plugin_command.payload {
                 Some(Payload::SwitchTabToPayload(switch_to_tab_payload)) => {
@@ -2295,6 +2321,23 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for ChangeFloatingPanesCoordinates"),
                 }
             },
+            Some(CommandName::ChangeOverlayCoordinates) => match protobuf_plugin_command.payload {
+                Some(Payload::ChangeOverlayCoordinatesPayload(
+                    change_overlay_coordinates_payload,
+                )) => Ok(PluginCommand::ChangeOverlayCoordinates(
+                    change_overlay_coordinates_payload
+                        .pane_ids_and_floating_panes_coordinates
+                        .into_iter()
+                        .filter_map(|p_id_a_fp| {
+                            let pane_id: PaneId = p_id_a_fp.pane_id?.try_into().ok()?;
+                            let coordinates: FloatingPaneCoordinates =
+                                p_id_a_fp.floating_pane_coordinates?.try_into().ok()?;
+                            Some((pane_id, coordinates))
+                        })
+                        .collect(),
+                )),
+                _ => Err("Mismatched payload for ChangeOverlayCoordinates"),
+            },
             Some(CommandName::TogglePaneBorderless) => match protobuf_plugin_command.payload {
                 Some(Payload::TogglePaneBorderlessPayload(toggle_payload)) => {
                     match toggle_payload.pane_id {
@@ -3335,6 +3378,22 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         OpenCommandPanePayload {
                             command_to_run: Some(command_to_run.try_into()?),
                             floating_pane_coordinates: floating_pane_coordinates.map(|f| f.into()),
+                            context,
+                        },
+                    )),
+                })
+            },
+            PluginCommand::OpenCommandPaneOverlay(command_to_run, placement, context) => {
+                let context: Vec<_> = context
+                    .into_iter()
+                    .map(|(name, value)| ContextItem { name, value })
+                    .collect();
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::OpenCommandPaneOverlay as i32,
+                    payload: Some(Payload::OpenCommandPaneOverlayPayload(
+                        OpenCommandPaneOverlayPayload {
+                            command_to_run: Some(command_to_run.try_into()?),
+                            placement: Some(placement.try_into()?),
                             context,
                         },
                     )),
@@ -4440,6 +4499,26 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::ChangeOverlayCoordinates as i32,
+                    payload: Some(Payload::ChangeOverlayCoordinatesPayload(
+                        ChangeOverlayCoordinatesPayload {
+                            pane_ids_and_floating_panes_coordinates: pane_ids_and_coordinates
+                                .into_iter()
+                                .filter_map(|(p_id, coordinates)| {
+                                    Some(PaneIdAndFloatingPaneCoordinates {
+                                        pane_id: Some(p_id.try_into().ok()?),
+                                        floating_pane_coordinates: Some(
+                                            coordinates.try_into().ok()?,
+                                        ),
+                                    })
+                                })
+                                .collect(),
+                        },
+                    )),
+                })
+            },
             PluginCommand::TogglePaneBorderless(pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::TogglePaneBorderless as i32,
                 payload: Some(Payload::TogglePaneBorderlessPayload(
@@ -5935,6 +6014,24 @@ impl TryFrom<ProtobufOpenCommandPaneFloatingResponse> for OpenCommandPaneFloatin
 impl From<OpenCommandPaneFloatingResponse> for ProtobufOpenCommandPaneFloatingResponse {
     fn from(response: OpenCommandPaneFloatingResponse) -> Self {
         ProtobufOpenCommandPaneFloatingResponse {
+            pane_id: response.map(|p| p.try_into().unwrap()),
+        }
+    }
+}
+
+impl TryFrom<ProtobufOpenCommandPaneOverlayResponse> for OpenCommandPaneOverlayResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufOpenCommandPaneOverlayResponse) -> Result<Self, Self::Error> {
+        match protobuf.pane_id {
+            Some(pane_id) => Ok(Some(pane_id.try_into()?)),
+            None => Ok(None),
+        }
+    }
+}
+
+impl From<OpenCommandPaneOverlayResponse> for ProtobufOpenCommandPaneOverlayResponse {
+    fn from(response: OpenCommandPaneOverlayResponse) -> Self {
+        ProtobufOpenCommandPaneOverlayResponse {
             pane_id: response.map(|p| p.try_into().unwrap()),
         }
     }

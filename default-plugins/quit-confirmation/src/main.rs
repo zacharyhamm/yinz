@@ -28,6 +28,7 @@ impl ZellijPlugin for State {
 
         let plugin_id = get_plugin_ids().plugin_id;
         rename_plugin_pane(plugin_id, "quit confirmation");
+        // The pane is already an overlay - `Action::Quit` opens it as a modal. This only sizes it.
         if let Some(coordinates) = FloatingPaneCoordinates::new(
             Some("30%".to_owned()),
             Some("30%".to_owned()),
@@ -35,11 +36,8 @@ impl ZellijPlugin for State {
             Some("8".to_owned()),
             None,
             None,
-            None,
-        )
-        .map(FloatingPaneCoordinates::as_overlay)
-        {
-            change_floating_panes_coordinates(vec![(PaneId::Plugin(plugin_id), coordinates)]);
+        ) {
+            change_overlay_coordinates(vec![(PaneId::Plugin(plugin_id), coordinates)]);
         }
     }
 

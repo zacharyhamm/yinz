@@ -758,7 +758,8 @@ pub enum ScreenInstruction {
         Option<String>,
         bool,
         Option<PathBuf>,
-        Option<FloatingPaneCoordinates>,
+        // floating or overlay, carried whole so a modal's kind survives the trip
+        NewPanePlacement,
         ClientId,
         Option<NotificationEnd>,
         Option<usize>, // tab_id
@@ -794,6 +795,9 @@ pub enum ScreenInstruction {
         Option<bool>, // should focus plugin
         Option<ClientId>,
         Option<NotificationEnd>, // completion signal
+        // the overlay placement the launcher stated outright, rather than the one derived from
+        // the plugin's own `overlay`/`modal` configuration
+        Option<OverlayPlacement>,
     ),
     UpdatePluginLoadingStage(u32, LoadingIndication), // u32 - plugin_id
     StartPluginLoadingIndication(u32, LoadingIndication), // u32 - plugin_id
@@ -825,6 +829,8 @@ pub enum ScreenInstruction {
         Option<usize>, // tab_id
         bool,
         Option<GlobalPanePlacement>,
+        // stated by the launcher rather than derived from the plugin's own configuration
+        Option<OverlayPlacement>,
     ), // bools are: should_float, should_open_in_place, close_replaced_pane, Option<PaneId> is the pane id to replace, Option<PathBuf> is an optional cwd, bool after is skip_cache
     SuppressPane(PaneId, ClientId),
     UnsuppressPane(PaneId, bool), // bool -> should float if hidden
@@ -1021,6 +1027,10 @@ pub enum ScreenInstruction {
     TogglePanePinned(ClientId, Option<NotificationEnd>),
     SetFloatingPanePinned(PaneId, bool),
     StackPanes(Vec<PaneId>, ClientId, Option<NotificationEnd>),
+    ChangeOverlayCoordinates(
+        Vec<(PaneId, FloatingPaneCoordinates)>,
+        Option<NotificationEnd>,
+    ),
     ChangeFloatingPanesCoordinates(
         Vec<(PaneId, FloatingPaneCoordinates)>,
         Option<NotificationEnd>,
@@ -1392,6 +1402,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::TogglePanePinned(..) => ScreenContext::TogglePanePinned,
             ScreenInstruction::SetFloatingPanePinned(..) => ScreenContext::SetFloatingPanePinned,
             ScreenInstruction::StackPanes(..) => ScreenContext::StackPanes,
+            ScreenInstruction::ChangeOverlayCoordinates(..) => {
+                ScreenContext::ChangeOverlayCoordinates
+            },
             ScreenInstruction::ChangeFloatingPanesCoordinates(..) => {
                 ScreenContext::ChangeFloatingPanesCoordinates
             },
@@ -8190,6 +8203,7 @@ impl Screen {
                         None,
                         None,
                         Some(properties),
+                        None,
                     ))?;
                 },
                 run => {
@@ -10037,6 +10051,24 @@ impl Screen {
             .map(|t| t.stack_panes(root_pane_id, panes_to_stack));
         last_pane_id.copied()
     }
+    /// Move or resize overlays where they already are, in the overlay collection.
+    ///
+    /// No `activate_overlay` sweep afterwards: nothing became an overlay here, so there is no
+    /// global-pane focus to suspend that was not already suspended when it was born.
+    pub fn change_overlay_coordinates(
+        &mut self,
+        pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+    ) {
+        for (pane_id, coordinates) in pane_ids_and_coordinates {
+            for (_tab_id, tab) in self.tabs.iter_mut() {
+                if tab.has_pane_with_pid(&pane_id) {
+                    tab.change_overlay_coordinates(&pane_id, coordinates)
+                        .non_fatal();
+                    break;
+                }
+            }
+        }
+    }
     pub fn change_floating_panes_coordinates(
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
@@ -11759,6 +11791,7 @@ pub(crate) fn screen_thread_main(
                                     None,
                                     None,
                                     Some(context),
+                                    None,
                                 ))?;
                         },
                         None => {
@@ -14396,6 +14429,7 @@ pub(crate) fn screen_thread_main(
                         None,
                         completion_tx,
                         None,
+                        None,
                     ))?;
             },
             ScreenInstruction::NewFloatingPluginPane(
@@ -14403,7 +14437,7 @@ pub(crate) fn screen_thread_main(
                 pane_title,
                 skip_cache,
                 cwd,
-                floating_pane_coordinates,
+                placement,
                 client_id,
                 completion_tx,
                 explicit_tab_id,
@@ -14417,6 +14451,10 @@ pub(crate) fn screen_thread_main(
                         let should_float = Some(true);
                         let should_be_opened_in_place = false;
                         let should_focus_plugin = if no_focus { Some(false) } else { None };
+                        let overlay_placement = match &placement {
+                            NewPanePlacement::Overlay(overlay) => Some(overlay.clone()),
+                            _ => None,
+                        };
                         screen
                             .bus
                             .senders
@@ -14433,9 +14471,10 @@ pub(crate) fn screen_thread_main(
                                 skip_cache,
                                 cwd,
                                 should_focus_plugin,
-                                floating_pane_coordinates,
+                                placement.floating_pane_coordinates(),
                                 completion_tx,
                                 None,
+                                overlay_placement,
                             ))?;
                     },
                     None => {
@@ -14483,6 +14522,7 @@ pub(crate) fn screen_thread_main(
                                 None,
                                 completion_tx,
                                 None,
+                                None,
                             ))?;
                     },
                     None => {
@@ -14524,22 +14564,26 @@ pub(crate) fn screen_thread_main(
                 should_focus_plugin,
                 client_id,
                 mut completion_tx,
+                stated_overlay_placement,
             ) => {
                 let mut new_pane_placement = NewPanePlacement::default();
                 let maybe_should_float = should_float;
                 let should_float = maybe_should_float.unwrap_or(false);
-                // The one place a plugin's own `overlay`/`modal` configuration is read: resolve it
-                // into a placement here and everything downstream takes the placement. Coordinates
-                // the caller passed are kept - they say *where* on the surface, not *whether*.
-                let overlay_placement =
-                    run_plugin_or_alias
-                        .overlay_placement()
-                        .map(|placement| OverlayPlacement {
-                            coordinates: floating_pane_coordinates
-                                .clone()
-                                .or(placement.coordinates.clone()),
-                            ..placement
-                        });
+                // Two spellings of "this is an overlay" meet here. A launcher that states an
+                // `OverlayPlacement` outright wins; the plugin's own `overlay`/`modal`
+                // configuration is the compatibility shim for everything written before
+                // placements existed, and this is the one place it is read. Coordinates the
+                // caller passed are kept either way - they say *where* on the surface, not
+                // *whether*.
+                let overlay_placement = stated_overlay_placement
+                    .clone()
+                    .or_else(|| run_plugin_or_alias.overlay_placement())
+                    .map(|placement| OverlayPlacement {
+                        coordinates: floating_pane_coordinates
+                            .clone()
+                            .or(placement.coordinates.clone()),
+                        ..placement
+                    });
                 let floating_pane_coordinates = floating_pane_coordinates.or_else(|| {
                     overlay_placement
                         .as_ref()
@@ -14582,6 +14626,7 @@ pub(crate) fn screen_thread_main(
                         should_focus_plugin,
                         client_id,
                         completion_tx,
+                        stated_overlay_placement,
                     ));
                     continue;
                 }
@@ -14779,6 +14824,7 @@ pub(crate) fn screen_thread_main(
                                             None,
                                             completion_tx,
                                             Some(global_placement.into()),
+                                            None,
                                         ),
                                     )?;
                                 }
@@ -14818,6 +14864,7 @@ pub(crate) fn screen_thread_main(
                                             None,
                                             None,
                                             completion_tx,
+                                            None,
                                             None,
                                         ),
                                     )?;
@@ -14862,6 +14909,7 @@ pub(crate) fn screen_thread_main(
                                                 None,
                                                 completion_tx,
                                                 None,
+                                                None,
                                             ),
                                         )?;
                                     }
@@ -14889,6 +14937,7 @@ pub(crate) fn screen_thread_main(
                 explicit_tab_id,
                 no_focus,
                 global_placement,
+                overlay_placement,
             ) => {
                 if let Some(global_placement) = global_placement {
                     let mut completion_tx = completion_tx;
@@ -14927,6 +14976,7 @@ pub(crate) fn screen_thread_main(
                                         None,
                                         completion_tx,
                                         Some(global_placement.into()),
+                                        None,
                                     ))?;
                             },
                             None => {
@@ -14965,6 +15015,7 @@ pub(crate) fn screen_thread_main(
                                             None,
                                             completion_tx,
                                             None,
+                                            overlay_placement,
                                         ),
                                     )?;
                                 },
@@ -14997,6 +15048,7 @@ pub(crate) fn screen_thread_main(
                                             None,
                                             completion_tx,
                                             None,
+                                            overlay_placement,
                                         ),
                                     )?;
                                 },
@@ -16276,6 +16328,21 @@ pub(crate) fn screen_thread_main(
                     continue;
                 }
                 screen.change_floating_panes_coordinates(pane_ids_and_coordinates);
+                let _ = screen.render(None);
+            },
+            ScreenInstruction::ChangeOverlayCoordinates(
+                pane_ids_and_coordinates,
+                mut completion_tx,
+            ) => {
+                if pane_ids_and_coordinates.iter().any(|(pane_id, _)| {
+                    screen.reject_global_for_tab_operation_with_completion(
+                        *pane_id,
+                        &mut completion_tx,
+                    )
+                }) {
+                    continue;
+                }
+                screen.change_overlay_coordinates(pane_ids_and_coordinates);
                 let _ = screen.render(None);
             },
             ScreenInstruction::TogglePaneBorderless(pane_id, _completion_tx) => {

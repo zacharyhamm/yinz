@@ -29,6 +29,7 @@ fn global_plugin_rejects_modal_configuration_from_resolved_alias() {
             Some(crate::pty::GlobalPaneSpawnContext::from(
                 zellij_utils::data::GlobalPanePlacement::default(),
             )),
+            None,
         ))
         .unwrap();
 
@@ -94,6 +95,7 @@ pub fn load_new_plugin_from_hd() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -178,6 +180,7 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -271,6 +274,7 @@ pub fn load_new_plugin_with_plugin_alias() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -349,6 +353,7 @@ pub fn plugin_workers() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -435,6 +440,7 @@ pub fn plugin_workers_persist_state() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -531,6 +537,7 @@ pub fn can_subscribe_to_hd_events() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

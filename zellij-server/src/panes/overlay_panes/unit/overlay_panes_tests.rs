@@ -134,7 +134,6 @@ fn coordinates(width: &str, height: &str) -> FloatingPaneCoordinates {
         Some(height.to_owned()),
         None,
         None,
-        Some(true),
     )
     .unwrap()
 }

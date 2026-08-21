@@ -36,18 +36,18 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
     ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
     ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
-    ProtobufOpenCommandPaneResponse, ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenFileFloatingNearPluginResponse, ProtobufOpenFileFloatingResponse,
-    ProtobufOpenFileInPlaceOfPluginResponse, ProtobufOpenFileInPlaceResponse,
-    ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse, ProtobufOpenPaneInNewTabResponse,
-    ProtobufOpenPluginPaneFloatingResponse, ProtobufOpenTerminalFloatingNearPluginResponse,
-    ProtobufOpenTerminalFloatingResponse, ProtobufOpenTerminalInPlaceOfPluginResponse,
-    ProtobufOpenTerminalInPlaceResponse, ProtobufOpenTerminalNearPluginResponse,
-    ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-    ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
-    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
-    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
-    RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufOpenCommandPaneOverlayResponse, ProtobufOpenCommandPaneResponse,
+    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
+    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
+    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
+    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
+    ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
+    ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
+    ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
+    ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
+    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
+    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -704,6 +704,27 @@ pub fn open_command_pane_floating(
         ProtobufOpenCommandPaneFloatingResponse::decode(bytes_from_stdin().unwrap().as_slice())
             .unwrap();
     OpenCommandPaneFloatingResponse::try_from(response).unwrap()
+}
+
+/// Open a command pane as an overlay: over the whole session surface, above the global panes,
+/// rather than on the tab's floating layer.
+///
+/// A terminal pane carries no plugin configuration, so the placement is the only thing that can
+/// say it is an overlay - and whether it is a modal, which may not have focus taken from it.
+pub fn open_command_pane_overlay(
+    command_to_run: CommandToRun,
+    placement: OverlayPlacement,
+    context: BTreeMap<String, String>,
+) -> Option<PaneId> {
+    let plugin_command = PluginCommand::OpenCommandPaneOverlay(command_to_run, placement, context);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let response =
+        ProtobufOpenCommandPaneOverlayResponse::decode(bytes_from_stdin().unwrap().as_slice())
+            .unwrap();
+    OpenCommandPaneOverlayResponse::try_from(response).unwrap()
 }
 
 /// Open a new floating command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -3249,6 +3270,20 @@ pub fn change_floating_panes_coordinates(
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
 ) {
     let plugin_command = PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_and_coordinates);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Move or resize an overlay - a pane drawn over the whole session surface, above the global
+/// panes.
+///
+/// Its kind - dismissible or modal - was decided when it was born and is left alone here. Use
+/// `change_floating_panes_coordinates` for a pane on a tab's floating layer.
+pub fn change_overlay_coordinates(
+    pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+) {
+    let plugin_command = PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

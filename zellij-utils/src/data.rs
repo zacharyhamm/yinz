@@ -3378,9 +3378,6 @@ pub struct FloatingPaneCoordinates {
     pub height: Option<PercentOrFixed>,
     pub pinned: Option<bool>,
     pub borderless: Option<bool>,
-    /// Position this pane against the whole session surface and draw it above global panes.
-    #[serde(default)]
-    pub overlay: Option<bool>,
 }
 
 impl FloatingPaneCoordinates {
@@ -3391,7 +3388,6 @@ impl FloatingPaneCoordinates {
         height: Option<String>,
         pinned: Option<bool>,
         borderless: Option<bool>,
-        overlay: Option<bool>,
     ) -> Option<Self> {
         // Parse x/y coordinates - allows 0% or 0
         let x = x.and_then(|x| PercentOrFixed::from_str(&x).ok());
@@ -3423,7 +3419,6 @@ impl FloatingPaneCoordinates {
             && height.is_none()
             && pinned.is_none()
             && borderless.is_none()
-            && overlay.is_none()
         {
             None
         } else {
@@ -3434,13 +3429,8 @@ impl FloatingPaneCoordinates {
                 height,
                 pinned,
                 borderless,
-                overlay,
             })
         }
-    }
-    pub fn as_overlay(mut self) -> Self {
-        self.overlay = Some(true);
-        self
     }
     pub fn with_x_fixed(mut self, x: usize) -> Self {
         self.x = Some(PercentOrFixed::Fixed(x));
@@ -3501,7 +3491,6 @@ impl From<PaneGeom> for FloatingPaneCoordinates {
             height: Some(PercentOrFixed::Fixed(pane_geom.rows.as_usize())),
             pinned: Some(pane_geom.is_pinned),
             borderless: None,
-            overlay: None,
         }
     }
 }
@@ -3643,13 +3632,12 @@ impl OverlayPlacement {
     pub fn is_modal(&self) -> bool {
         self.kind.is_modal()
     }
-    /// The coordinates this placement resolves to, flagged as an overlay.
+    /// Where on the surface this overlay sits, defaulted if it did not say.
     ///
-    /// Until overlays have their own collection, an overlay is still carried through the server
-    /// as a floating pane whose coordinates say `overlay: true`; this is the one place that
-    /// translation happens.
+    /// Only the geometry: what makes it an overlay is the placement itself, and which kind of
+    /// overlay is `kind`. Coordinates cannot express either.
     pub fn as_floating_pane_coordinates(&self) -> FloatingPaneCoordinates {
-        self.coordinates.clone().unwrap_or_default().as_overlay()
+        self.coordinates.clone().unwrap_or_default()
     }
 }
 
@@ -3701,15 +3689,7 @@ impl NewPanePlacement {
     ) -> Self {
         let is_modal = modal.unwrap_or(false);
         let is_overlay = is_modal || overlay.unwrap_or(false);
-        let coordinates = FloatingPaneCoordinates::new(
-            x,
-            y,
-            width,
-            height,
-            pinned,
-            borderless,
-            is_overlay.then_some(true),
-        );
+        let coordinates = FloatingPaneCoordinates::new(x, y, width, height, pinned, borderless);
         if is_overlay {
             NewPanePlacement::Overlay(OverlayPlacement {
                 kind: if is_modal {
@@ -3760,11 +3740,14 @@ impl NewPanePlacement {
             _ => None,
         }
     }
+    /// Where on a surface this pane sits, for the two placements that have coordinates at all:
+    /// the tab's floating layer and the session surface an overlay is drawn on.
     pub fn floating_pane_coordinates(&self) -> Option<FloatingPaneCoordinates> {
         match self {
             NewPanePlacement::Floating(floating_pane_coordinates) => {
                 floating_pane_coordinates.clone()
             },
+            NewPanePlacement::Overlay(overlay) => overlay.coordinates.clone(),
             _ => None,
         }
     }
@@ -3813,6 +3796,10 @@ pub enum PluginCommand {
     OpenTerminalFloating(FileToOpen, Option<FloatingPaneCoordinates>), // only used for the path as cwd
     OpenCommandPane(CommandToRun, Context),
     OpenCommandPaneFloating(CommandToRun, Option<FloatingPaneCoordinates>, Context),
+    /// Open a command pane directly onto the session surface, above the global panes. A terminal
+    /// pane carries no plugin configuration, so the placement is the only thing that can say it
+    /// is an overlay - and which kind.
+    OpenCommandPaneOverlay(CommandToRun, OverlayPlacement, Context),
     SwitchTabTo(u32), // tab index
     SetTimeout(f64),  // seconds
     ExecCmd(Vec<String>),
@@ -4012,6 +3999,9 @@ pub enum PluginCommand {
     },
     StackPanes(Vec<PaneId>),
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
+    /// Move or resize an overlay on the session surface. The overlay's kind was decided when it
+    /// was born and is not touched here.
+    ChangeOverlayCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     TogglePaneBorderless(PaneId),
     SetPaneBorderless(PaneId, bool),
     OpenCommandPaneNearPlugin(CommandToRun, Context),
@@ -4271,6 +4261,7 @@ pub type NewTiledPaneInTabResponse = Option<PaneId>;
 
 pub type OpenCommandPaneResponse = Option<PaneId>;
 pub type OpenCommandPaneFloatingResponse = Option<PaneId>;
+pub type OpenCommandPaneOverlayResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceResponse = Option<PaneId>;
 pub type OpenCommandPaneNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInGitCheckoutResponse = Result<PaneId, String>;

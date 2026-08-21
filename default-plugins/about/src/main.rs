@@ -306,7 +306,6 @@ impl App {
                         Some(UI_ROWS.to_string()),
                         None,
                         Some(false),
-                        None,
                     )
                     .unwrap(),
                 )]);

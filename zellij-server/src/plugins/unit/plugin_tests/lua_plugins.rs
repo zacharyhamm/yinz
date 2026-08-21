@@ -71,6 +71,7 @@ pub fn lua_plugin_loads_and_renders() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     // The fixture subscribes to Key, so this reaches `update` and asks for a re-render.
@@ -139,6 +140,7 @@ pub fn lua_plugin_receives_its_configuration() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -188,6 +190,7 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -273,6 +276,7 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     // 't' is what the fixture maps to `zellij.open_terminal`.
@@ -341,6 +345,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

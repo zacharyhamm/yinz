@@ -878,7 +878,7 @@ pub struct EditFileAction {
     #[prost(bool, tag="5")]
     pub start_suppressed: bool,
     #[prost(message, optional, tag="6")]
-    pub coordinates: ::core::option::Option<FloatingPaneCoordinates>,
+    pub placement: ::core::option::Option<NewPanePlacement>,
     #[prost(bool, tag="7")]
     pub near_current_pane: bool,
     #[prost(bool, tag="8")]
@@ -898,7 +898,7 @@ pub struct NewFloatingPaneAction {
     #[prost(string, optional, tag="2")]
     pub pane_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="3")]
-    pub coordinates: ::core::option::Option<FloatingPaneCoordinates>,
+    pub placement: ::core::option::Option<NewPanePlacement>,
     #[prost(bool, tag="7")]
     pub near_current_pane: bool,
     #[prost(uint32, optional, tag="8")]
@@ -1158,7 +1158,7 @@ pub struct NewFloatingPluginPaneAction {
     #[prost(string, optional, tag="4")]
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="5")]
-    pub coordinates: ::core::option::Option<FloatingPaneCoordinates>,
+    pub placement: ::core::option::Option<NewPanePlacement>,
     #[prost(uint32, optional, tag="6")]
     pub tab_id: ::core::option::Option<u32>,
     #[prost(bool, tag="7")]
@@ -1743,8 +1743,6 @@ pub struct FloatingPaneCoordinates {
     pub pinned: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="6")]
     pub borderless: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="7")]
-    pub overlay: ::core::option::Option<bool>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

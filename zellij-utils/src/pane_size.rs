@@ -605,7 +605,6 @@ mod tests {
             height: tc.draw(generators::optional(percent_or_fixeds())),
             pinned: None,
             borderless: None,
-            overlay: None,
         };
         let mut geom = PaneGeom::default();
         geom.adjust_coordinates(coords.clone(), viewport, origin);

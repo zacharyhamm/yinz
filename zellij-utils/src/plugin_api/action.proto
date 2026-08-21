@@ -578,7 +578,6 @@ message FloatingPaneCoordinates {
   optional SplitSize height = 4;
   optional bool pinned = 5;
   optional bool borderless = 6;
-  optional bool overlay = 7;
 }
 
 // SetPaneBorderlessPayload specifies the pane and borderless state

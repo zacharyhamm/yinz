@@ -1937,6 +1937,7 @@ impl WasmBridge {
                                 Some(should_focus),
                                 Some(client_id),
                                 None,
+                                None,
                             )));
                             vec![(plugin_id, Some(client_id))]
                         },

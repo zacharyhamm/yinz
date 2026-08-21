@@ -53,6 +53,7 @@ pub fn hide_pane_with_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -126,6 +127,7 @@ pub fn show_pane_with_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -214,6 +216,7 @@ pub fn open_command_pane_background_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -295,6 +298,7 @@ pub fn rerun_command_pane_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -368,6 +372,7 @@ pub fn resize_pane_with_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -449,6 +454,7 @@ pub fn edit_scrollback_for_pane_with_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -522,6 +528,7 @@ pub fn write_to_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -603,6 +610,7 @@ pub fn write_chars_to_pane_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -676,6 +684,7 @@ pub fn move_pane_with_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -757,6 +766,7 @@ pub fn move_pane_with_pane_id_in_direction_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -830,6 +840,7 @@ pub fn clear_screen_for_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -911,6 +922,7 @@ pub fn scroll_up_in_pane_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -984,6 +996,7 @@ pub fn scroll_down_in_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1065,6 +1078,7 @@ pub fn scroll_to_top_in_pane_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1138,6 +1152,7 @@ pub fn scroll_to_bottom_in_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1219,6 +1234,7 @@ pub fn page_scroll_up_in_pane_id_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1292,6 +1308,7 @@ pub fn page_scroll_down_in_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1373,6 +1390,7 @@ pub fn toggle_pane_id_fullscreen_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -1446,6 +1464,7 @@ pub fn toggle_pane_embed_or_eject_for_pane_id_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

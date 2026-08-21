@@ -379,7 +379,7 @@ impl State {
         let Some(coordinates) = floating_geometry(&self.config) else {
             return;
         };
-        change_floating_panes_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
+        change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
     }
 }
 
@@ -406,9 +406,7 @@ fn floating_geometry(config: &BTreeMap<String, String>) -> Option<FloatingPaneCo
         Some(dimension("height", DEFAULT_HEIGHT)),
         None,
         None,
-        None,
     )
-    .map(FloatingPaneCoordinates::as_overlay)
 }
 
 #[cfg(test)]
@@ -464,9 +462,7 @@ mod tests {
             Some(DEFAULT_HEIGHT.to_owned()),
             None,
             None,
-            None,
         )
-        .map(FloatingPaneCoordinates::as_overlay)
         .expect("some geometry");
         assert_eq!(coordinates, expected);
     }

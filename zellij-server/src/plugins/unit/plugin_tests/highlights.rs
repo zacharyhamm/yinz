@@ -51,6 +51,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -144,6 +145,7 @@ pub fn clear_pane_highlights_via_plugin() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -224,6 +226,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

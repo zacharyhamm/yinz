@@ -682,8 +682,6 @@ pub fn send_cli_change_floating_pane_coordinates_action() {
         width: Some("10".to_owned()),
         height: Some("10".to_owned()),
         pinned: None,
-        overlay: None,
-        modal: None,
         borderless: Some(false),
     };
     send_cli_action_to_server(
