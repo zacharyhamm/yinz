@@ -54,6 +54,7 @@ pub fn generate_random_name_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -141,6 +142,7 @@ pub fn dump_layout_success_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -241,6 +243,7 @@ pub fn data_store_plugin_commands() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -328,6 +331,7 @@ pub fn dump_layout_not_found_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -423,6 +427,7 @@ pub fn get_layout_dir_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -514,6 +519,7 @@ pub fn get_focused_pane_info_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -596,6 +602,7 @@ pub fn dump_session_layout_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -685,6 +692,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -766,6 +774,7 @@ pub fn parse_layout_success_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -861,6 +870,7 @@ pub fn parse_layout_error_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -952,6 +962,7 @@ pub fn save_layout_success_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1039,6 +1050,7 @@ pub fn save_layout_already_exists_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1148,6 +1160,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1239,6 +1252,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1326,6 +1340,7 @@ pub fn rename_layout_success_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1435,6 +1450,7 @@ pub fn rename_layout_not_found_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1522,6 +1538,7 @@ pub fn delete_layout_success_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1644,6 +1661,7 @@ pub fn delete_layout_not_found_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1731,6 +1749,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1839,6 +1858,7 @@ pub fn edit_layout_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1927,6 +1947,7 @@ pub fn override_layout_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

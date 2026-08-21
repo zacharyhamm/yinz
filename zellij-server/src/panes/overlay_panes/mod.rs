@@ -15,9 +15,10 @@
 //! - **No `show_panes`.** There is no layer to raise or lower: an overlay is drawn for as long as
 //!   it exists. The entire bug class this collection was made to remove came from code that read
 //!   "floating layer down" as "nothing on it is focused".
-//! - **No `fullscreen_pane_id`.** What a fullscreen overlay would mean is undefined; it happens to
-//!   be reachable today only because overlays live among the floating panes. It is not reachable
-//!   from here.
+//! - **No `fullscreen_pane_id`.** What a fullscreen overlay would mean is undefined - an overlay
+//!   is drawn over the whole session surface already. It is not reachable from here, and since
+//!   Phase 4 `Tab`'s fullscreen paths refuse an overlay outright rather than falling through to
+//!   the tiled collection, which used to fullscreen the pane *behind* the overlay.
 //! - **No `desired_pane_positions`.** A floating pane remembers where the user dragged it. An
 //!   overlay has no such history - it is re-resolved against the surface whenever the surface
 //!   changes, which is what `reapply_coordinates` is for.
@@ -383,17 +384,6 @@ impl OverlayPanes {
         for client_id in connected_clients {
             self.active_panes.insert(client_id, pane_id, &self.panes);
             self.set_pane_active_at(pane_id);
-        }
-        self.z_indices.retain(|p_id| *p_id != pane_id);
-        self.z_indices.push(pane_id);
-        self.set_force_render();
-    }
-    /// Take over the focus of a pane that has just moved into this collection from another one,
-    /// without telling it anything: it kept its focus across the move, so it neither gained nor
-    /// lost it. Used by the promotion path in `Tab::change_floating_pane_coordinates`.
-    pub fn adopt_focus(&mut self, pane_id: PaneId, client_ids: &[ClientId]) {
-        for client_id in client_ids {
-            self.active_panes.insert_silently(*client_id, pane_id);
         }
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.z_indices.push(pane_id);

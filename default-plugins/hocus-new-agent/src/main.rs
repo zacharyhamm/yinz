@@ -268,12 +268,10 @@ impl State {
             Some(modal_height(&self.dialog)),
             None,
             None,
-            None,
         ) {
-            change_floating_panes_coordinates(vec![(
-                PaneId::Plugin(self.plugin_id),
-                coordinates.as_overlay(),
-            )]);
+            // Already an overlay by the time this runs - the keybinding opens it as a modal. This
+            // resizes it where it is; `OverlayPanes` keeps the kind.
+            change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
         }
     }
 }

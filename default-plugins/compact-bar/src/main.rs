@@ -479,7 +479,6 @@ impl State {
             Some(height.to_string()),
             Some(true),
             Some(false),
-            None,
         )
         .unwrap_or_default()
     }

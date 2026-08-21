@@ -60,6 +60,7 @@ pub fn switch_to_mode_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -138,6 +139,7 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -212,6 +214,7 @@ pub fn new_tabs_with_layout_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -308,6 +311,7 @@ pub fn new_tab_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -386,6 +390,7 @@ pub fn go_to_next_tab_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -459,6 +464,7 @@ pub fn go_to_previous_tab_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

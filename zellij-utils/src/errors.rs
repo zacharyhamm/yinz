@@ -430,6 +430,7 @@ pub enum ScreenContext {
     SetFloatingPanePinned,
     StackPanes,
     ChangeFloatingPanesCoordinates,
+    ChangeOverlayCoordinates,
     TogglePaneBorderless,
     SetPaneBorderless,
     AddHighlightPaneFrameColorOverride,

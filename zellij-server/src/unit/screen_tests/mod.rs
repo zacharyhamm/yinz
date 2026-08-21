@@ -14,7 +14,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use zellij_utils::cli::CliAction;
 use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{Event, EventType, Mouse, Resize, Style, Styling, WebSharing};
+use zellij_utils::data::{
+    Event, EventType, Mouse, OverlayKind, OverlayPlacement, Resize, Style, Styling, WebSharing,
+};
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, RunCommandAction, TerminalAction};
@@ -1912,14 +1914,19 @@ fn open_floating_pane(
     contents: &str,
     overlay: bool,
 ) {
-    let coordinates = overlay.then(|| FloatingPaneCoordinates {
-        x: Some(PercentOrFixed::Fixed(2)),
-        y: Some(PercentOrFixed::Fixed(2)),
-        width: Some(PercentOrFixed::Percent(60)),
-        height: Some(PercentOrFixed::Fixed(4)),
-        overlay: Some(true),
-        ..Default::default()
-    });
+    let placement = if overlay {
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(2)),
+                y: Some(PercentOrFixed::Fixed(2)),
+                width: Some(PercentOrFixed::Percent(60)),
+                height: Some(PercentOrFixed::Fixed(4)),
+                ..Default::default()
+            },
+        )))
+    } else {
+        NewPanePlacement::Floating(None)
+    };
     let tab = screen.tabs.get_mut(&tab_index).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(pane_id),
@@ -1927,7 +1934,7 @@ fn open_floating_pane(
         None,
         false,
         true,
-        NewPanePlacement::Floating(coordinates),
+        placement,
         Some(1),
         None,
     )
@@ -2370,6 +2377,8 @@ fn quit_action_launches_a_new_confirmation_plugin() {
         }
     };
 
+    // The placement is stated by the launcher rather than spelled as a `modal` key in the
+    // plugin's configuration for the server to read back out.
     assert!(matches!(
         instruction,
         ScreenInstruction::LaunchPlugin(
@@ -2389,8 +2398,11 @@ fn quit_action_launches_a_new_confirmation_plugin() {
             None,
             false,
             None,
-        ) if plugin_tag.to_string() == "quit-confirmation"
-            && configuration.inner().get("modal").is_some_and(|modal| modal == "true")
+            Some(OverlayPlacement {
+                kind: OverlayKind::Modal,
+                coordinates: None,
+            }),
+        ) if plugin_tag.to_string() == "quit-confirmation" && configuration.inner().is_empty()
     ));
 
     mock_screen.teardown(vec![]);

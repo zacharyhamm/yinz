@@ -484,7 +484,6 @@ impl App {
                     Some(format!("{}", height)),
                     Some(true),
                     Some(false),
-                    None,
                 ) else {
                     return;
                 };
@@ -505,7 +504,6 @@ impl App {
                     Some(format!("{}", height)),
                     Some(true),
                     Some(false),
-                    None,
                 ) else {
                     return;
                 };

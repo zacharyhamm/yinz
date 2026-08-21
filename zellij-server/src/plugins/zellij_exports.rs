@@ -49,16 +49,17 @@ use zellij_utils::data::{
     OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
     OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
     OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
-    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
-    OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
-    OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
-    OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
-    OpenPluginPaneFloatingResponse, OpenTerminalFloatingNearPluginResponse,
-    OpenTerminalFloatingResponse, OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
+    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse,
+    OpenCommandPaneOverlayResponse, OpenCommandPaneResponse, OpenEditPaneInPlaceOfPaneIdResponse,
+    OpenFileFloatingNearPluginResponse, OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse,
+    OpenFileInPlaceResponse, OpenFileNearPluginResponse, OpenFileResponse,
+    OpenPaneInNewTabResponse, OpenPluginPaneFloatingResponse,
+    OpenTerminalFloatingNearPluginResponse, OpenTerminalFloatingResponse,
+    OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
-    OriginatingPlugin, OrphanedPane, PaneFrameStyle, PaneScrollbackResponse, PermissionStatus,
-    PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse,
-    TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
+    OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
+    PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
+    SaveLayoutResponse, TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::home::default_layout_dir;
 use zellij_utils::input::layout::PercentOrFixed;
@@ -120,8 +121,8 @@ use zellij_utils::{
             ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
             ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
             ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
-            ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneResponse,
-            ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+            ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneOverlayResponse,
+            ProtobufOpenCommandPaneResponse, ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
             ProtobufOpenFileFloatingNearPluginResponse, ProtobufOpenFileFloatingResponse,
             ProtobufOpenFileInPlaceOfPluginResponse, ProtobufOpenFileInPlaceResponse,
             ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
@@ -269,6 +270,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 context,
             ) => {
                 open_command_pane_floating(env, command_to_run, floating_pane_coordinates, context)
+            },
+            PluginCommand::OpenCommandPaneOverlay(command_to_run, placement, context) => {
+                open_command_pane_overlay(env, command_to_run, placement, context)
             },
             PluginCommand::OpenCommandPaneFloatingNearPlugin(
                 command_to_run,
@@ -838,6 +842,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         None,
                     ));
             },
+            PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
+                change_overlay_coordinates(
+                    env,
+                    pane_ids_and_coordinates
+                        .into_iter()
+                        .map(|(p_id, coordinates)| (p_id.into(), coordinates))
+                        .collect(),
+                )
+            },
             PluginCommand::LaunchOrFocusGlobalPaneSplit {
                 plugin_url,
                 config,
@@ -1301,7 +1314,7 @@ fn open_plugin_pane_floating(
         pane_name: None,
         skip_cache: false,
         cwd: Some(env.plugin_cwd.clone()),
-        coordinates: floating_pane_coordinates,
+        placement: NewPanePlacement::Floating(floating_pane_coordinates),
         no_focus: false,
         tab_id: None,
     };
@@ -1541,7 +1554,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
         in_place,
         close_replaced_pane: false,
         start_suppressed,
-        coordinates: None,
+        placement: NewPanePlacement::Floating(None),
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
@@ -1638,7 +1651,7 @@ fn open_file_floating(
         in_place,
         close_replaced_pane: false,
         start_suppressed,
-        coordinates: floating_pane_coordinates,
+        placement: NewPanePlacement::Floating(floating_pane_coordinates),
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
@@ -1681,7 +1694,7 @@ fn open_file_in_place(
         in_place,
         close_replaced_pane: false,
         start_suppressed,
-        coordinates: None,
+        placement: NewPanePlacement::Floating(None),
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
@@ -1925,7 +1938,7 @@ fn open_terminal_floating(
     let action = Action::NewFloatingPane {
         command: run_command_action,
         pane_name: None,
-        coordinates: floating_pane_coordinates,
+        placement: NewPanePlacement::Floating(floating_pane_coordinates),
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
@@ -2575,7 +2588,7 @@ fn open_command_pane_floating(
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
         pane_name: name,
-        coordinates: floating_pane_coordinates,
+        placement: NewPanePlacement::Floating(floating_pane_coordinates),
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
@@ -2591,6 +2604,56 @@ fn open_command_pane_floating(
     let response = ProtobufOpenCommandPaneFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_floating response".to_string())
+        .non_fatal();
+}
+
+/// Open a command pane directly onto the session surface.
+///
+/// The placement travels whole rather than being flattened to coordinates: a terminal pane has no
+/// plugin configuration for the server to read overlay-ness back out of, so this is the only thing
+/// that knows whether the pane is a modal.
+fn open_command_pane_overlay(
+    env: &mut PluginEnv,
+    command_to_run: CommandToRun,
+    placement: OverlayPlacement,
+    context: BTreeMap<String, String>,
+) {
+    let error_msg = || format!("failed to open command in plugin {}", env.name());
+    let cwd = command_to_run
+        .cwd
+        .map(|cwd| translate_plugin_path(env, cwd));
+    let run_command_action = RunCommandAction {
+        command: command_to_run.path,
+        args: command_to_run.args,
+        cwd,
+        direction: None,
+        hold_on_close: true,
+        hold_on_start: false,
+        originating_plugin: Some(OriginatingPlugin::new(
+            env.plugin_id,
+            env.client_id,
+            context,
+        )),
+        use_terminal_title: false,
+        remote_host: command_to_run.remote_host,
+        remote_default_shell: command_to_run.remote_default_shell,
+    };
+    let action = Action::NewFloatingPane {
+        command: Some(run_command_action),
+        pane_name: None,
+        placement: NewPanePlacement::Overlay(placement),
+        near_current_pane: false,
+        no_focus: false,
+        tab_id: None,
+        global_placement: None,
+    };
+    let result = apply_action!(action, error_msg, env);
+
+    let pane_id: OpenCommandPaneOverlayResponse =
+        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let response = ProtobufOpenCommandPaneOverlayResponse::from(pane_id);
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| "failed to write open_command_pane_overlay response".to_string())
         .non_fatal();
 }
 
@@ -4682,6 +4745,23 @@ fn stack_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
             .send_to_screen(ScreenInstruction::StackPanes(pane_ids, env.client_id, None));
 }
 
+/// Move or resize overlays, within the overlay collection.
+///
+/// The sibling of `change_floating_panes_coordinates`, and deliberately not the same instruction:
+/// an overlay is not on the tab's floating layer, and a pane that is on it does not become one by
+/// being resized.
+fn change_overlay_coordinates(
+    env: &PluginEnv,
+    pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::ChangeOverlayCoordinates(
+            pane_ids_and_coordinates,
+            None,
+        ));
+}
+
 fn change_floating_panes_coordinates(
     env: &PluginEnv,
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
@@ -5450,7 +5530,7 @@ fn try_edit_layout(
         in_place: true,
         close_replaced_pane: false,
         start_suppressed: false,
-        coordinates: None,
+        placement: NewPanePlacement::Floating(None),
         near_current_pane: true,
         no_focus: false,
         tab_id: None,
@@ -5839,6 +5919,7 @@ fn load_new_plugin(
                     cwd,
                     None,
                     skip_cache,
+                    None,
                     None,
                     None,
                     None,
@@ -6282,6 +6363,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::OpenCommandPaneNearPlugin(..)
         | PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(..)
         | PluginCommand::OpenCommandPaneFloating(..)
+        | PluginCommand::OpenCommandPaneOverlay(..)
         | PluginCommand::OpenCommandPaneFloatingNearPlugin(..)
         | PluginCommand::OpenCommandPaneInPlace(..)
         | PluginCommand::OpenCommandPaneInPlaceOfPlugin(..)
@@ -6384,6 +6466,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::SetFloatingPanePinned(..)
         | PluginCommand::StackPanes(..)
         | PluginCommand::ChangeFloatingPanesCoordinates(..)
+        | PluginCommand::ChangeOverlayCoordinates(..)
         | PluginCommand::TogglePaneBorderless(..)
         | PluginCommand::SetPaneBorderless(..)
         | PluginCommand::SetPaneColor(..)

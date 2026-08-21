@@ -254,7 +254,8 @@ pub enum Action {
         in_place: bool,
         close_replaced_pane: bool,
         start_suppressed: bool,
-        coordinates: Option<FloatingPaneCoordinates>,
+        /// Where the editor pane goes when `floating` is set. See `NewFloatingPane::placement`.
+        placement: NewPanePlacement,
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
@@ -265,7 +266,10 @@ pub enum Action {
     NewFloatingPane {
         command: Option<RunCommandAction>,
         pane_name: Option<String>,
-        coordinates: Option<FloatingPaneCoordinates>,
+        /// Where on the surface: `Floating` for the tab's floating layer, `Overlay` for the
+        /// session surface above the global panes. Carried whole rather than as coordinates
+        /// with a flag on them, so a modal's *kind* survives the trip to the server.
+        placement: NewPanePlacement,
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
@@ -518,7 +522,8 @@ pub enum Action {
         pane_name: Option<String>,
         skip_cache: bool,
         cwd: Option<PathBuf>,
-        coordinates: Option<FloatingPaneCoordinates>,
+        /// See `NewFloatingPane::placement`.
+        placement: NewPanePlacement,
         no_focus: bool,
         tab_id: Option<usize>,
     },
@@ -783,18 +788,6 @@ pub fn warp_placement(focused_tab: bool, floating: bool) -> WarpPlacement {
         WarpPlacement::FocusedTab
     } else {
         WarpPlacement::NewTab
-    }
-}
-
-/// `--modal` implies `--overlay`. On the paths that carry bare `FloatingPaneCoordinates` rather
-/// than a `NewPanePlacement` (the plugin and command launchers), the surface placement is all the
-/// coordinates can express; which kind of overlay it is still reaches the server through the
-/// plugin's own configuration - see `RunPluginOrAlias::overlay_placement`.
-fn overlay_or_modal(overlay: Option<bool>, modal: Option<bool>) -> Option<bool> {
-    if modal.unwrap_or(false) {
-        Some(true)
-    } else {
-        overlay
     }
 }
 
@@ -1397,14 +1390,8 @@ impl Action {
                             pane_name: name,
                             skip_cache: skip_plugin_cache,
                             cwd,
-                            coordinates: FloatingPaneCoordinates::new(
-                                x,
-                                y,
-                                width,
-                                height,
-                                pinned,
-                                borderless,
-                                overlay_or_modal(overlay, modal),
+                            placement: NewPanePlacement::floating_or_overlay(
+                                x, y, width, height, pinned, borderless, overlay, modal,
                             ),
                             no_focus,
                             tab_id,
@@ -1441,14 +1428,8 @@ impl Action {
                         Ok(vec![Action::NewFloatingPane {
                             command: Some(run_command_action),
                             pane_name: name,
-                            coordinates: FloatingPaneCoordinates::new(
-                                x,
-                                y,
-                                width,
-                                height,
-                                pinned,
-                                borderless,
-                                overlay_or_modal(overlay, modal),
+                            placement: NewPanePlacement::floating_or_overlay(
+                                x, y, width, height, pinned, borderless, overlay, modal,
                             ),
                             near_current_pane,
                             no_focus,
@@ -1492,14 +1473,8 @@ impl Action {
                         Ok(vec![Action::NewFloatingPane {
                             command: None,
                             pane_name: name,
-                            coordinates: FloatingPaneCoordinates::new(
-                                x,
-                                y,
-                                width,
-                                height,
-                                pinned,
-                                borderless,
-                                overlay_or_modal(overlay, modal),
+                            placement: NewPanePlacement::floating_or_overlay(
+                                x, y, width, height, pinned, borderless, overlay, modal,
                             ),
                             near_current_pane,
                             no_focus,
@@ -1576,14 +1551,8 @@ impl Action {
                     in_place,
                     close_replaced_pane,
                     start_suppressed,
-                    coordinates: FloatingPaneCoordinates::new(
-                        x,
-                        y,
-                        width,
-                        height,
-                        pinned,
-                        borderless,
-                        overlay_or_modal(overlay, modal),
+                    placement: NewPanePlacement::floating_or_overlay(
+                        x, y, width, height, pinned, borderless, overlay, modal,
                     ),
                     near_current_pane,
                     no_focus,
@@ -2279,18 +2248,10 @@ impl Action {
                 height,
                 pinned,
                 borderless,
-                overlay,
-                modal,
             } => {
-                let Some(coordinates) = FloatingPaneCoordinates::new(
-                    x,
-                    y,
-                    width,
-                    height,
-                    pinned,
-                    borderless,
-                    overlay_or_modal(overlay, modal),
-                ) else {
+                let Some(coordinates) =
+                    FloatingPaneCoordinates::new(x, y, width, height, pinned, borderless)
+                else {
                     return Err("Failed to parse floating pane coordinates".to_string());
                 };
                 let parsed_pane_id = PaneId::from_str(&pane_id);

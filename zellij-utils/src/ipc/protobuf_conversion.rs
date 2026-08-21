@@ -1598,7 +1598,7 @@ impl TryFrom<crate::input::actions::Action>
                 in_place,
                 close_replaced_pane,
                 start_suppressed,
-                coordinates,
+                placement,
                 near_current_pane,
                 no_focus,
                 tab_id,
@@ -1610,7 +1610,7 @@ impl TryFrom<crate::input::actions::Action>
                 in_place,
                 close_replaced_pane,
                 start_suppressed,
-                coordinates: coordinates.map(|c| c.into()),
+                placement: Some(placement.into()),
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
@@ -1619,7 +1619,7 @@ impl TryFrom<crate::input::actions::Action>
             crate::input::actions::Action::NewFloatingPane {
                 command,
                 pane_name,
-                coordinates,
+                placement,
                 near_current_pane,
                 no_focus,
                 tab_id,
@@ -1627,7 +1627,7 @@ impl TryFrom<crate::input::actions::Action>
             } => ActionType::NewFloatingPane(NewFloatingPaneAction {
                 command: command.map(|c| c.into()),
                 pane_name,
-                coordinates: coordinates.map(|c| c.into()),
+                placement: Some(placement.into()),
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
@@ -1998,7 +1998,7 @@ impl TryFrom<crate::input::actions::Action>
                 pane_name,
                 skip_cache,
                 cwd,
-                coordinates,
+                placement,
                 no_focus,
                 tab_id,
                 ..
@@ -2007,7 +2007,7 @@ impl TryFrom<crate::input::actions::Action>
                 pane_name,
                 skip_cache,
                 cwd: cwd.map(|p| p.to_string_lossy().to_string()),
-                coordinates: coordinates.map(|c| c.into()),
+                placement: Some(placement.into()),
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
             }),
@@ -2575,10 +2575,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 in_place: edit_file_action.in_place,
                 close_replaced_pane: edit_file_action.close_replaced_pane,
                 start_suppressed: edit_file_action.start_suppressed,
-                coordinates: edit_file_action
-                    .coordinates
-                    .map(|c| c.try_into())
-                    .transpose()?,
+                placement: edit_file_action
+                    .placement
+                    .ok_or_else(|| anyhow!("EditFile missing placement"))?
+                    .try_into()?,
                 near_current_pane: edit_file_action.near_current_pane,
                 no_focus: edit_file_action.no_focus,
                 tab_id: edit_file_action.tab_id.map(|t| t as usize),
@@ -2594,10 +2594,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .map(|c| c.try_into())
                         .transpose()?,
                     pane_name: new_floating_action.pane_name,
-                    coordinates: new_floating_action
-                        .coordinates
-                        .map(|c| c.try_into())
-                        .transpose()?,
+                    placement: new_floating_action
+                        .placement
+                        .ok_or_else(|| anyhow!("NewFloatingPane missing placement"))?
+                        .try_into()?,
                     near_current_pane: new_floating_action.near_current_pane,
                     no_focus: new_floating_action.no_focus,
                     tab_id: new_floating_action.tab_id.map(|t| t as usize),
@@ -3001,10 +3001,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     pane_name: new_floating_plugin_action.pane_name,
                     skip_cache: new_floating_plugin_action.skip_cache,
                     cwd: new_floating_plugin_action.cwd.map(PathBuf::from),
-                    coordinates: new_floating_plugin_action
-                        .coordinates
-                        .map(|c| c.try_into())
-                        .transpose()?,
+                    placement: new_floating_plugin_action
+                        .placement
+                        .ok_or_else(|| anyhow!("NewFloatingPluginPane missing placement"))?
+                        .try_into()?,
                     no_focus: new_floating_plugin_action.no_focus,
                     tab_id: new_floating_plugin_action.tab_id.map(|t| t as usize),
                 })
@@ -4226,7 +4226,6 @@ impl From<crate::data::FloatingPaneCoordinates>
             height: coords.height.map(|h| h.into()),
             pinned: coords.pinned,
             borderless: coords.borderless,
-            overlay: coords.overlay,
         }
     }
 }
@@ -4246,7 +4245,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::FloatingPane
             height: coords.height.map(|h| h.try_into()).transpose()?,
             pinned: coords.pinned,
             borderless: coords.borderless,
-            overlay: coords.overlay,
         })
     }
 }

@@ -36,7 +36,10 @@ use zellij_utils::ipc::IpcReceiverWithContext;
 use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::position::Position;
 use zellij_utils::{
-    data::{FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, Palette, Style},
+    data::{
+        FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, OverlayPlacement, Palette,
+        Style,
+    },
     input::command::{RunCommand, TerminalAction},
     ipc::{ClientToServerMsg, ServerToClientMsg},
 };

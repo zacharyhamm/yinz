@@ -1,9 +1,9 @@
 mod kdl_layout_parser;
 use crate::data::{
     BareKey, Direction, FloatingPaneCoordinates, GlobalPaneEdge, GlobalPanePlacement, InputMode,
-    KeyWithModifier, LayoutInfo, LayoutMetadata, MultiplayerColors, Palette, PaletteColor, PaneId,
-    PaneInfo, PaneManifest, PermissionType, Resize, SessionInfo, StyleDeclaration, Styling,
-    TabInfo, WebSharing, DEFAULT_STYLES,
+    KeyWithModifier, LayoutInfo, LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette,
+    PaletteColor, PaneId, PaneInfo, PaneManifest, PermissionType, Resize, SessionInfo,
+    StyleDeclaration, Styling, TabInfo, WebSharing, DEFAULT_STYLES,
 };
 use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -1064,10 +1064,11 @@ impl Action {
             Action::NewFloatingPane {
                 command: run_command_action,
                 pane_name: name,
-                coordinates: floating_pane_coordinates,
+                placement,
                 near_current_pane: false,
                 ..
             } => {
+                let floating_pane_coordinates = placement.floating_pane_coordinates();
                 let mut node = KdlNode::new("Run");
                 let mut node_children = KdlDocument::new();
                 let mut floating_pane = KdlNode::new("floating");
@@ -2256,9 +2257,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     Ok(Action::NewFloatingPane {
                         command: Some(run_command_action),
                         pane_name: name,
-                        coordinates: FloatingPaneCoordinates::new(
-                            x, y, width, height, pinned, borderless, None,
-                        ),
+                        placement: NewPanePlacement::Floating(FloatingPaneCoordinates::new(
+                            x, y, width, height, pinned, borderless,
+                        )),
                         near_current_pane: false,
                         no_focus: false,
                         tab_id: None,

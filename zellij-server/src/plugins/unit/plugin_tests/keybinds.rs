@@ -91,6 +91,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     // Load plugin B
@@ -107,6 +108,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -254,6 +256,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

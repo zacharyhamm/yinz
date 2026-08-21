@@ -76,14 +76,15 @@ fn overlay_does_not_show_hidden_floating_panes() {
         None,
         false,
         true,
-        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-            x: Some(PercentOrFixed::Fixed(10)),
-            y: Some(PercentOrFixed::Fixed(2)),
-            width: Some(PercentOrFixed::Fixed(20)),
-            height: Some(PercentOrFixed::Fixed(8)),
-            overlay: Some(true),
-            ..Default::default()
-        })),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(10)),
+                y: Some(PercentOrFixed::Fixed(2)),
+                width: Some(PercentOrFixed::Fixed(20)),
+                height: Some(PercentOrFixed::Fixed(8)),
+                ..Default::default()
+            },
+        ))),
         Some(client_id),
         None,
     )
@@ -215,10 +216,11 @@ fn default_new_pane_from_overlay_is_tiled_and_visible() {
         None,
         false,
         true,
-        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-            overlay: Some(true),
-            ..Default::default()
-        })),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                ..Default::default()
+            },
+        ))),
         Some(client_id),
         None,
     )
@@ -272,10 +274,9 @@ fn overlay_focus_tracks_whether_the_overlay_is_rendered() {
         None,
         false,
         true,
-        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-            overlay: Some(true),
+        NewPanePlacement::Overlay(OverlayPlacement::modal(Some(FloatingPaneCoordinates {
             ..Default::default()
-        })),
+        }))),
         Some(client_id),
         None,
     )
@@ -2423,20 +2424,19 @@ fn an_overlay_is_not_counted_by_the_floating_collection() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let overlay_pane_id = PaneId::Terminal(2);
 
-    tab.new_floating_pane(
+    tab.new_overlay_pane(
         overlay_pane_id,
         None,
         None,
         false,
         true,
-        Some(FloatingPaneCoordinates {
+        OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
             x: Some(PercentOrFixed::Fixed(10)),
             y: Some(PercentOrFixed::Fixed(2)),
             width: Some(PercentOrFixed::Fixed(20)),
             height: Some(PercentOrFixed::Fixed(8)),
-            overlay: Some(true),
             ..Default::default()
-        }),
+        })),
         None,
     )
     .unwrap();
@@ -2471,20 +2471,19 @@ fn closing_the_last_floating_pane_under_an_overlay_takes_the_layer_down() {
 
     tab.new_floating_pane(floating_pane_id, None, None, false, true, None, None)
         .unwrap();
-    tab.new_floating_pane(
+    tab.new_overlay_pane(
         overlay_pane_id,
         None,
         None,
         false,
         true,
-        Some(FloatingPaneCoordinates {
+        OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
             x: Some(PercentOrFixed::Fixed(10)),
             y: Some(PercentOrFixed::Fixed(2)),
             width: Some(PercentOrFixed::Fixed(20)),
             height: Some(PercentOrFixed::Fixed(8)),
-            overlay: Some(true),
             ..Default::default()
-        }),
+        })),
         None,
     )
     .unwrap();

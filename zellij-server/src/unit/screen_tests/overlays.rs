@@ -47,10 +47,11 @@ fn alt_f_opens_a_floating_pane_when_only_an_overlay_exists() {
         None,
         false,
         true,
-        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-            overlay: Some(true),
-            ..Default::default()
-        })),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                ..Default::default()
+            },
+        ))),
         Some(1),
         None,
     )
@@ -119,13 +120,14 @@ fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
             None,
             false,
             true,
-            NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
-                x: Some(PercentOrFixed::Percent(20)),
-                width: Some(PercentOrFixed::Percent(60)),
-                height: Some(PercentOrFixed::Fixed(4)),
-                overlay: Some(true),
-                ..Default::default()
-            })),
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+                FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Percent(20)),
+                    width: Some(PercentOrFixed::Percent(60)),
+                    height: Some(PercentOrFixed::Fixed(4)),
+                    ..Default::default()
+                },
+            ))),
             Some(1),
             None,
         )
@@ -272,13 +274,19 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
         y: Some(PercentOrFixed::Fixed(2)),
         width: Some(PercentOrFixed::Percent(60)),
         height: Some(PercentOrFixed::Fixed(4)),
-        overlay: Some(true),
         ..Default::default()
     };
     let first_tab = screen.tabs.get_mut(&0).expect("TEST");
     first_tab.show_floating_panes();
     first_tab
-        .add_floating_pane(popup, popup_id, Some(coordinates), true, Some(1))
+        .add_overlay_pane(
+            popup,
+            popup_id,
+            OverlayKind::Dismissible,
+            coordinates,
+            true,
+            Some(1),
+        )
         .expect("TEST");
     assert!(first_tab.pane_is_overlay(popup_id));
     let placed_at = first_tab
@@ -598,41 +606,30 @@ fn drag_floating_pane_left_over_the_global_pane(screen: &mut Screen, pane_id: u3
     );
 }
 
-/// Coordinates that turn a floating pane into an overlay, as the fork's popup plugins do from
-/// their `load()` - they are launched as ordinary floating panes and only upgrade themselves
-/// once they are running.
+/// Where the overlays in these tests sit on the session surface. Just geometry: what makes a pane
+/// an overlay is its placement, which is decided when it is born.
 fn overlay_coordinates() -> FloatingPaneCoordinates {
     FloatingPaneCoordinates {
         x: Some(PercentOrFixed::Fixed(2)),
         y: Some(PercentOrFixed::Fixed(2)),
         width: Some(PercentOrFixed::Percent(60)),
         height: Some(PercentOrFixed::Fixed(4)),
-        overlay: Some(true),
         ..Default::default()
     }
 }
 
-/// Opening a floating pane shows the floating layer. A plugin that then turns that pane into an
-/// overlay leaves the layer flag set behind it, and the whole of zellij reads that flag as "the
-/// user has floating panes up": the status bar lights its `<f>` ribbon, the next new pane joins
-/// the floating layer, splits and focus moves get swallowed. Only the overlay is up, so the
-/// layer must go back down.
+/// Opening an ordinary floating pane shows the floating layer, and the whole of zellij reads that
+/// flag as "the user has floating panes up": the status bar lights its `<f>` ribbon, the next new
+/// pane joins the floating layer, splits and focus moves get swallowed. An overlay is not on that
+/// layer, so opening one must leave it exactly as it was.
 #[test]
-fn a_floating_pane_that_becomes_an_overlay_takes_the_floating_layer_down_with_it() {
+fn opening_an_overlay_does_not_raise_the_floating_layer() {
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    open_floating_pane(&mut screen, 0, 2, "POPUP", false);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", true);
 
     let tab = screen.get_active_tab_mut(1).unwrap();
-    assert!(
-        tab.are_floating_panes_visible(),
-        "opening an ordinary floating pane shows the floating layer"
-    );
-
-    tab.change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
-        .expect("TEST");
-
     assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
     assert!(
         !tab.are_floating_panes_visible(),
@@ -641,46 +638,7 @@ fn a_floating_pane_that_becomes_an_overlay_takes_the_floating_layer_down_with_it
     assert_eq!(
         tab.get_active_pane_id(1),
         Some(PaneId::Terminal(2)),
-        "the overlay keeps focus - the layer went away, it did not"
-    );
-}
-
-/// The two ways to arrive at an overlay - born one, or turned into one - have to land in the same
-/// place, or the fix above is only a fix for the path it was written against.
-#[test]
-fn a_pane_that_becomes_an_overlay_lands_where_a_pane_born_an_overlay_already_is() {
-    let size = Size { cols: 80, rows: 12 };
-
-    let mut born = create_non_mirrored_screen(size);
-    new_tab(&mut born, 1, 0);
-    open_floating_pane(&mut born, 0, 2, "POPUP", true);
-
-    let mut turned = create_non_mirrored_screen(size);
-    new_tab(&mut turned, 1, 0);
-    open_floating_pane(&mut turned, 0, 2, "POPUP", false);
-    turned
-        .get_active_tab_mut(1)
-        .unwrap()
-        .change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
-        .expect("TEST");
-
-    for screen in [&mut born, &mut turned] {
-        let tab = screen.get_active_tab_mut(1).unwrap();
-        assert!(tab.pane_is_overlay(PaneId::Terminal(2)));
-        assert!(!tab.are_floating_panes_visible());
-        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(2)));
-    }
-
-    let render = |screen: &mut Screen| {
-        let (server_sender, server_receiver) = channels::unbounded();
-        screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-        let mut grid = grid_for_render_snapshot(size);
-        render_frame_into(screen, &server_receiver, 1, &mut grid)
-    };
-    assert_eq!(
-        render(&mut turned),
-        render(&mut born),
-        "a pane turned into an overlay must render as one born an overlay"
+        "the overlay has the keyboard"
     );
 }
 
@@ -692,12 +650,9 @@ fn the_floating_layer_stays_up_when_a_real_floating_pane_is_behind_the_new_overl
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-    open_floating_pane(&mut screen, 0, 3, "POPUP", false);
+    open_floating_pane(&mut screen, 0, 3, "POPUP", true);
 
     let tab = screen.get_active_tab_mut(1).unwrap();
-    tab.change_floating_pane_coordinates(&PaneId::Terminal(3), overlay_coordinates())
-        .expect("TEST");
-
     assert!(tab.pane_is_overlay(PaneId::Terminal(3)));
     assert!(
         tab.are_floating_panes_visible(),
@@ -705,8 +660,8 @@ fn the_floating_layer_stays_up_when_a_real_floating_pane_is_behind_the_new_overl
     );
 }
 
-/// Overlay status is permanent for the pane's lifetime. A coordinate update must not turn an
-/// overlay back into an ordinary floating pane rendered on a hidden layer.
+/// Overlay status is permanent for the pane's lifetime, and coordinates cannot express it either
+/// way. A move must not turn an overlay back into an ordinary floating pane on a hidden layer.
 #[test]
 fn changing_an_overlays_coordinates_does_not_remove_its_overlay_status() {
     let size = Size { cols: 80, rows: 12 };
@@ -722,7 +677,6 @@ fn changing_an_overlays_coordinates_does_not_remove_its_overlay_status() {
         FloatingPaneCoordinates {
             x: Some(PercentOrFixed::Fixed(4)),
             y: Some(PercentOrFixed::Fixed(4)),
-            overlay: Some(false),
             ..Default::default()
         },
     )
@@ -936,14 +890,14 @@ fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    open_floating_pane(&mut screen, 0, 2, "POPUP", false);
+    open_floating_pane(&mut screen, 0, 2, "POPUP", true);
 
     let tab = screen.get_active_tab_mut(1).unwrap();
     // DECSET 1004: the pane asks to be told when it gains and loses focus
     tab.handle_pty_bytes(2, b"\x1b[?1004h".to_vec())
         .expect("TEST");
 
-    tab.change_floating_pane_coordinates(&PaneId::Terminal(2), overlay_coordinates())
+    tab.change_overlay_coordinates(&PaneId::Terminal(2), overlay_coordinates())
         .expect("TEST");
 
     assert!(!tab.are_floating_panes_visible());
@@ -954,17 +908,10 @@ fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
     );
 }
 
-/// Open a floating pane and then have it turn itself into an overlay, which is how every popup
-/// plugin in this fork arrives: `hocus-new-agent`, `hocus-ask` and `quit-confirmation` all call
-/// `change_floating_panes_coordinates(.. .as_overlay())` from their `load()`, after the server
-/// has already placed them as ordinary floating panes.
-fn open_pane_that_becomes_an_overlay(screen: &mut Screen, pane_id: u32, contents: &str) {
-    open_floating_pane(screen, 0, pane_id, contents, false);
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .change_floating_pane_coordinates(&PaneId::Terminal(pane_id), overlay_coordinates())
-        .expect("TEST");
+/// Open a popup the way every popup plugin in this fork arrives: born onto the session surface,
+/// never on the tab's floating layer.
+fn open_popup(screen: &mut Screen, pane_id: u32, contents: &str) {
+    open_floating_pane(screen, 0, pane_id, contents, true);
 }
 
 /// What the frame actually shows, which is the only thing the user can see. `are_floating_panes_visible`
@@ -994,7 +941,7 @@ fn a_modal_opened_onto_a_hidden_layer_does_not_reveal_hidden_floating_panes() {
         .unwrap()
         .are_floating_panes_visible());
 
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+    open_popup(&mut screen, 3, "MODAL");
 
     let tab = screen.get_active_tab_mut(1).unwrap();
     assert!(tab.pane_is_overlay(PaneId::Terminal(3)));
@@ -1025,7 +972,7 @@ fn a_modal_opened_onto_a_hidden_layer_with_several_floating_panes_behind_it() {
     open_floating_pane(&mut screen, 0, 3, "SECONDHIDDEN", false);
     screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
 
-    open_pane_that_becomes_an_overlay(&mut screen, 4, "MODAL");
+    open_popup(&mut screen, 4, "MODAL");
 
     assert!(!screen
         .get_active_tab_mut(1)
@@ -1049,7 +996,7 @@ fn a_modal_opened_onto_a_visible_layer_leaves_it_up() {
     new_tab(&mut screen, 1, 0);
     open_floating_pane(&mut screen, 0, 2, "VISIBLEFLOATING", false);
 
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+    open_popup(&mut screen, 3, "MODAL");
 
     assert!(
         screen
@@ -1074,7 +1021,7 @@ fn closing_a_modal_leaves_the_floating_layer_as_it_found_it() {
     open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
     screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
 
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "MODAL");
+    open_popup(&mut screen, 3, "MODAL");
     let tab = screen.get_active_tab_mut(1).unwrap();
     tab.close_pane(PaneId::Terminal(3), false, None);
 
@@ -1258,7 +1205,7 @@ fn an_overlay_owns_the_mouse_where_it_is_painted_while_the_layer_is_hidden() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+    open_popup(&mut screen, 3, "OVERLAY");
 
     let tab = screen.get_active_tab_mut(1).unwrap();
     assert!(!tab.are_floating_panes_visible());
@@ -1318,7 +1265,7 @@ fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
             None,
         )
         .expect("TEST");
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+    open_popup(&mut screen, 3, "OVERLAY");
 
     let tab = screen.get_active_tab_mut(1).unwrap();
     tab.focus_pane_with_id(PaneId::Terminal(2), false, false, 2)
@@ -1374,7 +1321,7 @@ fn frame_of_an_overlay_over_a_hidden_layer_beside_a_global_pane() {
     screen.render_to_clients().expect("TEST");
     open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
     screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
-    open_pane_that_becomes_an_overlay(&mut screen, 3, "OVERLAY");
+    open_popup(&mut screen, 3, "OVERLAY");
 
     let frame = rendered_frame(&mut screen, size);
     assert!(
@@ -1417,7 +1364,7 @@ fn frame_of_an_overlay_with_a_pinned_and_a_plain_floating_pane() {
             },
         )
         .expect("TEST");
-    open_pane_that_becomes_an_overlay(&mut screen, 4, "OVERLAY");
+    open_popup(&mut screen, 4, "OVERLAY");
 
     assert_snapshot!(rendered_frame(&mut screen, size));
 }
@@ -1437,16 +1384,15 @@ mod invariant_props {
     use hegel::generators;
 
     /// One thing a user (or a plugin) can do to a tab. Deliberately includes the operations that
-    /// the overlay special-casing threads through - opening onto a hidden layer, promoting a pane
-    /// to an overlay, toggling the layer underneath one - because those are where the collections
-    /// have historically fallen out of step.
+    /// the overlay special-casing threads through - opening onto a hidden layer, toggling the
+    /// layer underneath an overlay - because those are where the collections have historically
+    /// fallen out of step.
     #[derive(Debug, Clone)]
     enum Op {
         NewTiledPane,
         NewFloatingPane,
         NewOverlay,
         NewModalPlugin,
-        PromoteToOverlay,
         ClosePane,
         ShowFloatingLayer,
         HideFloatingLayer,
@@ -1456,16 +1402,15 @@ mod invariant_props {
 
     #[hegel::composite]
     fn op(tc: &hegel::TestCase) -> Op {
-        match tc.draw(generators::integers::<u8>().max_value(9)) {
+        match tc.draw(generators::integers::<u8>().max_value(8)) {
             0 => Op::NewTiledPane,
             1 => Op::NewFloatingPane,
             2 => Op::NewOverlay,
             3 => Op::NewModalPlugin,
-            4 => Op::PromoteToOverlay,
-            5 => Op::ClosePane,
-            6 => Op::ShowFloatingLayer,
-            7 => Op::HideFloatingLayer,
-            8 => Op::FocusFirstTiledPane,
+            4 => Op::ClosePane,
+            5 => Op::ShowFloatingLayer,
+            6 => Op::HideFloatingLayer,
+            7 => Op::FocusFirstTiledPane,
             _ => Op::Resize(tc.draw(generators::integers::<u16>().min_value(40).max_value(160))),
         }
     }
@@ -1482,7 +1427,7 @@ mod invariant_props {
 
         // pane ids have to be unique across the whole run, including the plugin ones
         let mut next_id = 2u32;
-        // the ids we opened, so `ClosePane` and `PromoteToOverlay` pick a real one
+        // the ids we opened, so `ClosePane` picks a real one
         let mut opened: Vec<PaneId> = vec![];
 
         for (index, op) in ops.iter().enumerate() {
@@ -1491,11 +1436,9 @@ mod invariant_props {
             // lights the status bar's <f>, sends the next new pane to the layer, and puts every
             // hidden floating pane back on screen under a modal.
             //
-            // `PromoteToOverlay` is exempt, and it is the one that proves the point: a pane that
-            // promotes itself was born an ordinary floating pane a moment earlier, and *that*
-            // raised the layer. The promotion putting it back down is the correction, not a
-            // violation. Once the popup plugins open as overlays directly there is no reveal to
-            // correct, and this exemption goes.
+            // Nothing is exempt. The one operation that used to be - a floating pane promoting
+            // itself to an overlay, which had to put back the reveal its own birth caused - does
+            // not exist any more: a pane is born an overlay or is never one.
             let layer_was_visible = screen
                 .get_active_tab_mut(1)
                 .unwrap()
@@ -1509,7 +1452,6 @@ mod invariant_props {
                     | Op::HideFloatingLayer
                     | Op::FocusFirstTiledPane
                     | Op::Resize(_)
-                    | Op::PromoteToOverlay
             );
             match op {
                 Op::NewTiledPane | Op::NewFloatingPane | Op::NewOverlay => {
@@ -1518,7 +1460,9 @@ mod invariant_props {
                     let placement = match op {
                         Op::NewTiledPane => NewPanePlacement::default(),
                         Op::NewFloatingPane => NewPanePlacement::Floating(None),
-                        _ => NewPanePlacement::Floating(Some(overlay_coordinates())),
+                        _ => NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+                            overlay_coordinates(),
+                        ))),
                     };
                     screen
                         .get_active_tab_mut(1)
@@ -1545,15 +1489,6 @@ mod invariant_props {
                         )
                         .expect("TEST");
                     opened.push(pane_id);
-                },
-                Op::PromoteToOverlay => {
-                    // the self-upgrade every popup plugin in this fork performs today
-                    if let Some(pane_id) = opened.last().copied() {
-                        let _ = screen
-                            .get_active_tab_mut(1)
-                            .unwrap()
-                            .change_floating_pane_coordinates(&pane_id, overlay_coordinates());
-                    }
                 },
                 Op::ClosePane => {
                     if !opened.is_empty() {

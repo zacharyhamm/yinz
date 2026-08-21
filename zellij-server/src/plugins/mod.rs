@@ -44,8 +44,8 @@ use wasm_bridge::WasmBridge;
 use zellij_utils::{
     data::{
         ClientInfo, CommandOrPlugin, Event, EventType, FloatingPaneCoordinates, InputMode,
-        LayoutInfo, LayoutWithError, MessageToPlugin, PermissionStatus, PermissionType,
-        PipeMessage, PipeSource, WebServerStatus,
+        LayoutInfo, LayoutWithError, MessageToPlugin, OverlayPlacement, PermissionStatus,
+        PermissionType, PipeMessage, PipeSource, WebServerStatus,
     },
     errors::{prelude::*, ContextType, PluginContext},
     input::{
@@ -86,6 +86,9 @@ pub enum PluginInstruction {
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>, // completion signal
         Option<GlobalPaneSpawnContext>,
+        // the overlay placement the launcher stated outright, rather than the one derived from
+        // the plugin's own `overlay`/`modal` configuration
+        Option<OverlayPlacement>,
     ),
     LoadBackgroundPlugin(RunPluginOrAlias, ClientId),
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
@@ -386,6 +389,7 @@ pub(crate) fn plugin_thread_main(
                 floating_pane_coordinates,
                 mut completion_tx,
                 global_placement,
+                overlay_placement,
             ) => {
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 if global_placement.is_some() && run_plugin_or_alias.requests_overlay() {
@@ -460,6 +464,7 @@ pub(crate) fn plugin_thread_main(
                                 should_focus_plugin,
                                 Some(client_id),
                                 completion_tx,
+                                overlay_placement,
                             )));
                         }
 
@@ -541,6 +546,7 @@ pub(crate) fn plugin_thread_main(
                                                     None,
                                                     None,
                                                     completion_tx,
+                                                    None,
                                                 ),
                                             ));
                                         },
@@ -1521,6 +1527,7 @@ fn load_background_plugin(
                 None,
                 None,
                 Some(client_id),
+                None,
                 None,
             )));
         },

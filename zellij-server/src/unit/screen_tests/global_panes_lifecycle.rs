@@ -126,7 +126,7 @@ fn resurrection_layout_global_panes_launch_once_in_declaration_order_before_tab_
     assert!(matches!(
         &plugin_instructions[0],
         PluginInstruction::Load(
-            _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(properties)
+            _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(properties), _
         ) if properties.placement == plugin_placement
             && !properties.borderless
             && !properties.initially_hidden
@@ -187,7 +187,7 @@ fn global_plugin_launch_retains_placement_when_not_loaded() {
         .any(|instruction| matches!(
             instruction,
             PtyInstruction::FillPluginCwd(
-                _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(actual)
+                _, _, _, _, _, _, _, _, _, _, _, _, _, _, Some(actual), _
             ) if actual.placement == placement
         )));
 }

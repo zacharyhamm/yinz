@@ -1,16 +1,15 @@
 #![cfg(unix)]
 
-//! The `overlay` flag on `FloatingPaneCoordinates` (position a floating pane against the
-//! whole session surface, above global panes) used to be reachable only by the two
-//! built-in plugins that called the low-level floating-open shims directly
-//! (`hocus-ask`, `file-finder`; see `zellij-integration-tests/tests/hocus_ask.rs` and
-//! `file_finder.rs`). It is now threaded through the `zellij action` CLI surface as
-//! well, so an ordinary floating pane opened with `--overlay` gets the same treatment.
+//! An overlay - a pane placed against the whole session surface, above the global panes, rather
+//! than on a tab's floating layer - used to be reachable only by the built-in plugins that called
+//! the low-level floating-open shims directly (`hocus-ask`, `file-finder`; see
+//! `zellij-integration-tests/tests/hocus_ask.rs` and `file_finder.rs`). It is a placement on the
+//! `zellij action` CLI surface now: `--overlay`, or `--modal` for one that keeps focus.
 //!
-//! This test exercises that generic path with a plain command pane (not a plugin), and
-//! guards the invariant the plugin-specific tests already cover for their own panes:
-//! an overlay pane must still be gone from the screen once its tab is left, and back
-//! once its tab is focused again.
+//! This file exercises that generic path with a plain command pane (not a plugin), and guards the
+//! invariants the plugin-specific tests already cover for their own panes: an overlay is gone from
+//! the screen once its tab is left and back once its tab is focused again, and putting one on
+//! screen never reveals the floating panes the user had hidden.
 
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE};
 use zellij_utils::cli::CliAction;
@@ -279,10 +278,9 @@ fn a_plain_floating_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
     zellij.quit();
 }
 
-/// Open `quit-confirmation` as a plain floating *plugin* pane - no `--overlay`, no `modal`
-/// configuration. Like every popup plugin in this fork it turns itself into an overlay from its
-/// own `load()`, which is the two-stage birth the reveal bug lives in.
-fn open_self_upgrading_popup(zellij: &TestSession) {
+/// Open `quit-confirmation` the way `Action::Quit` does: born a modal on the session surface,
+/// with the geometry the plugin then keeps for itself. It is never on the tab's floating layer.
+fn open_popup(zellij: &TestSession) {
     zellij.run_cli_action(CliAction::NewPane {
         direction: None,
         command: vec![],
@@ -298,13 +296,13 @@ fn open_self_upgrading_popup(zellij: &TestSession) {
         start_suspended: false,
         configuration: None,
         skip_plugin_cache: false,
-        x: None,
-        y: None,
-        width: None,
-        height: None,
+        x: Some("30%".to_string()),
+        y: Some("30%".to_string()),
+        width: Some("40%".to_string()),
+        height: Some("8".to_string()),
         pinned: None,
         overlay: None,
-        modal: None,
+        modal: Some(true),
         stacked: false,
         blocking: false,
         block_until_exit_success: false,
@@ -325,11 +323,12 @@ fn open_self_upgrading_popup(zellij: &TestSession) {
 /// floating panes on screen with it. This is the end-to-end shape of the "new agent" modal
 /// revealing whatever was behind it.
 ///
-/// The popup is launched here the way a config written before `overlay`/`modal` existed launches
-/// one - as an ordinary floating pane, which reveals the layer - and only becomes an overlay once
-/// the plugin is running. The layer has to go back down with it, however many panes are on it.
+/// The reveal used to come from the popup's own birth: it opened as an ordinary floating pane,
+/// which raises the layer, and only became an overlay once the plugin was running. A pane born an
+/// overlay never touches the layer, so there is nothing to put back - but the guarantee the user
+/// sees is the same one, and it is what this asserts.
 #[test]
-fn a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane() {
+fn a_popup_does_not_reveal_a_hidden_floating_pane() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(NO_BACKGROUND_PLUGINS)
         .start();
@@ -351,7 +350,7 @@ fn a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane() {
         !snapshot.contains("HIDDEN-FLOATING")
     });
 
-    open_self_upgrading_popup(&zellij);
+    open_popup(&zellij);
     zellij.wait_until("the popup is up", |snapshot| {
         snapshot.contains("Quit Zellij?")
     });
@@ -365,10 +364,9 @@ fn a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane() {
     zellij.quit();
 }
 
-/// The other half of `a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane`: closing the
-/// popup has to put the floating layer back the way it found it. Opening the popup took the layer
-/// down (it was already down here, but the popup's own arrival raised and re-hid it), so a close
-/// that restores the layer would put the user's hidden pane back on screen without being asked.
+/// The other half of `a_popup_does_not_reveal_a_hidden_floating_pane`: closing the popup has to
+/// leave the floating layer where it found it. The popup was never on that layer, so a close that
+/// raised it would be putting the user's hidden pane back on screen without being asked.
 #[test]
 fn closing_a_popup_leaves_the_hidden_floating_layer_hidden() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
@@ -392,7 +390,7 @@ fn closing_a_popup_leaves_the_hidden_floating_layer_hidden() {
         !snapshot.contains("HIDDEN-FLOATING")
     });
 
-    open_self_upgrading_popup(&zellij);
+    open_popup(&zellij);
     zellij.wait_until("the popup is up", |snapshot| {
         snapshot.contains("Quit Zellij?")
     });
@@ -440,7 +438,7 @@ fn closing_a_popup_hands_focus_back_to_the_global_pane_that_had_it() {
         snapshot.contains("before-popup")
     });
 
-    open_self_upgrading_popup(&zellij);
+    open_popup(&zellij);
     zellij.wait_until("the popup is up", |snapshot| {
         snapshot.contains("Quit Zellij?")
     });

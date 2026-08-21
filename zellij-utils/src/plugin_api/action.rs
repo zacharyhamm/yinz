@@ -380,7 +380,7 @@ impl TryFrom<ProtobufAction> for Action {
                         in_place: should_be_in_place,
                         close_replaced_pane: false,
                         start_suppressed: false,
-                        coordinates: None,
+                        placement: NewPanePlacement::Floating(None),
                         near_current_pane,
                         no_focus: false,
                         tab_id: None,
@@ -402,7 +402,7 @@ impl TryFrom<ProtobufAction> for Action {
                         Ok(Action::NewFloatingPane {
                             command: Some(run_command_action),
                             pane_name,
-                            coordinates: None,
+                            placement: NewPanePlacement::Floating(None),
                             near_current_pane,
                             no_focus: false,
                             tab_id: None,
@@ -412,7 +412,7 @@ impl TryFrom<ProtobufAction> for Action {
                         Ok(Action::NewFloatingPane {
                             command: None,
                             pane_name: None,
-                            coordinates: None,
+                            placement: NewPanePlacement::Floating(None),
                             near_current_pane,
                             no_focus: false,
                             tab_id: None,
@@ -932,7 +932,7 @@ impl TryFrom<ProtobufAction> for Action {
                             pane_name,
                             skip_cache: skip_plugin_cache,
                             cwd: None,
-                            coordinates: None,
+                            placement: NewPanePlacement::Floating(None),
                             no_focus: false,
                             tab_id: None,
                         })
@@ -1487,7 +1487,7 @@ impl TryFrom<Action> for ProtobufAction {
                 in_place: _should_be_in_place,
                 close_replaced_pane: _close_replaced_pane,
                 start_suppressed: _start_suppressed,
-                coordinates: _floating_pane_coordinates,
+                placement: _placement,
                 near_current_pane,
                 global_placement,
                 ..
@@ -1514,7 +1514,7 @@ impl TryFrom<Action> for ProtobufAction {
             Action::NewFloatingPane {
                 command: run_command_action,
                 pane_name,
-                coordinates: _coordinates,
+                placement: _placement,
                 near_current_pane,
                 global_placement,
                 ..
@@ -1913,7 +1913,7 @@ impl TryFrom<Action> for ProtobufAction {
                 pane_name,
                 skip_cache: skip_plugin_cache,
                 cwd: _cwd,
-                coordinates: _coordinates,
+                placement: _placement,
                 ..
             } => Ok(ProtobufAction {
                 name: ProtobufActionName::NewFloatingPluginPane as i32,
@@ -2750,7 +2750,6 @@ impl TryFrom<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
             height: protobuf_coords.height.and_then(|h| h.try_into().ok()),
             pinned: protobuf_coords.pinned,
             borderless: protobuf_coords.borderless,
-            overlay: protobuf_coords.overlay,
         })
     }
 }
@@ -2765,7 +2764,6 @@ impl TryFrom<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
             height: coords.height.and_then(|h| h.try_into().ok()),
             pinned: coords.pinned,
             borderless: coords.borderless,
-            overlay: coords.overlay,
         })
     }
 }
@@ -2795,17 +2793,7 @@ impl TryFrom<ProtobufNewPanePlacement> for NewPanePlacement {
                 Ok(NewPanePlacement::Floating(coords))
             },
             Some(PlacementVariant::Overlay(overlay)) => {
-                let coordinates = overlay.coordinates.and_then(|c| c.try_into().ok());
-                let kind = ProtobufOverlayKind::try_from(overlay.kind)
-                    .map(|kind| match kind {
-                        ProtobufOverlayKind::Modal => OverlayKind::Modal,
-                        ProtobufOverlayKind::Dismissible => OverlayKind::Dismissible,
-                    })
-                    .unwrap_or_default();
-                Ok(NewPanePlacement::Overlay(OverlayPlacement {
-                    kind,
-                    coordinates,
-                }))
+                Ok(NewPanePlacement::Overlay(overlay.try_into()?))
             },
             Some(PlacementVariant::InPlace(config)) => {
                 let pane_id_to_replace =
@@ -2882,19 +2870,42 @@ impl TryFrom<NewPanePlacement> for ProtobufNewPanePlacement {
                 }))
             },
             NewPanePlacement::Overlay(overlay) => {
-                let kind = match overlay.kind {
-                    OverlayKind::Modal => ProtobufOverlayKind::Modal,
-                    OverlayKind::Dismissible => ProtobufOverlayKind::Dismissible,
-                } as i32;
-                let coordinates = overlay.coordinates.and_then(|c| c.try_into().ok());
-                Some(PlacementVariant::Overlay(ProtobufOverlayPlacement {
-                    kind,
-                    coordinates,
-                }))
+                Some(PlacementVariant::Overlay(overlay.try_into()?))
             },
         };
 
         Ok(ProtobufNewPanePlacement { placement_variant })
+    }
+}
+
+/// The overlay placement on its own, for the plugin commands that carry one without a
+/// `NewPanePlacement` around it - `OpenCommandPaneOverlay`.
+impl TryFrom<ProtobufOverlayPlacement> for OverlayPlacement {
+    type Error = &'static str;
+    fn try_from(placement: ProtobufOverlayPlacement) -> Result<Self, &'static str> {
+        let kind = ProtobufOverlayKind::try_from(placement.kind)
+            .map(|kind| match kind {
+                ProtobufOverlayKind::Modal => OverlayKind::Modal,
+                ProtobufOverlayKind::Dismissible => OverlayKind::Dismissible,
+            })
+            .unwrap_or_default();
+        Ok(OverlayPlacement {
+            kind,
+            coordinates: placement.coordinates.and_then(|c| c.try_into().ok()),
+        })
+    }
+}
+
+impl TryFrom<OverlayPlacement> for ProtobufOverlayPlacement {
+    type Error = &'static str;
+    fn try_from(placement: OverlayPlacement) -> Result<Self, &'static str> {
+        Ok(ProtobufOverlayPlacement {
+            kind: match placement.kind {
+                OverlayKind::Modal => ProtobufOverlayKind::Modal,
+                OverlayKind::Dismissible => ProtobufOverlayKind::Dismissible,
+            } as i32,
+            coordinates: placement.coordinates.and_then(|c| c.try_into().ok()),
+        })
     }
 }
 
@@ -3636,7 +3647,7 @@ mod tests {
                 in_place: false,
                 close_replaced_pane: false,
                 start_suppressed: false,
-                coordinates: None,
+                placement: NewPanePlacement::Floating(None),
                 near_current_pane: false,
                 no_focus: false,
                 tab_id: None,
@@ -3645,7 +3656,7 @@ mod tests {
             Action::NewFloatingPane {
                 command: None,
                 pane_name: None,
-                coordinates: None,
+                placement: NewPanePlacement::Floating(None),
                 near_current_pane: false,
                 no_focus: false,
                 tab_id: None,

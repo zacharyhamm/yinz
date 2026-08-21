@@ -928,32 +928,18 @@ fn run_overlay_placement(run: &Option<Run>) -> Option<OverlayPlacement> {
     }
 }
 
-/// Resolve the two surviving spellings of "this pane is an overlay" into one placement.
+/// The overlay placement a pane arriving by one of the coordinate-carrying paths asks for.
 ///
-/// The `overlay` flag on `FloatingPaneCoordinates` is still a valid *input* - it is what a
-/// keybinding written before `OverlayPlacement` existed carries, and what
-/// `zellij action change-floating-pane-coordinates --overlay` sends. It stops being *storage*: the
-/// pane's kind and coordinates live in `OverlayPanes` from here on. Phase 4 removes the flag once
-/// the in-repo plugins are off it.
+/// Overlay-ness is a placement now, so the only thing left to resolve is the compatibility shim:
+/// a pane whose plugin configuration still spells it as `overlay`/`modal` keys. Coordinates say
+/// *where* on the surface and never *whether*, so they are carried through untouched.
 fn overlay_placement_for(
     coordinates: &Option<FloatingPaneCoordinates>,
     invoked_with: &Option<Run>,
 ) -> Option<OverlayPlacement> {
-    let from_configuration = run_overlay_placement(invoked_with);
-    let coordinates_say_overlay = coordinates
-        .as_ref()
-        .is_some_and(|coordinates| coordinates.overlay.unwrap_or(false));
-    if from_configuration.is_none() && !coordinates_say_overlay {
-        return None;
-    }
-    // the plugin's configuration is what knows whether this is a modal; the coordinates only ever
-    // said "somewhere on the surface"
-    let kind = from_configuration
-        .map(|placement| placement.kind)
-        .unwrap_or_default();
-    Some(OverlayPlacement {
-        kind,
-        coordinates: coordinates.clone(),
+    run_overlay_placement(invoked_with).map(|placement| OverlayPlacement {
+        kind: placement.kind,
+        coordinates: coordinates.clone().or(placement.coordinates),
     })
 }
 
@@ -3184,12 +3170,6 @@ impl Tab {
                 blocking_notification,
             );
         }
-        // Sampled before the reveal below. The in-repo popup plugins are still born as ordinary
-        // floating panes and promote themselves once they are running, and opening an ordinary
-        // floating pane raises the layer - so the promotion has to be able to put the layer back
-        // the way this pane found it. Phase 4 makes those plugins open as overlays directly, and
-        // then this goes.
-        let layer_was_visible = self.floating_panes.panes_are_visible();
         if should_focus_pane {
             self.show_floating_panes();
         }
@@ -3202,27 +3182,22 @@ impl Tab {
             // takes it out of there in one way or another
             self.park_new_pane(new_pane)
         } else {
-            let added = self.add_floating_pane(
+            self.add_floating_pane(
                 new_pane,
                 pid,
                 floating_pane_coordinates,
                 should_focus_pane,
                 None,
-            );
-            if self.floating_panes.panes_contain(&pid) {
-                self.floating_panes
-                    .note_layer_state_before_adding(pid, layer_was_visible);
-            }
-            added
+            )
         }
     }
 
     /// Create a pane directly onto the session surface as an overlay.
     ///
-    /// The floating path's compensations are absent rather than skipped: nothing raises the
-    /// floating layer here, so nothing has to remember its state in order to put it back. That
-    /// bookkeeping - `layer_visible_when_added`, `hide_floating_panes_under_overlay` - existed
-    /// only to undo a reveal an overlay never earned.
+    /// Nothing raises the floating layer here, which is the whole point: an overlay that is never
+    /// on that layer has no reveal to undo. The bookkeeping this used to be contrasted with -
+    /// `layer_visible_when_added`, `hide_floating_panes_under_overlay` - is gone with the
+    /// two-stage birth it compensated for.
     #[allow(clippy::too_many_arguments)]
     pub fn new_overlay_pane(
         &mut self,
@@ -8071,7 +8046,6 @@ impl Tab {
                 height: Some(PercentOrFixed::Fixed(pane.rows())),
                 pinned: Some(pane.current_geom().is_pinned),
                 borderless: Some(pane.borderless()),
-                overlay: None,
             };
             // non_fatal rather than `?`: the only error here comes from `relayout`, which
             // runs after the pane is already in the tab, and the caller must not abort a
@@ -8456,21 +8430,38 @@ impl Tab {
             }
         }
     }
-    /// Move or resize a pane on the surface, and - if the new coordinates say so - make it an
-    /// overlay.
+    /// Move or resize an overlay where it already is.
     ///
-    /// The promotion is a *migration* now: the pane leaves `floating_panes` and joins
-    /// `overlay_panes`. It used to be a flag set on a pane that stayed where it was, which is why
-    /// there was a block here restoring the floating layer's visibility afterwards - opening an
-    /// ordinary floating pane raises the layer, and a pane that became an overlay a moment later
-    /// had to put back what its own birth had revealed. A pane that is never on the layer reveals
-    /// nothing, so there is nothing to undo.
+    /// The kind is not a parameter and cannot change: an overlay was born dismissible or modal and
+    /// stays so, which is why `OverlayPanes::change_pane_coordinates` touches only the geometry.
+    /// A pane that is not an overlay is refused rather than promoted - overlay-ness is decided at
+    /// birth, and `change_floating_pane_coordinates` is what moves a floating pane.
+    pub fn change_overlay_coordinates(
+        &mut self,
+        pane_id: &PaneId,
+        coordinates: FloatingPaneCoordinates,
+    ) -> Result<()> {
+        if !self.overlay_panes.panes_contain(pane_id) {
+            return Err(anyhow!(
+                "pane {pane_id:?} is not an overlay - use change_floating_pane_coordinates"
+            ));
+        }
+        self.overlay_panes
+            .change_pane_coordinates(*pane_id, coordinates)?;
+        self.set_force_render();
+        Ok(())
+    }
+    /// Move or resize a pane on the tab's floating layer.
     ///
-    /// The in-repo popup plugins still arrive this way (they open floating and call
-    /// `change_floating_panes_coordinates(..).as_overlay()` from `load()`), and `hocus-new-agent`
-    /// re-asserts it on every resize - so an overlay changing its coordinates has to stay an
-    /// overlay of the same kind. That now holds by construction: `OverlayPanes` keeps the kind
-    /// beside the pane and simply leaves it alone.
+    /// A pane cannot *become* an overlay here. Overlay-ness is decided when the pane is born, so
+    /// there is no promotion to compensate for: the compensation that used to live here - noting
+    /// the floating layer's visibility before a pane opened onto it, so that a pane which turned
+    /// itself into an overlay a moment later could put back the reveal its own birth had caused -
+    /// went with it.
+    ///
+    /// An overlay asking to be moved is answered where it already is, so that a plugin resizing
+    /// itself does not have to know which collection it landed in. `change_overlay_coordinates`
+    /// is the direct route.
     pub fn change_floating_pane_coordinates(
         &mut self,
         pane_id: &PaneId,
@@ -8502,50 +8493,6 @@ impl Tab {
                     return Ok(());
                 }
             }
-        }
-        // becoming an overlay: leave the floating layer rather than being flagged on it
-        if floating_pane_coordinates.overlay.unwrap_or(false)
-            && self.floating_panes.panes_contain(pane_id)
-        {
-            let kind = run_overlay_placement(
-                self.floating_panes
-                    .get_pane(*pane_id)
-                    .map(|pane| pane.invoked_with())
-                    .unwrap_or(&None),
-            )
-            .map(|placement| placement.kind)
-            .unwrap_or_default();
-            // carried across the move rather than re-applied: the pane keeps the focus it already
-            // had, and must not be told it gained anything
-            let focused_clients = self.floating_panes.clients_focused_on(pane_id);
-            // Whether this pane's own birth is what raised the layer. If it was, the layer goes
-            // back down behind the overlay - otherwise every floating pane the user had hidden is
-            // now on screen under a modal. Nothing was noted for a pane that arrived by some other
-            // route and only later became an overlay; there, fall back to asking whether anything
-            // is left on the layer at all.
-            let layer_was_visible = self.floating_panes.take_layer_state_before_adding(*pane_id);
-            if let Some(pane) = self.extract_pane(*pane_id, true) {
-                self.add_overlay_pane(
-                    pane,
-                    *pane_id,
-                    kind,
-                    floating_pane_coordinates,
-                    false,
-                    None,
-                )?;
-                self.overlay_panes.adopt_focus(*pane_id, &focused_clients);
-            }
-            let restore_hidden = match layer_was_visible {
-                Some(layer_was_visible) => !layer_was_visible,
-                None => !self.floating_panes.has_selectable_panes(),
-            };
-            if restore_hidden && self.floating_panes.all_panes_are_visible() {
-                // the plain one: the overlay has already left the layer, so there is no longer a
-                // focused pane down there for this to lie to
-                self.hide_floating_panes();
-            }
-            self.swap_layouts.set_is_floating_damaged();
-            return Ok(());
         }
         self.floating_panes
             .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;

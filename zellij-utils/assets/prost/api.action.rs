@@ -766,8 +766,6 @@ pub struct FloatingPaneCoordinates {
     pub pinned: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="6")]
     pub borderless: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="7")]
-    pub overlay: ::core::option::Option<bool>,
 }
 /// SetPaneBorderlessPayload specifies the pane and borderless state
 #[allow(clippy::derive_partial_eq_without_eq)]

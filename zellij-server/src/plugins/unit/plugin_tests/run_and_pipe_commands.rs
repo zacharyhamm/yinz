@@ -60,6 +60,7 @@ pub fn run_command_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -140,6 +141,7 @@ pub fn run_command_with_env_vars_and_cwd_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -228,6 +230,7 @@ pub fn web_request_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -301,6 +304,7 @@ pub fn unblock_input_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -389,6 +393,7 @@ pub fn block_input_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -489,6 +494,7 @@ pub fn pipe_output_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -574,6 +580,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -678,6 +685,7 @@ pub fn switch_session_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -764,6 +772,7 @@ pub fn switch_session_with_layout_plugin_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -858,6 +867,7 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -941,6 +951,7 @@ pub fn disconnect_other_clients_plugins_command() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1032,6 +1043,7 @@ pub fn reconfigure_plugin_command() {
         None,
         None,
         None,
+        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1119,6 +1131,7 @@ pub fn run_plugin_in_specific_cwd() {
         None,
         None,
         false,
+        None,
         None,
         None,
         None,

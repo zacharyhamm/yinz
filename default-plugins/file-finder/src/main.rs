@@ -175,7 +175,11 @@ impl State {
             ..Default::default()
         };
 
-        match open_command_pane_floating(command, self.floating_geometry(), BTreeMap::new()) {
+        match open_command_pane_overlay(
+            command,
+            OverlayPlacement::dismissible(self.floating_geometry()),
+            BTreeMap::new(),
+        ) {
             Some(PaneId::Terminal(pane_id)) => {
                 rename_pane_with_id(PaneId::Terminal(pane_id), &title);
                 self.stage = Stage::Finding { pane_id };
@@ -305,6 +309,8 @@ impl State {
         Path::new(HOST_MOUNT).join(self.out_path.strip_prefix("/").unwrap_or(&self.out_path))
     }
 
+    /// Where the finder pane sits on the session surface. Dismissible rather than modal: the
+    /// user can click away from a file picker.
     fn floating_geometry(&self) -> Option<FloatingPaneCoordinates> {
         let Geometry {
             x,
@@ -312,16 +318,7 @@ impl State {
             width,
             height,
         } = geometry(&self.config);
-        FloatingPaneCoordinates::new(
-            Some(x),
-            Some(y),
-            Some(width),
-            Some(height),
-            None,
-            None,
-            None,
-        )
-        .map(FloatingPaneCoordinates::as_overlay)
+        FloatingPaneCoordinates::new(Some(x), Some(y), Some(width), Some(height), None, None)
     }
 }
 
@@ -458,10 +455,6 @@ mod tests {
                 width: "120".to_owned(),
                 height: "70%".to_owned(),
             }
-        );
-        assert_eq!(
-            State::default().floating_geometry().unwrap().overlay,
-            Some(true)
         );
     }
 

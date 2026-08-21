@@ -481,7 +481,7 @@ message EditFileAction {
   bool floating = 3;
   bool in_place = 4;
   bool start_suppressed = 5;
-  optional FloatingPaneCoordinates coordinates = 6;
+  NewPanePlacement placement = 6;
   bool near_current_pane = 7;
   bool close_replaced_pane = 8;
   optional uint32 tab_id = 9;
@@ -492,7 +492,7 @@ message EditFileAction {
 message NewFloatingPaneAction {
   optional RunCommandAction command = 1;
   optional string pane_name = 2;
-  optional FloatingPaneCoordinates coordinates = 3;
+  NewPanePlacement placement = 3;
   bool near_current_pane = 7;
   optional uint32 tab_id = 8;
   bool no_focus = 9;
@@ -643,7 +643,7 @@ message NewFloatingPluginPaneAction {
   optional string pane_name = 2;
   bool skip_cache = 3;
   optional string cwd = 4;
-  optional FloatingPaneCoordinates coordinates = 5;
+  NewPanePlacement placement = 5;
   optional uint32 tab_id = 6;
   bool no_focus = 7;
 }
@@ -1070,7 +1070,6 @@ message FloatingPaneCoordinates {
   optional FloatingCoordinate height = 4;
   optional bool pinned = 5;
   optional bool borderless = 6;
-  optional bool overlay = 7;
 }
 
 message FloatingCoordinate {

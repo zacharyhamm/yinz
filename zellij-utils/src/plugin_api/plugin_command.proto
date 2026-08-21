@@ -242,6 +242,8 @@ enum CommandName {
   RevealPaneWithId = 249;
   OpenCommandPaneInGitCheckoutNearPlugin = 251;
   GetPaneGitProbe = 252;
+  ChangeOverlayCoordinates = 253;
+  OpenCommandPaneOverlay = 254;
 }
 
 message PluginCommand {
@@ -424,6 +426,8 @@ message PluginCommand {
     NotifyWithPanePayload notify_with_pane_payload = 191;
     OpenCommandPaneInGitCheckoutPayload open_command_pane_in_git_checkout_payload = 192;
     GetPaneGitProbePayload get_pane_git_probe_payload = 193;
+    ChangeOverlayCoordinatesPayload change_overlay_coordinates_payload = 194;
+    OpenCommandPaneOverlayPayload open_command_pane_overlay_payload = 195;
   }
 }
 
@@ -759,6 +763,20 @@ message ChangeFloatingPanesCoordinatesPayload {
   repeated PaneIdAndFloatingPaneCoordinates pane_ids_and_floating_panes_coordinates = 1;
 }
 
+// Move or resize an overlay within the overlay collection. Its kind - dismissible or modal -
+// is not part of this: it was decided when the overlay was born and does not change.
+message ChangeOverlayCoordinatesPayload {
+  repeated PaneIdAndFloatingPaneCoordinates pane_ids_and_floating_panes_coordinates = 1;
+}
+
+// Open a command pane directly onto the session surface. A terminal pane has no plugin
+// configuration for the server to read overlay-ness out of, so the placement says it.
+message OpenCommandPaneOverlayPayload {
+  command.Command command_to_run = 1;
+  action.OverlayPlacement placement = 2;
+  repeated ContextItem context = 3;
+}
+
 message StackPanesPayload {
   repeated PaneId pane_ids = 1;
 }
@@ -1079,7 +1097,6 @@ message FloatingPaneCoordinates {
   optional FixedOrPercentValue height = 4;
   optional bool pinned = 5;
   optional bool borderless = 6;
-  optional bool overlay = 7;
 }
 
 message FixedOrPercentValue {
@@ -1513,6 +1530,10 @@ message OpenCommandPaneResponse {
 }
 
 message OpenCommandPaneFloatingResponse {
+  optional PaneId pane_id = 1;
+}
+
+message OpenCommandPaneOverlayResponse {
   optional PaneId pane_id = 1;
 }
 

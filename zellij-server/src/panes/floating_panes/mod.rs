@@ -63,11 +63,6 @@ pub struct FloatingPanes {
     style: Style,
     session_is_mirrored: bool,
     desired_pane_positions: HashMap<PaneId, PaneGeom>, // this represents the positions of panes the user moved with intention, rather than by resizing the terminal window
-    /// The floating layer's visibility as it was immediately before each pane was opened onto
-    /// it. A pane that turns itself into an overlay after the fact (which is how every popup
-    /// plugin in this fork arrives - see `Tab::change_floating_pane_coordinates`) has to put the
-    /// layer back the way it found it, and only the opener knows what that was.
-    layer_visible_when_added: HashMap<PaneId, bool>,
     z_indices: Vec<PaneId>,
     active_panes: ActivePanes,
     show_panes: bool,
@@ -117,7 +112,6 @@ impl FloatingPanes {
             default_mode_info,
             style,
             desired_pane_positions: HashMap::new(),
-            layer_visible_when_added: HashMap::new(),
             z_indices: vec![],
             show_panes: false,
             active_panes: ActivePanes::new(&os_input),
@@ -342,11 +336,6 @@ impl FloatingPanes {
             self.desired_pane_positions
                 .insert(with_pane_id, desired_pane_position);
         }
-        if let Some(layer_was_visible) = self.layer_visible_when_added.remove(&pane_id) {
-            self.layer_visible_when_added
-                .insert(with_pane_id, layer_was_visible);
-        }
-
         // move clients from the previously active pane to the new pane we just inserted
         self.move_clients_between_panes(pane_id, with_pane_id);
         let _ = self.set_pane_frames();
@@ -355,7 +344,6 @@ impl FloatingPanes {
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.desired_pane_positions.remove(&pane_id);
-        self.layer_visible_when_added.remove(&pane_id);
         self.panes.remove(&pane_id)
     }
     pub fn hold_pane(
@@ -1321,27 +1309,6 @@ impl FloatingPanes {
     ) {
         let (viewport, origin) = self.placement_space();
         pane_geom.adjust_coordinates(coordinates, viewport, origin);
-    }
-
-    /// Remember the floating layer's visibility as it was before `pane_id` was opened onto it.
-    /// Call this with a value sampled *before* the opening path had its chance to reveal the
-    /// layer - opening a floating pane calls `Tab::show_floating_panes`, so sampling from inside
-    /// `add_pane` would only ever read back the reveal it is meant to undo.
-    ///
-    /// This exists for one caller: a pane that opens as an ordinary floating pane and turns itself
-    /// into an overlay once it is running, which is how every popup plugin in this fork still
-    /// arrives. When they open as overlays directly there will be no reveal to undo, and this goes
-    /// with them.
-    pub fn note_layer_state_before_adding(&mut self, pane_id: PaneId, layer_was_visible: bool) {
-        self.layer_visible_when_added
-            .insert(pane_id, layer_was_visible);
-    }
-
-    /// What the layer looked like before this pane arrived, consumed on read: it answers the one
-    /// question of whether the pane's own opening revealed the layer, and once that has been
-    /// answered the layer belongs to whatever happened since.
-    pub fn take_layer_state_before_adding(&mut self, pane_id: PaneId) -> Option<bool> {
-        self.layer_visible_when_added.remove(&pane_id)
     }
 
     /// The area a floating pane may be *moved* around in: the whole session surface, global panes

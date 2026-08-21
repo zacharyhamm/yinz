@@ -1621,7 +1621,6 @@ impl Args {
             self.height.clone(),
             None,
             None,
-            None,
         )
         .ok_or_else(|| "at least one of x, y, width or height is required".to_owned())
     }

@@ -28,8 +28,8 @@ use zellij_utils::{
     channels::SenderWithContext,
     data::{
         BareKey, ConnectToSession, Direction, Event, GlobalPanePlacement, InputMode, KeyModifier,
-        ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneListEntry, PluginTag,
-        ResizeStrategy, TabInfo, UnblockCondition,
+        ListPanesResponse, ListTabsResponse, NewPanePlacement, OverlayPlacement, PaneListEntry,
+        PluginTag, ResizeStrategy, TabInfo, UnblockCondition,
     },
     envs,
     errors::prelude::*,
@@ -759,7 +759,7 @@ pub(crate) fn route_action(
             in_place: should_open_in_place,
             close_replaced_pane,
             start_suppressed,
-            coordinates: floating_pane_coordinates,
+            placement,
             near_current_pane,
             no_focus,
             tab_id,
@@ -785,7 +785,7 @@ pub(crate) fn route_action(
                     Some(open_file),
                     Some(title),
                     if should_float {
-                        NewPanePlacement::Floating(floating_pane_coordinates)
+                        placement
                     } else {
                         NewPanePlacement::Tiled {
                             direction: split_direction,
@@ -819,7 +819,7 @@ pub(crate) fn route_action(
         Action::NewFloatingPane {
             command: run_command,
             pane_name: name,
-            coordinates: floating_pane_coordinates,
+            placement,
             near_current_pane,
             no_focus,
             tab_id,
@@ -835,7 +835,7 @@ pub(crate) fn route_action(
                 .send_to_pty(PtyInstruction::SpawnTerminal(
                     run_cmd,
                     name,
-                    NewPanePlacement::Floating(floating_pane_coordinates),
+                    placement,
                     false,
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
@@ -1220,13 +1220,10 @@ pub(crate) fn route_action(
         // A keybinding has neither an originating pane nor a CLI client. Direct CLI and plugin
         // quits stay immediate, and the confirmation plugin's own quit cannot reopen itself.
         Action::Quit if pane_id.is_none() && cli_client_id.is_none() => {
-            let plugin = RunPluginOrAlias::RunPlugin(
-                RunPlugin {
-                    location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
-                    ..Default::default()
-                }
-                .with_configuration(BTreeMap::from([("modal".to_owned(), "true".to_owned())])),
-            );
+            let plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
+                ..Default::default()
+            });
             senders
                 .send_to_screen(ScreenInstruction::LaunchPlugin(
                     plugin,
@@ -1241,6 +1238,9 @@ pub(crate) fn route_action(
                     None,
                     false,
                     None,
+                    // the one pane the user has to answer: stated here rather than spelled as a
+                    // `modal` key in the plugin's configuration for the server to read back out
+                    Some(OverlayPlacement::modal(None)),
                 ))
                 .with_context(err_context)?;
         },
@@ -1550,7 +1550,7 @@ pub(crate) fn route_action(
             pane_name: name,
             skip_cache,
             cwd,
-            coordinates: floating_pane_coordinates,
+            placement,
             no_focus,
             tab_id,
         } => {
@@ -1560,7 +1560,7 @@ pub(crate) fn route_action(
                     name,
                     skip_cache,
                     cwd,
-                    floating_pane_coordinates,
+                    placement,
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                     tab_id,
@@ -1654,6 +1654,7 @@ pub(crate) fn route_action(
                     tab_id,
                     no_focus,
                     global_placement,
+                    None,
                 ))
                 .with_context(err_context)?;
         },

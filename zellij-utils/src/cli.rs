@@ -1741,13 +1741,6 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         /// mouse if without a border)
         #[clap(short, long, value_parser)]
         borderless: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
-        #[clap(long)]
-        overlay: Option<bool>,
-        /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
-        /// way to learn it was defocused, and would be stranded on screen if focus moved.
-        #[clap(long)]
-        modal: Option<bool>,
     },
     TogglePaneBorderless {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3 (equivalent to terminal_3)

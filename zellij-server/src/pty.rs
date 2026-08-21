@@ -30,8 +30,8 @@ use zellij_utils::{
     data::{
         CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
         GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
-        GlobalPanePlacement, NewPanePlacement, OriginatingPlugin, PaneGitProbe, SessionInfo,
-        WarpPlacement, WarpedPane, WarpedTab,
+        GlobalPanePlacement, NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe,
+        SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -343,6 +343,9 @@ pub enum PtyInstruction {
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>,
         Option<GlobalPaneSpawnContext>,
+        // the overlay placement the launcher stated outright, rather than the one derived from
+        // the plugin's own `overlay`/`modal` configuration
+        Option<OverlayPlacement>,
     ),
     ListClientsMetadata(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     Reconfigure {
@@ -1169,6 +1172,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 floating_pane_coordinates,
                 completion_tx,
                 global_placement,
+                overlay_placement,
             ) => {
                 pty.fill_plugin_cwd(
                     should_float,
@@ -1186,6 +1190,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     floating_pane_coordinates,
                     completion_tx,
                     global_placement,
+                    overlay_placement,
                 )?;
             },
             PtyInstruction::Reconfigure {
@@ -2734,6 +2739,7 @@ impl Pty {
         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
         completion_tx: Option<NotificationEnd>,
         global_placement: Option<GlobalPaneSpawnContext>,
+        overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
         let get_focused_cwd = || {
             self.active_panes
@@ -2793,6 +2799,7 @@ impl Pty {
             floating_pane_coordinates,
             completion_tx,
             global_placement,
+            overlay_placement,
         ))?;
         Ok(())
     }
