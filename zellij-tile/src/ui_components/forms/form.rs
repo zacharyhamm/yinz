@@ -1063,6 +1063,31 @@ impl Form {
         self.render_rows(x, y, width, rows, Some(y.saturating_add(rows)));
     }
 
+    /// Draw in a `rows`-tall viewport, letting an open dropdown overlay down to
+    /// `overlay_bottom`.
+    ///
+    /// The rows between the viewport's own bottom and `overlay_bottom` belong to
+    /// the caller - a dialog's blank, status and help lines, say - and it has to
+    /// keep whatever it draws there off the list; [`Form::overlay_rect`] says
+    /// where the list ended up. The alternative is for the form to scroll to
+    /// make room, which moves every field the user is looking at.
+    pub fn render_in_viewport_with_overlay(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        rows: usize,
+        overlay_bottom: usize,
+    ) {
+        self.render_rows(
+            x,
+            y,
+            width,
+            rows,
+            Some(overlay_bottom.max(y.saturating_add(rows))),
+        );
+    }
+
     fn render_rows(
         &mut self,
         x: usize,
@@ -1071,9 +1096,9 @@ impl Form {
         rows: usize,
         overlay_bottom: Option<usize>,
     ) {
-        let start = overlay_bottom
-            .map(|_| self.viewport_start(rows))
-            .unwrap_or(0);
+        // `render` asks for every row it has, so this is 0 there: the scroll and
+        // the overlay's bottom edge are separate questions.
+        let start = self.viewport_start(rows);
         let end = start.saturating_add(rows).min(self.height());
 
         for field in &mut self.fields {
@@ -1204,6 +1229,15 @@ impl Form {
         }
     }
 
+    /// The first row of the form the viewport shows: the least scroll that keeps
+    /// the focused row on screen.
+    ///
+    /// An open dropdown does not enter into it. Scrolling to make room for one
+    /// would move every other field - the row the user just opened jumps to the
+    /// top of the viewport and whatever sat above it falls off - and the list is
+    /// an overlay precisely so that nothing has to move. A dropdown with no room
+    /// under it is the caller's problem to solve with
+    /// [`render_in_viewport_with_overlay`](Self::render_in_viewport_with_overlay).
     fn viewport_start(&self, rows: usize) -> usize {
         if rows == 0 {
             return 0;
@@ -1212,21 +1246,10 @@ impl Form {
         let Some(focused_row) = self.focus_index() else {
             return 0;
         };
-        let focused_select_is_open = match self.focus {
-            Some(Focus::Field(i)) => self.fields[i]
-                .select()
-                .map(|select| select.is_open())
-                .unwrap_or(false),
-            _ => false,
-        };
-        if focused_select_is_open {
-            focused_row.min(self.height().saturating_sub(rows - 1))
-        } else {
-            focused_row
-                .saturating_add(1)
-                .saturating_sub(rows)
-                .min(max_start)
-        }
+        focused_row
+            .saturating_add(1)
+            .saturating_sub(rows)
+            .min(max_start)
     }
 }
 
@@ -1721,33 +1744,65 @@ mod tests {
 
     #[test]
     fn a_dropdown_is_clipped_to_the_form_viewport() {
+        // Name, then the select, then the button row.
         let mut form = a_form_with_a_select();
         form.focus_on("layout");
         form.handle_key(key(BareKey::Char(' ')));
-        form.render_in_viewport(0, 0, 40, 2);
-        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 1, 40, 1)));
 
-        form.render_in_viewport(0, 0, 40, 1);
+        // Only the button row is left underneath, so only one option fits.
+        form.render_in_viewport(0, 0, 40, 3);
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 1)));
+
+        // Nothing is left underneath: the list is not drawn rather than the
+        // form being scrolled to make space for it.
+        form.render_in_viewport(0, 0, 40, 2);
         assert_eq!(form.overlay_rect(), None);
     }
 
     #[test]
-    fn a_bottom_row_dropdown_reserves_space_in_the_viewport() {
+    fn a_bottom_row_dropdown_uses_the_rows_the_caller_lends_it() {
         let mut form = Form::new()
             .field("name", "Name", TextInput::empty())
             .select("layout", "Layout", Select::new(["default", "compact"]));
         form.focus_on("layout");
         form.handle_key(key(BareKey::Char(' ')));
-        form.handle_key(key(BareKey::Down));
 
-        form.render_in_viewport(0, 0, 40, 2);
+        // Two rows of form, and two more below it that the caller owns.
+        form.render_in_viewport_with_overlay(0, 0, 40, 2, 4);
 
-        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 1, 40, 1)));
         assert_eq!(
-            click(&mut form, 1, 0),
+            form.fields[0].last_rendered,
+            Some(Rect::new(0, 0, 40, 1)),
+            "opening the list is not a reason to scroll the field above it away"
+        );
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 2)));
+        assert_eq!(
+            click(&mut form, 3, 0),
             FormEvent::FieldChanged("layout".to_string())
         );
         assert_eq!(form.text("layout"), "compact");
+    }
+
+    /// The bug this replaced: the form scrolled a row to make space for the
+    /// list, taking the field above the select off the top of the viewport.
+    #[test]
+    fn opening_a_dropdown_does_not_scroll_a_form_that_already_fits() {
+        let mut form = Form::new()
+            .field("name", "Name", TextInput::empty())
+            .select("layout", "Layout", Select::new(["default", "compact"]))
+            .field("path", "Path", TextInput::empty())
+            .button("save", Button::new("Save"));
+        form.focus_on("layout");
+        let rows = form.height();
+
+        assert_eq!(form.viewport_start(rows), 0);
+        form.handle_key(key(BareKey::Char(' ')));
+        assert!(form.select_by_id("layout").unwrap().is_open());
+        assert_eq!(form.viewport_start(rows), 0);
+
+        form.render_in_viewport(0, 0, 40, rows);
+        assert_eq!(form.fields[0].last_rendered, Some(Rect::new(0, 0, 40, 1)));
+        assert_eq!(form.fields[1].last_rendered, Some(Rect::new(0, 1, 40, 1)));
     }
 
     #[test]

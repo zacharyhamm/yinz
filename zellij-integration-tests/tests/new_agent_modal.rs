@@ -58,6 +58,57 @@ fn position_of(snapshot: &zellij_integration_tests::GridSnapshot, needle: &str) 
         .unwrap_or_else(|| panic!("{needle} is not on the screen:\n{}", snapshot.text))
 }
 
+/// The other way the frame used to move: opening a list scrolled the form.
+///
+/// A dropdown is an overlay - it covers the rows under it and takes none of its own -
+/// so the form has no reason to move when one opens. It used to anyway: the viewport
+/// scrolled a row to reserve space for the list, which put the select at the top of the
+/// form and took the field above it off screen.
+#[test]
+fn opening_a_dropdown_leaves_the_rest_of_the_form_where_it_was() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NEW_AGENT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
+        .start();
+    let _shell = zellij.expect_pty_spawn();
+
+    zellij.send_stdin(&keys::ctrl('b'));
+    let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
+        snapshot.contains("Use worktree") && snapshot.contains("[x]")
+    });
+    let title = position_of(&snapshot, "New agent");
+    let project = position_of(&snapshot, "Project");
+    let (column, row) = position_of(&snapshot, "Agent:");
+
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+
+    // An option that is only on screen while the list is open.
+    let snapshot = zellij.wait_until("the agent list is open", |snapshot| {
+        snapshot.contains("Cursor")
+    });
+    assert_eq!(
+        position_of(&snapshot, "Project"),
+        project,
+        "the field above the select moved when the list opened:\n{}",
+        snapshot.text
+    );
+    assert_eq!(
+        position_of(&snapshot, "Agent:"),
+        (column, row),
+        "the select itself moved when its list opened:\n{}",
+        snapshot.text
+    );
+    assert_eq!(
+        position_of(&snapshot, "New agent"),
+        title,
+        "the dialog's title moved when the list opened:\n{}",
+        snapshot.text
+    );
+
+    zellij.quit();
+}
+
 #[test]
 fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
