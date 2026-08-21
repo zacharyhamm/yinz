@@ -34,6 +34,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 * fix: only advertise Sixel support if the attached terminal also supports it (https://github.com/zellij-org/zellij/pull/5432)
 * fix: properly unbundle plugin wasm executables when stripping them (to assist distro packagers) (https://github.com/zellij-org/zellij/pull/5433)
 * feat: allow opting-in to reading paste buffer (default false) (https://github.com/zellij-org/zellij/pull/5472)
+* feat: overlays and modals are a pane collection of their own rather than a flag on the floating layer - `zellij action new-pane --modal` joins `--overlay`, both now work for terminal panes and for `zellij action edit --floating`, and an overlay draws over a pinned or fullscreen pane instead of being hidden behind one
+* feat: plugin API - `change_overlay_coordinates` and `open_command_pane_overlay`
+* breaking: `zellij action change-floating-pane-coordinates` loses `--overlay` and `--modal`; a floating pane can no longer become an overlay after it is open - open it as one instead. The `overlay` field is deleted rather than reserved in the plugin wire contract, so a plugin built against an older `zellij-tile` that sets it silently loses overlay-ness
 
 ## [0.44.3] - 2026-05-13
 * fix: deadlock with --blocking panes (https://github.com/zellij-org/zellij/pull/5152)
