@@ -116,7 +116,7 @@ impl std::error::Error for SessionEnded {}
 fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Result<String> {
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
     loop {
-        match receiver.recv_server_msg() {
+        match receiver.recv_server_msg().msg() {
             Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
             Some((ServerToClientMsg::Log { lines }, _)) => return Ok(lines.join(" ")),
             Some((ServerToClientMsg::LogError { lines }, _)) => {

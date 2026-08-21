@@ -18,7 +18,7 @@ use zellij_utils::{
     cli::CliArgs,
     data::Style,
     input::{config::Config, options::Options},
-    ipc::{ClientToServerMsg, ExitReason, PixelDimensions, ServerToClientMsg},
+    ipc::{ClientToServerMsg, ExitReason, IpcRecv, PixelDimensions, ServerToClientMsg},
     pane_size::{Size, SizeInPixels},
     sessions::generate_unique_session_name,
     setup::Setup,
@@ -174,13 +174,29 @@ pub fn zellij_server_listener(
 
                     let mut unknown_message_count = 0;
                     loop {
-                        let msg = os_input.recv_from_server();
-                        if msg.is_some() {
-                            unknown_message_count = 0;
-                        } else {
-                            unknown_message_count += 1;
+                        let received = os_input.recv_from_server();
+                        match &received {
+                            IpcRecv::Msg(..) => unknown_message_count = 0,
+                            IpcRecv::Malformed => unknown_message_count += 1,
+                            // Nothing arrived and nothing is wrong; counting
+                            // this as an unknown message is how an idle
+                            // connection used to look like a broken one.
+                            IpcRecv::Idle => {},
+                            IpcRecv::Eof => {},
                         }
-                        match msg.map(|m| m.0) {
+                        if received.is_eof() {
+                            // Terminal: retrying only spins. Tell the browser
+                            // the same thing a lost connection tells it.
+                            log::error!(
+                                "The server closed the connection without sending Exit"
+                            );
+                            handle_exit_reason(
+                                &mut client_connection_bus,
+                                ExitReason::Disconnect,
+                            );
+                            break;
+                        }
+                        match received.msg().map(|m| m.0) {
                             Some(ServerToClientMsg::UnblockInputThread) => {},
                             Some(ServerToClientMsg::Connected) => {},
                             Some(ServerToClientMsg::CliPipeOutput { .. } ) => {},
@@ -276,7 +292,7 @@ pub fn zellij_server_listener(
                             },
                             None => {
                                 if unknown_message_count >= 1000 {
-                                    log::error!("Error: Received more than 1000 consecutive unknown server messages, disconnecting.");
+                                    log::error!("Error: Received more than 1000 consecutive unreadable server messages, disconnecting.");
                                     // this probably means we're in an infinite loop, let's
                                     // disconnect so as not to cause 100% CPU
                                     break;

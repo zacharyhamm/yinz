@@ -6,9 +6,8 @@ use zellij_client::os_input_output::{
     ClientOsApi, ServerConnection, SignalEvent, SignalSource, StdioAccess, TtyControl,
 };
 use zellij_utils::data::Palette;
-use zellij_utils::errors::ErrorContext;
 use zellij_utils::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+    ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
 };
 use zellij_utils::pane_size::Size;
 use zellij_utils::shared::default_palette;
@@ -185,7 +184,7 @@ impl ServerConnection for FakeClientOsApi {
             },
         }
     }
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
+    fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {
         let received = self
             .receive_instructions_from_server
             .lock()
@@ -193,7 +192,7 @@ impl ServerConnection for FakeClientOsApi {
             .as_mut()
             .unwrap()
             .recv_server_msg();
-        if let Some((msg, _)) = received.as_ref() {
+        if let IpcRecv::Msg(msg, _) = &received {
             // `Log`/`LogError` carry their lines rather than just their name:
             // they are how an action answers a cli client in prose, and for
             // anything whose whole outcome *is* the prose — a warp explaining why

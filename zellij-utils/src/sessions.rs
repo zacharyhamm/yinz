@@ -155,7 +155,7 @@ fn assert_socket(name: &str) -> bool {
                 IpcSenderWithContext::new(stream);
             let _ = sender.send_client_msg(ClientToServerMsg::ConnStatus);
             let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
-            match receiver.recv_server_msg() {
+            match receiver.recv_server_msg().msg() {
                 Some((ServerToClientMsg::Connected, _)) => true,
                 None | Some((_, _)) => false,
             }

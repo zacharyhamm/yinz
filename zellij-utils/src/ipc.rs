@@ -408,6 +408,65 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     }
 }
 
+/// The outcome of one read on an IPC socket.
+///
+/// The distinction that matters is `Eof` versus `Malformed`. A malformed frame
+/// is a single bad message on a stream that may well carry good ones after it,
+/// so retrying is reasonable. `Eof` means the peer is gone: it is terminal, it
+/// never blocks, and every subsequent read returns it immediately — so a caller
+/// that retries `Eof` is a busy loop, not a recovery.
+pub enum IpcRecv<T> {
+    Msg(T, ErrorContext),
+    /// The peer closed the socket, or the connection was reset. Terminal.
+    Eof,
+    /// A frame arrived but could not be read as a message. Possibly survivable.
+    Malformed,
+    /// Nothing has arrived yet. A real socket blocks instead of saying this, so
+    /// only non-blocking transports and test doubles ever produce it — but they
+    /// do, and without a name for it "nothing yet" gets counted as "garbage",
+    /// which is the conflation this enum exists to stop.
+    Idle,
+}
+
+impl<T> IpcRecv<T> {
+    /// The message, if this read produced one.
+    pub fn msg(self) -> Option<(T, ErrorContext)> {
+        match self {
+            IpcRecv::Msg(msg, err_ctx) => Some((msg, err_ctx)),
+            _ => None,
+        }
+    }
+
+    pub fn is_eof(&self) -> bool {
+        matches!(self, IpcRecv::Eof)
+    }
+}
+
+/// Decide whether a failed read means "the peer hung up" or "that frame was bad".
+///
+/// The length prefix is the only place a clean hangup can show up: `read_exact`
+/// on a socket whose peer has closed returns `UnexpectedEof` with nothing
+/// consumed. A reset or a broken pipe is the same situation reached less
+/// politely. Anything else — a decode failure, an over-long frame, a truncated
+/// body — is a bad message on a stream that is still open.
+fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
+    if let Some(io_err) = e.downcast_ref::<io::Error>() {
+        if matches!(
+            io_err.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+        ) {
+            return IpcRecv::Eof;
+        }
+    }
+    // Previously discarded outright, which is what made a desynchronised stream
+    // impossible to tell apart from a hangup after the fact.
+    warn!("Error reading {}: {:?}", msg_type, e);
+    IpcRecv::Malformed
+}
+
 /// Receives messages on a stream socket, along with an [`ErrorContext`].
 pub struct IpcReceiverWithContext<T> {
     receiver: io::BufReader<Box<dyn IpcStream>>,
@@ -433,29 +492,29 @@ where
         }
     }
 
-    pub fn recv_client_msg(&mut self) -> Option<(ClientToServerMsg, ErrorContext)> {
+    pub fn recv_client_msg(&mut self) -> IpcRecv<ClientToServerMsg> {
         match read_protobuf_message::<ProtoClientToServerMsg>(&mut self.receiver) {
             Ok(proto_msg) => match proto_msg.try_into() {
-                Ok(rust_msg) => Some((rust_msg, ErrorContext::default())),
+                Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
                 Err(e) => {
                     warn!("Error converting protobuf to ClientToServerMsg: {:?}", e);
-                    None
+                    IpcRecv::Malformed
                 },
             },
-            Err(_e) => None,
+            Err(e) => classify_read_error(e, "ClientToServerMsg"),
         }
     }
 
-    pub fn recv_server_msg(&mut self) -> Option<(ServerToClientMsg, ErrorContext)> {
+    pub fn recv_server_msg(&mut self) -> IpcRecv<ServerToClientMsg> {
         match read_protobuf_message::<ProtoServerToClientMsg>(&mut self.receiver) {
             Ok(proto_msg) => match proto_msg.try_into() {
-                Ok(rust_msg) => Some((rust_msg, ErrorContext::default())),
+                Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
                 Err(e) => {
                     warn!("Error converting protobuf to ServerToClientMsg: {:?}", e);
-                    None
+                    IpcRecv::Malformed
                 },
             },
-            Err(_e) => None,
+            Err(e) => classify_read_error(e, "ServerToClientMsg"),
         }
     }
 

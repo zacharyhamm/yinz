@@ -40,6 +40,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
 };
 
 pub use async_trait::async_trait;
@@ -353,15 +354,67 @@ impl CoalescingSendQueue {
 // will give up on this client and we'll stop sending messages to it.
 // If the client ever becomes responsive again, we'll send one final Disconnect message so it
 // knows what happened.
+/// How many client writer threads are still draining.
+///
+/// The count has to live outside `client_senders`, because `remove_client`
+/// drops the `ClientSender` — by the time the server is shutting down there is
+/// no handle left to join. Each writer registers here at birth and deregisters
+/// once it has written everything it was given, which is the only signal that
+/// a queued `Exit` actually reached the socket.
+#[derive(Default)]
+struct LiveWriters {
+    count: Mutex<usize>,
+    drained: Condvar,
+}
+
+impl LiveWriters {
+    fn register(&self) {
+        *self.count.lock().unwrap() += 1;
+    }
+
+    fn deregister(&self) {
+        let mut count = self.count.lock().unwrap();
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.drained.notify_all();
+        }
+    }
+
+    /// Wait for every writer to finish, up to `deadline`. Returns whether they
+    /// all did. Bounded on purpose: a client whose socket buffer is full and
+    /// which is not reading would otherwise hold the server open forever.
+    fn wait_until_drained(&self, deadline: Duration) -> bool {
+        let started = Instant::now();
+        let mut count = self.count.lock().unwrap();
+        while *count > 0 {
+            let remaining = match deadline.checked_sub(started.elapsed()) {
+                Some(remaining) if !remaining.is_zero() => remaining,
+                _ => return false,
+            };
+            let (next, timeout) = self.drained.wait_timeout(count, remaining).unwrap();
+            count = next;
+            if timeout.timed_out() && *count > 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 struct ClientSender {
     client_id: ClientId,
     queue: Arc<CoalescingSendQueue>,
 }
 
 impl ClientSender {
-    pub fn new(client_id: ClientId, mut sender: IpcSenderWithContext<ServerToClientMsg>) -> Self {
+    pub fn new(
+        client_id: ClientId,
+        mut sender: IpcSenderWithContext<ServerToClientMsg>,
+        live_writers: Arc<LiveWriters>,
+    ) -> Self {
         let queue = Arc::new(CoalescingSendQueue::new());
         let writer_queue = queue.clone();
+        live_writers.register();
         std::thread::spawn(move || {
             let err_context = || format!("failed to send message to client {client_id}");
             while let Some(msg) = writer_queue.pop() {
@@ -373,6 +426,9 @@ impl ClientSender {
             let _ = sender.send_server_msg(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Disconnect,
             });
+            // Last thing this thread does: from here on the socket has
+            // everything it was ever going to get.
+            live_writers.deregister();
         });
         ClientSender { client_id, queue }
     }
@@ -400,6 +456,15 @@ impl ClientSender {
     }
 }
 
+impl ClientSender {
+    /// Stop accepting messages and let the writer thread finish what it has.
+    /// Idempotent, so shutdown can call it on senders still in the map without
+    /// disturbing the ones already dropped.
+    fn close(&self) {
+        self.queue.close();
+    }
+}
+
 impl Drop for ClientSender {
     fn drop(&mut self) {
         // lets the writer thread drain what's queued and send the final
@@ -412,6 +477,8 @@ impl Drop for ClientSender {
 pub struct ServerOsInputOutput {
     pty_backend: PtyBackendImpl,
     client_senders: Arc<Mutex<HashMap<ClientId, ClientSender>>>,
+    /// Writer threads that have not finished draining yet. See `LiveWriters`.
+    live_writers: Arc<LiveWriters>,
     cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16, Option<u16>, Option<u16>)>>>>,
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host, shared by every pane there.
@@ -617,6 +684,13 @@ pub trait ServerOsApi: Send + Sync {
     fn set_pty_host_enabled(&self, _enabled: bool) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
+    /// Wait for queued client messages to reach their sockets, on the way out.
+    ///
+    /// `send_to_client` only queues; a per-client writer thread does the actual
+    /// write. Those threads are detached, so without this the process can exit
+    /// between "queued the `Exit`" and "wrote the `Exit`", and the client sees
+    /// a bare hangup instead of being told why the session ended.
+    fn flush_client_writers(&self, _deadline: Duration) {}
     /// Whether this pane's process lives on another machine.
     ///
     /// The question every pid-shaped operation has to ask first. `id_to_child_pid`
@@ -829,7 +903,7 @@ impl ServerOsApi for ServerOsInputOutput {
         stream: LocalSocketStream,
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
         let receiver = IpcReceiverWithContext::new(stream);
-        let sender = ClientSender::new(client_id, receiver.get_sender());
+        let sender = ClientSender::new(client_id, receiver.get_sender(), self.live_writers.clone());
         self.client_senders
             .lock()
             .to_anyhow()
@@ -1015,6 +1089,17 @@ impl ServerOsApi for ServerOsInputOutput {
         // per host on the way out.
         self.remote_hosts.shutdown();
     }
+
+    fn flush_client_writers(&self, deadline: Duration) {
+        // Closing each queue is what lets a writer thread finish: `pop` returns
+        // `None` once the queue is closed and drained.
+        for sender in self.client_senders.lock().unwrap().values() {
+            sender.close();
+        }
+        if !self.live_writers.wait_until_drained(deadline) {
+            log::warn!("timed out waiting for client writer threads to drain; some clients may not have been told why the session ended");
+        }
+    }
     #[cfg(not(windows))]
     fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
         self.pty_backend.release_terminal_for_warp(terminal_id)
@@ -1106,6 +1191,7 @@ pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
         pty_backend: PtyBackendImpl::new()?,
         remote_hosts: Arc::new(RemoteHosts::new()),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
+        live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),
     })
 }

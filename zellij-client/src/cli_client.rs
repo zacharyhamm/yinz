@@ -161,7 +161,7 @@ fn pipe_client(
         }
         loop {
             // wait for a response and act accordingly
-            match os_input.recv_from_server() {
+            match os_input.recv_from_server().msg() {
                 Some((ServerToClientMsg::UnblockCliPipeInput { pipe_name }, _)) => {
                     // unblock this pipe, meaning we need to stop waiting for a response and read
                     // once more from STDIN
@@ -230,7 +230,7 @@ fn individual_messages_client(
     };
     os_input.send_to_server(msg);
     loop {
-        match os_input.recv_from_server() {
+        match os_input.recv_from_server().msg() {
             Some((ServerToClientMsg::UnblockInputThread, _)) if !is_blocking => {
                 return None;
             },
@@ -301,7 +301,7 @@ pub fn start_subscribe_client(
     let mut stdout = stdout.lock();
 
     loop {
-        match os_input.recv_from_server() {
+        match os_input.recv_from_server().msg() {
             Some((
                 ServerToClientMsg::PaneRenderUpdate {
                     pane_id,

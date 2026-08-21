@@ -51,7 +51,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     thread,
+    time::Duration,
 };
+
+/// How long shutdown waits for queued client messages to reach their sockets.
+/// Generous enough for a live client to drain, short enough that a wedged one
+/// cannot keep the server process alive.
+const CLIENT_WRITER_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
@@ -882,6 +888,11 @@ pub fn start_server_impl(
             }
         });
 
+    // Why the loop below stopped. Set at every break so that the reason a
+    // session ended is written down: without it, a server shutdown leaves
+    // nothing in the log at all, and "the session died" is indistinguishable
+    // from "the session was closed" after the fact.
+    let exit_reason: &str;
     loop {
         let (instruction, mut err_ctx) = server_receiver.recv().unwrap();
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
@@ -1301,6 +1312,7 @@ pub fn start_server_impl(
                             );
                         }
 
+                        exit_reason = "the last client exited";
                         break;
                     }
                 }
@@ -1364,6 +1376,7 @@ pub fn start_server_impl(
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
                 }
+                exit_reason = "KillSession";
                 break;
             },
             ServerInstruction::DisconnectAllClientsExcept(client_id) => {
@@ -1469,6 +1482,7 @@ pub fn start_server_impl(
                         );
                         remove_client!(watcher_id, os_input, session_state, session_data);
                     }
+                    exit_reason = "the last pane closed";
                     break;
                 }
             },
@@ -1483,6 +1497,7 @@ pub fn start_server_impl(
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
                 }
+                exit_reason = "a fatal error in the server";
                 break;
             },
             ServerInstruction::ConnStatus(client_id) => {
@@ -1923,6 +1938,8 @@ pub fn start_server_impl(
         }
     }
 
+    log::info!("Server exiting: {exit_reason}");
+
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's
     // supervisor, via `clear_terminal_id`.
@@ -1931,6 +1948,12 @@ pub fn start_server_impl(
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
+
+    // Every break above sends the clients an `Exit` first, but sending only
+    // queues it — the writer threads are detached, so without this wait the
+    // process can exit before the bytes are written and a client that was told
+    // why the session ended sees a bare hangup instead.
+    os_input.flush_client_writers(CLIENT_WRITER_FLUSH_TIMEOUT);
 
     drop(std::fs::remove_file(&socket_path));
 }
