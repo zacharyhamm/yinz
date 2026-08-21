@@ -21,9 +21,13 @@ fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
 }
 
 fn lua_run_plugin(configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
+    lua_run_plugin_at(&LUA_PLUGIN_FIXTURE, configuration)
+}
+
+fn lua_run_plugin_at(path: &str, configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
     RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
-        location: RunPluginLocation::File(PathBuf::from(&*LUA_PLUGIN_FIXTURE)),
+        location: RunPluginLocation::File(PathBuf::from(path)),
         configuration: PluginUserConfiguration::new(configuration),
         ..Default::default()
     })
@@ -215,5 +219,79 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         !rendered.iter().any(|r| r.contains("presses 2")),
         "the unsubscribed timer event should not have been delivered, got: {:?}",
         rendered
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn lua_plugin_host_command_reaches_the_pty_thread() {
+    // The whole point of the design is that a Lua plugin's commands go through the same handlers
+    // wasm plugins use, so this checks one all the way through: `zellij.open_terminal` in Lua
+    // should arrive at the pty thread as a `SpawnTerminal`, permission-gated like any other.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+
+    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::SpawnTerminal,
+        pty_receiver,
+        1
+    );
+    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
+        received_screen_instructions,
+        ScreenInstruction::Exit,
+        screen_receiver,
+        1,
+        &PermissionType::OpenTerminalsOrPlugins,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_test_plugin".to_owned()),
+        lua_run_plugin_at(&LUA_PLUGIN_FIXTURE_WITH_PERMISSIONS, BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 't' is what the fixture maps to `zellij.open_terminal`.
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Char('t'))),
+    )]));
+    pty_thread.join().unwrap();
+    teardown();
+
+    let spawned = received_pty_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|instruction| matches!(instruction, PtyInstruction::SpawnTerminal(..)));
+    assert!(
+        spawned,
+        "expected `zellij.open_terminal` to reach the pty thread, got: {:?}",
+        received_pty_instructions.lock().unwrap()
     );
 }

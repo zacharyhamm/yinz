@@ -741,6 +741,10 @@ fn lua_plugin_fixture_path() -> PathBuf {
 lazy_static! {
     static ref PLUGIN_FIXTURE: String = plugin_fixture_path().display().to_string();
     static ref LUA_PLUGIN_FIXTURE: String = lua_plugin_fixture_path().display().to_string();
+    static ref LUA_PLUGIN_FIXTURE_WITH_PERMISSIONS: String = lua_plugin_fixture_path()
+        .with_file_name("fixture_with_permissions.lua")
+        .display()
+        .to_string();
 }
 
 // =====================================================================

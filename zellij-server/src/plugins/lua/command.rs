@@ -26,7 +26,9 @@ pub fn plugin_command_from_lua(name: &str, args: LuaValue) -> Result<PluginComma
             args,
             LuaValue::Boolean(true)
         ))),
-        "open_terminal" => Ok(PluginCommand::OpenTerminal(file_to_open(args)?)),
+        // `OpenTerminal` carries a `FileToOpen` but only reads its `path`, treating it as the
+        // cwd - so a bare string is accepted here and put where the handler looks.
+        "open_terminal" => Ok(PluginCommand::OpenTerminal(cwd_to_open(args)?)),
         "close_self" => Ok(PluginCommand::CloseSelf),
         "set_timeout" => Ok(PluginCommand::SetTimeout(number(args, "set_timeout")?)),
         other => Err(anyhow!("unknown zellij command '{}'", other)),
@@ -53,6 +55,25 @@ fn permissions(args: LuaValue) -> Result<Vec<PermissionType>> {
         permissions.push(permission);
     }
     Ok(permissions)
+}
+
+/// Build the `FileToOpen` that `OpenTerminal` expects, which reads the cwd out of `path`.
+fn cwd_to_open(args: LuaValue) -> Result<FileToOpen> {
+    let mut file = FileToOpen::default();
+    match args {
+        LuaValue::String(cwd) => {
+            file.path = PathBuf::from(cwd.to_string_lossy().to_string());
+        },
+        LuaValue::Table(_) => {
+            let from_table = file_to_open(args)?;
+            file.path = from_table
+                .cwd
+                .clone()
+                .unwrap_or_else(|| from_table.path.clone());
+        },
+        _ => {},
+    }
+    Ok(file)
 }
 
 fn file_to_open(args: LuaValue) -> Result<FileToOpen> {

@@ -82,8 +82,8 @@ directly:
 ```lua
 function M.update(event)
   if event.name == "key" then
-    -- named fields are readable directly, and as event.value.bare_key
-    if event.bare_key == "Esc" then ... end
+    -- key events carry a readable `key`: "t", "Esc", "F2"
+    if event.key == "Esc" then ... end
   elseif event.name == "tab_update" then
     for _, tab in ipairs(event.value) do ... end   -- a list
   elseif event.name == "timer" then
@@ -91,6 +91,8 @@ function M.update(event)
   end
 end
 ```
+
+`zellij.key_name(bare_key)` is the same conversion, if you need it elsewhere.
 
 Instead of one big `if`, you can register handlers:
 
@@ -112,7 +114,8 @@ zellij.close_self()               zellij.request_render()
 zellij.set_timeout(seconds)
 ```
 
-Anything not yet wrapped by name is reachable with `zellij.command(name, args)`.
+`zellij.command(name, args)` calls a command by name, for anything the prelude has not given a
+named wrapper yet. It only reaches commands zellij knows how to marshal - see *Current limits*.
 
 Privileged commands need permission, which the user is prompted for once:
 
@@ -154,8 +157,9 @@ translation wasm plugins get, not by opening `io`.
 
 Everything below is a gap in the Lua binding, not in the plugin system:
 
-- **Commands** - the named wrappers above, plus `zellij.command` for the rest. The full set of
-  ~200 commands is not yet marshalled.
+- **Commands** - only the ones listed above are wrapped. `zellij.command` reaches the same set
+  by name rather than unlocking the others; the full ~200-command surface is not yet marshalled,
+  so anything else raises "unknown zellij command".
 - **Return values** - commands that reply (`get_plugin_ids` and friends) hand back raw protobuf
   bytes rather than a Lua table.
 - **Workers** - wasm plugins can spawn background workers; Lua plugins cannot.

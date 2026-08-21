@@ -440,3 +440,27 @@ fn a_command_cannot_be_called_re_entrantly() {
     let _ = plugin.load(&BTreeMap::new());
     assert!(plugin.render(1, 1).is_ok());
 }
+
+#[test]
+fn key_events_carry_a_readable_key_name() {
+    // `BareKey::Char('t')` serializes as `{ Char = "t" }` while `BareKey::Esc` serializes as the
+    // string "Esc". Plugins should not have to know that, so key events also carry `event.key`.
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.update(event) M.keys = (M.keys or "") .. event.key .. " " return false end
+        function M.render() return M.keys or "" end
+        return M
+        "#,
+    )
+    .unwrap();
+    for key in [BareKey::Char('t'), BareKey::Esc, BareKey::Enter] {
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(key)))
+            .unwrap();
+    }
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 40).unwrap()).unwrap(),
+        "t Esc Enter "
+    );
+}
