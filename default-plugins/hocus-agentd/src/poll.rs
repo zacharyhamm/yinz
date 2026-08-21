@@ -37,6 +37,16 @@ pub fn pane_cwd(pane_id: u32) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// What Git said about a remote pane's folder, from its own machine.
+///
+/// `None` for a local pane — there is nothing cached for one, and the host will
+/// not run Git on the pty thread to make some — and for a remote pane whose
+/// machine has not reported yet. Callers ask again rather than recording the
+/// silence: both reasons pass on their own.
+pub fn pane_git_probe(pane_id: u32) -> Option<PaneGitProbe> {
+    get_pane_git_probe(PaneId::Terminal(pane_id)).ok()
+}
+
 /// One poll's reading of a pane: what it shows, and what that reading is worth.
 ///
 /// The text alone cannot say whether an agent is working. A pane repaints when the user
@@ -215,6 +225,9 @@ pub fn repository(exit_code: Option<i32>, metadata: &[u8], config: &[u8]) -> Pro
         }),
         common_dir: Some(common_dir.to_owned()),
         branch,
+        // The parse says nothing about which machine Git ran on — it is handed
+        // bytes. Whoever asked stamps that on, in `record_probe_outcome`.
+        host: None,
     })
 }
 

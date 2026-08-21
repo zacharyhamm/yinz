@@ -528,6 +528,7 @@ pub enum PtyContext {
     GetPanePid,
     GetPaneRunningCommand,
     GetPaneCwd,
+    GetPaneGitProbe,
     UpdateAndReportCwds,
     NotifyCwdFromOsc7,
     Exit,

@@ -15,8 +15,8 @@ use zellij_utils::plugin_api::generated_api::api::plugin_command::{
 };
 use zellij_utils::plugin_api::plugin_command::{
     dump_layout_response, dump_session_layout_response, get_focused_pane_info_response,
-    get_pane_cwd_response, get_pane_running_command_response, get_session_list_response,
-    parse_layout_response, CreateTokenResponse, ListTokensResponse,
+    get_pane_cwd_response, get_pane_git_probe_response, get_pane_running_command_response,
+    get_session_list_response, parse_layout_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
     ProtobufBreakPanesToTabWithIndexResponse, ProtobufCurrentSessionLastSavedTimeResponse,
     ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
@@ -25,8 +25,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
     ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
     ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
-    ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
     ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
     ProtobufKillSessionsResponse, ProtobufListNotificationsResponse,
@@ -2714,6 +2714,43 @@ pub fn get_pane_cwd(pane_id: PaneId) -> Result<PathBuf, String> {
     match protobuf_response.result {
         Some(get_pane_cwd_response::Result::Cwd(cwd_str)) => Ok(PathBuf::from(cwd_str)),
         Some(get_pane_cwd_response::Result::Error(err)) => Err(err),
+        None => Err("Empty response from server".to_string()),
+    }
+}
+
+/// What Git says about a **remote** pane's folder, as its own machine sees it.
+///
+/// Raw and unparsed — the same two `git` invocations a caller would run itself,
+/// with their bytes and exit code — so the parsing stays in one place rather
+/// than being duplicated for remote panes.
+///
+/// Only a remote pane has an answer. A local pane returns `Err`: nothing on this
+/// machine has a cached probe to give, and the pty thread will not spawn `git`
+/// to make one. Branch on `PaneInfo::host` and run Git yourself for a local
+/// pane. The `cwd` in the answer is the folder the probe was *run* in, which for
+/// a pane that has just moved is not the folder it is in now — file the result
+/// under the probe's own folder rather than the pane's.
+///
+/// # Permissions Required
+/// * `ReadApplicationState`
+pub fn get_pane_git_probe(pane_id: PaneId) -> Result<PaneGitProbe, String> {
+    let plugin_command = PluginCommand::GetPaneGitProbe { pane_id };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let protobuf_response =
+        ProtobufGetPaneGitProbeResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+
+    match protobuf_response.result {
+        Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(PaneGitProbe {
+            host: probe.host,
+            cwd: probe.cwd,
+            exit_code: probe.exit_code,
+            metadata: probe.metadata,
+            config: probe.config,
+        }),
+        Some(get_pane_git_probe_response::Result::Error(err)) => Err(err),
         None => Err("Empty response from server".to_string()),
     }
 }

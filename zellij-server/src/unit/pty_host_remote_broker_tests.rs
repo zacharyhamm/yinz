@@ -604,3 +604,127 @@ fn an_explicit_command_pane_gets_an_environment_but_no_login_shell() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The Git probe pump
+// ---------------------------------------------------------------------------
+
+/// Every case below drives `GitProbePump::tick` directly rather than the thread
+/// that owns it. The pump's whole job is *when* to ask Git and *whether* the
+/// answer is worth sending, and inside the pump thread the refresh interval is
+/// reachable only by waiting a minute for it.
+mod git_probe_pump {
+    use super::*;
+    use crate::pty_host::remote::broker::GitProbePump;
+    use crate::pty_host::remote::status::GitProbe;
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    const TICK: Duration = Duration::from_secs(1);
+    const INTERVAL: Duration = Duration::from_secs(60);
+
+    fn probe_of(cwd: &str, branch: &str) -> GitProbe {
+        GitProbe {
+            cwd: cwd.to_owned(),
+            exit_code: Some(0),
+            metadata: format!("{cwd}\n{cwd}/.git\n{cwd}/.git\n{branch}\n").into_bytes(),
+            config: Vec::new(),
+        }
+    }
+
+    /// The first tick has nothing to compare against, so it probes and sends.
+    #[test]
+    fn the_first_look_at_a_folder_is_reported() {
+        let mut pump = GitProbePump::new(INTERVAL);
+        let ran = pump
+            .tick("/work", TICK, |cwd| probe_of(cwd, "main"))
+            .expect("the first tick must probe");
+        assert!(ran.changed, "the first answer is news");
+    }
+
+    /// The property the pane's whole traffic model rests on: a pane sitting
+    /// still in an unchanging checkout says nothing, however long it sits.
+    #[test]
+    fn an_unchanging_folder_is_never_reported_again() {
+        let runs = Cell::new(0);
+        let mut pump = GitProbePump::new(INTERVAL);
+        let probe = |cwd: &str| {
+            runs.set(runs.get() + 1);
+            probe_of(cwd, "main")
+        };
+
+        assert!(pump.tick("/work", TICK, probe).is_some());
+        for _ in 0..59 {
+            assert!(
+                pump.tick("/work", TICK, probe).is_none(),
+                "nothing changed and the interval is not up"
+            );
+        }
+        // The 61st tick crosses the interval, so Git is asked again...
+        let ran = pump
+            .tick("/work", TICK, probe)
+            .expect("the refresh interval is up");
+        // ...and says the same thing, which is not worth a frame.
+        assert!(!ran.changed, "an unchanged answer must not be sent");
+        assert_eq!(runs.get(), 2, "Git was asked once, then once more");
+    }
+
+    /// What the interval exists for: `git checkout` moves the branch without
+    /// moving the folder, and no event anywhere says it happened.
+    #[test]
+    fn a_branch_switched_in_place_is_reported_at_the_interval() {
+        let branch = Cell::new("main");
+        let mut pump = GitProbePump::new(INTERVAL);
+        let probe = |cwd: &str| probe_of(cwd, branch.get());
+
+        assert!(pump.tick("/work", TICK, probe).is_some());
+        branch.set("topic");
+        for _ in 0..59 {
+            assert!(
+                pump.tick("/work", TICK, probe).is_none(),
+                "the interval is not up yet, so nothing has looked",
+            );
+        }
+
+        let ran = pump
+            .tick("/work", TICK, probe)
+            .expect("the refresh interval is up");
+        assert!(ran.changed, "the branch moved, so this is news");
+        assert!(String::from_utf8_lossy(&ran.probe.metadata).contains("topic"));
+    }
+
+    /// A new folder may be a different checkout, which is the one thing that can
+    /// change a pane's project — so it does not wait for the interval.
+    #[test]
+    fn a_new_folder_is_probed_at_once() {
+        let mut pump = GitProbePump::new(INTERVAL);
+        assert!(pump
+            .tick("/work", TICK, |cwd| probe_of(cwd, "main"))
+            .is_some());
+
+        let ran = pump
+            .tick("/elsewhere", TICK, |cwd| probe_of(cwd, "main"))
+            .expect("a folder change probes without waiting");
+        assert!(ran.changed);
+        assert_eq!(ran.probe.cwd, "/elsewhere");
+    }
+
+    /// Moving away and back is still a move: the answer for the folder in hand
+    /// is what the pane's project is read from, and the pump holds exactly one.
+    #[test]
+    fn moving_back_to_a_folder_probes_it_again() {
+        let mut pump = GitProbePump::new(INTERVAL);
+        assert!(pump
+            .tick("/work", TICK, |cwd| probe_of(cwd, "main"))
+            .is_some());
+        assert!(pump
+            .tick("/elsewhere", TICK, |cwd| probe_of(cwd, "main"))
+            .is_some());
+
+        let ran = pump
+            .tick("/work", TICK, |cwd| probe_of(cwd, "main"))
+            .expect("back in the first folder, and it has not been looked at since");
+        assert!(ran.changed, "the last answer described the other folder");
+        assert_eq!(ran.probe.cwd, "/work");
+    }
+}

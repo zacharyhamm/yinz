@@ -1,6 +1,7 @@
 use super::*;
 use crate::os_input_output::ServerOsApi;
 use crate::plugins::PluginInstruction;
+use crate::pty_host::remote::conn::RemoteGitProbe;
 use crate::pty_host::remote::RemoteStatus;
 use crate::thread_bus::Bus;
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -27,6 +28,9 @@ struct MockOsApi {
     remote_signals: Arc<Mutex<Vec<(u32, ChildSignal)>>>,
     remote_status: Arc<Mutex<HashMap<u32, RemoteStatus>>>,
     remote_hosts: Arc<Mutex<HashMap<u32, String>>>,
+    /// What each remote pane's machine last said about its folder, as the
+    /// broker's `GitProbe` arrives.
+    remote_git_probes: Arc<Mutex<HashMap<u32, RemoteGitProbe>>>,
     /// Panes this backend will refuse to warp, and why.
     ///
     /// Absent means yes. A real backend answers out of the maps the release
@@ -52,6 +56,7 @@ impl MockOsApi {
             remote_signals: Arc::new(Mutex::new(Vec::new())),
             remote_status: Arc::new(Mutex::new(HashMap::new())),
             remote_hosts: Arc::new(Mutex::new(HashMap::new())),
+            remote_git_probes: Arc::new(Mutex::new(HashMap::new())),
             warp_refusals: Arc::new(Mutex::new(HashMap::new())),
             unreleasable: Arc::new(Mutex::new(std::collections::HashSet::new())),
             release_attempts: Arc::new(Mutex::new(Vec::new())),
@@ -75,6 +80,13 @@ impl MockOsApi {
             .lock()
             .unwrap()
             .insert(terminal_id, host.to_owned());
+    }
+    fn set_remote_git_probe(&self, terminal_id: u32, probe: RemoteGitProbe) {
+        self.remote_panes.lock().unwrap().insert(terminal_id);
+        self.remote_git_probes
+            .lock()
+            .unwrap()
+            .insert(terminal_id, probe);
     }
     fn set_remote_status(&self, terminal_id: u32, status: RemoteStatus) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
@@ -168,6 +180,13 @@ impl ServerOsApi for MockOsApi {
     }
     fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
         self.remote_hosts.lock().unwrap().get(&terminal_id).cloned()
+    }
+    fn remote_pane_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
+        self.remote_git_probes
+            .lock()
+            .unwrap()
+            .get(&terminal_id)
+            .cloned()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -995,6 +1014,59 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
     match pty.get_pane_cwd(PaneId::Terminal(7)) {
         GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
         other => panic!("expected the cwd, got {other:?}"),
+    }
+}
+
+/// The far machine ran Git in the pane's folder, and the answer is handed to the
+/// plugins raw. Raw is the point: a repository with no commits writes its
+/// identity to stdout and *then* exits 128, so a parse that gated on the exit
+/// code would record a real checkout as an ordinary folder — and the parser that
+/// knows this already exists in `hocus-agentd`, for local panes.
+#[test]
+fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
+    let mock = MockOsApi::new();
+    mock.set_remote_git_probe(
+        7,
+        RemoteGitProbe {
+            host: "build-box".to_owned(),
+            cwd: "/srv/build/project".to_owned(),
+            exit_code: Some(128),
+            metadata: b"/srv/build/project\n/srv/build/project/.git\n".to_vec(),
+            config: b"remote.origin.url\ngit@example.com:me/project\0".to_vec(),
+        },
+    );
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
+
+    match pty.get_pane_git_probe(PaneId::Terminal(7)) {
+        GetPaneGitProbeResponse::Ok(probe) => {
+            assert_eq!(
+                probe.host, "build-box",
+                "without the machine, two checkouts at the same path would merge"
+            );
+            assert_eq!(probe.cwd, "/srv/build/project");
+            assert_eq!(probe.exit_code, Some(128));
+            assert!(String::from_utf8_lossy(&probe.metadata).contains("/srv/build/project/.git"));
+            assert!(probe.config.contains(&0), "git's --null output, unmangled");
+        },
+        other => panic!("expected the git probe, got {other:?}"),
+    }
+}
+
+/// A local pane has no cached probe, and the pty thread will not spawn Git to
+/// make one — every pane in the session is waiting on that thread. Saying so is
+/// not the same as answering "not a repository", which is what an empty probe
+/// would read as.
+#[test]
+fn a_local_pane_has_no_git_probe_to_give() {
+    let mock = MockOsApi::new();
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
+
+    match pty.get_pane_git_probe(PaneId::Terminal(7)) {
+        GetPaneGitProbeResponse::Err(message) => assert!(
+            message.contains("not remote"),
+            "the reason has to be readable: {message}"
+        ),
+        other => panic!("expected an error for a local pane, got {other:?}"),
     }
 }
 

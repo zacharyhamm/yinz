@@ -2736,6 +2736,46 @@ pub enum GetPaneCwdResponse {
     Err(String),
 }
 
+/// What Git said about a remote pane's working directory, unparsed.
+///
+/// Raw on purpose. `hocus-agentd`'s `poll::repository` already turns exactly
+/// these three things into a checkout identity, including the awkward parts — a
+/// repository with no commits writes its identity to stdout and *then* exits
+/// 128, so the exit code cannot gate the parse. Shipping the bytes means that
+/// logic stays in one place and keeps working for remote panes without knowing
+/// they exist.
+///
+/// A projection of the server's `RemoteGitProbe`, which lives in `zellij-server`
+/// and could never cross the wasm boundary.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PaneGitProbe {
+    /// The machine this was run on, so two checkouts at the same path on
+    /// different hosts stay distinct.
+    pub host: String,
+    /// The folder the probe was run in, which is a path on `host`.
+    ///
+    /// Not necessarily the pane's folder *now*: the far machine probes on its
+    /// own clock, so a pane that has just moved reports the folder it was in.
+    /// Whoever files the answer keys it by this, not by where the pane is.
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+    pub metadata: Vec<u8>,
+    pub config: Vec<u8>,
+}
+
+/// The answer to `get_pane_git_probe`.
+///
+/// A local pane is an `Err`: nothing on this machine has a cached probe to give,
+/// and a plugin wanting one runs Git itself. That is not a failure worth
+/// special-casing — callers branch on `PaneInfo::host` before asking — but it is
+/// worth saying rather than returning an empty answer that reads as "not a
+/// repository".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GetPaneGitProbeResponse {
+    Ok(PaneGitProbe),
+    Err(String),
+}
+
 /// The outcome of moving a pane between sessions, in either direction.
 ///
 /// Both variants carry prose meant to be shown to whoever asked. The failures in
@@ -3792,6 +3832,10 @@ pub enum PluginCommand {
         pane_id: PaneId,
     },
     GetPaneCwd {
+        pane_id: PaneId,
+    },
+    /// What Git says about a *remote* pane's folder, as its own machine sees it.
+    GetPaneGitProbe {
         pane_id: PaneId,
     },
     MovePaneWithPaneId(PaneId),

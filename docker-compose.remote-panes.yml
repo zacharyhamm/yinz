@@ -26,6 +26,12 @@ services:
       # failure would look like a broken reconnect rather than an impatient
       # fixture.
       ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS: "20"
+      #
+      # How often the broker asks Git about a pane's folder again, on top of
+      # asking when the folder changes. The default is a minute, which is the
+      # right cadence in real use and far too long to watch in a test: a branch
+      # switched in place has to be waited out before it is reported.
+      ZELLIJ_REMOTE_GIT_REFRESH_SECS: "5"
     volumes:
       # The same bind-mount trick the e2e container uses: the musl binary the
       # build drops into ./target simply appears here, with nothing copied.
