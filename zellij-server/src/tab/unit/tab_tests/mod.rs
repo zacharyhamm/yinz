@@ -1,4 +1,4 @@
-use super::{AcceptedPane, Tab};
+use super::{AcceptedPane, ExtractedPanePlacement, Tab};
 use crate::pane_groups::PaneGroups;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
@@ -8,7 +8,9 @@ use crate::{os_input_output::ServerOsApi, panes::PaneId, thread_bus::ThreadSende
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
-use zellij_utils::data::{Direction, NewPanePlacement, Resize, ResizeStrategy, WebSharing};
+use zellij_utils::data::{
+    Direction, NewPanePlacement, OverlayPlacement, Resize, ResizeStrategy, WebSharing,
+};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::layout::{
     FloatingPaneLayout, PercentOrFixed, SplitDirection, SplitSize, TiledPaneLayout,

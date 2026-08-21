@@ -216,6 +216,10 @@ struct ClickedPaneDetails {
     frame_intercepted: bool,
     edge: Option<PaneEdge>,
     is_floating: bool,
+    /// Not the negation of `is_floating`: since overlays moved out of the floating collection
+    /// they answer `false` to both `panes_contain` *and* the layer-visibility flag, so the frame
+    /// branches below had no way to tell an overlay from a tiled pane and treated it as one.
+    is_overlay: bool,
     terminal_wants_mouse: bool,
 }
 
@@ -495,6 +499,7 @@ impl MouseHandler {
         client_id: ClientId,
     ) -> Option<ClickedPaneDetails> {
         let is_floating = tab.floating_panes.panes_contain(&pane_id);
+        let is_overlay = tab.pane_is_overlay(pane_id);
         let is_hidden_stack_list_member = tab.pane_is_hidden_stack_list_member(&pane_id);
         let pane = Self::get_pane_at(tab, position, false).ok()??;
 
@@ -518,6 +523,7 @@ impl MouseHandler {
             frame_intercepted,
             edge,
             is_floating,
+            is_overlay,
             terminal_wants_mouse,
         })
     }
@@ -936,7 +942,11 @@ impl MouseHandler {
             pane_at_position.start_selection(&relative_position, client_id);
         }
 
-        if tab.floating_panes.panes_are_visible() {
+        // `focus_pane_at` above already swallowed the click if it landed on an overlay - but
+        // swallowing it there is not enough, because this is a second door into the same drag:
+        // `move_pane_with_mouse` re-resolves the position through `FloatingPanes` alone and
+        // would pick up whatever the overlay is covering.
+        if tab.floating_panes.panes_are_visible() && !tab.position_is_on_an_overlay(&position) {
             let search_selectable = false;
             let moved_pane_with_mouse = tab
                 .floating_panes
@@ -1124,8 +1134,13 @@ impl MouseHandler {
         }
 
         let floating_visible = tab.floating_panes.panes_are_visible();
-        let is_floating = tab.floating_panes.get_pane(pane_id).is_some();
-        if floating_visible && !is_floating {
+        // an overlay is painted over everything with no layer-visibility precondition - which is
+        // the whole reason it is not a floating pane - so it passes this test the way a pane on
+        // the visible layer does, rather than reading as "underneath something" and being
+        // reduced to a hover
+        let is_on_top =
+            tab.floating_panes.get_pane(pane_id).is_some() || tab.pane_is_overlay(pane_id);
+        if floating_visible && !is_on_top {
             return Self::execute_update_hover(tab, Some(pane_id), Some(position), client_id);
         }
 
@@ -1414,13 +1429,18 @@ impl MouseHandler {
                         pane_id: details.pane_id,
                     });
                 }
-                if let Some(edge) = details.edge {
-                    return Ok(MouseAction::StartResize {
-                        pane_id: details.pane_id,
-                        edge,
-                        is_floating: details.is_floating,
-                        position: event.position,
-                    });
+                // an overlay is not user-resizable, and `is_floating` is `false` for one - so
+                // this used to hand an overlay id to `start_pane_resize_with_mouse`, which looks
+                // in the floating and tiled collections only and errors the whole mouse event
+                if !details.is_overlay {
+                    if let Some(edge) = details.edge {
+                        return Ok(MouseAction::StartResize {
+                            pane_id: details.pane_id,
+                            edge,
+                            is_floating: details.is_floating,
+                            position: event.position,
+                        });
+                    }
                 }
             }
             return Ok(MouseAction::NoAction);
@@ -1446,20 +1466,31 @@ impl MouseHandler {
                     });
                 }
 
-                let should_start_moving = ctx.floating_visible || is_pinned_pane;
-                if should_start_moving {
-                    return Ok(MouseAction::StartMovingFloatingPane {
-                        position: event.position,
-                    });
-                }
+                // An overlay is neither draggable nor resizable, so its frame has no move or
+                // resize to start - it falls through to the ordinary focus handling below, which
+                // is already what a frame position with no edge does.
+                //
+                // `should_start_moving` is the reason this test has to be here: it asks whether
+                // the floating *layer* is up, not whether the clicked pane is on it, and
+                // `execute_move_floating_pane` then throws the pane id away and re-resolves the
+                // position through `FloatingPanes` alone. Clicking a modal's frame dragged the
+                // pane underneath it.
+                if !details.is_overlay {
+                    let should_start_moving = ctx.floating_visible || is_pinned_pane;
+                    if should_start_moving {
+                        return Ok(MouseAction::StartMovingFloatingPane {
+                            position: event.position,
+                        });
+                    }
 
-                if let Some(edge) = details.edge {
-                    return Ok(MouseAction::StartResize {
-                        pane_id: details.pane_id,
-                        edge,
-                        is_floating: false,
-                        position: event.position,
-                    });
+                    if let Some(edge) = details.edge {
+                        return Ok(MouseAction::StartResize {
+                            pane_id: details.pane_id,
+                            edge,
+                            is_floating: false,
+                            position: event.position,
+                        });
+                    }
                 }
             }
 
@@ -1907,6 +1938,68 @@ mod tests {
             focus_follows_mouse: false,
             mouse_click_through: false,
             mouse_scroll_resize,
+        }
+    }
+
+    fn frame_click_on(pane_id: PaneId, is_overlay: bool) -> ClickedPaneDetails {
+        ClickedPaneDetails {
+            pane_id,
+            on_frame: true,
+            frame_intercepted: false,
+            edge: Some(PaneEdge::TopLeft),
+            is_floating: false,
+            is_overlay,
+            terminal_wants_mouse: false,
+        }
+    }
+
+    /// `should_start_moving` asks whether the floating *layer* is up, not whether the clicked
+    /// pane is on it - and `execute_move_floating_pane` then throws the pane id away and
+    /// re-resolves the position through `FloatingPanes` alone. So a press on an overlay's frame
+    /// used to start dragging whatever floating pane the overlay was covering.
+    #[test]
+    fn a_press_on_an_overlay_frame_does_not_start_a_floating_move() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.floating_visible = true;
+        context.pane_id_at_position = Some(overlay);
+        context.clicked_pane = Some(frame_click_on(overlay, true));
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(
+            !matches!(action, MouseAction::StartMovingFloatingPane { .. }),
+            "got {action:?}"
+        );
+
+        // the same click on a pane that really is under the visible layer still moves it
+        context.clicked_pane = Some(frame_click_on(PaneId::Terminal(1), false));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::StartMovingFloatingPane { .. }
+        ));
+    }
+
+    /// With the layer down the same frame press fell to `StartResize`, and
+    /// `start_pane_resize_with_mouse` looks in the floating and tiled collections only - so an
+    /// overlay id missed both and errored the whole mouse event. An overlay is not resizable.
+    #[test]
+    fn a_press_on_an_overlay_frame_does_not_start_a_resize() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(overlay);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(frame_click_on(overlay, true));
+
+        let position = Position::new(1, 1);
+        let mut ctrl_left_press = MouseEvent::new_left_press_event(position);
+        ctrl_left_press.ctrl = true;
+        for event in [MouseEvent::new_left_press_event(position), ctrl_left_press] {
+            let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+            assert!(
+                !matches!(action, MouseAction::StartResize { .. }),
+                "got {action:?}"
+            );
         }
     }
 

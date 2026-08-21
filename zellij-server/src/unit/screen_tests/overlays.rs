@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
-use zellij_utils::data::OverlayPlacement;
+use zellij_utils::data::{OverlayPlacement, Resize, ResizeStrategy};
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
@@ -1943,5 +1943,647 @@ fn an_overlay_counts_as_visible_for_kitty_graphics() {
     assert!(
         tab.kitty_visible_pane_ids().contains(&PaneId::Terminal(2)),
         "the overlay is on screen, so its kitty placements must not be cleaned up"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// An overlay's geometry is a function of the surface and its coordinates, and of nothing else.
+//
+// `PaneGeom::adjust_coordinates` writes only the fields the coordinates name, so whatever the
+// resolution starts from is what a coordinate that said nothing means. All three resolution
+// points used to start from the pane's own geometry - and a pane built for this path arrives
+// with `PaneGeom::default()`, whose 100%-constraint dimensions have an `inner` of 1. An overlay
+// that named no size was born one cell square.
+// ---------------------------------------------------------------------------
+
+/// Open an overlay with exactly these coordinates, saying nothing the caller did not say.
+fn open_overlay_with(screen: &mut Screen, pane_id: u32, coordinates: FloatingPaneCoordinates) {
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(pane_id),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+}
+
+/// `OverlayPlacement::coordinates` is documented as "`None` centres it at a default size", and
+/// that is what every overlay born from plugin configuration asks for: `RunPlugin::overlay_placement`
+/// returns `modal(None)` / `dismissible(None)` for the `modal`/`overlay` keys, and the fork's own
+/// `hocus-new-agent` binding is one of them.
+///
+/// It used to be born 1x1 - a framed pane with no content area at all - and only recovered if the
+/// plugin happened to re-assert its placement afterwards.
+#[test]
+fn an_overlay_that_named_no_size_gets_the_default_geometry() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 2, FloatingPaneCoordinates::default());
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (geom.cols.as_usize(), geom.rows.as_usize()),
+        (40, 10),
+        "half the 80x20 session surface, not one cell"
+    );
+    assert_eq!(
+        (geom.x, geom.y),
+        (20, 5),
+        "centered on the surface, as a floating pane with no coordinates would be"
+    );
+}
+
+/// Coordinates are resolved per axis: the one the caller named follows the coordinate, the one it
+/// did not falls back to the surface default rather than to whatever the pane happened to carry.
+#[test]
+fn an_overlay_defaults_only_the_axis_its_coordinates_did_not_name() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            width: Some(PercentOrFixed::Percent(60)),
+            ..Default::default()
+        },
+    );
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        geom.cols.as_usize(),
+        48,
+        "60% of the 80 columns it asked for"
+    );
+    assert_eq!(
+        geom.rows.as_usize(),
+        10,
+        "and half the surface for the height it did not"
+    );
+}
+
+/// The default is re-resolved against the surface like any other coordinate: an overlay has no
+/// positional history, so a resize leaves it half of whatever the screen is *now* rather than
+/// stranded at the absolute the old surface produced.
+#[test]
+fn an_overlay_that_named_no_size_follows_the_surface_across_a_resize() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 2, FloatingPaneCoordinates::default());
+
+    screen
+        .resize_to_screen(Size {
+            cols: 120,
+            rows: 20,
+        })
+        .expect("TEST");
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        geom.cols.as_usize(),
+        60,
+        "half of the new 120 columns, not the old 40"
+    );
+    assert_eq!(geom.x, 30, "and re-centered on the new surface");
+}
+
+/// `is_pinned` lives inside the `PaneGeom` rather than beside it, and `Tab::add_overlay_pane` sets
+/// it on the pane before handing it over. Seeding the geometry from the surface without carrying
+/// the flag across would drop something the caller explicitly asked for.
+#[test]
+fn an_overlay_that_named_no_size_keeps_the_pinned_flag_it_was_given() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            pinned: Some(true),
+            ..Default::default()
+        },
+    );
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert!(
+        geom.is_pinned,
+        "the pinned flag survives the default geometry"
+    );
+    assert_eq!(
+        (geom.cols.as_usize(), geom.rows.as_usize()),
+        (40, 10),
+        "and it still got a usable size"
+    );
+}
+
+/// An overlay is not in the tiled grid, so it cannot be the root of a stack - and saying so has to
+/// happen *before* `Screen::stack_panes` extracts the members.
+///
+/// `has_room_for_stack` used to reject only a floating or suppressed root, and it measures the root
+/// through `get_pane_with_id`, which resolves overlays: a tall enough overlay answered "yes, there
+/// is room". Screen then pulled every member out of its tab, `TiledPanes::stack_panes` could not
+/// find the root, and `Tab::stack_panes` returned - dropping the vec that was by then the only
+/// thing holding those panes, while their processes went on running.
+#[test]
+fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    for pane_id in [2, 3] {
+        screen
+            .get_active_tab_mut(1)
+            .unwrap()
+            .new_pane(
+                PaneId::Terminal(pane_id),
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Tiled {
+                    direction: Some(Direction::Down),
+                    borderless: None,
+                },
+                Some(1),
+                None,
+            )
+            .expect("TEST");
+    }
+    let overlay = PaneId::Terminal(4);
+    open_overlay_with(&mut screen, 4, FloatingPaneCoordinates::default());
+
+    // the size gate is not what refuses this: the overlay's default geometry is half the 20-row
+    // surface, comfortably more than the `stack_size + MIN_TERMINAL_HEIGHT` the root is measured
+    // against. Without the overlay arm in `has_room_for_stack` this stack would be accepted.
+    assert!(
+        screen.tabs[&0]
+            .get_pane_with_id(overlay)
+            .expect("TEST")
+            .position_and_size()
+            .rows
+            .as_usize()
+            >= 3 + crate::tab::MIN_TERMINAL_HEIGHT
+    );
+
+    assert_eq!(
+        screen.stack_panes(vec![overlay, PaneId::Terminal(2), PaneId::Terminal(3)]),
+        None,
+        "an overlay root is refused"
+    );
+
+    // still *tiled*, not merely still reachable: `get_pane_with_id` would also find them parked
+    // in the suppressed panes, and being parked is the salvage path, not the correct outcome
+    let tiled: Vec<PaneId> = screen.tabs[&0]
+        .pane_infos()
+        .into_iter()
+        .filter(|info| !info.is_floating && !info.is_suppressed)
+        .map(|info| PaneId::Terminal(info.id))
+        .collect();
+    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+        assert!(
+            tiled.contains(&pane_id),
+            "{pane_id:?} was never extracted, so it is still tiled in its tab - got {tiled:?}"
+        );
+    }
+    assert!(
+        screen.tabs[&0].pane_is_overlay(overlay),
+        "and the overlay is untouched"
+    );
+}
+
+// --- Phase 7: the generic paths that still reached past the collection ------------------------
+
+/// Open a *modal* terminal overlay in the given tab, by id.
+///
+/// A terminal rather than a plugin deliberately: a plugin's overlay-ness can be re-derived on the
+/// far side of a move from its `modal` configuration key, so a plugin modal can survive a path
+/// that drops the placement entirely. A terminal modal has no such second source and is the only
+/// honest test of whether the placement travelled.
+fn open_modal_terminal_in_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId) {
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .expect("TEST")
+        .new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::modal(Some(overlay_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+}
+
+/// Moving a pane between tabs is the one place overlay-ness can be lost without anybody
+/// noticing: `extract_pane` drops the kind and coordinates on the way out, and the destination
+/// has no way to re-derive them. `break_multiple_panes_to_tab_with_id` used to ask only
+/// `pane_id_is_floating`, which an overlay answers `false` to - so a modal arrived as an
+/// ordinary tiled pane, silently stripped of the one property it cannot do without.
+#[test]
+fn a_modal_broken_out_to_another_tab_arrives_as_a_modal() {
+    let mut screen = screen_with_diverged_tab_ids();
+    let modal = PaneId::Terminal(42);
+    open_modal_terminal_in_tab(&mut screen, 2, modal);
+    assert!(screen.tabs[&2].pane_is_overlay(modal), "pre-condition");
+
+    let outcome = screen
+        .break_multiple_panes_to_tab_with_id(vec![modal], 3, false, 1)
+        .expect("TEST");
+
+    assert!(outcome.succeeded(), "{outcome:?}");
+    assert_eq!(outcome.moved, vec![modal]);
+    assert!(
+        screen.tabs[&3].pane_is_overlay(modal),
+        "it is an overlay in the tab it landed in"
+    );
+    assert!(
+        screen.tabs[&3]
+            .overlay_placement_for(modal)
+            .expect("TEST")
+            .is_modal(),
+        "and a modal, not merely a dismissible overlay"
+    );
+    assert!(
+        !screen.tabs[&3].are_floating_panes_visible(),
+        "an overlay arriving does not raise the destination's floating layer"
+    );
+}
+
+/// The same reading of "not floating" as "tiled", on the path that makes a brand new tab.
+#[test]
+fn a_modal_broken_out_to_a_new_tab_arrives_as_a_modal() {
+    let mut screen = screen_with_diverged_tab_ids();
+    let modal = PaneId::Terminal(42);
+    open_modal_terminal_in_tab(&mut screen, 2, modal);
+
+    let new_tab_id = screen
+        .break_multiple_panes_to_new_tab(vec![modal], None, false, None, 1)
+        .expect("TEST");
+
+    assert!(
+        screen.tabs[&new_tab_id].pane_is_overlay(modal),
+        "an overlay broken out to a new tab is still an overlay there"
+    );
+    assert!(screen.tabs[&new_tab_id]
+        .overlay_placement_for(modal)
+        .expect("TEST")
+        .is_modal());
+    assert!(
+        !screen.tabs[&2].has_pane_with_pid(&modal),
+        "and no longer in the tab it came from"
+    );
+}
+
+/// `Tab::resize` was a two-way floating/tiled split, and an overlay answers `false` to the
+/// floating half - so a resize keystroke with a modal up dissolved the tab's stack lists and
+/// resized whatever the modal was covering. An overlay is not resizable; the keystroke does
+/// nothing at all.
+#[test]
+fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .vertical_split(PaneId::Terminal(2), None, 1, None, None)
+        .expect("TEST");
+    open_floating_pane(&mut screen, 0, 3, "OVERLAY", true);
+
+    let before: Vec<PaneGeom> = [PaneId::Terminal(1), PaneId::Terminal(2)]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+    assert_eq!(
+        screen.tabs[&0].get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "pre-condition: the overlay has the keyboard"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Left)),
+        )
+        .expect("TEST");
+
+    let after: Vec<PaneGeom> = [PaneId::Terminal(1), PaneId::Terminal(2)]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+    assert_eq!(
+        before, after,
+        "the tiled panes behind the overlay are untouched"
+    );
+}
+
+/// `active_pane_is_flush_with_edge` is the sole input to
+/// `Screen::resize_global_pane_from_adjacent_tab_pane`, and it excused only *floating* active
+/// panes. An overlay that happened to reach an edge of the surface therefore let a resize
+/// keystroke aimed at nothing in particular resize a global pane instead.
+#[test]
+fn a_resize_keystroke_on_an_overlay_does_not_reach_a_global_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    // an overlay pinned to the very top-left of the surface, so it is flush with two edges
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(0)),
+            y: Some(PercentOrFixed::Fixed(0)),
+            width: Some(PercentOrFixed::Percent(50)),
+            height: Some(PercentOrFixed::Percent(50)),
+            ..Default::default()
+        },
+    );
+
+    for direction in [Direction::Left, Direction::Up] {
+        assert!(
+            !screen.tabs[&0].active_pane_is_flush_with_edge(direction, 1),
+            "an overlay is never flush with anything, so nothing hands the keystroke to a \
+             global pane ({direction:?})"
+        );
+    }
+}
+
+/// With `visual_bell` off, `check_and_consume_bells_without_visual_notification` is the *only*
+/// thing that sees a bell - and its iterator chain was the visual one minus the overlay link.
+/// A BEL from a modal was therefore neither forwarded to the client nor consumed off the pane.
+#[test]
+fn a_bell_in_an_overlay_is_heard_without_visual_notification() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+
+    let tab = screen.get_active_tab_mut(1).unwrap();
+    tab.handle_pty_bytes(2, b"\x07".to_vec()).expect("TEST");
+
+    assert!(
+        tab.check_and_consume_bells_without_visual_notification(),
+        "the bell rung inside the overlay is heard"
+    );
+    assert!(
+        !tab.check_and_consume_bells_without_visual_notification(),
+        "and consumed, so it does not ring forever"
+    );
+}
+
+/// An overlay's frame is drawn over whatever is under it, and an overlay is not draggable. But
+/// the mouse pipeline decided "start moving a floating pane" from the *global* layer-visibility
+/// flag rather than from the clicked pane, and the executor then threw the pane id away and
+/// re-resolved the position through `FloatingPanes` alone. Pressing a modal's frame therefore
+/// picked up the ordinary floating pane whose own frame lay beneath it and dragged that.
+#[test]
+fn a_press_on_an_overlay_frame_does_not_drag_the_floating_pane_beneath_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    assert!(
+        screen.tabs[&0].are_floating_panes_visible(),
+        "pre-condition: the layer is up, which is what the buggy test consulted"
+    );
+
+    // an overlay whose top frame row lies exactly on the floating pane's own top frame row
+    let floating = floating_geom(&screen, 2);
+    open_overlay_with(
+        &mut screen,
+        3,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(floating.x)),
+            y: Some(PercentOrFixed::Fixed(floating.y)),
+            width: Some(PercentOrFixed::Fixed(floating.cols.as_usize())),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+
+    let row = floating.y as i32;
+    let from = floating.x as u16 + 2;
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(row, from)),
+        1,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(row, from - 5)),
+        1,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_event(Position::new(row, from - 5)),
+        1,
+    );
+
+    assert_eq!(
+        floating_geom(&screen, 2),
+        floating,
+        "the floating pane under the overlay did not move"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "and the press landed on the overlay, which is what was drawn there"
+    );
+}
+
+/// The second door into the same drag, and the reason swallowing the click in `focus_pane_at`
+/// was not enough on its own: when the pressed overlay is not the focused one the press
+/// classifies as an ordinary focus, and `execute_focus_pane` went on to call
+/// `move_pane_with_mouse` anyway - which re-resolves the position through `FloatingPanes` and
+/// finds the pane the overlay is covering.
+#[test]
+fn focusing_one_overlay_by_its_frame_does_not_drag_the_floating_pane_beneath_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+
+    let floating = floating_geom(&screen, 2);
+    open_overlay_with(
+        &mut screen,
+        3,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(floating.x)),
+            y: Some(PercentOrFixed::Fixed(floating.y)),
+            width: Some(PercentOrFixed::Fixed(floating.cols.as_usize())),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+    // a second overlay, elsewhere, which takes the focus - so the press below lands on an
+    // overlay that is *not* active and classifies as a focus rather than a selection
+    open_overlay_with(
+        &mut screen,
+        4,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(0)),
+            y: Some(PercentOrFixed::Fixed(0)),
+            width: Some(PercentOrFixed::Fixed(10)),
+            height: Some(PercentOrFixed::Fixed(3)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(4)),
+        "pre-condition: the overlay about to be pressed does not have the focus"
+    );
+
+    let row = floating.y as i32;
+    let from = floating.x as u16 + 2;
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(row, from)),
+        1,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_event(Position::new(row, from - 5)),
+        1,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_event(Position::new(row, from - 5)),
+        1,
+    );
+
+    assert_eq!(
+        floating_geom(&screen, 2),
+        floating,
+        "the floating pane under the overlay did not move"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "and the press did focus the overlay it landed on"
+    );
+}
+
+/// `break_pane_to_new_tab` moves the *active* pane, which is the overlay whenever one is up, and
+/// it chose between floating and tiled from `are_floating_panes_visible` alone. A modal broken
+/// out this way arrived in the neighbouring tab as an ordinary pane.
+#[test]
+fn a_modal_broken_out_to_the_neighbouring_tab_arrives_as_a_modal() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.switch_tab_prev(None, false, 1).expect("TEST");
+
+    let modal = PaneId::Terminal(3);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+    assert_eq!(screen.active_pane_id(1), Some(modal), "pre-condition");
+
+    screen
+        .break_pane_to_new_tab(Direction::Right, 1)
+        .expect("TEST");
+
+    assert!(
+        screen.tabs[&1].pane_is_overlay(modal),
+        "it is an overlay in the tab it landed in"
+    );
+    assert!(screen.tabs[&1]
+        .overlay_placement_for(modal)
+        .expect("TEST")
+        .is_modal());
+    assert!(
+        !screen.tabs[&1].are_floating_panes_visible(),
+        "and did not raise that tab's floating layer on the way in"
+    );
+}
+
+/// `execute_focus_on_hover` asked whether the hovered pane was on the *visible floating layer*,
+/// and an overlay answers `false` - so with the layer up, focus-follows-mouse over a modal
+/// reduced to a hover and left the keyboard where it was. An overlay is painted over everything
+/// with no layer precondition, which is the whole reason it is not a floating pane.
+#[test]
+fn focus_follows_mouse_lands_on_an_overlay_over_a_visible_floating_layer() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    assert!(
+        screen.tabs[&0].are_floating_panes_visible(),
+        "pre-condition"
+    );
+
+    let floating = floating_geom(&screen, 2);
+    open_overlay_with(
+        &mut screen,
+        3,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(floating.x)),
+            y: Some(PercentOrFixed::Fixed(floating.y)),
+            width: Some(PercentOrFixed::Fixed(floating.cols.as_usize())),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+    // a second overlay elsewhere takes the focus, so there is somewhere for the hover to move it
+    // *from*
+    open_overlay_with(
+        &mut screen,
+        4,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(0)),
+            y: Some(PercentOrFixed::Fixed(0)),
+            width: Some(PercentOrFixed::Fixed(10)),
+            height: Some(PercentOrFixed::Fixed(3)),
+            ..Default::default()
+        },
+    );
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .update_focus_follows_mouse(true);
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(4)));
+
+    // the body of the first overlay, not its frame
+    screen.handle_mouse_event(
+        MouseEvent::new_buttonless_motion(Position::new(
+            floating.y as i32 + 2,
+            floating.x as u16 + 2,
+        )),
+        1,
+    );
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the hover focused the overlay under the cursor"
     );
 }

@@ -1,9 +1,12 @@
 # Modals and overlays: giving them their own collection
 
-Working document for the `unify-modals-overlays` branch. Phases 0–4 have landed. Overlays are
+Working document for the `unify-modals-overlays` branch. Phases 0–7 have landed. Overlays are
 their own collection, overlay-ness is a placement rather than a flag on coordinates, the
 two-stage birth is gone with the whole of its compensation layer, and a pane is now either born
-an overlay or is never one.
+an overlay or is never one. Phases 5 to 7 are review findings on top of that: behaviors the
+floating path had and the new collection did not, and generic code that could now reach an
+overlay and did not expect to. Phase 7 is the last of that second kind, and all of it is one
+sentence — "not floating" read as "tiled".
 
 ## Why
 
@@ -260,6 +263,146 @@ plugin that opened an overlay command pane and asked about the ID it had just be
 nothing — where the same call worked while overlays lived in `floating_panes`. It now answers with
 the same fields `OverlayPanes::pane_info` sets: `is_floating` true (read everywhere as "not
 tiled"), `is_fullscreen` false.
+
+### Phase 6 — the geometry an overlay starts from, and the stack that ate its members
+
+Found by review, like Phase 5, and for the same reason: neither is a behavior the floating path
+had and lost. Both are consequences of overlays now being *reachable* from generic code that was
+written when they were not.
+
+**An overlay that named no size was born one cell square.** `PaneGeom::adjust_coordinates` writes
+only the fields the coordinates actually name — with `width`/`height` `None` it touches neither
+`cols` nor `rows`, and with `x`/`y` also `None` it does not even centre. All three of
+`OverlayPanes`' resolution points (`add_pane`, `change_pane_coordinates`, `reapply_coordinates`)
+started from `pane.position_and_size()`, and a pane built for this path arrives with
+`PaneGeom::default()`, whose `Dimension::default()` is `percent(100.0)` with an `inner` of **1**.
+So a coordinate-less overlay was a 1×1 pane, and a framed one had no content area at all.
+
+Not hypothetical: `RunPlugin::overlay_placement` returns `modal(None)` / `dismissible(None)` for
+the `modal`/`overlay` configuration keys, `route.rs` does the same for the quit-confirmation
+modal, and `default.kdl` binds `hocus-new-agent` and `hocus-duplicate-agent` with `modal true`
+and no coordinates. Those mostly recovered only because — as `change_pane_coordinates`' own doc
+comment says — `hocus-new-agent` re-asserts its placement afterwards. An overlay that does not
+self-assert stayed 1×1. And the contract was already written down: `OverlayPlacement::coordinates`
+is documented as "`None` centres it at a default size".
+
+All three points now seed from `OverlayPanes::base_geom` — `half_size_middle_geom` over the
+session surface, which is what a floating pane with no coordinates gets from
+`find_room_for_new_pane`. Seeding at `add_pane` alone would have been enough for the reported
+symptom; doing it at all three is what makes an overlay's geometry the pure function of its
+coordinates and the surface that this module's own header claims it is. Two consequences, both
+intended: a partial `change_pane_coordinates` now resolves the axis it did not name from the
+surface rather than from a stale absolute (the call replaces the stored coordinates wholesale, so
+that axis was gone from `overlay.coordinates` either way), and a modal taken back out of the
+suppressed panes with no coordinates is re-centred rather than restoring its pre-suppression
+geometry — consistent with the collection's deliberate absence of `desired_pane_positions`.
+
+The one trap: `is_pinned` lives *inside* the `PaneGeom` rather than beside it, and
+`Tab::add_overlay_pane` sets it on the pane before handing it over. Seeding without carrying it
+across would have silently dropped a flag the caller explicitly asked for, so `base_geom` takes
+the current geom and carries `is_pinned` and `logical_position` over. `stacked` is deliberately
+left at `None`: an overlay does not tile, so it is never a member of a stack.
+
+**An overlay accepted as a stack root ate every pane stacked onto it.**
+`Tab::has_room_for_stack` rejected a floating or suppressed root but not an overlay one, and it
+measures the root through `Tab::get_pane_with_id` — which, since Phase 3, resolves overlays. A
+tall enough overlay therefore answered "yes, there is room". `Screen::stack_panes` then extracted
+every member out of its tab into a local `Vec<Box<dyn Pane>>`, `TiledPanes::stack_panes` could not
+find the root in the tiled grid, and `Tab::stack_panes` hit its `stack_geoms.is_empty()` early
+return — dropping the vec that was by then the only thing holding those panes, while their pty
+processes went on running unowned. Nothing upstream caught it either: the route-level guard rejects
+only *global* panes, and `Tab::pane_id_is_floating` is floating-only.
+
+`has_room_for_stack` now rejects an overlay root alongside floating and suppressed. That is the
+load-bearing half, because `Screen::stack_panes` consults it *before* extracting anything, so the
+refusal is a clean no-op rather than a salvage. The `stack_geoms.is_empty()` branch also parks its
+panes now instead of dropping them, matching what the `add_pane_to_stack` arm directly above it
+already did — the extraction is irreversible by the time that branch runs, so no future path that
+gets past the gate should be able to close panes out from under their processes.
+
+
+### Phase 7 — one mistake, spelled nine ways
+
+Found by review, like Phases 5 and 6, and it is the same class again — but this time all of it is
+one sentence:
+
+> **"not floating" was read as "tiled", and "the floating layer is up" was read as "this pane is
+> on it".**
+
+Since Phase 3 an overlay answers `false` to `floating_panes.panes_contain` and to
+`Tab::pane_id_is_floating`, while still being reachable from `get_active_pane_id`,
+`get_pane_with_id` and `MouseHandler::get_pane_at`. Every surviving two-way `if floating { … }
+else { … tiled … }` therefore routed overlay work onto the pane the overlay was covering — quietly,
+because the overlay is drawn on top and the user sees nothing move where they are looking.
+
+Nine sites, in four groups: the three cross-tab move paths (and the `accept_extracted_pane` that
+receives from all of them), `Tab::resize` with `active_pane_is_flush_with_edge` behind it, the
+nonvisual bell scan, and three in the mouse pipeline.
+
+**Cross-tab moves demoted a modal.** `extract_pane` drops the kind and coordinates on the way out,
+so the placement has to be read *before* it. Exactly one caller did that — `focus_plugin_pane` —
+and the other three asked `pane_id_is_floating` and landed a modal in the destination as a tiled
+pane. That is generalized now: `ExtractedPanePlacement { Tiled, Floating, Overlay(_) }` and
+`Tab::placement_for_extraction`, which `accept_extracted_pane` takes in place of its
+`was_floating: bool`, and which `break_multiple_panes_to_tab_with_id`,
+`break_multiple_panes_to_new_tab` and `break_pane_to_new_tab` all read before extracting.
+The overlay arm of `accept_extracted_pane` has no room check and sets no geom, both deliberately:
+an overlay is not on a layer and does not tile, so there is nothing for it to run out of, and its
+geometry is resolved from its coordinates against the *destination's* surface — which is the whole
+point of carrying the placement rather than the pane's absolute position across.
+
+A terminal modal is the honest test of this and the reason the tests use one: a plugin's
+overlay-ness can be re-derived on the far side from its `modal` configuration key, so a plugin
+modal survives a path that drops the placement entirely.
+
+**Resize keystrokes resized what the overlay was covering.** `Tab::resize` is the two-way split in
+its purest form; with a modal focused it fell into the `else` arm, dissolved the tab's stack lists
+and resized the tiled pane behind. **Decided against implementing overlay resize.** `OverlayPanes`
+has no `ResizeStrategy` API and deliberately no `desired_pane_positions`; an overlay's geometry is a
+function of its coordinates and the surface, which is exactly the property Phase 6 finished
+establishing, and `Tab::resize_pane_with_id` already dispatches on membership and no-ops for an
+overlay id. The keyboard path now agrees with it and does nothing.
+
+`Tab::active_pane_is_flush_with_edge` went with it, and is the sharper half: it excused only
+*floating* active panes, and it is the sole input to
+`Screen::resize_global_pane_from_adjacent_tab_pane`. An overlay that happened to reach an edge of
+the surface let a resize keystroke aimed at nothing in particular resize a **global pane**.
+
+**A bell inside an overlay was never heard.** `check_and_handle_bell_notifications` had its overlay
+link; `check_and_consume_bells_without_visual_notification` — the branch taken when `visual_bell`
+is off, and then the *only* thing that sees a bell — was the same chain minus that link. The BEL
+was neither forwarded to the client nor consumed, so it stayed latched on the pane forever.
+
+**Pressing a modal's frame dragged the pane underneath it, through two separate doors.** This is
+the one worth remembering, because fixing the obvious door left the bug alive:
+
+1. *Classification.* `should_start_moving` asks whether the floating **layer** is up, not whether
+   the clicked pane is on it, and `execute_move_floating_pane` then throws the resolved pane id
+   away and re-resolves the position through `FloatingPanes` alone. `ClickedPaneDetails` now
+   carries `is_overlay` — not the negation of `is_floating`, which is what left the frame branches
+   unable to tell an overlay from a tiled pane — and both frame branches skip the move/resize block
+   for one, falling through to ordinary focus handling. `frame_intercepted` is still checked first:
+   a plugin overlay's frame buttons must keep working. With the layer *down* the same press instead
+   reached `start_pane_resize_with_mouse`, which looks in the floating and tiled collections only
+   and errored the whole mouse event on an overlay id.
+2. *Execution.* `focus_pane_at` already swallowed the click correctly — and it was not enough.
+   When the pressed overlay is not the focused one the press classifies as an ordinary focus, and
+   `execute_focus_pane` went on to call `move_pane_with_mouse` anyway, straight past the swallow.
+   Gated now on `Tab::position_is_on_an_overlay`, which is the fact stated about the *position*
+   rather than about a pane, because the floating collection's hit tests re-resolve a position from
+   scratch and have no way to know an overlay was drawn over the answer they find.
+
+Each door has its own test, and each was confirmed to fail with only the other one fixed. That
+pairing is the finding: a swallow at the top of a pipeline does not protect a re-resolve at the
+bottom of it.
+
+**Focus-follows-mouse skipped overlays**, for the third spelling of the same sentence:
+`execute_focus_on_hover` asked whether the hovered pane was on the visible floating layer, so with
+the layer up, hovering a modal reduced to a hover and left the keyboard where it was.
+
+Nothing new was added to `OverlayPanes` — no resize, no drag state, no room check. Every fix is a
+caller learning that the collection exists, which is what the four deliberate absences in its
+module doc predicted would be the shape of this work.
 
 ---
 
@@ -620,3 +763,12 @@ Phase 4 moved three: two `ScreenInstruction` dumps that gained the new trailing
 (`send_cli_launch_or_focus_plugin_action`,
 `send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane`) and the new
 `frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane`.
+
+Phase 7 moved none: it changes what happens to an overlay, never how one is drawn.
+
+**A note on how Phase 7's tests were validated.** Every fix in that phase had its test re-run
+with only that fix reverted, and each failed. This is worth doing rather than assuming, and the
+mouse pair is why: with the classification fixed but `execute_focus_pane` still leaking, the
+first drag test passed. It takes a *second* test - one where the pressed overlay is not the
+focused one, so the press classifies as a focus rather than a selection - to reach the second
+door at all. A green suite after fixing the obvious half of a two-door bug is not evidence.

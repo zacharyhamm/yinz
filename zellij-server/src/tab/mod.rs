@@ -253,6 +253,21 @@ pub(crate) enum AcceptedPane {
     LostInAdd,
 }
 
+/// Where a pane extracted from one tab belongs when another tab accepts it.
+///
+/// Read from the source tab with [`Tab::placement_for_extraction`] *before*
+/// [`Tab::extract_pane`], which destroys the wrapper holding an overlay's kind and
+/// coordinates. "Not floating" is not "tiled": since overlays moved out of the floating
+/// collection they answer `false` to `pane_id_is_floating`, so a caller that asks only that
+/// question lands a modal in the destination as an ordinary tiled pane, silently stripped of
+/// the one property it cannot do without.
+#[derive(Debug, Clone)]
+pub(crate) enum ExtractedPanePlacement {
+    Tiled,
+    Floating,
+    Overlay(OverlayPlacement),
+}
+
 enum BufferedTabInstruction {
     SetPaneSelectable(PaneId, bool),
     HandlePtyBytes(u32, VteBytes),
@@ -4048,16 +4063,22 @@ impl Tab {
     }
     /// Whether the client's active tiled pane sits flush against the given edge of the tab, ie.
     /// whether the border it would resize in that direction is the one it shares with a global pane
-    /// rather than one with another tab pane. Floating panes are never flush with anything.
+    /// rather than one with another tab pane. Floating panes and overlays are never flush with
+    /// anything.
+    ///
+    /// The overlay half is load-bearing rather than symmetry: this is the only input to
+    /// `Screen::resize_global_pane_from_adjacent_tab_pane`, so an overlay that happened to reach
+    /// an edge of the surface would let a resize keystroke aimed at nothing in particular resize
+    /// a *global* pane.
     pub fn active_pane_is_flush_with_edge(
         &self,
         direction: Direction,
         client_id: ClientId,
     ) -> bool {
-        let active_pane_is_floating = self
-            .get_active_pane_id(client_id)
-            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
-        if active_pane_is_floating {
+        let active_pane_is_not_tiled = self.get_active_pane_id(client_id).is_some_and(|pane_id| {
+            self.floating_panes.panes_contain(&pane_id) || self.pane_is_overlay(pane_id)
+        });
+        if active_pane_is_not_tiled {
             return false;
         }
         let Some(geom) = self
@@ -4206,10 +4227,14 @@ impl Tab {
     /// whether any were found. Does not update notification state (used when visual_bell is
     /// disabled but ANSI BEL forwarding is still desired).
     pub fn check_and_consume_bells_without_visual_notification(&mut self) -> bool {
+        // the same chain as `check_and_handle_bell_notifications`, overlay link included: with
+        // `visual_bell` off this is the *only* thing that sees a bell, so an overlay missing here
+        // is a BEL that is neither forwarded to the client nor consumed off the pane
         let ringing_panes: Vec<PaneId> = self
             .tiled_panes
             .get_panes()
             .chain(self.floating_panes.get_panes())
+            .chain(self.overlay_panes.get_panes())
             .chain(self.suppressed_stack_list_members())
             .filter(|(_, pane)| pane.has_bell())
             .map(|(pane_id, _)| *pane_id)
@@ -5142,6 +5167,14 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
+    /// Whether an overlay is being painted at `position`, whatever it is covering.
+    ///
+    /// The mouse pipeline needs this as a fact about the *position* rather than about a pane,
+    /// because the floating collection's own hit tests re-resolve a position from scratch and
+    /// have no way to know an overlay was drawn over the answer they find.
+    pub fn position_is_on_an_overlay(&self, position: &Position) -> bool {
+        self.overlay_panes.visible_pane_id_at(position).is_some()
+    }
     /// Whether this tab is painting a floating pane outside its own viewport - onto the global
     /// panes or the chrome beside them. The one thing a tab draws that the tab cannot clean up
     /// after by repainting itself.
@@ -5210,6 +5243,20 @@ impl Tab {
     /// why a modal *terminal* pane could not survive the trip.
     pub fn overlay_placement_for(&self, pane_id: PaneId) -> Option<OverlayPlacement> {
         self.overlay_panes.placement_of(&pane_id)
+    }
+    /// Where `pane_id` belongs, for a caller about to take it out of this tab and hand it to
+    /// another one. The overlay arm has to come first and has to be asked *here*: `extract_pane`
+    /// drops the kind and coordinates on the way out, and the destination has no way to
+    /// re-derive them - a modal *terminal* pane has no plugin configuration to read them back
+    /// out of.
+    pub fn placement_for_extraction(&self, pane_id: PaneId) -> ExtractedPanePlacement {
+        if let Some(placement) = self.overlay_placement_for(pane_id) {
+            ExtractedPanePlacement::Overlay(placement)
+        } else if self.pane_id_is_floating(&pane_id) {
+            ExtractedPanePlacement::Floating
+        } else {
+            ExtractedPanePlacement::Tiled
+        }
     }
     /// Recompute the tiled panes' content offsets (and the pty sizes that follow from them) against
     /// the current boundary viewport — needed when the global pane strips change without the tab's
@@ -5784,6 +5831,18 @@ impl Tab {
     pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
         let err_context = || "unable to resize pane".to_string();
         if self.floating_panes.fullscreen_is_active() {
+            return Ok(());
+        }
+        // An overlay is not resizable, and the branch below is a two-way floating/tiled split -
+        // so without this the keystroke fell through to `tiled_panes.resize_active_pane` and
+        // resized whatever the overlay was covering. `resize_pane_with_id` already dispatches on
+        // membership and no-ops for an overlay; this is the keyboard path agreeing with it.
+        // `OverlayPanes` has no `ResizeStrategy` API by design: an overlay's geometry is a
+        // function of its coordinates and the surface, not of its own history.
+        if self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.pane_is_overlay(pane_id))
+        {
             return Ok(());
         }
         let active_pane_is_floating = self
@@ -8073,33 +8132,54 @@ impl Tab {
     pub fn accept_extracted_pane(
         &mut self,
         mut pane: Box<dyn Pane>,
-        was_floating: bool,
+        placement: ExtractedPanePlacement,
     ) -> AcceptedPane {
         let pane_id = pane.pid();
-        if was_floating {
-            if self.floating_panes.find_room_for_new_pane().is_none() {
-                return AcceptedPane::NoRoom(pane);
-            }
-            let floating_pane_coordinates = FloatingPaneCoordinates {
-                x: Some(PercentOrFixed::Fixed(pane.x())),
-                y: Some(PercentOrFixed::Fixed(pane.y())),
-                width: Some(PercentOrFixed::Fixed(pane.cols())),
-                height: Some(PercentOrFixed::Fixed(pane.rows())),
-                pinned: Some(pane.current_geom().is_pinned),
-                borderless: Some(pane.borderless()),
-            };
-            // non_fatal rather than `?`: the only error here comes from `relayout`, which
-            // runs after the pane is already in the tab, and the caller must not abort a
-            // multi-pane move part-way through
-            self.add_floating_pane(pane, pane_id, Some(floating_pane_coordinates), false, None)
+        match placement {
+            ExtractedPanePlacement::Overlay(overlay_placement) => {
+                // no room check: an overlay is not on a layer and does not tile, so there is nothing
+                // for it to run out of. That is also why this arm cannot return `NoRoom` - only
+                // `Accepted` or, if the pty thread is already gone, `LostInAdd`.
+                //
+                // No geom either: `OverlayPanes::add_pane` resolves the geometry from the
+                // coordinates and the destination tab's surface, which is the point of carrying the
+                // placement rather than the pane's absolute position across.
+                self.add_overlay_pane(
+                    pane,
+                    pane_id,
+                    overlay_placement.kind,
+                    overlay_placement.coordinates.unwrap_or_default(),
+                    false,
+                    None,
+                )
                 .non_fatal();
-        } else {
-            if !self.tiled_panes.has_room_for_new_pane() {
-                return AcceptedPane::NoRoom(pane);
-            }
-            let new_geom = PaneGeom::from(&self.size);
-            pane.set_geom(new_geom);
-            self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
+            },
+            ExtractedPanePlacement::Floating => {
+                if self.floating_panes.find_room_for_new_pane().is_none() {
+                    return AcceptedPane::NoRoom(pane);
+                }
+                let floating_pane_coordinates = FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(pane.x())),
+                    y: Some(PercentOrFixed::Fixed(pane.y())),
+                    width: Some(PercentOrFixed::Fixed(pane.cols())),
+                    height: Some(PercentOrFixed::Fixed(pane.rows())),
+                    pinned: Some(pane.current_geom().is_pinned),
+                    borderless: Some(pane.borderless()),
+                };
+                // non_fatal rather than `?`: the only error here comes from `relayout`, which
+                // runs after the pane is already in the tab, and the caller must not abort a
+                // multi-pane move part-way through
+                self.add_floating_pane(pane, pane_id, Some(floating_pane_coordinates), false, None)
+                    .non_fatal();
+            },
+            ExtractedPanePlacement::Tiled => {
+                if !self.tiled_panes.has_room_for_new_pane() {
+                    return AcceptedPane::NoRoom(pane);
+                }
+                let new_geom = PaneGeom::from(&self.size);
+                pane.set_geom(new_geom);
+                self.add_tiled_pane(pane, pane_id, false, None).non_fatal();
+            },
         }
         if self.has_pane_with_pid(&pane_id) {
             AcceptedPane::Accepted
@@ -8413,11 +8493,17 @@ impl Tab {
     pub fn has_room_for_stack(&mut self, root_pane_id: PaneId, stack_size: usize) -> bool {
         self.dissolve_stack_lists_for_classic_mutation();
         if self.floating_panes.panes_contain(&root_pane_id)
+            || self.overlay_panes.panes_contain(&root_pane_id)
             || self.suppressed_panes.contains_key(&root_pane_id)
         {
-            log::error!("Root pane of stack cannot be floating or suppressed");
+            log::error!("Root pane of stack cannot be floating, an overlay or suppressed");
             return false;
         }
+        // the overlay arm above is load-bearing rather than tidiness: the size check below
+        // measures through `get_pane_with_id`, which resolves overlays, so a tall enough overlay
+        // would answer `true` for a pane that is not in the tiled grid at all. `Screen::stack_panes`
+        // consults this *before* extracting the members, and by the time the tiled stacking found
+        // no root the extracted panes would already be out of their tabs with nowhere to go.
         if self.pane_is_stacked(root_pane_id) {
             let room_left_in_stack = self
                 .tiled_panes
@@ -8454,6 +8540,13 @@ impl Tab {
                 .stack_panes(root_pane_id, panes_to_stack.len() + 1);
             if stack_geoms.is_empty() {
                 log::error!("Failed to find room for stacked panes");
+                // these panes were extracted from their tabs before we were called, so this is
+                // the last thing holding them: dropping the vec would close them out from under
+                // their still-running processes. The stacked-root arm above parks on failure for
+                // exactly the same reason.
+                for pane in panes_to_stack.drain(..) {
+                    self.park_pane(pane);
+                }
                 return;
             }
             self.tiled_panes
