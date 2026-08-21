@@ -271,9 +271,6 @@ pub(crate) struct Tab {
     // panes drawn over the whole session surface, above the global panes - a sibling of the two
     // above rather than a special case of the floating layer, so that "the floating layer is down"
     // can never mean "nothing on it is focused".
-    // Built and held but not yet routed to; Phase 3 of the modals/overlays refactor moves the
-    // behavior across from `floating_panes` and this attribute comes off.
-    #[allow(dead_code)]
     overlay_panes: OverlayPanes,
     suppressed_panes: SuppressedPanes,
     stacked_pane_list: Rc<RefCell<bool>>,
