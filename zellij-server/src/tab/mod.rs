@@ -7734,9 +7734,13 @@ impl Tab {
                 if !run_requests_overlay(suppressed.pane.invoked_with()) {
                     self.show_floating_panes();
                 }
+                // no focus call after this: `add_floating_pane` with no client focuses every
+                // client itself, in whichever collection the pane actually landed in. Doing it
+                // again here would name `floating_panes` unconditionally, and for an overlay that
+                // is a collection the pane is not in - leaving a phantom in its `active_panes` and
+                // `z_indices` that outlives the overlay.
                 self.add_floating_pane(suppressed.pane, pane_id, None, true, None)
                     .non_fatal();
-                self.floating_panes.focus_pane_for_all_clients(pane_id);
             },
             None => {
                 log::error!("Could not find suppressed pane wiht id: {:?}", pane_id);
