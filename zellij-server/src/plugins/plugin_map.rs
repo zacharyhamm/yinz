@@ -555,13 +555,28 @@ impl RunningPlugin {
     }
 
     /// Call the plugin's `update` entrypoint, returning whether it asked to be re-rendered.
+    ///
+    /// An event the host cannot encode is deliberately non-fatal: it is logged and dropped
+    /// rather than returned as an error, because the caller turns any error here into a plugin
+    /// crash and the plugin is not the thing that failed.
     pub fn update(&mut self, event: &Event) -> Result<bool> {
         match &mut self.backend {
             PluginBackend::Wasm { store, instance } => {
-                let protobuf_event: ProtobufEvent = event
-                    .clone()
-                    .try_into()
-                    .map_err(|e| anyhow!("failed to serialize event: {:?}", e))?;
+                let protobuf_event: ProtobufEvent = match event.clone().try_into() {
+                    Ok(protobuf_event) => protobuf_event,
+                    Err(e) => {
+                        // the host could not encode this event; the plugin itself is fine, so
+                        // skip the event rather than kill it
+                        Err::<(), _>(anyhow!(
+                            "plugin {}: failed to serialize {}: {:?}",
+                            self.env().plugin_id,
+                            event,
+                            e
+                        ))
+                        .non_fatal();
+                        return Ok(false);
+                    },
+                };
                 let update = instance
                     .get_typed_func::<(), i32>(&mut *store, "update")
                     .map_err(|e| anyhow!(e))?;
