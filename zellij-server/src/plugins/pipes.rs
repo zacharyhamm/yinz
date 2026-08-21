@@ -3,9 +3,7 @@ use crate::plugins::plugin_map::RunningPlugin;
 use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
 use std::collections::{HashMap, HashSet};
 use zellij_utils::data::{PipeMessage, PipeSource};
-use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 
-use prost::Message;
 use zellij_utils::errors::prelude::*;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
@@ -146,12 +144,8 @@ pub fn apply_pipe_message_to_plugin(
     let columns = running_plugin.columns;
 
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
-    let protobuf_pipe_message: ProtobufPipeMessage = pipe_message
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow!("Failed to convert to protobuf: {:?}", e))?;
     match running_plugin
-        .pipe(&protobuf_pipe_message.encode_to_vec())
+        .pipe(pipe_message)
         .with_context(err_context)?
     {
         Some(should_render) => {

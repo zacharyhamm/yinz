@@ -5,6 +5,7 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
+mod lua;
 mod pinned_executor;
 mod pipes;
 mod plugin_limits;

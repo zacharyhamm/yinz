@@ -27,6 +27,7 @@ kasuari = { version = "0.4.12", default-features = false }
 kdl = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
+mlua = { workspace = true }
 notify-debouncer-full = { workspace = true }
 png = { version = "0.17.16", default-features = false }
 prost = { workspace = true }
