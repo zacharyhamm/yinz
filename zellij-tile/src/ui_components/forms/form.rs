@@ -1114,7 +1114,7 @@ impl Form {
                         Widget::Select(select) => select.cursor_column(&prompt, width),
                         Widget::Checkbox(_) | Widget::Radio(_) => None,
                     };
-                    column.map(|column| (x + column, (y + i - start).saturating_sub(1)))
+                    column.map(|column| (x + column, y + i - start))
                 })
             },
             // Focus is on a button: there is nothing to type into, and a cursor
@@ -1321,7 +1321,9 @@ mod tests {
 
         form.handle_key(key(BareKey::Enter));
         form.render(2, 5, 40);
-        assert_eq!(take_last_cursor_position(), Some(Some((8, 4))));
+        // The row the focused field was drawn on, which is the row the form was
+        // asked to start at.
+        assert_eq!(take_last_cursor_position(), Some(Some((8, 5))));
     }
 
     #[test]
@@ -1466,12 +1468,12 @@ mod tests {
         form.handle_key(key(BareKey::Tab));
         form.render(2, 5, 40);
         let name_row = form.field_by_id("name").unwrap().last_rendered.unwrap().y;
-        assert_eq!(take_last_cursor_position(), Some(Some((8, name_row - 1))));
+        assert_eq!(take_last_cursor_position(), Some(Some((8, name_row))));
 
         form.handle_key(key(BareKey::Tab));
         form.render_in_viewport(2, 5, 40, 1);
         let path_row = form.field_by_id("path").unwrap().last_rendered.unwrap().y;
-        assert_eq!(take_last_cursor_position(), Some(Some((8, path_row - 1))));
+        assert_eq!(take_last_cursor_position(), Some(Some((8, path_row))));
     }
 
     #[test]
