@@ -1,9 +1,9 @@
 # Modals and overlays: giving them their own collection
 
-Working document for the `unify-modals-overlays` branch. Phases 0–3 have landed — overlays
-are their own collection and the compensation layer is gone. Phase 4 is what is left: the
-in-repo plugins still open floating and promote themselves, which is the last thing keeping
-the two-stage birth alive.
+Working document for the `unify-modals-overlays` branch. Phases 0–4 have landed. Overlays are
+their own collection, overlay-ness is a placement rather than a flag on coordinates, the
+two-stage birth is gone with the whole of its compensation layer, and a pane is now either born
+an overlay or is never one.
 
 ## Why
 
@@ -38,10 +38,9 @@ assumption only wrong because overlays live in the floating collection.
 is never a floating pane, so the compensation layer is deleted and the bug class becomes
 unrepresentable.
 
-As of Phase 3 that holds for every path *inside the server*. What still arrives the old
-way is a popup plugin, which opens floating and promotes itself from `load()` — so the
-promotion path survives as a genuine migration between collections, and one piece of the
-compensation (`layer_visible_when_added`) survives with it. Phase 4 removes both.
+As of Phase 4 that holds everywhere. There is no promotion path left: `FloatingPaneCoordinates`
+carries no `overlay` flag, so nothing can ask for one after the fact, and the last of the
+compensation (`layer_visible_when_added`) went with it.
 
 ---
 
@@ -204,17 +203,43 @@ the same shape: `Tab::set_force_render`, `rename_pane` (how a plugin titles its 
 `undo_active_rename_pane`, which picked its collection from whether the floating layer
 happens to be visible.
 
-**The lesson for Phase 4:** a change to how panes are stored is not verified by the unit
-suite. Run `cargo x integration-test`, and drive the real binary — the fastest reproduction
-here was `zellij action new-pane --plugin zellij:about --floating --overlay true` against a
-live session, which showed an empty frame in one command.
+**The lesson, which Phase 4 inherited:** a change to how panes are stored is not verified by
+the unit suite. Run `cargo x integration-test`, and drive the real binary — the fastest
+reproduction here was `zellij action new-pane --plugin zellij:about --floating --overlay`
+against a live session, which showed an empty frame in one command.
+
+### Phase 4 — born as an overlay or never one (commits `9a965891a`, `10feb5220`)
+
+Two commits: the mechanical move, then the one behavior flip that could be separated from it.
+
+Overlay-ness stops being expressible as a flag on coordinates and becomes only a placement.
+`FloatingPaneCoordinates::overlay` and `as_overlay()` are deleted along with the `overlay` field
+in all three `.proto` contracts; `Action::NewFloatingPane`, `NewFloatingPluginPane` and `EditFile`
+carry a `NewPanePlacement` instead; plugins get `change_overlay_coordinates` and
+`open_command_pane_overlay`; and `Action::Quit` states `OverlayPlacement::modal(None)` rather than
+injecting a `modal` configuration key for the server to read back out.
+
+With no way to ask for a promotion, the promotion branch of
+`Tab::change_floating_pane_coordinates` goes, and with it the last of the compensation:
+`FloatingPanes::layer_visible_when_added` and its two accessors, `ActivePanes::insert_silently`,
+`OverlayPanes::adopt_focus`, and the `PromoteToOverlay` exemption from the property test.
+
+Two behavior decisions landed here as well — overlays now outrank a UI-covering fullscreen tiled
+pane, and fullscreen is refused on an overlay rather than falling through. Both are written up
+under Phase 4 below, with what the plan got wrong.
+
+`requests_overlay`/`requests_modal`/`RunPluginOrAlias::overlay_placement` stay: they are the
+documented compatibility shim for the `overlay`/`modal` keys that keybindings, layouts and
+third-party plugins still write, and they go in a later release once those are out of
+circulation.
 
 ---
 
 ## Findings that the remaining work depends on
 
 Discovered while writing Phase 0. Each was pinned by a test asserting the pre-refactor
-behavior. **1–4 and 9 are resolved by Phase 3**; the rest still describe the code.
+behavior. **1–4 and 9 were resolved by Phase 3, and 7, 8 and 10 by Phase 4**; 5 and 6 still
+describe the code.
 
 1. **RESOLVED (`017977bc5`). An overlay was re-resolved against the stale surface on
    resize.**
@@ -253,26 +278,28 @@ behavior. **1–4 and 9 are resolved by Phase 3**; the rest still describe the c
    boolean parameter into `FloatingPanes::move_surface` and
    `FloatingPanes::placement_space`, which is what it always meant.
 
-7. **`change_floating_panes_coordinates` must stay.** It is used for ordinary resizing by
-   `compact-bar:450`, `multiple-select:491,512`, `about:300`, `hocus/tools.rs:2277`.
-   Only the `.as_overlay()` promotion goes away.
+7. **RESOLVED (Phase 4). `change_floating_panes_coordinates` stays** — it is used for ordinary
+   resizing by `compact-bar`, `multiple-select`, `about` and `hocus/tools.rs`. What went away is
+   the `.as_overlay()` promotion, and an overlay resizing itself now has its own command,
+   `change_overlay_coordinates`.
 
-8. **`hocus-new-agent` re-asserts `.as_overlay()` on every resize**
-   (`default-plugins/hocus-new-agent/src/main.rs:228-241`), so overlay-ness must stay
-   sticky across coordinate changes. Since Phase 3 it holds by construction:
-   `OverlayPanes::change_pane_coordinates` leaves the stored `kind` alone.
+8. **RESOLVED (Phase 4). `hocus-new-agent` re-asserts its geometry on every resize**, so
+   overlay-ness has to stay sticky across coordinate changes. It holds by construction:
+   `OverlayPanes::change_pane_coordinates` leaves the stored `kind` alone, and since Phase 4 the
+   plugin cannot say anything about overlay-ness in the call at all.
 
 9. **RESOLVED by construction. `layout_applier.rs:869,944` drained `floating_panes`** for
    swap layouts, sweeping overlays into relayouts. Those drains no longer see an overlay,
    which also fixes the silent demotion of an `--overlay` *terminal* pane — it had no
    plugin configuration for `add_floating_pane` to re-derive overlay-ness from.
 
-10. **NEW, for Phase 4. An overlay is not drawn under a UI-covering fullscreen tiled
-    pane**, and focus follows: `Tab::get_active_pane_id` hands the keyboard back to the
-    tiled pane. That is arguably wrong for a *modal*, which would be focused and invisible,
-    but it is what the code did before the split and changing it is a separate decision.
-    Pinned by `overlay_focus_tracks_whether_the_overlay_is_rendered`; the single gate is
-    `Tab::overlays_are_rendered`.
+10. **RESOLVED (Phase 4), against the old behavior. An overlay used not to be drawn under a
+    UI-covering fullscreen tiled pane**, and focus followed it away. That left a modal focused
+    and invisible, which the user cannot get out of, so overlays now outrank fullscreen the way
+    they outrank a pinned pane. `Tab::overlays_are_rendered` is the single gate and is now just
+    `self.overlay_panes.has_panes()`. Pinned by
+    `an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane` and the new snapshot
+    `frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane`.
 
 ---
 
@@ -364,41 +391,88 @@ missed one fails the property test immediately — which is what it is for. The 
 
 ---
 
-## Phase 4 — born-as-overlay, plugin migration, cleanup
+## Phase 4 — born-as-overlay, plugin migration, cleanup (**landed**; see Done, above)
 
-- `route.rs:1213-1220`: `Action::Quit` stops injecting `configuration {"modal":"true"}`
-  and passes `OverlayPlacement::modal(None)`.
-- Add `change_overlay_coordinates(..)` to `zellij-tile/src/shim.rs` (beside `:3211`),
-  its `zellij_exports.rs:4735` host function and a `ScreenInstruction`, so an overlay
-  resizes itself *within* the overlay collection. `change_floating_panes_coordinates`
-  stays for ordinary resizing — finding 7.
-- Migrate the in-repo plugins off `.as_overlay()`: `hocus-new-agent/src/main.rs:232-241`,
-  `hocus-ask/src/main.rs:382,411,469`, `file-finder/src/main.rs:324,369`,
-  `quit-confirmation/src/main.rs:34-46`.
-- Rewrite `zellij-integration-tests/tests/floating_pane_overlay.rs`
-  (`open_self_upgrading_popup`, `a_self_upgrading_popup_does_not_reveal_a_hidden_floating_pane`,
-  `closing_a_popup_leaves_the_hidden_floating_layer_hidden`) against the new mechanism.
-  **Rewrite, do not delete** — the user-visible guarantee still holds; only the mechanism
-  changes. They pass unchanged after Phase 3 because the promotion path still exists.
-- Delete `FloatingPaneCoordinates::overlay` and `as_overlay()`. Phase 3 removed every
-  *storage* use; what is left is a handful of read sites treating it as an input
-  (`overlay_placement_for` in `tab/mod.rs`, and the plugin callers being migrated above).
-  Keep `requests_overlay`/`requests_modal`/`overlay_placement` and
-  `Tab::run_requests_overlay` as the documented compatibility shim; they go in a later
-  release once the old configuration keys are out of circulation.
-- **Delete the last of the compensation layer**, which Phase 3 could not:
-  `FloatingPanes::layer_visible_when_added` with `note_layer_state_before_adding` and
-  `take_layer_state_before_adding`, the promotion branch of
-  `Tab::change_floating_pane_coordinates`, and the `PromoteToOverlay` exemption from the
-  property test's invariant-3 transition check. All four exist for the two-stage birth; a
-  pane born an overlay reveals nothing, so there is nothing to put back.
-- Decide finding 10: should a modal be drawn over a UI-covering fullscreen tiled pane?
-  Today it is not, and focus follows it away. `Tab::overlays_are_rendered` is the single
-  place to change.
-- Enforce that an overlay cannot go fullscreen, and say so in the module doc. `OverlayPanes`
-  has no `fullscreen_pane_id`, so it is no longer *reachable* — but `Tab` still has
-  `toggle_pane_fullscreen` paths that simply fall through for an overlay rather than
-  refusing, which is luck rather than design.
+The plan that used to be here has been executed. What is worth keeping is where the plan's
+premise was wrong, and the four decisions taken while carrying it out.
+
+**The premise was already half-true.** The plan said the in-repo popup plugins "still open
+floating and promote themselves". They did call `.as_overlay()` from `load()`, but every one of
+them is launched with `overlay`/`modal` in its configuration
+(`zellij-utils/assets/config/default.kdl`, plus the key `route.rs` injected for
+`quit-confirmation`), so `AddPlugin` had already resolved them to `NewPanePlacement::Overlay` and
+they were *already* born into `OverlayPanes`. Their `.as_overlay()` calls hit the "already an
+overlay" early return, not the promotion branch. The promotion branch's real users were
+third-party plugins and `zellij action change-floating-pane-coordinates --overlay` — and Phase 4
+deliberately stops supporting both.
+
+**Deliberate user-visible removal:** `zellij action change-floating-pane-coordinates` loses its
+`--overlay` and `--modal` flags. A floating pane cannot become an overlay any more; open one as an
+overlay instead (`zellij action new-pane --overlay` / `--modal`). This is the point of the phase
+rather than a casualty of it: overlay-ness decided after birth is the bug class the whole refactor
+exists to make unrepresentable.
+
+### The four decisions
+
+1. **Finding 10, resolved against the old behavior.** *All* overlays, not only modals, now draw
+   over a UI-covering fullscreen tiled pane and keep focus. Hiding them left a modal focused and
+   invisible — a state the user cannot get out of, because the invisible thing is what has the
+   keyboard. `Tab::overlays_are_rendered` is now just `self.overlay_panes.has_panes()`.
+2. **Fullscreen is refused on an overlay, on both paths.** `Tab::refuses_fullscreen` covers the
+   by-id ones, which used to log "no tiled pane with id" — a lookup failure, not a refusal — and
+   `active_pane_refuses_fullscreen` covers `toggle_active_pane_fullscreen`/`_no_ui_`, which never
+   consulted `get_active_pane_id` and so silently fullscreened the tiled pane *behind* the overlay
+   the user was looking at. That was a live bug, not a tidy-up. `unset_fullscreen` needed nothing:
+   an overlay can never be the fullscreen pane it would clear.
+3. **The wire contract was broken outright.** The `overlay` field is deleted from all three
+   `.proto` contracts rather than reserved or shimmed. A plugin built against an older
+   `zellij-tile` that sets it silently loses overlay-ness.
+4. **A dedicated `open_command_pane_overlay`**, matching the existing `_floating` / `_in_place`
+   family, rather than a general placement-carrying open shim.
+
+### What the plan did not anticipate
+
+**`NewPanePlacement` had to replace bare coordinates on three actions, not two.**
+`Action::NewFloatingPane`, `Action::NewFloatingPluginPane` *and* `Action::EditFile` all carried
+overlay-ness as a bool on their coordinates, so `zellij action edit --floating --overlay` would
+have regressed silently. All three now carry a `placement: NewPanePlacement`, with
+`Action::NewBlockingPane` as the precedent. This also fixed a live gap: the
+`--plugin --floating --modal` path flattened to a bare bool and lost the modal *kind*, which only
+came back if the plugin's own configuration happened to say `modal`.
+
+**An `Option<OverlayPlacement>` had to be threaded through the plugin-load round trip** —
+`ScreenInstruction::LaunchPlugin` → `PtyInstruction::FillPluginCwd` → `PluginInstruction::Load` →
+`ScreenInstruction::AddPlugin` — so that a launcher can state overlay-ness without going through
+the configuration shim. At `AddPlugin` a stated placement wins over the one
+`RunPluginOrAlias::overlay_placement()` derives from configuration. It is the last parameter of
+each instruction rather than beside the coordinates, which kept the call-site sweep to appending
+one argument.
+
+**`ActivePanes::insert_silently` and `OverlayPanes::adopt_focus` died with the promotion.** Both
+existed to carry focus across a collection migration; there is no migration left, so they had no
+callers and are gone.
+
+### Coverage that moved
+
+- `Op::PromoteToOverlay` is gone from the property test, and with it the last exemption from
+  invariant 3's transition half. Nothing is exempt now.
+- `a_floating_pane_that_becomes_an_overlay_takes_the_floating_layer_down_with_it` and
+  `a_pane_that_becomes_an_overlay_lands_where_a_pane_born_an_overlay_already_is` described a
+  path that no longer exists. The first became
+  `opening_an_overlay_does_not_raise_the_floating_layer`, which is the guarantee the user
+  actually has; the second had nothing left to compare.
+- `overlay_focus_tracks_whether_the_overlay_is_rendered` became
+  `an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane`, asserting decision 1.
+- New: `frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane`. This combination had no
+  snapshot because the overlay was simply not drawn, and it is the sharpest test of the flat-list
+  discipline — a fullscreen tiled pane is the one case where the floating half of
+  `occlusion_stack` is not drawn while the overlay half is. An empty box is the failure it pins.
+- New: `an_overlay_cannot_be_fullscreened_by_id` and
+  `a_fullscreen_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone`, for decision 2.
+- `zellij-integration-tests/tests/floating_pane_overlay.rs`: `open_self_upgrading_popup` became
+  `open_popup`, opening `zellij:quit-confirmation` as a modal with the geometry the plugin used to
+  set on itself. The assertions did not change — the user-visible guarantee is the same one; only
+  the mechanism it rides on is gone.
 
 ---
 
@@ -445,9 +519,15 @@ Notes from running these on this branch:
   failure sets, drawn from
   `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`
-  and `screen_tests::cli_actions::send_cli_scroll_up_action`. Every one of them passes when
-  run alone, and `global_panes_focus` also fails on a stashed (pre-branch) tree — so this is
-  load, not a regression.
+  and `screen_tests::cli_actions::send_cli_scroll_up_action`. `global_panes_focus` also fails
+  on a stashed (pre-branch) tree — so this is not a regression.
+
+  **`global_panes_focus` is not merely load-sensitive; it is racy on its own.** Run alone five
+  times against one unchanged binary at the end of Phase 4 it failed three times and passed
+  twice, always with the same two-row shift in the "from anchor" box. Same binary, both
+  outcomes, is the proof: a regression fails deterministically. So "check the named test alone"
+  is not sufficient for *this* test — run it several times, and compare the failure to the
+  snapshot diff above rather than to a pass/fail count. It touches no overlays.
 
   The mechanism is visible in the tests themselves: `mode_update_payload...` loads a real
   wasm plugin and then synchronizes with bare `std::thread::sleep(500ms)`
@@ -462,8 +542,20 @@ Notes from running these on this branch:
   zellij-utils/assets/plugins/`) unless plugin source actually changed, or it lands in
   the commit.
 
+- **The Phase 4 full run, for reference.** `cargo x test`: 2502 passed, 1 failed
+  (`mode_update_payload_is_lightweight_for_opted_in_plugins`, green alone).
+  `cargo x test --no-web`: green. `cargo x integration-test -- -j 4`: 324 tests, 305 passed,
+  19 failed - exactly the pre-existing set named above, nothing else. `build`, `format --check`
+  and `assets --check` clean. Note the integration suite took ~52 minutes at `-j 4`.
+
 **Snapshots expected to change legitimately:** the config snapshots under
 `zellij-utils/src/kdl/snapshots/` if KDL serialization shifts, and any
 `screen_tests`/`tab_integration_tests` snapshot whose frame contains an overlay. Frames
 *without* an overlay must not move — a diff there is a real regression, not a
 re-baseline.
+
+Phase 4 moved three: two `ScreenInstruction` dumps that gained the new trailing
+`Option<OverlayPlacement>` field
+(`send_cli_launch_or_focus_plugin_action`,
+`send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane`) and the new
+`frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane`.
