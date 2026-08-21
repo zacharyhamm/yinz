@@ -105,6 +105,9 @@ pub fn probe(master_fd: RawFd, child_pid: u32) -> Probe {
 /// exits 128, so the exit code cannot gate the parse. Shipping raw output means
 /// that logic stays in one place and keeps working for remote panes without
 /// knowing they exist.
+///
+/// It reaches that parser through `PluginCommand::GetPaneGitProbe`, which
+/// answers from the cache this fills — see `Pty::get_pane_git_probe`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GitProbe {
     pub cwd: String,

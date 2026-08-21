@@ -29,6 +29,9 @@ ZELLIJ_BIN="/usr/src/zellij/$(uname -m)-unknown-linux-musl/release/zellij"
     if [ -n "${ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS:-}" ]; then
         echo "export ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS=$ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS"
     fi
+    if [ -n "${ZELLIJ_REMOTE_GIT_REFRESH_SECS:-}" ]; then
+        echo "export ZELLIJ_REMOTE_GIT_REFRESH_SECS=$ZELLIJ_REMOTE_GIT_REFRESH_SECS"
+    fi
     echo "exec \"$ZELLIJ_BIN\" \"\$@\""
 } > /usr/local/bin/zellij
 chmod +x /usr/local/bin/zellij

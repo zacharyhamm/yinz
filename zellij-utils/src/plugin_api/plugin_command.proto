@@ -241,6 +241,7 @@ enum CommandName {
   SetTabProjects = 248;
   RevealPaneWithId = 249;
   OpenCommandPaneInGitCheckoutNearPlugin = 251;
+  GetPaneGitProbe = 252;
 }
 
 message PluginCommand {
@@ -422,6 +423,7 @@ message PluginCommand {
     RevealPaneWithIdPayload reveal_pane_with_id_payload = 190;
     NotifyWithPanePayload notify_with_pane_payload = 191;
     OpenCommandPaneInGitCheckoutPayload open_command_pane_in_git_checkout_payload = 192;
+    GetPaneGitProbePayload get_pane_git_probe_payload = 193;
   }
 }
 
@@ -1200,6 +1202,27 @@ message GetPaneCwdPayload {
 message GetPaneCwdResponse {
   oneof result {
     string cwd = 1;
+    string error = 2;
+  }
+}
+
+message GetPaneGitProbePayload {
+  PaneId pane_id = 1;
+}
+
+// Git's own output, unparsed. `bytes` rather than `string` because
+// `git config --null` output is not text.
+message PaneGitProbe {
+  string host = 1;
+  string cwd = 2;
+  optional int32 exit_code = 3;
+  bytes metadata = 4;
+  bytes config = 5;
+}
+
+message GetPaneGitProbeResponse {
+  oneof result {
+    PaneGitProbe probe = 1;
     string error = 2;
   }
 }

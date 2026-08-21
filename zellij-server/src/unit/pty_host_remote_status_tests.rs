@@ -207,3 +207,14 @@ fn probing_a_directory_that_is_gone_reports_nothing_useful() {
     assert!(git.metadata.is_empty());
     assert_eq!(git.cwd, "/definitely/not/a/real/directory");
 }
+
+/// The premise the pump's "send only on difference" rests on: a folder nobody
+/// has touched answers identically every time. Were the probe unstable — a
+/// timestamp, an ordering that drifted — an idle pane would send a frame a
+/// minute for the life of the session, which is exactly what the pump was built
+/// to avoid.
+#[test]
+fn probing_an_unchanged_checkout_twice_answers_the_same() {
+    let repo = env!("CARGO_MANIFEST_DIR");
+    assert_eq!(probe_git(repo), probe_git(repo));
+}

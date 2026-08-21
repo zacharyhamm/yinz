@@ -8,6 +8,7 @@
 mod poll;
 
 use hocus_proto::llm::Endpoint;
+use hocus_proto::location::Location;
 use hocus_proto::panes::{
     focused_pane, focused_plugin_pane, manifest_pane_ids, pane_geometry, terminal_panes,
 };
@@ -41,6 +42,13 @@ const COMMAND_REPAIRS_PER_TICK: usize = 4;
 /// gits in one breath. The leftovers are taken by the next event or the
 /// heartbeat; every filter in `repository_cwds` makes a repeated pass idempotent.
 const GIT_PROBES_PER_PASS: usize = 8;
+/// How many remote panes one heartbeat will ask the host the Git probe of.
+///
+/// Cheaper than a local probe — one channel round trip against a cached answer,
+/// with no process anywhere — but still a blocking round trip, and the same
+/// reason for a cap as `COMMAND_REPAIRS_PER_TICK`. What is left over is taken by
+/// the next tick, which resumes the rotation where this one stopped.
+const REMOTE_PROBES_PER_TICK: usize = 4;
 /// The alias whose KDL block configures the endpoint summaries are asked of.
 ///
 /// hocus's block, not this daemon's: the endpoint, the model and the key are one setting
@@ -132,14 +140,36 @@ struct State {
     /// the same reader — it is how hocus tells the agents pane above it from itself.
     focused_plugin: Option<u32>,
     commands: BTreeMap<u32, String>,
+    /// Where each pane is, as a plain path.
+    ///
+    /// Deliberately *not* keyed by machine: `CwdChanged` carries a pane id and a
+    /// path and nothing else, and a pane can be heard about before anything has
+    /// said which machine it is on. Baking a host in here would record a remote
+    /// pane as local and then have to repair it. The machine comes from the pane
+    /// itself — see `pane_location`.
     cwds: BTreeMap<u32, String>,
+    /// Which machine each pane's process runs on, absent for this one.
+    ///
+    /// Kept beside `cwds` and pruned with it, rather than read off the pane
+    /// list, because the pane list is the *visible* panes: a pane hidden behind
+    /// the scrollback editor is suppressed, not closed, and it keeps its folder
+    /// across that. A host that went away with it would key the folder as local
+    /// for as long as the pane stayed hidden.
+    hosts: BTreeMap<u32, String>,
     activity: agents::Activity,
-    repositories: BTreeMap<String, projects::Repository>,
-    git_probes: BTreeMap<String, GitProbe>,
+    /// What Git said about each folder, keyed by folder *and machine*.
+    repositories: BTreeMap<Location, projects::Repository>,
+    /// Local probes in flight. Only ever local: a remote folder is answered by
+    /// the host in one call, with nothing to correlate — see
+    /// `refresh_remote_repositories_with`.
+    git_probes: BTreeMap<Location, GitProbe>,
     /// Seconds left before a folder whose probe answered nothing is tried again.
-    probe_backoff: BTreeMap<String, f64>,
+    probe_backoff: BTreeMap<Location, f64>,
     git_probe_seq: u64,
     git_refresh_elapsed: f64,
+    /// Where the rotating remote re-ask left off. See
+    /// `refresh_remote_repositories_with`.
+    remote_probe_cursor: usize,
     /// Who to push snapshots to — hocus, and hocus-store for its project
     /// discovery. A list rather than a single slot because both want the same
     /// snapshot, and broadcasting it instead would hand every plugin in the
@@ -290,6 +320,11 @@ impl ZellijPlugin for State {
                 self.record_cwd(id, &cwd.to_string_lossy());
                 self.rejoin_cwds();
                 self.resolve_repositories();
+                // A remote pane's folder is probed on the far machine, so a `cd`
+                // is attributed on the next ask rather than by the pass above.
+                // Asked here as well as on the heartbeat so it lands now rather
+                // than in five seconds.
+                self.refresh_remote_repositories();
                 self.publish();
             },
             Event::RunCommandResult(exit_code, stdout, _, context) => {
@@ -312,6 +347,11 @@ impl ZellijPlugin for State {
                 self.repair_commands();
                 self.repair_cwds();
                 self.expire_probe_backoff(elapsed);
+                // Every tick, not on the Git refresh interval: this reads a
+                // cache the far machine keeps fresh on its own clock, so waiting
+                // a minute would only add latency to an answer already sitting
+                // there. It publishes nothing unless something changed.
+                self.refresh_remote_repositories();
                 self.git_refresh_elapsed += elapsed;
                 if self.git_refresh_elapsed >= GIT_REFRESH_SECONDS {
                     self.git_refresh_elapsed %= GIT_REFRESH_SECONDS;
@@ -553,6 +593,19 @@ impl State {
             .flatten()
             .map(|pane| pane.pane_id)
             .collect();
+        // From the raw manifest for the same reason the maps above are pruned
+        // against it: a suppressed pane is still a pane, still on its machine.
+        for pane in self
+            .manifest
+            .panes
+            .values()
+            .flatten()
+            .chain(self.manifest.global_panes.iter())
+        {
+            if let Some(host) = pane.host.clone() {
+                self.hosts.insert(pane.id, host);
+            }
+        }
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
         for pane in &mut panes {
             if let Some(command) = self.commands.get(&pane.pane_id) {
@@ -568,6 +621,7 @@ impl State {
         let live = manifest_pane_ids(&self.manifest);
         self.commands.retain(|id, _| live.contains(id));
         self.cwds.retain(|id, _| live.contains(id));
+        self.hosts.retain(|id, _| live.contains(id));
         // A pane that closes stops being an agent because it stops being in the
         // manifest — the same rule as the two maps above, which is what keeps
         // the latch from being one more thing that can go stale.
@@ -765,10 +819,19 @@ impl State {
         // probed checkout on every flicker and cancelled the probe in flight
         // with it, so the agent lost its project until two more round trips
         // landed. One cwd per live pane still bounds both maps.
-        let live: BTreeSet<&String> = self.cwds.values().collect();
-        self.repositories.retain(|cwd, _| live.contains(cwd));
-        self.git_probes.retain(|cwd, _| live.contains(cwd));
-        self.probe_backoff.retain(|cwd, _| live.contains(cwd));
+        //
+        // A folder is only half a key now, so the live set is `cwds` joined to
+        // `hosts` rather than `cwds` alone — building local keys for remote
+        // panes would leave every remote entry matching nothing and so never
+        // evicted. Both maps are pruned against the *manifest*, which is what
+        // keeps a suppressed pane's folder alive while it is hidden.
+        let live: BTreeSet<Location> = self.pane_locations().into_iter().collect();
+        self.repositories
+            .retain(|location, _| live.contains(location));
+        self.git_probes
+            .retain(|location, _| live.contains(location));
+        self.probe_backoff
+            .retain(|location, _| live.contains(location));
         self.start_git_probes(self.repository_cwds(false));
     }
 
@@ -780,6 +843,10 @@ impl State {
     /// blinks while this runs.
     fn refresh_repositories(&mut self) {
         self.start_git_probes(self.repository_cwds(true));
+        // Both halves of the same job. This is what `wire::AGENT_REFRESH` calls,
+        // and a refresh that quietly did nothing for remote panes would be a
+        // trap for whoever asked.
+        self.refresh_remote_repositories();
     }
 
     /// The folders worth asking Git about on this pass.
@@ -794,45 +861,90 @@ impl State {
     ///
     /// Agents first all the same: theirs are the folders a header is drawn from,
     /// and the cap below is spent on them before anything else.
-    fn repository_cwds(&self, refresh: bool) -> Vec<String> {
-        let agents = self.agent_cwds();
-        let mut seen: BTreeSet<&String> = BTreeSet::new();
+    ///
+    /// Local folders only. A remote pane's folder is on another machine, where
+    /// running Git from here would probe an unrelated directory of the same
+    /// name — see `refresh_remote_repositories_with` for the other half.
+    fn repository_cwds(&self, refresh: bool) -> Vec<Location> {
+        let agents = self.agent_locations();
+        let mut seen: BTreeSet<Location> = BTreeSet::new();
         agents
             .iter()
-            .chain(self.cwds.values())
+            .cloned()
+            .chain(self.pane_locations())
+            .filter(|location| location.host.is_none())
             // One folder can hold several panes, and an agent folder is in both
             // halves of the chain.
-            .filter(|cwd| seen.insert(cwd))
-            .filter(|cwd| refresh || !self.repositories.contains_key(*cwd))
+            .filter(|location| seen.insert(location.clone()))
+            .filter(|location| refresh || !self.repositories.contains_key(location))
             // A probe already in flight answers for this folder either way, so
             // even a forced refresh must not start a second one.
-            .filter(|cwd| !self.git_probes.contains_key(*cwd))
+            .filter(|location| !self.git_probes.contains_key(location))
             // Nothing is cached for a probe that answered nothing, so without
             // this the next event would run it again immediately.
-            .filter(|cwd| !self.probe_backoff.contains_key(*cwd))
+            .filter(|location| !self.probe_backoff.contains_key(location))
             // Two processes per folder, and this runs on nearly every host
             // event. What is left over is picked up by the next event or the
             // heartbeat, and every filter above makes the pass idempotent.
             .take(GIT_PROBES_PER_PASS)
-            .cloned()
             .collect()
     }
 
-    fn agent_cwds(&self) -> BTreeSet<String> {
+    /// The folder a pane is in, with the machine it is on.
+    ///
+    /// The pane is the only thing that knows both: `cwds` holds the path, and
+    /// the manifest holds the host. A pane nothing has reported a folder for has
+    /// no location at all, which is what keeps it from being probed under a
+    /// half-known one.
+    fn pane_location(&self, pane: &agents::AgentPane) -> Option<Location> {
+        self.location_of(pane.pane_id)
+            .or_else(|| Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?)))
+    }
+
+    /// Where a pane is, by id alone.
+    ///
+    /// Both halves come out of the maps rather than off the pane list, so a pane
+    /// the list has dropped — suppressed behind the scrollback editor — still
+    /// answers, and the folder probed for it is not thrown away while it is
+    /// hidden.
+    fn location_of(&self, pane_id: u32) -> Option<Location> {
+        let cwd = self.cwds.get(&pane_id)?;
+        Some(Location::new(self.hosts.get(&pane_id).cloned(), cwd))
+    }
+
+    /// Every folder a pane we still know of is in.
+    ///
+    /// Keyed off `cwds` rather than the visible pane list, because that is what
+    /// decides how long a folder is remembered — see `hosts`.
+    fn pane_locations(&self) -> Vec<Location> {
+        self.cwds
+            .keys()
+            .filter_map(|pane_id| self.location_of(*pane_id))
+            .collect()
+    }
+
+    fn agent_locations(&self) -> BTreeSet<Location> {
         self.panes
             .iter()
             .flatten()
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
-            .filter_map(|pane| pane.cwd.clone())
+            .filter_map(|pane| self.pane_location(pane))
             .collect()
     }
 
-    fn start_git_probes(&mut self, cwds: Vec<String>) {
-        for cwd in cwds {
+    /// Run Git against folders on *this* machine.
+    ///
+    /// Two processes each, answered asynchronously through `RunCommandResult`,
+    /// which is why every one of them needs correlating back — see
+    /// `finish_git_probe`. The correlation key is the folder's full location, so
+    /// it cannot be confused with a folder of the same path elsewhere.
+    fn start_git_probes(&mut self, locations: Vec<Location>) {
+        for location in locations {
+            let cwd = location.path.clone();
             self.git_probe_seq += 1;
             let id = self.git_probe_seq;
             self.git_probes.insert(
-                cwd.clone(),
+                location.clone(),
                 GitProbe {
                     id,
                     ..GitProbe::default()
@@ -842,7 +954,7 @@ impl State {
                 BTreeMap::from([
                     ("git_probe".to_owned(), kind.to_owned()),
                     ("git_probe_id".to_owned(), id.to_string()),
-                    ("cwd".to_owned(), cwd.clone()),
+                    ("cwd".to_owned(), location.key()),
                 ])
             };
             run_command_with_env_variables_and_cwd(
@@ -872,6 +984,96 @@ impl State {
                 cwd.clone().into(),
                 context("config"),
             );
+        }
+    }
+
+    fn refresh_remote_repositories(&mut self) {
+        self.refresh_remote_repositories_with(poll::pane_git_probe);
+    }
+
+    /// Ask the host what Git said about each remote pane's folder.
+    ///
+    /// A separate path from `start_git_probes`, and deliberately not routed
+    /// through `git_probes`: that machinery exists to join two asynchronous
+    /// `RunCommandResult` events back together, and this is one synchronous call
+    /// that returns an answer the far machine has already computed. Reusing it
+    /// would mean inventing a probe id and waiting for an event that never
+    /// comes.
+    ///
+    /// The answer is filed under the folder the probe was *run in*, not under
+    /// wherever the pane is now. The far machine probes on its own clock, so a
+    /// pane that has just moved reports the folder it came from; filing that
+    /// under the new folder would claim a checkout the pane has left. Filed
+    /// under its own folder instead, the entry is simply a fact about a folder,
+    /// and the ancestor walk in hocus still offers it as a project while the
+    /// exact answer is on its way — which is precisely what a local pane does
+    /// between a `cd` and its next probe.
+    ///
+    /// `probe_of` is injected for the reason `repair_cwds_with` and
+    /// `repair_commands_with` are: it reaches the host, and this has to stay
+    /// testable on the host triple.
+    fn refresh_remote_repositories_with(
+        &mut self,
+        mut probe_of: impl FnMut(u32) -> Option<PaneGitProbe>,
+    ) {
+        let remote: Vec<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| pane.host.is_some())
+            .filter(|pane| pane.status == agents::AgentStatus::Running)
+            .map(|pane| pane.pane_id)
+            .collect();
+        if remote.is_empty() {
+            return;
+        }
+
+        // A rotation, so every remote pane is revisited without paying for all
+        // of them on one tick — the same shape as `repair_commands_with`, and
+        // for the same reason: each ask is a host round trip.
+        //
+        // Panes with no answer for the folder they are in go first *within* the
+        // rotation rather than ahead of it. Ahead of it was the obvious way and
+        // it starves: a pane whose folder never resolves — no Git on the far
+        // machine, a folder that is not a checkout — stays unknown forever, so
+        // the first few unknowns would take every tick's budget and the panes
+        // behind them would never be reached at all.
+        if self.remote_probe_cursor >= remote.len() {
+            self.remote_probe_cursor = 0;
+        }
+        let rotation: Vec<u32> = remote
+            .iter()
+            .copied()
+            .cycle()
+            .skip(self.remote_probe_cursor)
+            .take(remote.len())
+            .collect();
+        let unknown = |pane_id: &u32| {
+            self.location_of(*pane_id)
+                .is_none_or(|location| !self.repositories.contains_key(&location))
+        };
+        let due: Vec<u32> = rotation
+            .iter()
+            .copied()
+            .filter(unknown)
+            .chain(rotation.iter().copied().filter(|id| !unknown(id)))
+            .take(REMOTE_PROBES_PER_TICK)
+            .collect();
+        self.remote_probe_cursor = (self.remote_probe_cursor + due.len()) % remote.len();
+
+        let mut changed = false;
+        for pane_id in due {
+            let Some(probe) = probe_of(pane_id) else {
+                continue;
+            };
+            let location = Location::new(Some(probe.host), probe.cwd);
+            let outcome = poll::repository(probe.exit_code, &probe.metadata, &probe.config);
+            changed |= self.record_probe_outcome(location, outcome);
+        }
+        // Only on change. This runs on every heartbeat, and a snapshot is the
+        // whole session's panes and folders pushed to every subscriber.
+        if changed {
+            self.publish();
         }
     }
 
@@ -1133,10 +1335,9 @@ impl State {
         };
         // The branch the daemon already probed for this pane's folder. Context the model
         // cannot get from the pane text, and free here.
-        let branch = pane
-            .cwd
-            .as_ref()
-            .and_then(|cwd| self.repositories.get(cwd))
+        let branch = self
+            .pane_location(pane)
+            .and_then(|location| self.repositories.get(&location))
             .and_then(|repository| repository.branch.clone());
         let tail = agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         let body = agents::summary_request_body(
@@ -1334,8 +1535,8 @@ impl State {
         stdout: Vec<u8>,
         context: BTreeMap<String, String>,
     ) {
-        let (Some(cwd), Some(kind), Some(id)) = (
-            context.get("cwd"),
+        let (Some(location), Some(kind), Some(id)) = (
+            context.get("cwd").map(|key| Location::parse(key)),
             context.get("git_probe"),
             context
                 .get("git_probe_id")
@@ -1343,7 +1544,11 @@ impl State {
         ) else {
             return;
         };
-        let Some(probe) = self.git_probes.get_mut(cwd).filter(|probe| probe.id == id) else {
+        let Some(probe) = self
+            .git_probes
+            .get_mut(&location)
+            .filter(|probe| probe.id == id)
+        else {
             return;
         };
         match kind.as_str() {
@@ -1365,32 +1570,56 @@ impl State {
         if probe.metadata.is_none() || probe.config.is_none() {
             return;
         }
-        let Some(probe) = self.git_probes.remove(cwd) else {
+        let Some(probe) = self.git_probes.remove(&location) else {
             return;
         };
         let (exit_code, metadata) = probe.metadata.unwrap_or_default();
-        let cwd = cwd.clone();
-        match poll::repository(
+        let outcome = poll::repository(
             exit_code,
             &metadata,
             probe.config.as_deref().unwrap_or_default(),
-        ) {
-            poll::ProbeOutcome::Checkout(repository) => {
-                self.repositories.insert(cwd, repository);
-            },
+        );
+        self.record_probe_outcome(location, outcome);
+        self.publish();
+    }
+
+    /// File what one folder's probe concluded, local or remote.
+    ///
+    /// Returns whether anything changed, so a caller that may run on every
+    /// heartbeat can stay quiet when it learned nothing.
+    fn record_probe_outcome(&mut self, location: Location, outcome: poll::ProbeOutcome) -> bool {
+        let host = location.host.clone();
+        let recorded = match outcome {
+            poll::ProbeOutcome::Checkout(repository) => Some(repository.on_host(host)),
             // Recorded, because "we looked here and Git said no" is what stops
             // the next event probing it again.
             poll::ProbeOutcome::NotARepository => {
-                self.repositories
-                    .insert(cwd.clone(), projects::Repository::folder(cwd));
+                Some(projects::Repository::folder(location.path.clone()).on_host(host))
             },
             // Deliberately not recorded. A guess here would outlive the reason
             // for it and deny the pane a project for as long as the entry lives.
             poll::ProbeOutcome::Failed => {
-                self.probe_backoff.insert(cwd, GIT_RETRY_SECONDS);
+                // Only a *local* probe waits: it costs two processes, so
+                // repeating it on every event would be real work spent on a
+                // missing `git`. A remote ask costs one channel round trip and
+                // fails only for reasons that pass on their own — the link, the
+                // broker not having answered yet — so it simply asks again next
+                // tick.
+                if location.host.is_none() {
+                    self.probe_backoff
+                        .insert(location.clone(), GIT_RETRY_SECONDS);
+                }
+                None
             },
+        };
+        let Some(repository) = recorded else {
+            return false;
+        };
+        if self.repositories.get(&location) == Some(&repository) {
+            return false;
         }
-        self.publish();
+        self.repositories.insert(location, repository);
+        true
     }
 
     fn publish(&mut self) {
@@ -1425,6 +1654,16 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder on this machine, which is what nearly every test is about.
+    fn local(path: &str) -> Location {
+        Location::local(path)
+    }
+
+    /// The same folder, on a machine that is not this one.
+    fn remote(host: &str, path: &str) -> Location {
+        Location::new(Some(host), path)
+    }
 
     fn pane(id: u32, command: &str, cwd: &str) -> agents::AgentPane {
         agents::AgentPane {
@@ -1500,18 +1739,255 @@ mod tests {
         }
     }
 
+    /// An agent on another machine, as the manifest and the daemon's maps see
+    /// it together: the folder in `cwds`, the machine in `hosts`.
+    fn agent_on(pane_id: u32, host: &str, cwd: &str) -> State {
+        let mut pane = pane(pane_id, "codex", cwd);
+        pane.host = Some(host.to_owned());
+        State {
+            panes: Some(vec![pane]),
+            cwds: BTreeMap::from([(pane_id, cwd.to_owned())]),
+            hosts: BTreeMap::from([(pane_id, host.to_owned())]),
+            ..State::default()
+        }
+    }
+
+    /// What the far machine's `git rev-parse` writes for a checkout.
+    fn probe_bytes(root: &str, branch: &str) -> Vec<u8> {
+        format!("{root}\n{root}/.git\n{root}/.git\n{branch}\n").into_bytes()
+    }
+
+    fn far_probe(host: &str, cwd: &str, branch: &str) -> PaneGitProbe {
+        PaneGitProbe {
+            host: host.to_owned(),
+            cwd: cwd.to_owned(),
+            exit_code: Some(0),
+            metadata: probe_bytes(cwd, branch),
+            config: Vec::new(),
+        }
+    }
+
+    // -- remote folders --------------------------------------------------
+
+    /// Running Git here for a pane whose process is elsewhere probes whatever
+    /// this machine happens to have at that path — nothing, usually, and
+    /// somebody else's checkout at worst. The far machine has already answered;
+    /// the daemon only has to ask for it.
+    #[test]
+    fn a_remote_pane_is_not_probed_with_a_local_git() {
+        let state = agent_on(7, "build-box", "/work/hocus");
+
+        assert!(
+            state.repository_cwds(false).is_empty(),
+            "a folder on another machine is not ours to run git in",
+        );
+    }
+
+    #[test]
+    fn a_remote_folder_is_resolved_from_its_own_machines_probe() {
+        let mut state = agent_on(7, "build-box", "/work/hocus");
+
+        state.refresh_remote_repositories_with(|pane_id| {
+            assert_eq!(pane_id, 7);
+            Some(far_probe("build-box", "/work/hocus", "topic"))
+        });
+
+        let repository = state
+            .repositories
+            .get(&remote("build-box", "/work/hocus"))
+            .expect("the folder was resolved under its own machine");
+        assert_eq!(repository.branch.as_deref(), Some("topic"));
+        assert_eq!(
+            repository.host.as_deref(),
+            Some("build-box"),
+            "the checkout carries the machine, so nothing matches it by path",
+        );
+        assert!(
+            !state.repositories.contains_key(&local("/work/hocus")),
+            "and nothing was filed as if it were here",
+        );
+    }
+
+    /// The hazard the whole change exists to close: the same path on two
+    /// machines is two folders, and one answer must not stand for both.
+    #[test]
+    fn the_same_path_on_two_machines_is_two_folders() {
+        let mut here = pane(7, "codex", "/work/hocus");
+        let mut there = pane(8, "codex", "/work/hocus");
+        there.host = Some("build-box".to_owned());
+        here.host = None;
+        let mut state = State {
+            panes: Some(vec![here, there]),
+            cwds: BTreeMap::from([(7, "/work/hocus".to_owned()), (8, "/work/hocus".to_owned())]),
+            hosts: BTreeMap::from([(8, "build-box".to_owned())]),
+            ..State::default()
+        };
+
+        state.refresh_remote_repositories_with(|_| {
+            Some(far_probe("build-box", "/work/hocus", "topic"))
+        });
+        state.record_probe_outcome(
+            local("/work/hocus"),
+            poll::repository(Some(0), &probe_bytes("/work/hocus", "main"), &[]),
+        );
+
+        assert_eq!(
+            state.repositories[&local("/work/hocus")].branch.as_deref(),
+            Some("main"),
+        );
+        assert_eq!(
+            state.repositories[&remote("build-box", "/work/hocus")]
+                .branch
+                .as_deref(),
+            Some("topic"),
+        );
+        // The local half is already answered for by now; what matters is that
+        // the remote folder was never a candidate for a local `git` at all.
+        assert!(
+            !state
+                .repository_cwds(true)
+                .contains(&remote("build-box", "/work/hocus")),
+            "a folder on another machine is not ours to run git in",
+        );
+    }
+
+    /// The far machine probes on its own clock, so a pane that has just moved
+    /// reports the folder it came from. Filing that under the new folder would
+    /// claim a checkout the pane has left; filed under its own, it is simply a
+    /// fact about a folder, and the pane waits one tick for its own answer —
+    /// exactly what a local pane does between a `cd` and its next probe.
+    #[test]
+    fn a_probe_that_describes_the_folder_a_pane_has_left_is_filed_under_that_folder() {
+        let mut state = agent_on(7, "build-box", "/work/hocus/deep");
+
+        state.refresh_remote_repositories_with(|_| {
+            Some(far_probe("build-box", "/work/hocus", "topic"))
+        });
+
+        assert!(
+            state
+                .repositories
+                .get(&remote("build-box", "/work/hocus/deep"))
+                .is_none(),
+            "the pane's own folder has not been answered for yet",
+        );
+        assert!(state
+            .repositories
+            .contains_key(&remote("build-box", "/work/hocus")));
+    }
+
+    /// This runs on every heartbeat, and a snapshot is the whole session pushed
+    /// to every subscriber. An unchanged answer is not worth one.
+    #[test]
+    fn an_unchanged_remote_answer_is_recorded_once() {
+        let mut state = agent_on(7, "build-box", "/work/hocus");
+        let outcome = || poll::repository(Some(0), &probe_bytes("/work/hocus", "topic"), &[]);
+
+        assert!(
+            state.record_probe_outcome(remote("build-box", "/work/hocus"), outcome()),
+            "the first answer is news",
+        );
+        assert!(
+            !state.record_probe_outcome(remote("build-box", "/work/hocus"), outcome()),
+            "the same answer again is not",
+        );
+    }
+
+    /// A failed *local* probe waits, because repeating it costs two processes. A
+    /// remote ask costs one round trip and fails only for reasons that pass on
+    /// their own, so it must not be penalised for half a minute.
+    #[test]
+    fn a_remote_folder_that_answered_nothing_is_not_put_in_backoff() {
+        let mut state = agent_on(7, "build-box", "/work/hocus");
+
+        state.record_probe_outcome(
+            remote("build-box", "/work/hocus"),
+            poll::ProbeOutcome::Failed,
+        );
+
+        assert!(
+            state.probe_backoff.is_empty(),
+            "the next tick simply asks again",
+        );
+    }
+
+    /// Each ask is a blocking host round trip, and the rotation is what stops a
+    /// session full of remote panes paying for them all at once.
+    #[test]
+    fn only_so_many_remote_panes_are_asked_on_one_tick() {
+        let count = REMOTE_PROBES_PER_TICK as u32 + 3;
+        let panes: Vec<agents::AgentPane> = (0..count)
+            .map(|id| {
+                let mut pane = pane(id, "codex", &format!("/work/{id}"));
+                pane.host = Some("build-box".to_owned());
+                pane
+            })
+            .collect();
+        let mut state = State {
+            panes: Some(panes),
+            cwds: (0..count).map(|id| (id, format!("/work/{id}"))).collect(),
+            hosts: (0..count).map(|id| (id, "build-box".to_owned())).collect(),
+            ..State::default()
+        };
+
+        let mut asked: Vec<u32> = Vec::new();
+        state.refresh_remote_repositories_with(|pane_id| {
+            asked.push(pane_id);
+            None
+        });
+        assert_eq!(asked.len(), REMOTE_PROBES_PER_TICK);
+
+        // The next tick resumes where this one stopped, so every pane is
+        // reached rather than the first few being asked forever.
+        let mut next: Vec<u32> = Vec::new();
+        state.refresh_remote_repositories_with(|pane_id| {
+            next.push(pane_id);
+            None
+        });
+        assert!(
+            next.iter().any(|pane_id| !asked.contains(pane_id)),
+            "the rotation did not move: {asked:?} then {next:?}",
+        );
+    }
+
+    /// A local pane has no cached probe and the host says so; asking would spend
+    /// a round trip to be told what the pane already says.
+    #[test]
+    fn a_local_pane_is_never_asked_for_a_remote_probe() {
+        let mut state = agent_in(7, "/work");
+
+        state.refresh_remote_repositories_with(|pane_id| {
+            panic!("asked the host about local pane {pane_id}");
+        });
+    }
+
+    /// A remote pane's folder is evicted like any other when its pane goes.
+    #[test]
+    fn a_remote_folder_is_forgotten_when_its_pane_closes() {
+        let mut state = agent_on(7, "build-box", "/work/hocus");
+        state.repositories.insert(
+            remote("build-box", "/work/hocus"),
+            projects::Repository::folder("/work/hocus"),
+        );
+
+        state.panes = Some(Vec::new());
+        state.cwds.clear();
+        state.hosts.clear();
+        state.resolve_repositories();
+
+        assert!(state.repositories.is_empty(), "{:?}", state.repositories);
+    }
+
     #[test]
     fn repository_refresh_reprobes_cached_cwds_without_overlapping() {
         let mut state = agent_in(7, "/work");
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+            .insert(local("/work"), projects::Repository::folder("/work"));
 
         assert!(state.repository_cwds(false).is_empty());
-        assert_eq!(state.repository_cwds(true), vec!["/work"]);
-        state
-            .git_probes
-            .insert("/work".to_owned(), GitProbe::default());
+        assert_eq!(state.repository_cwds(true), vec![local("/work")]);
+        state.git_probes.insert(local("/work"), GitProbe::default());
         assert!(state.repository_cwds(true).is_empty());
     }
 
@@ -1531,12 +2007,12 @@ mod tests {
             "nothing says this pane runs an agent yet",
         );
 
-        assert_eq!(state.repository_cwds(false), vec!["/work"]);
+        assert_eq!(state.repository_cwds(false), vec![local("/work")]);
 
         // And it is still asked only once.
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+            .insert(local("/work"), projects::Repository::folder("/work"));
         assert!(state.repository_cwds(false).is_empty());
     }
 
@@ -1555,7 +2031,10 @@ mod tests {
             ..State::default()
         };
 
-        assert_eq!(state.repository_cwds(false), vec!["/work/hocus", worktree]);
+        assert_eq!(
+            state.repository_cwds(false),
+            vec![local("/work/hocus"), local(worktree)]
+        );
     }
 
     /// Two processes per folder, on a pass that runs on nearly every host event.
@@ -1595,8 +2074,8 @@ mod tests {
         let asked = state.repository_cwds(false);
         assert_eq!(asked.len(), GIT_PROBES_PER_PASS);
         assert_eq!(
-            asked.first().map(String::as_str),
-            Some("/work/hocus"),
+            asked.first().cloned(),
+            Some(local("/work/hocus")),
             "the agent's folder is not crowded out by the shells: {asked:?}",
         );
     }
@@ -1609,10 +2088,8 @@ mod tests {
         let mut state = agent_in(7, "/work");
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
-        state
-            .git_probes
-            .insert("/work".to_owned(), GitProbe::default());
+            .insert(local("/work"), projects::Repository::folder("/work"));
+        state.git_probes.insert(local("/work"), GitProbe::default());
 
         let pane = &mut state.panes.as_mut().unwrap()[0];
         pane.command = None;
@@ -1623,8 +2100,8 @@ mod tests {
         );
         state.resolve_repositories();
 
-        assert!(state.repositories.contains_key("/work"));
-        assert!(state.git_probes.contains_key("/work"));
+        assert!(state.repositories.contains_key(&local("/work")));
+        assert!(state.git_probes.contains_key(&local("/work")));
     }
 
     /// The same guarantee, entered through the event handler rather than
@@ -1638,10 +2115,8 @@ mod tests {
         state.record_cwd(7, "/work");
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
-        state
-            .git_probes
-            .insert("/work".to_owned(), GitProbe::default());
+            .insert(local("/work"), projects::Repository::folder("/work"));
+        state.git_probes.insert(local("/work"), GitProbe::default());
 
         state.on_command(7, vec!["zsh".to_owned()], false);
 
@@ -1649,9 +2124,9 @@ mod tests {
             state.pending_release.contains(&7),
             "the release is still proposed",
         );
-        assert!(state.repositories.contains_key("/work"));
+        assert!(state.repositories.contains_key(&local("/work")));
         assert!(
-            state.git_probes.contains_key("/work"),
+            state.git_probes.contains_key(&local("/work")),
             "and the probe in flight was not cancelled either",
         );
     }
@@ -1661,18 +2136,17 @@ mod tests {
     #[test]
     fn a_pane_that_changes_folder_gives_up_the_old_one_and_probes_the_new() {
         let mut state = agent_in(7, "/work/a");
-        state.repositories.insert(
-            "/work/a".to_owned(),
-            projects::Repository::folder("/work/a"),
-        );
+        state
+            .repositories
+            .insert(local("/work/a"), projects::Repository::folder("/work/a"));
 
         state.record_cwd(7, "/work/b");
         state.rejoin_cwds();
         state.resolve_repositories();
 
-        assert!(!state.repositories.contains_key("/work/a"));
+        assert!(!state.repositories.contains_key(&local("/work/a")));
         assert!(
-            state.git_probes.contains_key("/work/b"),
+            state.git_probes.contains_key(&local("/work/b")),
             "the new folder was asked about in the same breath",
         );
     }
@@ -1684,13 +2158,13 @@ mod tests {
         let mut state = agent_in(7, "/work");
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+            .insert(local("/work"), projects::Repository::folder("/work"));
 
         state.panes = Some(vec![]);
         state.cwds.clear();
         state.resolve_repositories();
 
-        assert!(!state.repositories.contains_key("/work"));
+        assert!(!state.repositories.contains_key(&local("/work")));
     }
 
     /// The regression: a snapshot that says nothing about a folder has not said
@@ -1897,7 +2371,7 @@ mod tests {
         state.record_cwd(7, "/work");
         state
             .repositories
-            .insert("/work".to_owned(), projects::Repository::folder("/work"));
+            .insert(local("/work"), projects::Repository::folder("/work"));
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
@@ -1913,7 +2387,7 @@ mod tests {
         assert_eq!(state.cwds.get(&7).map(String::as_str), Some("/work"));
         assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
         assert!(
-            state.repositories.contains_key("/work"),
+            state.repositories.contains_key(&local("/work")),
             "and the branch probed from it was not thrown away",
         );
 
@@ -1935,7 +2409,7 @@ mod tests {
         state.rebuild_panes();
         assert!(state.cwds.is_empty());
         assert!(state.latched.is_empty());
-        assert!(!state.repositories.contains_key("/work"));
+        assert!(!state.repositories.contains_key(&local("/work")));
     }
 
     /// A re-run pane is a new process and has to earn its latch again, or a
@@ -2207,7 +2681,7 @@ mod tests {
             ("git_probe_id".to_owned(), "1".to_owned()),
         ]);
         state.git_probes.insert(
-            "/work".to_owned(),
+            local("/work"),
             GitProbe {
                 id: 1,
                 ..GitProbe::default()
@@ -2221,13 +2695,16 @@ mod tests {
         state.finish_git_probe(Some(0), Vec::new(), config);
         state.finish_git_probe(None, Vec::new(), metadata);
 
-        assert!(!state.repositories.contains_key("/work"), "no guess cached");
-        assert!(state.probe_backoff.contains_key("/work"));
+        assert!(
+            !state.repositories.contains_key(&local("/work")),
+            "no guess cached"
+        );
+        assert!(state.probe_backoff.contains_key(&local("/work")));
         assert!(state.repository_cwds(false).is_empty(), "not asked again");
 
         state.expire_probe_backoff(GIT_RETRY_SECONDS);
         assert!(state.probe_backoff.is_empty());
-        assert_eq!(state.repository_cwds(false), vec!["/work"]);
+        assert_eq!(state.repository_cwds(false), vec![local("/work")]);
     }
 
     // -- idle summaries -----------------------------------------------------
@@ -3381,7 +3858,7 @@ mod tests {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             repositories: BTreeMap::from([(
-                "/work".to_owned(),
+                local("/work"),
                 projects::Repository {
                     branch: Some("topic".to_owned()),
                     ..projects::Repository::folder("/work")
@@ -3405,7 +3882,7 @@ mod tests {
     fn a_result_from_a_replaced_git_probe_is_ignored() {
         let mut state = State {
             git_probes: BTreeMap::from([(
-                "/work".to_owned(),
+                local("/work"),
                 GitProbe {
                     id: 2,
                     ..GitProbe::default()
@@ -3420,6 +3897,6 @@ mod tests {
         ]);
 
         state.finish_git_probe(Some(0), b"stale".to_vec(), context);
-        assert!(state.git_probes["/work"].metadata.is_none());
+        assert!(state.git_probes[&local("/work")].metadata.is_none());
     }
 }

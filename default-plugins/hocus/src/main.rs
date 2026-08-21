@@ -19,6 +19,7 @@ pub use message::{
 };
 use worker::post_log;
 
+use hocus_proto::location::Location;
 use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects, todos};
@@ -287,7 +288,9 @@ pub struct State {
     /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
     /// Agent CWDs resolved by hocus-agentd to Git checkout identities.
-    repositories: BTreeMap<String, projects::Repository>,
+    /// What Git said about each folder an agent is in, keyed by folder *and*
+    /// machine. Filled from the daemon's snapshot; see `wire::PollReply`.
+    repositories: BTreeMap<Location, projects::Repository>,
     /// Kinds the user set by hand with `agent_register`, keyed by pane id. These win
     /// over detection, and are dropped when their pane leaves the snapshot.
     manual_kinds: BTreeMap<u32, String>,
