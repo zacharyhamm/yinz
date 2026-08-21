@@ -295,3 +295,70 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
         received_pty_instructions.lock().unwrap()
     );
 }
+
+#[test]
+#[serial(plugin_tests)]
+pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
+    // `PluginUserConfiguration::new` strips reserved keys such as `payload`, which is right when
+    // parsing a layout and wrong afterwards: a configuration that already exists must be handed
+    // to the plugin as-is. Rebuilding one on the way to `load` silently dropped these keys.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+
+    let mut configuration = PluginUserConfiguration::new(BTreeMap::new());
+    // Inserted after construction, exactly as the reserved-word filter intends to allow.
+    configuration.insert("payload", "carried");
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(PathBuf::from(&*LUA_PLUGIN_FIXTURE)),
+        configuration,
+        ..Default::default()
+    });
+
+    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        2
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_test_plugin".to_owned()),
+        run_plugin,
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+    )]));
+    screen_thread.join().unwrap();
+    teardown();
+
+    let rendered = rendered_output(&received_screen_instructions.lock().unwrap());
+    assert!(
+        rendered.iter().any(|r| r.contains("payload carried")),
+        "the reserved-word key should have survived to `load`, got: {:?}",
+        rendered
+    );
+}
