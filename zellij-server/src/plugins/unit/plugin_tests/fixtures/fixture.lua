@@ -10,6 +10,7 @@ M.presses = 0
 
 function M.load(config)
   M.greeting = config.greeting
+  M.payload = config.payload
   zellij.subscribe { "key", "tab_update" }
   zellij.set_selectable(true)
 end
@@ -28,12 +29,13 @@ end
 
 function M.render(rows, cols)
   return string.format(
-    "%s from lua | %dx%d | presses %d | tabs %s",
+    "%s from lua | %dx%d | presses %d | tabs %s | payload %s",
     M.greeting,
     rows,
     cols,
     M.presses,
-    tostring(M.tabs)
+    tostring(M.tabs),
+    tostring(M.payload)
   )
 end
 

@@ -207,13 +207,7 @@ impl<'a> PluginLoader<'a> {
         plugin
             .lock()
             .unwrap()
-            .load(
-                &self
-                    .plugin_config
-                    .initial_userspace_configuration
-                    .inner()
-                    .clone(),
-            )
+            .load(&self.plugin_config.initial_userspace_configuration)
             .with_context(err_context)?;
 
         self.clone_instance_for_other_clients()?;
@@ -307,13 +301,7 @@ impl<'a> PluginLoader<'a> {
         plugin
             .lock()
             .unwrap()
-            .load(
-                &self
-                    .plugin_config
-                    .initial_userspace_configuration
-                    .inner()
-                    .clone(),
-            )
+            .load(&self.plugin_config.initial_userspace_configuration)
             .with_context(err_context)?;
 
         Ok(())

@@ -532,11 +532,15 @@ impl RunningPlugin {
     }
 
     /// Call the plugin's `load` entrypoint with its user configuration.
-    pub fn load(&mut self, configuration: &BTreeMap<String, String>) -> Result<()> {
+    ///
+    /// Takes the `PluginUserConfiguration` rather than its inner map on purpose:
+    /// `PluginUserConfiguration::new` strips reserved keys, so rebuilding one here would quietly
+    /// drop configuration the plugin was meant to receive.
+    pub fn load(&mut self, configuration: &PluginUserConfiguration) -> Result<()> {
         match &mut self.backend {
             PluginBackend::Wasm { store, instance } => {
-                let configuration = PluginUserConfiguration::new(configuration.clone());
                 let protobuf_configuration: ProtobufPluginConfiguration = configuration
+                    .clone()
                     .try_into()
                     .map_err(|e| anyhow!("failed to serialize user configuration: {:?}", e))?;
                 let load = instance
@@ -546,7 +550,7 @@ impl RunningPlugin {
                 load.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(())
             },
-            PluginBackend::Lua(lua) => lua.load(configuration),
+            PluginBackend::Lua(lua) => lua.load(configuration.inner()),
         }
     }
 
