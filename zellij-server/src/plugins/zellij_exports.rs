@@ -190,736 +190,680 @@ pub fn zellij_exports(linker: &mut Linker<PluginEnv>) {
 
 fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
     let env = caller.data_mut();
-    let plugin_command = env.name();
-    let err_context = || format!("failed to run plugin command {}", plugin_command);
     wasi_read_bytes(env)
         .and_then(|bytes| {
             let command: ProtobufPluginCommand = ProtobufPluginCommand::decode(bytes.as_slice())?;
             let command: PluginCommand = command
                 .try_into()
                 .map_err(|e| anyhow!("failed to convert serialized command: {}", e))?;
-            match check_command_permission(env, &command) {
-                (PermissionStatus::Granted, _) => match command {
-                    PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,
-                    PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
-                    PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
-                    PluginCommand::ShowCursor(cursor_position) => show_cursor(env, cursor_position),
-                    PluginCommand::GetPluginIds => get_plugin_ids(env),
-                    PluginCommand::GetZellijVersion => get_zellij_version(env),
-                    PluginCommand::GenerateRandomName => generate_random_name(env),
-                    PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
-                    PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
-                    PluginCommand::GetLayoutDir => get_layout_dir(env),
-                    PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
-                    PluginCommand::SaveSession => save_session(env),
-                    PluginCommand::CurrentSessionLastSavedTime => {
-                        current_session_last_saved_time(env)
-                    },
-                    PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
-                    PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
-                    PluginCommand::ListRecordings => list_recordings(env),
-                    PluginCommand::ListNotifications => list_notifications(env),
-                    PluginCommand::SearchRecordings { query, limit } => {
-                        search_recordings(env, query, limit)
-                    },
-                    PluginCommand::OpenFile(file_to_open, context) => {
-                        open_file(env, file_to_open, context)
-                    },
-                    PluginCommand::OpenFileFloating(
-                        file_to_open,
-                        floating_pane_coordinates,
-                        context,
-                    ) => open_file_floating(env, file_to_open, floating_pane_coordinates, context),
-                    PluginCommand::OpenTerminal(cwd) => open_terminal(env, cwd.path),
-                    PluginCommand::OpenTerminalNearPlugin(cwd) => {
-                        open_terminal_near_plugin(env, cwd.path)
-                    },
-                    PluginCommand::OpenTerminalFloating(cwd, floating_pane_coordinates) => {
-                        open_terminal_floating(env, cwd.path, floating_pane_coordinates)
-                    },
-                    PluginCommand::OpenTerminalFloatingNearPlugin(
-                        cwd,
-                        floating_pane_coordinates,
-                    ) => {
-                        open_terminal_floating_near_plugin(env, cwd.path, floating_pane_coordinates)
-                    },
-                    PluginCommand::OpenCommandPane(command_to_run, context) => {
-                        open_command_pane(env, command_to_run, context)
-                    },
-                    PluginCommand::OpenCommandPaneNearPlugin(command_to_run, context) => {
-                        open_command_pane_near_plugin(env, command_to_run, context)
-                    },
-                    PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
-                        command_to_run,
-                        source_directory,
-                        checkout,
-                    ) => open_command_pane_in_git_checkout_near_plugin(
-                        env,
-                        command_to_run,
-                        source_directory,
-                        checkout,
-                    ),
-                    PluginCommand::OpenCommandPaneFloating(
-                        command_to_run,
-                        floating_pane_coordinates,
-                        context,
-                    ) => open_command_pane_floating(
-                        env,
-                        command_to_run,
-                        floating_pane_coordinates,
-                        context,
-                    ),
-                    PluginCommand::OpenCommandPaneFloatingNearPlugin(
-                        command_to_run,
-                        floating_pane_coordinates,
-                        context,
-                    ) => open_command_pane_floating_near_plugin(
-                        env,
-                        command_to_run,
-                        floating_pane_coordinates,
-                        context,
-                    ),
-                    PluginCommand::SwitchTabTo(tab_index) => switch_tab_to(env, tab_index),
-                    PluginCommand::SetTimeout(seconds) => set_timeout(env, seconds),
-                    PluginCommand::ExecCmd(command_line) => exec_cmd(env, command_line),
-                    PluginCommand::RunCommand(
-                        command_line,
-                        env_variables,
-                        cwd,
-                        context,
-                        max_output_bytes,
-                    ) => run_command(
-                        env,
-                        command_line,
-                        env_variables,
-                        cwd,
-                        context,
-                        max_output_bytes,
-                    ),
-                    PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
-                        web_request(env, url, verb, headers, body, context, stream_id)
-                    },
-                    PluginCommand::CancelWebRequest(stream_id) => {
-                        cancel_web_request(env, stream_id)
-                    },
-                    PluginCommand::PostMessageTo(plugin_message) => {
-                        post_message_to(env, plugin_message)?
-                    },
-                    PluginCommand::PostMessageToPlugin(plugin_message) => {
-                        post_message_to_plugin(env, plugin_message)?
-                    },
-                    PluginCommand::HideSelf => hide_self(env)?,
-                    PluginCommand::ShowSelf(should_float_if_hidden) => {
-                        show_self(env, should_float_if_hidden)
-                    },
-                    PluginCommand::SwitchToMode(input_mode) => switch_to_mode(env, input_mode),
-                    PluginCommand::NewTabsWithLayout(raw_layout) => {
-                        new_tabs_with_layout(env, &raw_layout)?
-                    },
-                    PluginCommand::NewTabsWithLayoutInfo(layout_info) => {
-                        new_tabs_with_layout_info(env, layout_info)?
-                    },
-                    PluginCommand::OverrideLayout(
-                        layout_info,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        apply_only_to_active_tab,
-                        context,
-                    ) => override_layout(
-                        env,
-                        layout_info,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        apply_only_to_active_tab,
-                        context,
-                    )?,
-                    PluginCommand::SaveLayout {
-                        layout_name,
-                        layout_kdl,
-                        overwrite,
-                    } => save_layout(env, layout_name, layout_kdl, overwrite),
-                    PluginCommand::DeleteLayout { layout_name } => delete_layout(env, layout_name),
-                    PluginCommand::RenameLayout {
-                        old_layout_name,
-                        new_layout_name,
-                    } => rename_layout(env, old_layout_name, new_layout_name),
-                    PluginCommand::EditLayout {
-                        layout_name,
-                        context,
-                    } => edit_layout(env, layout_name, context),
-                    PluginCommand::NewTab { name, cwd } => new_tab(env, name, cwd),
-                    PluginCommand::NewTabUnfocused { name, cwd } => {
-                        new_tab_unfocused(env, name, cwd)
-                    },
-                    PluginCommand::NewTiledPaneInTab { tab_position } => {
-                        new_tiled_pane_in_tab(env, tab_position)
-                    },
-                    PluginCommand::ToggleFloatingPanes { tab_id } => {
-                        toggle_floating_panes(env, tab_id)
-                    },
-                    PluginCommand::NewPane => new_pane(env),
-                    PluginCommand::GoToNextTab => go_to_next_tab(env),
-                    PluginCommand::GoToPreviousTab => go_to_previous_tab(env),
-                    PluginCommand::Resize(resize_payload) => resize(env, resize_payload),
-                    PluginCommand::ResizeWithDirection(resize_strategy) => {
-                        resize_with_direction(env, resize_strategy)
-                    },
-                    PluginCommand::FocusNextPane => focus_next_pane(env),
-                    PluginCommand::FocusPreviousPane => focus_previous_pane(env),
-                    PluginCommand::FocusLastPane => focus_last_pane(env),
-                    PluginCommand::MoveFocus(direction) => move_focus(env, direction),
-                    PluginCommand::MoveFocusOrTab(direction) => move_focus_or_tab(env, direction),
-                    PluginCommand::Detach => detach(env),
-                    PluginCommand::EditScrollback => edit_scrollback(env),
-                    PluginCommand::Write(bytes) => write(env, bytes),
-                    PluginCommand::WriteChars(chars) => write_chars(env, chars),
-                    PluginCommand::CopyToClipboard(text) => copy_to_clipboard(env, text)?,
-                    PluginCommand::ToggleTab => toggle_tab(env),
-                    PluginCommand::MovePane => move_pane(env),
-                    PluginCommand::MovePaneWithDirection(direction) => {
-                        move_pane_with_direction(env, direction)
-                    },
-                    PluginCommand::ClearScreen => clear_screen(env),
-                    PluginCommand::ScrollUp => scroll_up(env),
-                    PluginCommand::ScrollDown => scroll_down(env),
-                    PluginCommand::ScrollToTop => scroll_to_top(env),
-                    PluginCommand::ScrollToBottom => scroll_to_bottom(env),
-                    PluginCommand::PageScrollUp => page_scroll_up(env),
-                    PluginCommand::PageScrollDown => page_scroll_down(env),
-                    PluginCommand::ToggleFocusFullscreen => toggle_focus_fullscreen(env),
-                    PluginCommand::ToggleFocusNoUiFullscreen => toggle_focus_no_ui_fullscreen(env),
-                    PluginCommand::FocusHostSession => focus_host_session(env),
-                    PluginCommand::TogglePaneFrames => toggle_pane_frames(env),
-                    PluginCommand::SetPaneFrameStyle(pane_frame_style) => {
-                        set_pane_frame_style(env, pane_frame_style)
-                    },
-                    PluginCommand::TogglePaneEmbedOrEject => toggle_pane_embed_or_eject(env),
-                    PluginCommand::UndoRenamePane => undo_rename_pane(env),
-                    PluginCommand::CloseFocus => close_focus(env),
-                    PluginCommand::ToggleActiveTabSync => toggle_active_tab_sync(env),
-                    PluginCommand::CloseFocusedTab => close_focused_tab(env),
-                    PluginCommand::UndoRenameTab => undo_rename_tab(env),
-                    PluginCommand::QuitZellij => quit_zellij(env),
-                    PluginCommand::PreviousSwapLayout => previous_swap_layout(env),
-                    PluginCommand::NextSwapLayout => next_swap_layout(env),
-                    PluginCommand::GoToTabName(tab_name) => go_to_tab_name(env, tab_name),
-                    PluginCommand::FocusOrCreateTab(tab_name) => focus_or_create_tab(env, tab_name),
-                    PluginCommand::GoToTab(tab_index) => go_to_tab(env, tab_index),
-                    PluginCommand::StartOrReloadPlugin(plugin_url) => {
-                        start_or_reload_plugin(env, &plugin_url)?
-                    },
-                    PluginCommand::CloseTerminalPane(terminal_pane_id) => {
-                        close_terminal_pane(env, terminal_pane_id)
-                    },
-                    PluginCommand::ClosePluginPane(plugin_pane_id) => {
-                        close_plugin_pane(env, plugin_pane_id)
-                    },
-                    PluginCommand::FocusTerminalPane(
-                        terminal_pane_id,
-                        should_float_if_hidden,
-                        should_be_in_place_if_hidden,
-                    ) => focus_terminal_pane(
-                        env,
-                        terminal_pane_id,
-                        should_float_if_hidden,
-                        should_be_in_place_if_hidden,
-                    ),
-                    PluginCommand::FocusPluginPane(
-                        plugin_pane_id,
-                        should_float_if_hidden,
-                        should_be_in_place_if_hidden,
-                    ) => focus_plugin_pane(
-                        env,
-                        plugin_pane_id,
-                        should_float_if_hidden,
-                        should_be_in_place_if_hidden,
-                    ),
-                    PluginCommand::RenameTerminalPane(terminal_pane_id, new_name) => {
-                        rename_terminal_pane(env, terminal_pane_id, &new_name)
-                    },
-                    PluginCommand::RenamePluginPane(plugin_pane_id, new_name) => {
-                        rename_plugin_pane(env, plugin_pane_id, &new_name)
-                    },
-                    PluginCommand::RenameTab(tab_index, new_name) => {
-                        rename_tab(env, tab_index, &new_name)
-                    },
-                    PluginCommand::ReportPanic(crash_payload) => report_panic(env, &crash_payload),
-                    PluginCommand::RequestPluginPermissions(permissions) => {
-                        request_permission(env, permissions)?
-                    },
-                    PluginCommand::SwitchSession(connect_to_session) => switch_session(
-                        env,
-                        connect_to_session.name,
-                        connect_to_session.tab_position,
-                        connect_to_session.pane_id,
-                        connect_to_session.layout,
-                        connect_to_session.cwd,
-                    )?,
-                    PluginCommand::DeleteDeadSession(session_name) => {
-                        delete_dead_session(session_name)?
-                    },
-                    PluginCommand::DeleteAllDeadSessions => delete_all_dead_sessions()?,
-                    PluginCommand::OpenFileInPlace(file_to_open, context) => {
-                        open_file_in_place(env, file_to_open, context)
-                    },
-                    PluginCommand::OpenTerminalInPlace(cwd) => {
-                        open_terminal_in_place(env, cwd.path)
-                    },
-                    PluginCommand::OpenTerminalInPlaceOfPlugin(cwd, close_plugin_after_replace) => {
-                        open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)
-                    },
-                    PluginCommand::OpenCommandPaneInPlace(command_to_run, context) => {
-                        open_command_pane_in_place(env, command_to_run, context)
-                    },
-                    PluginCommand::OpenCommandPaneInPlaceOfPlugin(
-                        command_to_run,
-                        close_plugin_after_replace,
-                        context,
-                    ) => open_command_pane_in_place_of_plugin(
-                        env,
-                        command_to_run,
-                        close_plugin_after_replace,
-                        context,
-                    ),
-                    PluginCommand::RenameSession(new_session_name) => {
-                        rename_session(env, new_session_name)
-                    },
-                    PluginCommand::Notify(text, pane_id) => {
-                        notify(env, text, pane_id.map(Into::into))
-                    },
-                    PluginCommand::UnblockCliPipeInput(pipe_name) => {
-                        unblock_cli_pipe_input(env, pipe_name)
-                    },
-                    PluginCommand::BlockCliPipeInput(pipe_name) => {
-                        block_cli_pipe_input(env, pipe_name)
-                    },
-                    PluginCommand::CliPipeOutput(pipe_name, output) => {
-                        cli_pipe_output(env, pipe_name, output)?
-                    },
-                    PluginCommand::MessageToPlugin(message) => message_to_plugin(env, message)?,
-                    PluginCommand::DisconnectOtherClients => disconnect_other_clients(env),
-                    PluginCommand::KillSessions(session_list) => kill_sessions(session_list),
-                    PluginCommand::KillSessionsAndReply(session_list) => {
-                        kill_sessions_and_reply(env, session_list)
-                    },
-                    PluginCommand::DeleteDeadSessionAndReply(session_name) => {
-                        delete_dead_session_and_reply(env, session_name)
-                    },
-                    PluginCommand::DeleteAllDeadSessionsAndReply => {
-                        delete_all_dead_sessions_and_reply(env)
-                    },
-                    PluginCommand::WarpPaneToSession {
-                        pane_id,
-                        to_session,
-                        placement,
-                    } => warp_pane_to_session(env, pane_id.into(), to_session, placement),
-                    PluginCommand::WarpPaneFromSession {
-                        pane_id,
-                        from_session,
-                        placement,
-                    } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
-                    PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
-                    PluginCommand::WarpTabToSession {
-                        tab_index,
-                        to_session,
-                    } => warp_tab_to_session(env, tab_index, to_session),
-                    PluginCommand::WarpTabFromSession {
-                        tab_index,
-                        from_session,
-                    } => warp_tab_from_session(env, tab_index, from_session),
-                    PluginCommand::AdoptOrphanedPane { host_id, placement } => {
-                        adopt_orphaned_pane(env, host_id, placement)
-                    },
-                    PluginCommand::DataDefineEntity {
-                        namespace,
-                        def,
-                        allow_destructive,
-                    } => data_define_entity(env, namespace, def, allow_destructive),
-                    PluginCommand::DataApply {
-                        namespace,
-                        mutations,
-                    } => data_apply(env, namespace, mutations),
-                    PluginCommand::DataFetch { request } => data_fetch(env, request),
-                    PluginCommand::DataCount { request } => data_count(env, request),
-                    PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
-                    PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
-                    PluginCommand::ScanHostFolder(folder_to_scan) => {
-                        scan_host_folder(env, folder_to_scan)
-                    },
-                    PluginCommand::WatchFilesystem => watch_filesystem(env),
-                    PluginCommand::GetSessionList => get_session_list(env),
-                    PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
-                    PluginCommand::DumpSessionLayout { tab_index } => {
-                        dump_session_layout(env, tab_index)
-                    },
-                    PluginCommand::CloseSelf => close_self(env),
-                    PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
-                        reconfigure(env, new_config, write_config_to_disk)?
-                    },
-                    PluginCommand::HidePaneWithId(pane_id) => {
-                        hide_pane_with_id(env, pane_id.into())?
-                    },
-                    PluginCommand::ShowPaneWithId(
-                        pane_id,
-                        should_float_if_hidden,
-                        should_focus_pane,
-                    ) => show_pane_with_id(
-                        env,
-                        pane_id.into(),
-                        should_float_if_hidden,
-                        should_focus_pane,
-                    ),
-                    PluginCommand::OpenCommandPaneBackground(command_to_run, context) => {
-                        open_command_pane_background(env, command_to_run, context)
-                    },
-                    PluginCommand::RerunCommandPane(terminal_pane_id) => {
-                        rerun_command_pane(env, terminal_pane_id)
-                    },
-                    PluginCommand::ResizePaneIdWithDirection(resize, pane_id) => {
-                        resize_pane_with_id(env, resize, pane_id.into())
-                    },
-                    PluginCommand::EditScrollbackForPaneWithId(pane_id) => {
-                        edit_scrollback_for_pane_with_id(env, pane_id.into())
-                    },
-                    PluginCommand::GetPaneScrollback {
-                        pane_id,
-                        get_full_scrollback,
-                    } => get_pane_scrollback(env, pane_id.into(), get_full_scrollback),
-                    PluginCommand::WriteToPaneId(bytes, pane_id) => {
-                        write_to_pane_id(env, bytes, pane_id.into())
-                    },
-                    PluginCommand::WriteCharsToPaneId(chars, pane_id) => {
-                        write_chars_to_pane_id(env, chars, pane_id.into())
-                    },
-                    PluginCommand::SendSigintToPaneId(pane_id) => {
-                        send_sigint_to_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::SendSigkillToPaneId(pane_id) => {
-                        send_sigkill_to_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::GetPanePid { pane_id } => get_pane_pid(env, pane_id.into()),
-                    PluginCommand::GetPaneRunningCommand { pane_id } => {
-                        get_pane_running_command(env, pane_id.into())
-                    },
-                    PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
-                    PluginCommand::MovePaneWithPaneId(pane_id) => {
-                        move_pane_with_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::MovePaneWithPaneIdInDirection(pane_id, direction) => {
-                        move_pane_with_pane_id_in_direction(env, pane_id.into(), direction)
-                    },
-                    PluginCommand::ClearScreenForPaneId(pane_id) => {
-                        clear_screen_for_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::ScrollUpInPaneId(pane_id) => {
-                        scroll_up_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::ScrollDownInPaneId(pane_id) => {
-                        scroll_down_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::ScrollToTopInPaneId(pane_id) => {
-                        scroll_to_top_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::ScrollToBottomInPaneId(pane_id) => {
-                        scroll_to_bottom_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::PageScrollUpInPaneId(pane_id) => {
-                        page_scroll_up_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::PageScrollDownInPaneId(pane_id) => {
-                        page_scroll_down_in_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::TogglePaneIdFullscreen(pane_id) => {
-                        toggle_pane_id_fullscreen(env, pane_id.into())
-                    },
-                    PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
-                        toggle_pane_embed_or_eject_for_pane_id(env, pane_id.into())
-                    },
-                    PluginCommand::CloseTabWithIndex(tab_index) => {
-                        close_tab_with_index(env, tab_index)
-                    },
-                    PluginCommand::BreakPanesToNewTab(
-                        pane_ids,
-                        new_tab_name,
-                        should_change_focus_to_new_tab,
-                    ) => break_panes_to_new_tab(
-                        env,
-                        pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
-                        new_tab_name,
-                        should_change_focus_to_new_tab,
-                    ),
-                    PluginCommand::BreakPanesToTabWithIndex(
-                        pane_ids,
-                        should_change_focus_to_new_tab,
-                        tab_index,
-                    ) => break_panes_to_tab_with_index(
-                        env,
-                        pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
-                        tab_index,
-                        should_change_focus_to_new_tab,
-                    ),
-                    PluginCommand::SwitchTabToId(tab_id) => switch_tab_to_id(env, tab_id),
-                    PluginCommand::GoToTabWithId(tab_id) => go_to_tab_with_id(env, tab_id),
-                    PluginCommand::CloseTabWithId(tab_id) => close_tab_with_id(env, tab_id),
-                    PluginCommand::RenameTabWithId(tab_id, new_name) => {
-                        rename_tab_with_id(env, tab_id, &new_name)
-                    },
-                    PluginCommand::SetTabProjects(tab_projects) => {
-                        set_tab_projects(env, tab_projects)
-                    },
-                    PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
-                        break_panes_to_tab_with_id(
-                            env,
-                            pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
-                            should_change_focus,
-                            tab_id,
-                        )
-                    },
-                    PluginCommand::ReloadPlugin(plugin_id) => reload_plugin(env, plugin_id),
-                    PluginCommand::LoadNewPlugin {
-                        url,
-                        config,
-                        load_in_background,
-                        skip_plugin_cache,
-                    } => load_new_plugin(env, url, config, load_in_background, skip_plugin_cache),
-                    PluginCommand::RebindKeys {
-                        keys_to_rebind,
-                        keys_to_unbind,
-                        write_config_to_disk,
-                    } => rebind_keys(env, keys_to_rebind, keys_to_unbind, write_config_to_disk)?,
-                    PluginCommand::ListClients => list_clients(env),
-                    PluginCommand::ChangeHostFolder(new_host_folder) => {
-                        change_host_folder(env, new_host_folder)
-                    },
-                    PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned) => {
-                        set_floating_pane_pinned(env, pane_id.into(), should_be_pinned)
-                    },
-                    PluginCommand::StackPanes(pane_ids) => {
-                        stack_panes(env, pane_ids.into_iter().map(|p_id| p_id.into()).collect())
-                    },
-                    PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_and_coordinates) => {
-                        change_floating_panes_coordinates(
-                            env,
-                            pane_ids_and_coordinates
-                                .into_iter()
-                                .map(|(p_id, coordinates)| (p_id.into(), coordinates))
-                                .collect(),
-                        )
-                    },
-                    PluginCommand::TogglePaneBorderless(pane_id) => {
-                        toggle_pane_borderless(env, pane_id.into())
-                    },
-                    PluginCommand::SetPaneBorderless(pane_id, borderless) => {
-                        set_pane_borderless(env, pane_id.into(), borderless)
-                    },
-                    PluginCommand::SetPaneColor(pane_id, fg, bg) => {
-                        set_pane_color(env, pane_id.into(), fg, bg)
-                    },
-                    PluginCommand::OpenFileNearPlugin(file_to_open, context) => {
-                        open_file_near_plugin(env, file_to_open, context)
-                    },
-                    PluginCommand::OpenFileFloatingNearPlugin(
-                        file_to_open,
-                        floating_pane_coordinates,
-                        context,
-                    ) => open_file_floating_near_plugin(
-                        env,
-                        file_to_open,
-                        floating_pane_coordinates,
-                        context,
-                    ),
-                    PluginCommand::OpenFileInPlaceOfPlugin(
-                        file_to_open,
-                        close_plugin_after_replace,
-                        context,
-                    ) => open_file_in_place_of_plugin(
-                        env,
-                        file_to_open,
-                        close_plugin_after_replace,
-                        context,
-                    ),
-                    PluginCommand::GroupAndUngroupPanes(
-                        panes_to_group,
-                        panes_to_ungroup,
-                        for_all_clients,
-                    ) => group_and_ungroup_panes(
-                        env,
-                        panes_to_group.into_iter().map(|p| p.into()).collect(),
-                        panes_to_ungroup.into_iter().map(|p| p.into()).collect(),
-                        for_all_clients,
-                    ),
-                    PluginCommand::HighlightAndUnhighlightPanes(
-                        panes_to_highlight,
-                        panes_to_unhighlight,
-                    ) => highlight_and_unhighlight_panes(
-                        env,
-                        panes_to_highlight.into_iter().map(|p| p.into()).collect(),
-                        panes_to_unhighlight.into_iter().map(|p| p.into()).collect(),
-                    ),
-                    PluginCommand::RevealPaneWithId(pane_id, label) => {
-                        reveal_pane_with_id(env, pane_id.into(), label)
-                    },
-                    PluginCommand::CloseMultiplePanes(pane_ids) => {
-                        close_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
-                    },
-                    PluginCommand::FloatMultiplePanes(pane_ids) => {
-                        float_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
-                    },
-                    PluginCommand::EmbedMultiplePanes(pane_ids) => {
-                        embed_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
-                    },
-                    PluginCommand::StartWebServer => start_web_server(env),
-                    PluginCommand::StopWebServer => stop_web_server(env),
-                    PluginCommand::QueryWebServerStatus => query_web_server_status(env),
-                    PluginCommand::ShareCurrentSession => share_current_session(env),
-                    PluginCommand::StopSharingCurrentSession => stop_sharing_current_session(env),
-                    PluginCommand::SetSelfMouseSelectionSupport(selection_support) => {
-                        set_self_mouse_selection_support(env, selection_support);
-                    },
-                    PluginCommand::GenerateWebLoginToken(token_label, read_only) => {
-                        generate_web_login_token(env, token_label, read_only);
-                    },
-                    PluginCommand::RevokeWebLoginToken(label) => {
-                        revoke_web_login_token(env, label);
-                    },
-                    PluginCommand::ListWebLoginTokens => {
-                        list_web_login_tokens(env);
-                    },
-                    PluginCommand::RevokeAllWebLoginTokens => {
-                        revoke_all_web_login_tokens(env);
-                    },
-                    PluginCommand::RenameWebLoginToken(old_name, new_name) => {
-                        rename_web_login_token(env, old_name, new_name);
-                    },
-                    PluginCommand::InterceptKeyPresses => intercept_key_presses(env),
-                    PluginCommand::ClearKeyPressesIntercepts => clear_key_presses_intercepts(env),
-                    PluginCommand::ReplacePaneWithExistingPane(
-                        pane_id_to_replace,
-                        existing_pane_id,
-                        suppress_replaced_pane,
-                    ) => replace_pane_with_existing_pane(
-                        env,
-                        pane_id_to_replace.into(),
-                        existing_pane_id.into(),
-                        suppress_replaced_pane,
-                    ),
-                    PluginCommand::RunAction(action, context) => run_action(env, action, context),
-                    PluginCommand::GetSessionEnvironmentVariables => {
-                        get_session_environment_variables(env);
-                    },
-                    PluginCommand::GetPluginAliasConfiguration(alias) => {
-                        get_plugin_alias_configuration(env, alias);
-                    },
-                    PluginCommand::OpenCommandPaneInNewTab(command_to_run, context) => {
-                        open_command_pane_in_new_tab(env, command_to_run, context);
-                    },
-                    PluginCommand::OpenPluginPaneInNewTab {
-                        plugin_url,
-                        configuration,
-                        context,
-                    } => {
-                        open_plugin_pane_in_new_tab(env, plugin_url, configuration, context);
-                    },
-                    PluginCommand::OpenPluginPaneFloating {
-                        plugin_url,
-                        configuration,
-                        floating_pane_coordinates,
-                        context,
-                    } => {
-                        open_plugin_pane_floating(
-                            env,
-                            plugin_url,
-                            configuration,
-                            floating_pane_coordinates,
-                            context,
-                        );
-                    },
-                    PluginCommand::OpenEditorPaneInNewTab(file_to_open, context) => {
-                        open_editor_pane_in_new_tab(env, file_to_open, context);
-                    },
-                    PluginCommand::OpenCommandPaneInPlaceOfPaneId(
-                        pane_id,
-                        command_to_run,
-                        close_replaced_pane,
-                        context,
-                    ) => open_command_pane_in_place_of_pane_id(
-                        env,
-                        pane_id,
-                        command_to_run,
-                        close_replaced_pane,
-                        context,
-                    ),
-                    PluginCommand::OpenTerminalPaneInPlaceOfPaneId(
-                        pane_id,
-                        cwd,
-                        close_replaced_pane,
-                    ) => open_terminal_pane_in_place_of_pane_id(
-                        env,
-                        pane_id,
-                        cwd,
-                        close_replaced_pane,
-                    ),
-                    PluginCommand::OpenEditPaneInPlaceOfPaneId(
-                        pane_id,
-                        file_to_open,
-                        close_replaced_pane,
-                        context,
-                    ) => open_edit_pane_in_place_of_pane_id(
-                        env,
-                        pane_id,
-                        file_to_open,
-                        close_replaced_pane,
-                        context,
-                    ),
-                    PluginCommand::ShowFloatingPanes { tab_id } => show_floating_panes(env, tab_id),
-                    PluginCommand::HideFloatingPanes { tab_id } => hide_floating_panes(env, tab_id),
-                    PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
-                        set_pane_regex_highlights(env, pane_id, highlights)
-                    },
-                    PluginCommand::ClearPaneHighlights(pane_id) => {
-                        clear_pane_highlights(env, pane_id)
-                    },
-                    PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
-                        let _ =
-                            env.senders
-                                .send_to_screen(ScreenInstruction::SetGlobalPanePlacement(
-                                    pane_id.into(),
-                                    placement,
-                                    None,
-                                ));
-                    },
-                    PluginCommand::LaunchOrFocusGlobalPaneSplit {
-                        plugin_url,
-                        config,
-                        before,
-                        length,
-                        should_focus,
-                        skip_cache,
-                    } => launch_or_focus_global_pane_split(
-                        env,
-                        plugin_url,
-                        config,
-                        before,
-                        length,
-                        should_focus,
-                        skip_cache,
-                    ),
-                },
-                (PermissionStatus::Denied, permission) => {
-                    log::error!(
-                        "Plugin '{}' permission '{}' denied - Command '{:?}' denied",
-                        env.name(),
-                        permission
-                            .map(|p| p.to_string())
-                            .unwrap_or("UNKNOWN".to_owned()),
-                        CommandType::from_str(&command.to_string()).with_context(err_context)?
-                    );
-                },
-            };
-            Ok(())
+            run_plugin_command(env, command)
         })
         .with_context(|| format!("failed to run plugin command {}", env.name()))
         .non_fatal();
+}
+
+/// Run one host command on behalf of a plugin, after checking that the plugin is permitted to.
+///
+/// This is the whole plugin capability surface, and it is deliberately independent of how the
+/// plugin was written: the wasm host decodes a protobuf command off a WASI pipe and calls this,
+/// and the Lua host builds the same `PluginCommand` from a Lua call and calls this. Neither the
+/// permission check nor any individual handler knows which runtime it is serving.
+pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
+    let plugin_command = env.name();
+    let err_context = || format!("failed to run plugin command {}", plugin_command);
+    match check_command_permission(env, &command) {
+        (PermissionStatus::Granted, _) => match command {
+            PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,
+            PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
+            PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
+            PluginCommand::ShowCursor(cursor_position) => show_cursor(env, cursor_position),
+            PluginCommand::GetPluginIds => get_plugin_ids(env),
+            PluginCommand::GetZellijVersion => get_zellij_version(env),
+            PluginCommand::GenerateRandomName => generate_random_name(env),
+            PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
+            PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
+            PluginCommand::GetLayoutDir => get_layout_dir(env),
+            PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
+            PluginCommand::SaveSession => save_session(env),
+            PluginCommand::CurrentSessionLastSavedTime => current_session_last_saved_time(env),
+            PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
+            PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
+            PluginCommand::ListRecordings => list_recordings(env),
+            PluginCommand::ListNotifications => list_notifications(env),
+            PluginCommand::SearchRecordings { query, limit } => {
+                search_recordings(env, query, limit)
+            },
+            PluginCommand::OpenFile(file_to_open, context) => open_file(env, file_to_open, context),
+            PluginCommand::OpenFileFloating(file_to_open, floating_pane_coordinates, context) => {
+                open_file_floating(env, file_to_open, floating_pane_coordinates, context)
+            },
+            PluginCommand::OpenTerminal(cwd) => open_terminal(env, cwd.path),
+            PluginCommand::OpenTerminalNearPlugin(cwd) => open_terminal_near_plugin(env, cwd.path),
+            PluginCommand::OpenTerminalFloating(cwd, floating_pane_coordinates) => {
+                open_terminal_floating(env, cwd.path, floating_pane_coordinates)
+            },
+            PluginCommand::OpenTerminalFloatingNearPlugin(cwd, floating_pane_coordinates) => {
+                open_terminal_floating_near_plugin(env, cwd.path, floating_pane_coordinates)
+            },
+            PluginCommand::OpenCommandPane(command_to_run, context) => {
+                open_command_pane(env, command_to_run, context)
+            },
+            PluginCommand::OpenCommandPaneNearPlugin(command_to_run, context) => {
+                open_command_pane_near_plugin(env, command_to_run, context)
+            },
+            PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+                command_to_run,
+                source_directory,
+                checkout,
+            ) => open_command_pane_in_git_checkout_near_plugin(
+                env,
+                command_to_run,
+                source_directory,
+                checkout,
+            ),
+            PluginCommand::OpenCommandPaneFloating(
+                command_to_run,
+                floating_pane_coordinates,
+                context,
+            ) => {
+                open_command_pane_floating(env, command_to_run, floating_pane_coordinates, context)
+            },
+            PluginCommand::OpenCommandPaneFloatingNearPlugin(
+                command_to_run,
+                floating_pane_coordinates,
+                context,
+            ) => open_command_pane_floating_near_plugin(
+                env,
+                command_to_run,
+                floating_pane_coordinates,
+                context,
+            ),
+            PluginCommand::SwitchTabTo(tab_index) => switch_tab_to(env, tab_index),
+            PluginCommand::SetTimeout(seconds) => set_timeout(env, seconds),
+            PluginCommand::ExecCmd(command_line) => exec_cmd(env, command_line),
+            PluginCommand::RunCommand(
+                command_line,
+                env_variables,
+                cwd,
+                context,
+                max_output_bytes,
+            ) => run_command(
+                env,
+                command_line,
+                env_variables,
+                cwd,
+                context,
+                max_output_bytes,
+            ),
+            PluginCommand::WebRequest(url, verb, headers, body, context, stream_id) => {
+                web_request(env, url, verb, headers, body, context, stream_id)
+            },
+            PluginCommand::CancelWebRequest(stream_id) => cancel_web_request(env, stream_id),
+            PluginCommand::PostMessageTo(plugin_message) => post_message_to(env, plugin_message)?,
+            PluginCommand::PostMessageToPlugin(plugin_message) => {
+                post_message_to_plugin(env, plugin_message)?
+            },
+            PluginCommand::HideSelf => hide_self(env)?,
+            PluginCommand::ShowSelf(should_float_if_hidden) => {
+                show_self(env, should_float_if_hidden)
+            },
+            PluginCommand::SwitchToMode(input_mode) => switch_to_mode(env, input_mode),
+            PluginCommand::NewTabsWithLayout(raw_layout) => new_tabs_with_layout(env, &raw_layout)?,
+            PluginCommand::NewTabsWithLayoutInfo(layout_info) => {
+                new_tabs_with_layout_info(env, layout_info)?
+            },
+            PluginCommand::OverrideLayout(
+                layout_info,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                apply_only_to_active_tab,
+                context,
+            ) => override_layout(
+                env,
+                layout_info,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                apply_only_to_active_tab,
+                context,
+            )?,
+            PluginCommand::SaveLayout {
+                layout_name,
+                layout_kdl,
+                overwrite,
+            } => save_layout(env, layout_name, layout_kdl, overwrite),
+            PluginCommand::DeleteLayout { layout_name } => delete_layout(env, layout_name),
+            PluginCommand::RenameLayout {
+                old_layout_name,
+                new_layout_name,
+            } => rename_layout(env, old_layout_name, new_layout_name),
+            PluginCommand::EditLayout {
+                layout_name,
+                context,
+            } => edit_layout(env, layout_name, context),
+            PluginCommand::NewTab { name, cwd } => new_tab(env, name, cwd),
+            PluginCommand::NewTabUnfocused { name, cwd } => new_tab_unfocused(env, name, cwd),
+            PluginCommand::NewTiledPaneInTab { tab_position } => {
+                new_tiled_pane_in_tab(env, tab_position)
+            },
+            PluginCommand::ToggleFloatingPanes { tab_id } => toggle_floating_panes(env, tab_id),
+            PluginCommand::NewPane => new_pane(env),
+            PluginCommand::GoToNextTab => go_to_next_tab(env),
+            PluginCommand::GoToPreviousTab => go_to_previous_tab(env),
+            PluginCommand::Resize(resize_payload) => resize(env, resize_payload),
+            PluginCommand::ResizeWithDirection(resize_strategy) => {
+                resize_with_direction(env, resize_strategy)
+            },
+            PluginCommand::FocusNextPane => focus_next_pane(env),
+            PluginCommand::FocusPreviousPane => focus_previous_pane(env),
+            PluginCommand::FocusLastPane => focus_last_pane(env),
+            PluginCommand::MoveFocus(direction) => move_focus(env, direction),
+            PluginCommand::MoveFocusOrTab(direction) => move_focus_or_tab(env, direction),
+            PluginCommand::Detach => detach(env),
+            PluginCommand::EditScrollback => edit_scrollback(env),
+            PluginCommand::Write(bytes) => write(env, bytes),
+            PluginCommand::WriteChars(chars) => write_chars(env, chars),
+            PluginCommand::CopyToClipboard(text) => copy_to_clipboard(env, text)?,
+            PluginCommand::ToggleTab => toggle_tab(env),
+            PluginCommand::MovePane => move_pane(env),
+            PluginCommand::MovePaneWithDirection(direction) => {
+                move_pane_with_direction(env, direction)
+            },
+            PluginCommand::ClearScreen => clear_screen(env),
+            PluginCommand::ScrollUp => scroll_up(env),
+            PluginCommand::ScrollDown => scroll_down(env),
+            PluginCommand::ScrollToTop => scroll_to_top(env),
+            PluginCommand::ScrollToBottom => scroll_to_bottom(env),
+            PluginCommand::PageScrollUp => page_scroll_up(env),
+            PluginCommand::PageScrollDown => page_scroll_down(env),
+            PluginCommand::ToggleFocusFullscreen => toggle_focus_fullscreen(env),
+            PluginCommand::ToggleFocusNoUiFullscreen => toggle_focus_no_ui_fullscreen(env),
+            PluginCommand::FocusHostSession => focus_host_session(env),
+            PluginCommand::TogglePaneFrames => toggle_pane_frames(env),
+            PluginCommand::SetPaneFrameStyle(pane_frame_style) => {
+                set_pane_frame_style(env, pane_frame_style)
+            },
+            PluginCommand::TogglePaneEmbedOrEject => toggle_pane_embed_or_eject(env),
+            PluginCommand::UndoRenamePane => undo_rename_pane(env),
+            PluginCommand::CloseFocus => close_focus(env),
+            PluginCommand::ToggleActiveTabSync => toggle_active_tab_sync(env),
+            PluginCommand::CloseFocusedTab => close_focused_tab(env),
+            PluginCommand::UndoRenameTab => undo_rename_tab(env),
+            PluginCommand::QuitZellij => quit_zellij(env),
+            PluginCommand::PreviousSwapLayout => previous_swap_layout(env),
+            PluginCommand::NextSwapLayout => next_swap_layout(env),
+            PluginCommand::GoToTabName(tab_name) => go_to_tab_name(env, tab_name),
+            PluginCommand::FocusOrCreateTab(tab_name) => focus_or_create_tab(env, tab_name),
+            PluginCommand::GoToTab(tab_index) => go_to_tab(env, tab_index),
+            PluginCommand::StartOrReloadPlugin(plugin_url) => {
+                start_or_reload_plugin(env, &plugin_url)?
+            },
+            PluginCommand::CloseTerminalPane(terminal_pane_id) => {
+                close_terminal_pane(env, terminal_pane_id)
+            },
+            PluginCommand::ClosePluginPane(plugin_pane_id) => {
+                close_plugin_pane(env, plugin_pane_id)
+            },
+            PluginCommand::FocusTerminalPane(
+                terminal_pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+            ) => focus_terminal_pane(
+                env,
+                terminal_pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+            ),
+            PluginCommand::FocusPluginPane(
+                plugin_pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+            ) => focus_plugin_pane(
+                env,
+                plugin_pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+            ),
+            PluginCommand::RenameTerminalPane(terminal_pane_id, new_name) => {
+                rename_terminal_pane(env, terminal_pane_id, &new_name)
+            },
+            PluginCommand::RenamePluginPane(plugin_pane_id, new_name) => {
+                rename_plugin_pane(env, plugin_pane_id, &new_name)
+            },
+            PluginCommand::RenameTab(tab_index, new_name) => rename_tab(env, tab_index, &new_name),
+            PluginCommand::ReportPanic(crash_payload) => report_panic(env, &crash_payload),
+            PluginCommand::RequestPluginPermissions(permissions) => {
+                request_permission(env, permissions)?
+            },
+            PluginCommand::SwitchSession(connect_to_session) => switch_session(
+                env,
+                connect_to_session.name,
+                connect_to_session.tab_position,
+                connect_to_session.pane_id,
+                connect_to_session.layout,
+                connect_to_session.cwd,
+            )?,
+            PluginCommand::DeleteDeadSession(session_name) => delete_dead_session(session_name)?,
+            PluginCommand::DeleteAllDeadSessions => delete_all_dead_sessions()?,
+            PluginCommand::OpenFileInPlace(file_to_open, context) => {
+                open_file_in_place(env, file_to_open, context)
+            },
+            PluginCommand::OpenTerminalInPlace(cwd) => open_terminal_in_place(env, cwd.path),
+            PluginCommand::OpenTerminalInPlaceOfPlugin(cwd, close_plugin_after_replace) => {
+                open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)
+            },
+            PluginCommand::OpenCommandPaneInPlace(command_to_run, context) => {
+                open_command_pane_in_place(env, command_to_run, context)
+            },
+            PluginCommand::OpenCommandPaneInPlaceOfPlugin(
+                command_to_run,
+                close_plugin_after_replace,
+                context,
+            ) => open_command_pane_in_place_of_plugin(
+                env,
+                command_to_run,
+                close_plugin_after_replace,
+                context,
+            ),
+            PluginCommand::RenameSession(new_session_name) => rename_session(env, new_session_name),
+            PluginCommand::Notify(text, pane_id) => notify(env, text, pane_id.map(Into::into)),
+            PluginCommand::UnblockCliPipeInput(pipe_name) => unblock_cli_pipe_input(env, pipe_name),
+            PluginCommand::BlockCliPipeInput(pipe_name) => block_cli_pipe_input(env, pipe_name),
+            PluginCommand::CliPipeOutput(pipe_name, output) => {
+                cli_pipe_output(env, pipe_name, output)?
+            },
+            PluginCommand::MessageToPlugin(message) => message_to_plugin(env, message)?,
+            PluginCommand::DisconnectOtherClients => disconnect_other_clients(env),
+            PluginCommand::KillSessions(session_list) => kill_sessions(session_list),
+            PluginCommand::KillSessionsAndReply(session_list) => {
+                kill_sessions_and_reply(env, session_list)
+            },
+            PluginCommand::DeleteDeadSessionAndReply(session_name) => {
+                delete_dead_session_and_reply(env, session_name)
+            },
+            PluginCommand::DeleteAllDeadSessionsAndReply => delete_all_dead_sessions_and_reply(env),
+            PluginCommand::WarpPaneToSession {
+                pane_id,
+                to_session,
+                placement,
+            } => warp_pane_to_session(env, pane_id.into(), to_session, placement),
+            PluginCommand::WarpPaneFromSession {
+                pane_id,
+                from_session,
+                placement,
+            } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
+            PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
+            PluginCommand::WarpTabToSession {
+                tab_index,
+                to_session,
+            } => warp_tab_to_session(env, tab_index, to_session),
+            PluginCommand::WarpTabFromSession {
+                tab_index,
+                from_session,
+            } => warp_tab_from_session(env, tab_index, from_session),
+            PluginCommand::AdoptOrphanedPane { host_id, placement } => {
+                adopt_orphaned_pane(env, host_id, placement)
+            },
+            PluginCommand::DataDefineEntity {
+                namespace,
+                def,
+                allow_destructive,
+            } => data_define_entity(env, namespace, def, allow_destructive),
+            PluginCommand::DataApply {
+                namespace,
+                mutations,
+            } => data_apply(env, namespace, mutations),
+            PluginCommand::DataFetch { request } => data_fetch(env, request),
+            PluginCommand::DataCount { request } => data_count(env, request),
+            PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
+            PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
+            PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
+            PluginCommand::WatchFilesystem => watch_filesystem(env),
+            PluginCommand::GetSessionList => get_session_list(env),
+            PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
+            PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
+            PluginCommand::CloseSelf => close_self(env),
+            PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
+                reconfigure(env, new_config, write_config_to_disk)?
+            },
+            PluginCommand::HidePaneWithId(pane_id) => hide_pane_with_id(env, pane_id.into())?,
+            PluginCommand::ShowPaneWithId(pane_id, should_float_if_hidden, should_focus_pane) => {
+                show_pane_with_id(
+                    env,
+                    pane_id.into(),
+                    should_float_if_hidden,
+                    should_focus_pane,
+                )
+            },
+            PluginCommand::OpenCommandPaneBackground(command_to_run, context) => {
+                open_command_pane_background(env, command_to_run, context)
+            },
+            PluginCommand::RerunCommandPane(terminal_pane_id) => {
+                rerun_command_pane(env, terminal_pane_id)
+            },
+            PluginCommand::ResizePaneIdWithDirection(resize, pane_id) => {
+                resize_pane_with_id(env, resize, pane_id.into())
+            },
+            PluginCommand::EditScrollbackForPaneWithId(pane_id) => {
+                edit_scrollback_for_pane_with_id(env, pane_id.into())
+            },
+            PluginCommand::GetPaneScrollback {
+                pane_id,
+                get_full_scrollback,
+            } => get_pane_scrollback(env, pane_id.into(), get_full_scrollback),
+            PluginCommand::WriteToPaneId(bytes, pane_id) => {
+                write_to_pane_id(env, bytes, pane_id.into())
+            },
+            PluginCommand::WriteCharsToPaneId(chars, pane_id) => {
+                write_chars_to_pane_id(env, chars, pane_id.into())
+            },
+            PluginCommand::SendSigintToPaneId(pane_id) => {
+                send_sigint_to_pane_id(env, pane_id.into())
+            },
+            PluginCommand::SendSigkillToPaneId(pane_id) => {
+                send_sigkill_to_pane_id(env, pane_id.into())
+            },
+            PluginCommand::GetPanePid { pane_id } => get_pane_pid(env, pane_id.into()),
+            PluginCommand::GetPaneRunningCommand { pane_id } => {
+                get_pane_running_command(env, pane_id.into())
+            },
+            PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
+            PluginCommand::MovePaneWithPaneId(pane_id) => {
+                move_pane_with_pane_id(env, pane_id.into())
+            },
+            PluginCommand::MovePaneWithPaneIdInDirection(pane_id, direction) => {
+                move_pane_with_pane_id_in_direction(env, pane_id.into(), direction)
+            },
+            PluginCommand::ClearScreenForPaneId(pane_id) => {
+                clear_screen_for_pane_id(env, pane_id.into())
+            },
+            PluginCommand::ScrollUpInPaneId(pane_id) => scroll_up_in_pane_id(env, pane_id.into()),
+            PluginCommand::ScrollDownInPaneId(pane_id) => {
+                scroll_down_in_pane_id(env, pane_id.into())
+            },
+            PluginCommand::ScrollToTopInPaneId(pane_id) => {
+                scroll_to_top_in_pane_id(env, pane_id.into())
+            },
+            PluginCommand::ScrollToBottomInPaneId(pane_id) => {
+                scroll_to_bottom_in_pane_id(env, pane_id.into())
+            },
+            PluginCommand::PageScrollUpInPaneId(pane_id) => {
+                page_scroll_up_in_pane_id(env, pane_id.into())
+            },
+            PluginCommand::PageScrollDownInPaneId(pane_id) => {
+                page_scroll_down_in_pane_id(env, pane_id.into())
+            },
+            PluginCommand::TogglePaneIdFullscreen(pane_id) => {
+                toggle_pane_id_fullscreen(env, pane_id.into())
+            },
+            PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
+                toggle_pane_embed_or_eject_for_pane_id(env, pane_id.into())
+            },
+            PluginCommand::CloseTabWithIndex(tab_index) => close_tab_with_index(env, tab_index),
+            PluginCommand::BreakPanesToNewTab(
+                pane_ids,
+                new_tab_name,
+                should_change_focus_to_new_tab,
+            ) => break_panes_to_new_tab(
+                env,
+                pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                new_tab_name,
+                should_change_focus_to_new_tab,
+            ),
+            PluginCommand::BreakPanesToTabWithIndex(
+                pane_ids,
+                should_change_focus_to_new_tab,
+                tab_index,
+            ) => break_panes_to_tab_with_index(
+                env,
+                pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                tab_index,
+                should_change_focus_to_new_tab,
+            ),
+            PluginCommand::SwitchTabToId(tab_id) => switch_tab_to_id(env, tab_id),
+            PluginCommand::GoToTabWithId(tab_id) => go_to_tab_with_id(env, tab_id),
+            PluginCommand::CloseTabWithId(tab_id) => close_tab_with_id(env, tab_id),
+            PluginCommand::RenameTabWithId(tab_id, new_name) => {
+                rename_tab_with_id(env, tab_id, &new_name)
+            },
+            PluginCommand::SetTabProjects(tab_projects) => set_tab_projects(env, tab_projects),
+            PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
+                break_panes_to_tab_with_id(
+                    env,
+                    pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                    should_change_focus,
+                    tab_id,
+                )
+            },
+            PluginCommand::ReloadPlugin(plugin_id) => reload_plugin(env, plugin_id),
+            PluginCommand::LoadNewPlugin {
+                url,
+                config,
+                load_in_background,
+                skip_plugin_cache,
+            } => load_new_plugin(env, url, config, load_in_background, skip_plugin_cache),
+            PluginCommand::RebindKeys {
+                keys_to_rebind,
+                keys_to_unbind,
+                write_config_to_disk,
+            } => rebind_keys(env, keys_to_rebind, keys_to_unbind, write_config_to_disk)?,
+            PluginCommand::ListClients => list_clients(env),
+            PluginCommand::ChangeHostFolder(new_host_folder) => {
+                change_host_folder(env, new_host_folder)
+            },
+            PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned) => {
+                set_floating_pane_pinned(env, pane_id.into(), should_be_pinned)
+            },
+            PluginCommand::StackPanes(pane_ids) => {
+                stack_panes(env, pane_ids.into_iter().map(|p_id| p_id.into()).collect())
+            },
+            PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_and_coordinates) => {
+                change_floating_panes_coordinates(
+                    env,
+                    pane_ids_and_coordinates
+                        .into_iter()
+                        .map(|(p_id, coordinates)| (p_id.into(), coordinates))
+                        .collect(),
+                )
+            },
+            PluginCommand::TogglePaneBorderless(pane_id) => {
+                toggle_pane_borderless(env, pane_id.into())
+            },
+            PluginCommand::SetPaneBorderless(pane_id, borderless) => {
+                set_pane_borderless(env, pane_id.into(), borderless)
+            },
+            PluginCommand::SetPaneColor(pane_id, fg, bg) => {
+                set_pane_color(env, pane_id.into(), fg, bg)
+            },
+            PluginCommand::OpenFileNearPlugin(file_to_open, context) => {
+                open_file_near_plugin(env, file_to_open, context)
+            },
+            PluginCommand::OpenFileFloatingNearPlugin(
+                file_to_open,
+                floating_pane_coordinates,
+                context,
+            ) => open_file_floating_near_plugin(
+                env,
+                file_to_open,
+                floating_pane_coordinates,
+                context,
+            ),
+            PluginCommand::OpenFileInPlaceOfPlugin(
+                file_to_open,
+                close_plugin_after_replace,
+                context,
+            ) => {
+                open_file_in_place_of_plugin(env, file_to_open, close_plugin_after_replace, context)
+            },
+            PluginCommand::GroupAndUngroupPanes(
+                panes_to_group,
+                panes_to_ungroup,
+                for_all_clients,
+            ) => group_and_ungroup_panes(
+                env,
+                panes_to_group.into_iter().map(|p| p.into()).collect(),
+                panes_to_ungroup.into_iter().map(|p| p.into()).collect(),
+                for_all_clients,
+            ),
+            PluginCommand::HighlightAndUnhighlightPanes(
+                panes_to_highlight,
+                panes_to_unhighlight,
+            ) => highlight_and_unhighlight_panes(
+                env,
+                panes_to_highlight.into_iter().map(|p| p.into()).collect(),
+                panes_to_unhighlight.into_iter().map(|p| p.into()).collect(),
+            ),
+            PluginCommand::RevealPaneWithId(pane_id, label) => {
+                reveal_pane_with_id(env, pane_id.into(), label)
+            },
+            PluginCommand::CloseMultiplePanes(pane_ids) => {
+                close_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+            },
+            PluginCommand::FloatMultiplePanes(pane_ids) => {
+                float_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+            },
+            PluginCommand::EmbedMultiplePanes(pane_ids) => {
+                embed_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+            },
+            PluginCommand::StartWebServer => start_web_server(env),
+            PluginCommand::StopWebServer => stop_web_server(env),
+            PluginCommand::QueryWebServerStatus => query_web_server_status(env),
+            PluginCommand::ShareCurrentSession => share_current_session(env),
+            PluginCommand::StopSharingCurrentSession => stop_sharing_current_session(env),
+            PluginCommand::SetSelfMouseSelectionSupport(selection_support) => {
+                set_self_mouse_selection_support(env, selection_support);
+            },
+            PluginCommand::GenerateWebLoginToken(token_label, read_only) => {
+                generate_web_login_token(env, token_label, read_only);
+            },
+            PluginCommand::RevokeWebLoginToken(label) => {
+                revoke_web_login_token(env, label);
+            },
+            PluginCommand::ListWebLoginTokens => {
+                list_web_login_tokens(env);
+            },
+            PluginCommand::RevokeAllWebLoginTokens => {
+                revoke_all_web_login_tokens(env);
+            },
+            PluginCommand::RenameWebLoginToken(old_name, new_name) => {
+                rename_web_login_token(env, old_name, new_name);
+            },
+            PluginCommand::InterceptKeyPresses => intercept_key_presses(env),
+            PluginCommand::ClearKeyPressesIntercepts => clear_key_presses_intercepts(env),
+            PluginCommand::ReplacePaneWithExistingPane(
+                pane_id_to_replace,
+                existing_pane_id,
+                suppress_replaced_pane,
+            ) => replace_pane_with_existing_pane(
+                env,
+                pane_id_to_replace.into(),
+                existing_pane_id.into(),
+                suppress_replaced_pane,
+            ),
+            PluginCommand::RunAction(action, context) => run_action(env, action, context),
+            PluginCommand::GetSessionEnvironmentVariables => {
+                get_session_environment_variables(env);
+            },
+            PluginCommand::GetPluginAliasConfiguration(alias) => {
+                get_plugin_alias_configuration(env, alias);
+            },
+            PluginCommand::OpenCommandPaneInNewTab(command_to_run, context) => {
+                open_command_pane_in_new_tab(env, command_to_run, context);
+            },
+            PluginCommand::OpenPluginPaneInNewTab {
+                plugin_url,
+                configuration,
+                context,
+            } => {
+                open_plugin_pane_in_new_tab(env, plugin_url, configuration, context);
+            },
+            PluginCommand::OpenPluginPaneFloating {
+                plugin_url,
+                configuration,
+                floating_pane_coordinates,
+                context,
+            } => {
+                open_plugin_pane_floating(
+                    env,
+                    plugin_url,
+                    configuration,
+                    floating_pane_coordinates,
+                    context,
+                );
+            },
+            PluginCommand::OpenEditorPaneInNewTab(file_to_open, context) => {
+                open_editor_pane_in_new_tab(env, file_to_open, context);
+            },
+            PluginCommand::OpenCommandPaneInPlaceOfPaneId(
+                pane_id,
+                command_to_run,
+                close_replaced_pane,
+                context,
+            ) => open_command_pane_in_place_of_pane_id(
+                env,
+                pane_id,
+                command_to_run,
+                close_replaced_pane,
+                context,
+            ),
+            PluginCommand::OpenTerminalPaneInPlaceOfPaneId(pane_id, cwd, close_replaced_pane) => {
+                open_terminal_pane_in_place_of_pane_id(env, pane_id, cwd, close_replaced_pane)
+            },
+            PluginCommand::OpenEditPaneInPlaceOfPaneId(
+                pane_id,
+                file_to_open,
+                close_replaced_pane,
+                context,
+            ) => open_edit_pane_in_place_of_pane_id(
+                env,
+                pane_id,
+                file_to_open,
+                close_replaced_pane,
+                context,
+            ),
+            PluginCommand::ShowFloatingPanes { tab_id } => show_floating_panes(env, tab_id),
+            PluginCommand::HideFloatingPanes { tab_id } => hide_floating_panes(env, tab_id),
+            PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
+                set_pane_regex_highlights(env, pane_id, highlights)
+            },
+            PluginCommand::ClearPaneHighlights(pane_id) => clear_pane_highlights(env, pane_id),
+            PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
+                let _ = env
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetGlobalPanePlacement(
+                        pane_id.into(),
+                        placement,
+                        None,
+                    ));
+            },
+            PluginCommand::LaunchOrFocusGlobalPaneSplit {
+                plugin_url,
+                config,
+                before,
+                length,
+                should_focus,
+                skip_cache,
+            } => launch_or_focus_global_pane_split(
+                env,
+                plugin_url,
+                config,
+                before,
+                length,
+                should_focus,
+                skip_cache,
+            ),
+        },
+        (PermissionStatus::Denied, permission) => {
+            log::error!(
+                "Plugin '{}' permission '{}' denied - Command '{:?}' denied",
+                env.name(),
+                permission
+                    .map(|p| p.to_string())
+                    .unwrap_or("UNKNOWN".to_owned()),
+                CommandType::from_str(&command.to_string()).with_context(err_context)?
+            );
+        },
+    };
+    Ok(())
 }
 
 fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {

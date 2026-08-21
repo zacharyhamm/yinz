@@ -149,3 +149,30 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 - Toolchain is `stable` per `rust-toolchain.toml`; no MSRV policy.
 - Changing anything under `zellij-utils/assets/` (plugins, protobufs): regenerate with
   `cargo x proto` / `cargo x assets`, and CI's `assets --check` must pass.
+
+## Lua plugins
+
+Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. The Lua runtime lives in
+`zellij-server/src/plugins/lua/`; `docs/LUA_PLUGINS.md` is the user-facing guide.
+
+The two runtimes share everything above `RunningPlugin`: event routing, subscriptions, rendering,
+and — importantly — the whole command surface. `zellij_exports.rs` has one dispatcher,
+`run_plugin_command(&mut PluginEnv, PluginCommand)`, and both runtimes call it, so a capability is
+never implemented twice. What differs is confined to the `PluginBackend` enum and the entrypoint
+methods on `RunningPlugin`.
+
+Two things to know before changing this:
+
+- **Ergonomics belong in `lua/prelude.lua`, not in Rust.** Rust exposes exactly one function to
+  Lua (`__dispatch`), mirroring the single `host_run_plugin_command` wasm import. `zellij.on`,
+  event normalization and config merging are all Lua. Widening the Rust boundary should be a last
+  resort.
+- **Lua plugins are not sandboxed by their runtime the way wasm plugins are**, so `lua/loader.rs`
+  opens a restricted stdlib with no `io`/`os`/`dofile`/`loadlib`. Do not open those up: the
+  permission system is the only thing standing between a plugin and the server's authority, and
+  an unrestricted `io` would make it decorative.
+
+`PluginCommand` does not derive `Deserialize`, so Lua→command marshalling is hand-written in
+`lua/command.rs` for the commands wrapped so far. The intended way to reach the full ~200-command
+surface is to add that derive and replace the body of `plugin_command_from_lua` with a
+`from_value` call, not to keep adding match arms.

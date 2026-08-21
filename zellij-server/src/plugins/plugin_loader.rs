@@ -1,3 +1,4 @@
+use crate::plugins::lua::load_lua_plugin;
 use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{
     PluginEnv, PluginMap, ResponseSink, RunningPlugin, VecDequeInputStream, WriteOutputStream,
@@ -6,7 +7,6 @@ use crate::plugins::plugin_worker::{plugin_worker, RunningWorker};
 use crate::plugins::wasm_bridge::{LoadingContext, PluginCache, PluginCacheKey};
 use crate::plugins::zellij_exports::zellij_exports;
 use crate::plugins::PluginId;
-use prost::Message;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
@@ -24,7 +24,6 @@ use crate::{
     ui::loading_indication::LoadingIndication, ClientId,
 };
 
-use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
 use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
     consts::ZELLIJ_TMP_DIR,
@@ -32,7 +31,7 @@ use zellij_utils::{
     errors::prelude::*,
     input::command::TerminalAction,
     input::keybinds::Keybinds,
-    input::plugins::{PluginAliases, PluginConfig},
+    input::plugins::{PluginAliases, PluginConfig, PluginRuntime},
     pane_size::Size,
 };
 
@@ -147,6 +146,9 @@ impl<'a> PluginLoader<'a> {
         self
     }
     pub fn start_plugin(&mut self) -> Result<()> {
+        if self.plugin_config.runtime() == PluginRuntime::Lua {
+            return self.start_lua_plugin();
+        }
         let module = if self.skip_cache {
             self.interpret_module()?
         } else {
@@ -155,6 +157,65 @@ impl<'a> PluginLoader<'a> {
         };
         let (store, instance) = self.create_plugin_environment(module)?;
         self.load_plugin_instance(store, &instance)?;
+        self.clone_instance_for_other_clients()?;
+        Ok(())
+    }
+    /// Load a Lua plugin: read its source, build an interpreter for it, and register it exactly
+    /// as a wasm plugin is registered. Everything downstream of the `PluginMap` - event routing,
+    /// rendering, the loading indicator - is shared, so only the two runtime-shaped steps differ.
+    ///
+    /// There is no module cache here as there is for wasm: parsing Lua is cheap, and re-reading
+    /// the source on every load is what makes editing a plugin and reloading it work.
+    fn start_lua_plugin(&mut self) -> Result<()> {
+        let err_context = || {
+            format!(
+                "failed to start the Lua plugin at '{}'",
+                self.plugin_config.path.display()
+            )
+        };
+        self.loading_indication.override_previous_error();
+        let source = self
+            .plugin_config
+            .resolve_lua_source()
+            .with_context(err_context)?;
+
+        // A Lua plugin has no WASI layer, so it gets no wasi context. The pipes go unused, but
+        // `PluginEnv` is shared with the wasm runtime and they are cheap.
+        let plugin_env = self.create_plugin_env(
+            None,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(VecDeque::new())),
+        );
+        let subscriptions = plugin_env.subscriptions.clone();
+        let chunk_name = self.plugin_config.path.display().to_string();
+        let lua_plugin =
+            load_lua_plugin(&source, &chunk_name, plugin_env).with_context(err_context)?;
+
+        let plugin = Arc::new(Mutex::new(RunningPlugin::new_lua(
+            lua_plugin,
+            self.size.rows,
+            self.size.cols,
+        )));
+        // Inserted before `load` runs, so that host commands issued from `load` can find it.
+        self.plugin_map.insert(
+            self.plugin_id,
+            self.client_id,
+            plugin.clone(),
+            subscriptions,
+            HashMap::new(),
+        );
+        plugin
+            .lock()
+            .unwrap()
+            .load(
+                &self
+                    .plugin_config
+                    .initial_userspace_configuration
+                    .inner()
+                    .clone(),
+            )
+            .with_context(err_context)?;
+
         self.clone_instance_for_other_clients()?;
         Ok(())
     }
@@ -243,47 +304,31 @@ impl<'a> PluginLoader<'a> {
 
         plugin.lock().unwrap().start().with_context(err_context)?;
 
-        let protobuf_plugin_configuration: ProtobufPluginConfiguration = self
-            .plugin_config
-            .initial_userspace_configuration
-            .clone()
-            .try_into()
-            .map_err(|e| anyhow!("Failed to serialize user configuration: {:?}", e))?;
-        let protobuf_bytes = protobuf_plugin_configuration.encode_to_vec();
         plugin
             .lock()
             .unwrap()
-            .load(&protobuf_bytes)
+            .load(
+                &self
+                    .plugin_config
+                    .initial_userspace_configuration
+                    .inner()
+                    .clone(),
+            )
             .with_context(err_context)?;
 
         Ok(())
     }
-    pub fn create_plugin_environment(
+    /// Build the per-instance environment every host command acts on.
+    ///
+    /// Shared by both runtimes: `wasi_ctx` and the stdio pipes are the only wasm-shaped parts,
+    /// and a Lua plugin passes `None`/fresh pipes for them.
+    fn create_plugin_env(
         &self,
-        module: Module,
-    ) -> Result<(Store<PluginEnv>, Instance)> {
-        let err_context = || {
-            format!(
-                "Failed to create instance, plugin env and subscriptions for plugin {}",
-                self.plugin_id
-            )
-        };
-        let stdin_pipe = Arc::new(Mutex::new(VecDeque::new()));
-        let stdout_pipe = Arc::new(Mutex::new(VecDeque::new()));
-
-        let wasi_ctx = PluginLoader::create_wasi_ctx(
-            &self.plugin_cwd,
-            &self.plugin_own_data_dir,
-            &self.plugin_own_cache_dir,
-            &ZELLIJ_TMP_DIR,
-            &self.plugin_config.location.to_string(),
-            self.plugin_id,
-            stdin_pipe.clone(),
-            stdout_pipe.clone(),
-        )?;
-        let plugin_cache_key =
-            plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref());
-        let plugin_env = PluginEnv {
+        wasi_ctx: Option<WasiCtx>,
+        stdin_pipe: Arc<Mutex<VecDeque<u8>>>,
+        stdout_pipe: Arc<Mutex<VecDeque<u8>>>,
+    ) -> PluginEnv {
+        PluginEnv {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             client_id: self.client_id,
@@ -312,7 +357,36 @@ impl<'a> PluginLoader<'a> {
             stdin_pipe,
             stdout_pipe,
             store_limits: PluginResourceLimits::new(self.plugin_id),
+        }
+    }
+
+    pub fn create_plugin_environment(
+        &self,
+        module: Module,
+    ) -> Result<(Store<PluginEnv>, Instance)> {
+        let err_context = || {
+            format!(
+                "Failed to create instance, plugin env and subscriptions for plugin {}",
+                self.plugin_id
+            )
         };
+        let stdin_pipe = Arc::new(Mutex::new(VecDeque::new()));
+        let stdout_pipe = Arc::new(Mutex::new(VecDeque::new()));
+
+        let wasi_ctx = PluginLoader::create_wasi_ctx(
+            &self.plugin_cwd,
+            &self.plugin_own_data_dir,
+            &self.plugin_own_cache_dir,
+            &ZELLIJ_TMP_DIR,
+            &self.plugin_config.location.to_string(),
+            self.plugin_id,
+            stdin_pipe.clone(),
+            stdout_pipe.clone(),
+        )?;
+        let plugin_cache_key =
+            plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref());
+        let plugin_env =
+            self.create_plugin_env(Some(wasi_ctx), stdin_pipe.clone(), stdout_pipe.clone());
         let mut store = Store::new(&self.engine, plugin_env);
 
         // See `plugin_limits` for what a plugin is allowed to allocate
@@ -320,7 +394,10 @@ impl<'a> PluginLoader<'a> {
 
         let mut linker = Linker::new(&self.engine);
         wasmi_wasi::add_to_linker(&mut linker, |plugin_env: &mut PluginEnv| {
-            &mut plugin_env.wasi_ctx
+            plugin_env
+                .wasi_ctx
+                .as_mut()
+                .expect("a wasm plugin always has a WASI context")
         })?;
         zellij_exports(&mut linker);
 
@@ -416,7 +493,7 @@ impl<'a> PluginLoader<'a> {
             plugin: plugin_config,
             permissions: Arc::new(Mutex::new(None)),
             senders: self.senders.clone(),
-            wasi_ctx,
+            wasi_ctx: Some(wasi_ctx),
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             zellij_data_dir: self.zellij_data_dir.clone(),
             plugin_data_store: self.plugin_data_store.clone(),
@@ -445,7 +522,10 @@ impl<'a> PluginLoader<'a> {
 
         let mut linker = Linker::new(&self.engine);
         wasmi_wasi::add_to_linker(&mut linker, |plugin_env: &mut PluginEnv| {
-            &mut plugin_env.wasi_ctx
+            plugin_env
+                .wasi_ctx
+                .as_mut()
+                .expect("a wasm plugin always has a WASI context")
         })?;
         zellij_exports(&mut linker);
 

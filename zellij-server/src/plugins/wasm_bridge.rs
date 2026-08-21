@@ -33,10 +33,7 @@ use zellij_utils::data::{
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::plugin_api::event::ProtobufEvent;
 use zellij_utils::plugin_data_store::PluginDataStore;
-
-use prost::Message;
 
 use crate::panes::PaneId;
 use crate::{
@@ -1105,7 +1102,7 @@ impl WasmBridge {
                             );
                             match wasi_ctx {
                                 Ok(wasi_ctx) => {
-                                    drop(std::mem::replace(&mut plugin_env.wasi_ctx, wasi_ctx));
+                                    drop(plugin_env.wasi_ctx.replace(wasi_ctx));
                                     plugin_env.plugin_cwd = new_host_dir.clone();
 
                                     let _ =
@@ -2246,45 +2243,31 @@ pub fn apply_event_to_plugin(
                     mode_info.keybinds = running_plugin.env().keybinds.to_keybinds_vec();
                 }
             }
-            let protobuf_event: Result<ProtobufEvent, _> = event.clone().try_into();
-            match protobuf_event {
-                Ok(protobuf_event) => {
-                    let mut should_render = running_plugin
-                        .update(&protobuf_event.encode_to_vec())
-                        .with_context(err_context)?;
-                    if let Event::PermissionRequestResult(..) = event {
-                        // we always render in this case, otherwise the request permission screen stays on
-                        // screen
-                        should_render = true;
-                    }
-                    if rows > 0 && columns > 0 && should_render {
-                        plugin_render_assets.append(&mut render_plugin_for_clients(
-                            plugin_id,
-                            running_plugin,
-                            render_clients,
-                            None,
-                        )?);
-                    } else {
-                        // This is a bit of a hack to get around the fact that plugins are allowed not to
-                        // render and still unblock CLI pipes
-                        let pipes_to_block_or_unblock =
-                            pipes_to_block_or_unblock(running_plugin, None);
-                        let plugin_render_asset = PluginRenderAsset::new(
-                            plugin_id,
-                            running_plugin.env().owner_client_id,
-                            vec![],
-                        )
+            let mut should_render = running_plugin.update(&event).with_context(err_context)?;
+            if let Event::PermissionRequestResult(..) = event {
+                // we always render in this case, otherwise the request permission screen stays on
+                // screen
+                should_render = true;
+            }
+            if rows > 0 && columns > 0 && should_render {
+                plugin_render_assets.append(&mut render_plugin_for_clients(
+                    plugin_id,
+                    running_plugin,
+                    render_clients,
+                    None,
+                )?);
+            } else {
+                // This is a bit of a hack to get around the fact that plugins are allowed not to
+                // render and still unblock CLI pipes
+                let pipes_to_block_or_unblock = pipes_to_block_or_unblock(running_plugin, None);
+                let plugin_render_asset =
+                    PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
                         .with_pipes(pipes_to_block_or_unblock);
-                        let _ = senders
-                            .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
-                                plugin_render_asset,
-                            ]))
-                            .context("failed to unblock input pipe");
-                    }
-                },
-                Err(e) => {
-                    log::error!("Failed to convert to protobuf: {:?}", e);
-                },
+                let _ = senders
+                    .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
+                        plugin_render_asset,
+                    ]))
+                    .context("failed to unblock input pipe");
             }
         },
         (PermissionStatus::Denied, permission) => {
@@ -2317,13 +2300,8 @@ pub fn apply_before_close_event_to_plugin(
     senders: ThreadSenders,
 ) -> Result<()> {
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
-    let event = Event::BeforeClose;
-    let protobuf_event: ProtobufEvent = event
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow!("Failed to convert to protobuf: {:?}", e))?;
     let _should_render = running_plugin
-        .update(&protobuf_event.encode_to_vec())
+        .update(&Event::BeforeClose)
         .with_context(err_context)?;
     let pipes_to_block_or_unblock = pipes_to_block_or_unblock(running_plugin, None);
     let plugin_render_asset =

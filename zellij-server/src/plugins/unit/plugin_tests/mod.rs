@@ -727,8 +727,20 @@ fn plugin_fixture_path() -> PathBuf {
         })
 }
 
+/// Locates the Lua fixture plugin.
+///
+/// Unlike the wasm fixture there is nothing to build - it is a source file checked in next to
+/// these tests - so this always resolves and needs no prior `cargo x build`.
+fn lua_plugin_fixture_path() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
+    )
+    .join("src/plugins/unit/plugin_tests/fixtures/fixture.lua")
+}
+
 lazy_static! {
     static ref PLUGIN_FIXTURE: String = plugin_fixture_path().display().to_string();
+    static ref LUA_PLUGIN_FIXTURE: String = lua_plugin_fixture_path().display().to_string();
 }
 
 // =====================================================================
@@ -744,6 +756,7 @@ mod highlights;
 mod keybinds;
 mod layout_api;
 mod loading;
+mod lua_plugins;
 mod mode_and_tab_commands;
 mod open_and_session_commands;
 mod pane_id_commands;

@@ -32,6 +32,14 @@ impl PluginAliases {
 }
 
 /// Plugin metadata
+/// The runtime a plugin runs on. Zellij runs plugins compiled to wasm and plugins written in
+/// Lua; see `PluginConfig::runtime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginRuntime {
+    Wasm,
+    Lua,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PluginConfig {
     /// Path of the plugin, see resolve_wasm_bytes for resolution semantics
@@ -229,6 +237,27 @@ impl PluginConfig {
         }
 
         last_err
+    }
+
+    /// Which runtime should run this plugin, decided by its file extension.
+    ///
+    /// A `.lua` file is a Lua plugin; anything else is wasm, which keeps every existing plugin
+    /// declaration working untouched and means no new URL scheme is needed - `file:~/thing.lua`
+    /// is enough.
+    pub fn runtime(&self) -> PluginRuntime {
+        match self.path.extension().and_then(|e| e.to_str()) {
+            Some("lua") => PluginRuntime::Lua,
+            _ => PluginRuntime::Wasm,
+        }
+    }
+
+    /// Read a Lua plugin's source from disk. The path is used as given - unlike wasm plugins,
+    /// which are searched for across several directories with an extension appended, a Lua plugin
+    /// is named by a path that already points at a file.
+    pub fn resolve_lua_source(&self) -> Result<String> {
+        fs::read_to_string(&self.path)
+            .map_err(|e| anyhow!("{}", e))
+            .with_context(|| format!("failed to read the Lua plugin at '{}'", self.path.display()))
     }
 
     pub fn is_builtin(&self) -> bool {

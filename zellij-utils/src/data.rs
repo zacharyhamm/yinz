@@ -3197,14 +3197,14 @@ pub enum HttpVerb {
     Delete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PipeSource {
     Cli(String), // String is the pipe_id of the CLI pipe (used for blocking/unblocking)
     Plugin(u32), // u32 is the lugin id
     Keybind,     // TODO: consider including the actual keybind here?
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PipeMessage {
     pub source: PipeSource,
     pub name: String,

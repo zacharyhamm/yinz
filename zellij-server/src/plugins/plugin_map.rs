@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+use crate::plugins::lua::LuaPlugin;
 use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_worker::MessageToWorker;
 use crate::plugins::zellij_exports::{wasi_read_string, wasi_write_object};
@@ -14,7 +15,11 @@ use wasmi_wasi::WasiCtx;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
 
+use prost::Message;
 use tokio::sync::mpsc::UnboundedSender;
+use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
+use zellij_utils::plugin_api::event::ProtobufEvent;
+use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 use zellij_utils::plugin_data_store::PluginDataStore;
 use zellij_utils::{
     data::EventType,
@@ -24,7 +29,10 @@ use zellij_utils::{
     input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
     input::plugins::{PluginAliases, PluginConfig},
 };
-use zellij_utils::{data::PermissionType, errors::prelude::*};
+use zellij_utils::{
+    data::{Event, PermissionType, PipeMessage},
+    errors::prelude::*,
+};
 
 // the idea here is to provide atomicity when adding/removing plugins from the map (eg. when a new
 // client connects) but to also allow updates/renders not to block each other
@@ -355,7 +363,9 @@ pub struct PluginEnv {
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     pub senders: ThreadSenders,
-    pub wasi_ctx: WasiCtx,
+    /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
+    /// have no WASI layer at all, such as Lua.
+    pub wasi_ctx: Option<WasiCtx>,
     pub tab_index: Option<usize>,
     /// The client this instance is currently acting on behalf of. For a shared plugin (one
     /// instance for the whole session) this is set to the client whose event is being handled, so
@@ -456,6 +466,7 @@ pub enum PluginBackend {
         store: Store<PluginEnv>,
         instance: Instance,
     },
+    Lua(LuaPlugin),
 }
 
 pub struct RunningPlugin {
@@ -479,17 +490,30 @@ impl RunningPlugin {
     /// The plugin's environment - the per-instance state every host command acts on. Reached
     /// through here rather than through the wasm `Store` so that call sites don't need to know
     /// which runtime is backing this plugin.
+    pub fn new_lua(lua_plugin: LuaPlugin, rows: usize, columns: usize) -> Self {
+        RunningPlugin {
+            backend: PluginBackend::Lua(lua_plugin),
+            rows,
+            columns,
+            next_event_ids: HashMap::new(),
+            last_applied_event_ids: HashMap::new(),
+        }
+    }
     pub fn env(&self) -> &PluginEnv {
         match &self.backend {
             PluginBackend::Wasm { store, .. } => store.data(),
+            PluginBackend::Lua(lua) => lua.env(),
         }
     }
     pub fn env_mut(&mut self) -> &mut PluginEnv {
         match &mut self.backend {
             PluginBackend::Wasm { store, .. } => store.data_mut(),
+            PluginBackend::Lua(lua) => lua.env_mut(),
         }
     }
 
+    /// Run the plugin's module-level initialization (wasm's `_start`). Called once, after the
+    /// plugin is in the `PluginMap`, so that host commands it issues can find it.
     /// Run the plugin's module-level initialization (wasm's `_start`). Called once, after the
     /// plugin is in the `PluginMap`, so that host commands it issues can find it.
     pub fn start(&mut self) -> Result<()> {
@@ -501,51 +525,67 @@ impl RunningPlugin {
                 start.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(())
             },
+            // A Lua plugin's source has already run by the time it gets here; running it is how
+            // we obtained the table holding its entrypoints.
+            PluginBackend::Lua(_) => Ok(()),
         }
     }
 
-    /// Call the plugin's `load` entrypoint with its already-serialized user configuration.
-    pub fn load(&mut self, serialized_configuration: &[u8]) -> Result<()> {
+    /// Call the plugin's `load` entrypoint with its user configuration.
+    pub fn load(&mut self, configuration: &BTreeMap<String, String>) -> Result<()> {
         match &mut self.backend {
             PluginBackend::Wasm { store, instance } => {
+                let configuration = PluginUserConfiguration::new(configuration.clone());
+                let protobuf_configuration: ProtobufPluginConfiguration = configuration
+                    .try_into()
+                    .map_err(|e| anyhow!("failed to serialize user configuration: {:?}", e))?;
                 let load = instance
                     .get_typed_func::<(), ()>(&mut *store, "load")
                     .map_err(|e| anyhow!(e))?;
-                wasi_write_object(store.data_mut(), serialized_configuration)?;
+                wasi_write_object(store.data_mut(), &protobuf_configuration.encode_to_vec())?;
                 load.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(())
             },
+            PluginBackend::Lua(lua) => lua.load(configuration),
         }
     }
 
-    /// Call the plugin's `update` entrypoint with an event that has already been serialized for
-    /// it, returning whether the plugin asked to be re-rendered.
-    pub fn update(&mut self, serialized_event: &[u8]) -> Result<bool> {
+    /// Call the plugin's `update` entrypoint, returning whether it asked to be re-rendered.
+    pub fn update(&mut self, event: &Event) -> Result<bool> {
         match &mut self.backend {
             PluginBackend::Wasm { store, instance } => {
+                let protobuf_event: ProtobufEvent = event
+                    .clone()
+                    .try_into()
+                    .map_err(|e| anyhow!("failed to serialize event: {:?}", e))?;
                 let update = instance
                     .get_typed_func::<(), i32>(&mut *store, "update")
                     .map_err(|e| anyhow!(e))?;
-                wasi_write_object(store.data_mut(), serialized_event)?;
+                wasi_write_object(store.data_mut(), &protobuf_event.encode_to_vec())?;
                 let should_render = update.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(should_render == 1)
             },
+            PluginBackend::Lua(lua) => lua.update(event),
         }
     }
 
-    /// Call the plugin's `pipe` entrypoint with an already-serialized pipe message, returning
-    /// whether the plugin asked to be re-rendered. `Ok(None)` means the plugin does not
-    /// implement `pipe` at all, which is not an error.
-    pub fn pipe(&mut self, serialized_message: &[u8]) -> Result<Option<bool>> {
+    /// Call the plugin's `pipe` entrypoint, returning whether it asked to be re-rendered.
+    /// `Ok(None)` means the plugin does not implement `pipe` at all, which is not an error.
+    pub fn pipe(&mut self, message: &PipeMessage) -> Result<Option<bool>> {
         match &mut self.backend {
             PluginBackend::Wasm { store, instance } => {
                 let Ok(pipe) = instance.get_typed_func::<(), i32>(&mut *store, "pipe") else {
                     return Ok(None);
                 };
-                wasi_write_object(store.data_mut(), serialized_message)?;
+                let protobuf_message: ProtobufPipeMessage = message
+                    .clone()
+                    .try_into()
+                    .map_err(|e| anyhow!("failed to serialize pipe message: {:?}", e))?;
+                wasi_write_object(store.data_mut(), &protobuf_message.encode_to_vec())?;
                 let should_render = pipe.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(Some(should_render == 1))
             },
+            PluginBackend::Lua(lua) => lua.pipe(message).map(Some),
         }
     }
 
@@ -562,8 +602,10 @@ impl RunningPlugin {
                     .map_err(|e| anyhow!(e))?;
                 Ok(wasi_read_string(store.data())?.into_bytes())
             },
+            PluginBackend::Lua(lua) => lua.render(rows, columns),
         }
     }
+
     pub fn next_event_id(&mut self, atomic_event: AtomicEvent) -> usize {
         let current_event_id = *self.next_event_ids.get(&atomic_event).unwrap_or(&0);
         if current_event_id < usize::MAX {
