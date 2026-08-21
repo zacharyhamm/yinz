@@ -45,7 +45,32 @@ local function normalize_event(event)
       normalized[k] = v
     end
   end
+  if normalized.bare_key ~= nil then
+    normalized.key = zellij.key_name(normalized.bare_key)
+  end
   return normalized
+end
+
+--- A readable name for a key.
+---
+--- `BareKey` is a Rust enum, so a plain key arrives as `{ Char = "t" }` while a named one arrives
+--- as the bare string `"Esc"`. Comparing against that directly is miserable, so key events also
+--- carry `event.key`, which is `"t"`, `"Esc"`, `"F2"` - what the user would call the key.
+function zellij.key_name(bare_key)
+  if type(bare_key) == "string" then
+    return bare_key
+  end
+  if type(bare_key) ~= "table" then
+    return tostring(bare_key)
+  end
+  local variant, value = next(bare_key)
+  if variant == nil then
+    return ""
+  end
+  if variant == "Char" then
+    return tostring(value)
+  end
+  return variant .. tostring(value)
 end
 
 --- `TabUpdate` -> `tab_update`. Exposed because plugins subscribing by name need the same rule.
@@ -93,7 +118,7 @@ end
 
 --- Open a new terminal pane, optionally in `cwd`.
 function zellij.open_terminal(cwd)
-  return dispatch("open_terminal", { cwd = cwd })
+  return dispatch("open_terminal", cwd)
 end
 
 --- Ask to be sent a `timer` event in `seconds`. Timers do not repeat; set another one from the
@@ -107,7 +132,9 @@ function zellij.close_self()
   return dispatch("close_self")
 end
 
---- Escape hatch: run a command this prelude has no named wrapper for yet.
+--- Call a host command by name, for one this prelude has no named wrapper for yet. It reaches
+--- only commands the host knows how to marshal, so an unrecognized name is an error rather than
+--- a silent no-op.
 function zellij.command(name, args)
   return dispatch(name, args)
 end

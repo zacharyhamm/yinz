@@ -17,9 +17,6 @@ end
 function M.update(event)
   if event.name == "key" then
     M.presses = M.presses + 1
-    if event.bare_key == "Esc" then
-      zellij.close_self()
-    end
     return true
   end
   if event.name == "tab_update" then

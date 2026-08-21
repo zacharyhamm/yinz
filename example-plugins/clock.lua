@@ -13,6 +13,8 @@ function M.load(config)
   M.label = config.label
   M.ticks = 0
   zellij.subscribe { "timer", "key" }
+  -- `close_self` is privileged; without this, Esc would be silently refused.
+  zellij.request_permission { "change_application_state" }
   zellij.set_timeout(1.0)
 end
 
@@ -23,7 +25,7 @@ zellij.on("timer", function()
 end)
 
 zellij.on("key", function(event)
-  if event.bare_key == "Esc" then
+  if event.key == "Esc" then
     zellij.close_self()
   end
 end)
