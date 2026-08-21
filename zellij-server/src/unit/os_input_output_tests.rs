@@ -553,3 +553,123 @@ mod coalescing_send_queue {
         hegel::stateful::run(QueueModel::new(), tc);
     }
 }
+
+/// The wait that keeps a queued `Exit` from dying with the process.
+///
+/// `send_to_client` only queues; a detached writer thread does the write. Every
+/// server shutdown path sends clients an `Exit` and then returns from `main`, so
+/// without a wait in between the client can see a bare hangup instead of being
+/// told why the session ended — which is exactly what "Received empty unknown
+/// from server" was.
+mod client_writer_flush {
+    use super::super::{ClientSender, LiveWriters};
+    use interprocess::local_socket::{prelude::*, ListenerOptions};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use zellij_utils::ipc::{
+        ExitReason, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+    };
+
+    fn socket_pair() -> (
+        tempfile::TempDir,
+        interprocess::local_socket::Stream,
+        interprocess::local_socket::Stream,
+    ) {
+        use interprocess::local_socket::{GenericFilePath, Stream as LocalSocketStream};
+        let dir = tempfile::TempDir::new().expect("failed to create temp dir");
+        let path = dir.path().join("flush-test.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .expect("bind failed");
+        let client =
+            LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .expect("connect failed");
+        let server = listener.incoming().next().unwrap().expect("accept failed");
+        (dir, server, client)
+    }
+
+    #[test]
+    fn a_queued_exit_reaches_the_socket_before_the_wait_returns() {
+        let (_guard, server_end, client_end) = socket_pair();
+        let live_writers = Arc::new(LiveWriters::default());
+        let sender = ClientSender::new(
+            1,
+            IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
+            live_writers.clone(),
+        );
+
+        // What every break in the server main loop does on its way out.
+        sender
+            .send_or_buffer(ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Normal,
+            })
+            .expect("queueing the exit failed");
+        sender.close();
+
+        assert!(
+            live_writers.wait_until_drained(Duration::from_secs(5)),
+            "the writer should finish draining well inside the deadline"
+        );
+
+        // Only now would the process exit. The bytes must already be there.
+        let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+            IpcReceiverWithContext::new(client_end);
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Normal,
+                },
+                _,
+            ) => {},
+            other => panic!(
+                "the client should have been told why the session ended, got {:?}",
+                match other {
+                    IpcRecv::Msg(msg, _) => format!("{msg:?}"),
+                    IpcRecv::Eof => "a hangup".to_string(),
+                    IpcRecv::Malformed => "a malformed message".to_string(),
+                    IpcRecv::Idle => "nothing".to_string(),
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn waiting_gives_up_rather_than_holding_the_process_open() {
+        let live_writers = LiveWriters::default();
+        // A writer that never finishes - a client whose socket buffer is full
+        // and which has stopped reading looks exactly like this.
+        live_writers.register();
+        let started = std::time::Instant::now();
+        assert!(
+            !live_writers.wait_until_drained(Duration::from_millis(50)),
+            "an undrained writer should be reported as such"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the wait must be bounded, it took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn draining_is_reported_once_every_writer_is_done() {
+        let live_writers = LiveWriters::default();
+        assert!(
+            live_writers.wait_until_drained(Duration::from_millis(50)),
+            "no writers means nothing to wait for"
+        );
+        live_writers.register();
+        live_writers.register();
+        live_writers.deregister();
+        assert!(
+            !live_writers.wait_until_drained(Duration::from_millis(50)),
+            "one writer is still going"
+        );
+        live_writers.deregister();
+        assert!(
+            live_writers.wait_until_drained(Duration::from_millis(50)),
+            "both writers are done"
+        );
+    }
+}

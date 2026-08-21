@@ -38,10 +38,19 @@ use zellij_utils::{
         command::TerminalAction,
         layout::{RunPlugin, RunPluginLocation, RunPluginOrAlias},
     },
-    ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, ServerToClientMsg},
+    ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
 };
 
 use crate::ClientId;
+
+/// How many unreadable messages in a row we tolerate from one client before
+/// concluding the stream has desynchronised. Malformed frames only — a hangup
+/// is terminal and handled separately, so it never reaches this counter.
+const MAX_CONSECUTIVE_MALFORMED_MESSAGES: usize = 1000;
+
+/// Between malformed frames, so a stream that produces them without ever
+/// blocking cannot spin a core on the way to giving up.
+const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
 
 const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -2431,11 +2440,11 @@ pub(crate) fn route_thread_main(
     let mut retry_queue = VecDeque::new();
     let err_context = || format!("failed to handle instruction for client {client_id}");
     let mut seen_cli_pipes = HashSet::new();
-    let mut consecutive_unknown_messages_received = 0;
+    let mut consecutive_malformed_messages_received = 0;
     'route_loop: loop {
         match receiver.recv_client_msg() {
-            Some((instruction, err_ctx)) => {
-                consecutive_unknown_messages_received = 0;
+            IpcRecv::Msg(instruction, err_ctx) => {
+                consecutive_malformed_messages_received = 0;
                 err_ctx.update_thread_ctx();
                 let mut handle_instruction = |instruction: ClientToServerMsg,
                                               mut retry_queue: Option<
@@ -3068,23 +3077,40 @@ pub(crate) fn route_thread_main(
                 // retry on loop around
                 retry_queue = deferred_instructions;
             },
-            None => {
-                consecutive_unknown_messages_received += 1;
-                if consecutive_unknown_messages_received == 1 {
-                    log::error!("Received unknown message from client.");
+            IpcRecv::Eof => {
+                // The client is gone. This returns instantly and will keep
+                // doing so, so there is nothing to retry and nobody left to
+                // write an Exit to — leave, and let the cleanup below take the
+                // client out of the session.
+                log::info!("client {client_id} closed its connection");
+                break 'route_loop;
+            },
+            IpcRecv::Malformed => {
+                consecutive_malformed_messages_received += 1;
+                if consecutive_malformed_messages_received == 1 {
+                    log::error!("Received an unreadable message from client {client_id}.");
                 }
-                if consecutive_unknown_messages_received >= 1000 {
-                    log::error!("Client sent over 1000 consecutive unknown messages, this is probably an infinite loop, logging client out");
+                if consecutive_malformed_messages_received >= MAX_CONSECUTIVE_MALFORMED_MESSAGES {
+                    log::error!("Client sent over {MAX_CONSECUTIVE_MALFORMED_MESSAGES} consecutive unreadable messages, the connection has desynchronised - logging client out");
                     let _ = os_input.send_to_client(
                         client_id,
                         ServerToClientMsg::Exit {
-                            exit_reason: ExitReason::Error("Received empty message".to_string()),
+                            exit_reason: ExitReason::Error(
+                                "The connection to this client desynchronised.".to_string(),
+                            ),
                         },
                     );
                     let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
                     break 'route_loop;
                 }
+                // Don't fall through to the unblock below: nothing was
+                // processed, and a stream that produces malformed frames
+                // without blocking would otherwise have us write to it as fast
+                // as the CPU allows.
+                thread::sleep(MALFORMED_MESSAGE_BACKOFF);
+                continue 'route_loop;
             },
+            IpcRecv::Idle => continue 'route_loop,
         }
 
         // signal to the client that the action has finished processing and it can either exit (if

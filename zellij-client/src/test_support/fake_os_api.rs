@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use zellij_utils::data::Palette;
 use zellij_utils::errors::ErrorContext;
-use zellij_utils::ipc::{ClientToServerMsg, ServerToClientMsg};
+use zellij_utils::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use zellij_utils::pane_size::Size;
 
 /// A `ClientOsApi` that does nothing until you ask it to.
@@ -23,7 +23,7 @@ pub struct FakeClientOsApi {
     terminal_size: Size,
     stdout: Option<Arc<Mutex<Vec<u8>>>>,
     sent_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
-    from_server: Arc<Mutex<VecDeque<(ServerToClientMsg, ErrorContext)>>>,
+    from_server: Arc<Mutex<VecDeque<IpcRecv<ServerToClientMsg>>>>,
     stdin_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>,
     signal_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>>,
 }
@@ -91,7 +91,20 @@ impl FakeClientOsApi {
         self.from_server
             .lock()
             .unwrap()
-            .push_back((msg, ErrorContext::default()));
+            .push_back(IpcRecv::Msg(msg, ErrorContext::default()));
+    }
+
+    /// Queue a hangup, as if the server process had gone away.
+    pub fn queue_server_hangup(&self) {
+        self.from_server.lock().unwrap().push_back(IpcRecv::Eof);
+    }
+
+    /// Queue an unreadable frame, as if the stream had desynchronised.
+    pub fn queue_malformed_from_server(&self) {
+        self.from_server
+            .lock()
+            .unwrap()
+            .push_back(IpcRecv::Malformed);
     }
 }
 
@@ -184,15 +197,18 @@ impl ServerConnection for FakeClientOsApi {
     fn send_to_server(&self, msg: ClientToServerMsg) {
         self.sent_to_server.lock().unwrap().push(msg);
     }
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
-        let msg = self.from_server.lock().unwrap().pop_front();
-        if msg.is_none() {
-            // The real implementation blocks on a socket. Callers poll this in
-            // a loop, so yield briefly rather than spinning a core and
-            // starving the threads under test.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+    fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {
+        match self.from_server.lock().unwrap().pop_front() {
+            Some(received) => received,
+            None => {
+                // The real implementation blocks on a socket. Callers poll this
+                // in a loop, so yield briefly rather than spinning a core and
+                // starving the threads under test. `Idle` rather than a hangup:
+                // an empty queue means "not yet", not "gone".
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                IpcRecv::Idle
+            },
         }
-        msg
     }
     fn connect_to_server(&self, _path: &Path) {}
     fn update_session_name(&mut self, _new_session_name: String) {}

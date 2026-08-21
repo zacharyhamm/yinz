@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::{io, thread, time};
 use zellij_utils::{
     data::Palette,
-    errors::ErrorContext,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
+    ipc::{
+        ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+    },
     shared::default_palette,
 };
 
@@ -138,7 +139,11 @@ pub trait ServerConnection {
     fn send_to_server(&self, msg: ClientToServerMsg);
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)>;
+    ///
+    /// Returns `IpcRecv` rather than an `Option` so that "the server hung up"
+    /// is distinguishable from "that frame was garbage": the first is terminal
+    /// and must not be retried, the second may be.
+    fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg>;
     /// Establish a connection with the server socket.
     fn connect_to_server(&self, path: &Path);
     fn update_session_name(&mut self, new_session_name: String);
@@ -290,7 +295,7 @@ impl ServerConnection for ClientOsInputOutput {
             },
         }
     }
-    fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
+    fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {
         self.receive_instructions_from_server
             .lock()
             .unwrap()

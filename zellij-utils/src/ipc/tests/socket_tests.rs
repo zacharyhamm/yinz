@@ -1,5 +1,5 @@
 use crate::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+    ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
 };
 use crate::pane_size::Size;
 use interprocess::local_socket::{prelude::*, ListenerOptions};
@@ -59,7 +59,7 @@ fn client_to_server_message_over_socket() {
     let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
         IpcReceiverWithContext::new(stream);
 
-    let msg = receiver.recv_client_msg();
+    let msg = receiver.recv_client_msg().msg();
     assert!(msg.is_some(), "should receive a message");
     let (msg, _ctx) = msg.unwrap();
     assert!(
@@ -88,7 +88,7 @@ fn server_to_client_message_over_socket() {
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
         IpcReceiverWithContext::new(stream);
 
-    let msg = receiver.recv_server_msg();
+    let msg = receiver.recv_server_msg().msg();
     assert!(msg.is_some(), "should receive a message");
     let (msg, _ctx) = msg.unwrap();
     assert!(
@@ -114,7 +114,7 @@ fn bidirectional_communication_via_fd_duplication() {
             .send_server_msg(ServerToClientMsg::Connected)
             .expect("send failed");
 
-        let msg = receiver.recv_client_msg();
+        let msg = receiver.recv_client_msg().msg();
         assert!(msg.is_some(), "server should receive client message");
         let (msg, _) = msg.unwrap();
         assert!(
@@ -128,7 +128,7 @@ fn bidirectional_communication_via_fd_duplication() {
 
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
 
-    let msg = receiver.recv_server_msg();
+    let msg = receiver.recv_server_msg().msg();
     assert!(msg.is_some(), "client should receive server message");
     let (msg, _) = msg.unwrap();
     assert!(
@@ -176,10 +176,10 @@ fn multiple_messages_in_sequence() {
     let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
         IpcReceiverWithContext::new(stream);
 
-    let (msg1, _) = receiver.recv_client_msg().expect("missing message 1");
+    let (msg1, _) = receiver.recv_client_msg().msg().expect("missing message 1");
     assert!(matches!(msg1, ClientToServerMsg::ConnStatus));
 
-    let (msg2, _) = receiver.recv_client_msg().expect("missing message 2");
+    let (msg2, _) = receiver.recv_client_msg().msg().expect("missing message 2");
     match msg2 {
         ClientToServerMsg::TerminalResize { new_size } => {
             assert_eq!(new_size.rows, 50);
@@ -188,7 +188,7 @@ fn multiple_messages_in_sequence() {
         other => panic!("expected TerminalResize, got: {:?}", other),
     }
 
-    let (msg3, _) = receiver.recv_client_msg().expect("missing message 3");
+    let (msg3, _) = receiver.recv_client_msg().msg().expect("missing message 3");
     assert!(matches!(msg3, ClientToServerMsg::KillSession));
 
     client.join().expect("client thread panicked");
@@ -217,10 +217,10 @@ fn receiver_returns_none_on_closed_connection() {
 
     client.join().expect("client thread panicked");
 
-    let msg = receiver.recv_client_msg();
+    let msg = receiver.recv_client_msg().msg();
     assert!(msg.is_some(), "should receive the sent message");
 
-    let msg = receiver.recv_client_msg();
+    let msg = receiver.recv_client_msg().msg();
     assert!(msg.is_none(), "should return None after connection closed");
 }
 
@@ -264,7 +264,7 @@ fn session_probe_accepts_responding_socket() {
             IpcReceiverWithContext::new(stream);
         let mut sender: IpcSenderWithContext<ServerToClientMsg> = receiver.get_sender();
 
-        let msg = receiver.recv_client_msg();
+        let msg = receiver.recv_client_msg().msg();
         assert!(matches!(msg, Some((ClientToServerMsg::ConnStatus, _))));
 
         sender
@@ -279,7 +279,7 @@ fn session_probe_accepts_responding_socket() {
         .expect("send failed");
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
 
-    let result = receiver.recv_server_msg();
+    let result = receiver.recv_server_msg().msg();
     assert!(
         matches!(result, Some((ServerToClientMsg::Connected, _))),
         "probing a live session socket should return Connected"
@@ -334,4 +334,79 @@ fn socket_directory_enumeration_finds_sockets() {
 
     assert_eq!(entries.len(), 1, "should find exactly one socket");
     assert_eq!(entries[0], "test-session");
+}
+
+/// A hangup is terminal, so it has to be reported as one on the *first* read.
+/// The bug this guards against reported it as an unreadable message instead,
+/// which sent both routers into a thousand-iteration zero-delay retry loop
+/// before blaming "an empty message" for a server that had simply exited.
+#[test]
+fn a_closed_peer_reports_eof_immediately_and_keeps_reporting_it() {
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+
+    let client = std::thread::spawn(move || {
+        let stream = connect_stream(&name);
+        let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
+        sender
+            .send_client_msg(ClientToServerMsg::ConnStatus)
+            .expect("send failed");
+        // and now hang up
+    });
+
+    let stream = listener.incoming().next().unwrap().expect("accept failed");
+    let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+        IpcReceiverWithContext::new(stream);
+
+    assert!(
+        matches!(receiver.recv_client_msg(), IpcRecv::Msg(..)),
+        "the message sent before the hangup should still arrive"
+    );
+
+    client.join().expect("client thread panicked");
+
+    for read in 0..3 {
+        assert!(
+            receiver.recv_client_msg().is_eof(),
+            "read {read} after the peer closed should be Eof, not a malformed message"
+        );
+    }
+}
+
+/// The other half of the distinction: a frame that arrives but cannot be
+/// decoded is *not* a hangup. The stream is still open and may well carry good
+/// messages afterwards, so this one is worth retrying.
+#[test]
+fn a_garbage_frame_reports_malformed_not_eof() {
+    use std::io::Write;
+
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+
+    let client = std::thread::spawn(move || {
+        let mut stream = connect_stream(&name);
+        // A well-formed length prefix followed by bytes that are not a
+        // ClientToServerMsg. The frame is complete, so this is a decode
+        // failure rather than a truncated read.
+        let payload = [0xffu8; 8];
+        stream
+            .write_all(&(payload.len() as u32).to_le_bytes())
+            .expect("write len failed");
+        stream.write_all(&payload).expect("write payload failed");
+        stream.flush().expect("flush failed");
+        // Hold the connection open so the receiver cannot mistake this for a
+        // hangup.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+
+    let stream = listener.incoming().next().unwrap().expect("accept failed");
+    let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+        IpcReceiverWithContext::new(stream);
+
+    assert!(
+        matches!(receiver.recv_client_msg(), IpcRecv::Malformed),
+        "an undecodable frame on a live socket should be Malformed, not Eof"
+    );
+
+    client.join().expect("client thread panicked");
 }

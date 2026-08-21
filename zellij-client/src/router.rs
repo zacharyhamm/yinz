@@ -7,13 +7,29 @@
 use crate::os_input_output::ClientOsApi;
 use crate::ClientInstruction;
 use std::thread;
-use zellij_utils::{channels::SenderWithContext, errors::ErrorContext, ipc::ServerToClientMsg};
+use std::time::Duration;
+use zellij_utils::{
+    channels::SenderWithContext, errors::ErrorContext, ipc::IpcRecv, ipc::ServerToClientMsg,
+};
 
 /// How many unreadable messages in a row we tolerate before concluding the
-/// socket is not going to recover and tearing the client down. A single
-/// failure is survivable — a run of them means the server is gone or the
-/// stream has desynchronised.
-const MAX_CONSECUTIVE_UNKNOWN_MESSAGES: usize = 1000;
+/// stream is not going to recover and tearing the client down. A single
+/// failure is survivable — a run of them means the stream has desynchronised.
+///
+/// This applies to malformed frames only. A hangup is not a malformed frame:
+/// it is terminal and returns instantly, so retrying it a thousand times is a
+/// busy loop that reports the wrong cause.
+const MAX_CONSECUTIVE_MALFORMED_MESSAGES: usize = 1000;
+
+/// Between malformed frames, so that a stream that produces them without ever
+/// blocking cannot spin a core on the way to giving up.
+const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
+
+/// What the user is told when the server's socket closes without an `Exit`.
+/// The server sends one on every shutdown path, so reaching this means it went
+/// away without saying goodbye.
+const SERVER_HUNG_UP: &str =
+    "The zellij server exited without notifying this client.\nRun `zellij ls` to see whether the session is still there.";
 
 /// Spawn the router thread. It runs until the server says `Exit` or the
 /// socket gives up, and the caller joins it during shutdown.
@@ -27,36 +43,54 @@ pub(crate) fn spawn(
         .unwrap()
 }
 
-fn route(
+pub(crate) fn route(
     os_input: Box<dyn ClientOsApi>,
     send_client_instructions: SenderWithContext<ClientInstruction>,
 ) {
-    let mut consecutive_unknown_messages_received = 0;
+    let mut consecutive_malformed_messages_received = 0;
     loop {
         match os_input.recv_from_server() {
-            Some((instruction, err_ctx)) => {
-                consecutive_unknown_messages_received = 0;
+            IpcRecv::Msg(instruction, err_ctx) => {
+                consecutive_malformed_messages_received = 0;
                 if forward(&send_client_instructions, instruction, err_ctx) {
                     break;
                 }
             },
-            None => {
-                consecutive_unknown_messages_received += 1;
+            IpcRecv::Eof => {
+                // Terminal: every further read returns this immediately. Say so
+                // once and leave, rather than spinning until a counter runs out
+                // and then blaming an empty message.
+                log::error!("The server closed the connection without sending Exit");
+                send_client_instructions
+                    .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()))
+                    .unwrap();
+                break;
+            },
+            IpcRecv::Malformed => {
+                consecutive_malformed_messages_received += 1;
                 // Unblock the input thread so it doesn't sit waiting on a
                 // reply that is never going to arrive.
                 send_client_instructions
                     .send(ClientInstruction::UnblockInputThread)
                     .unwrap();
-                log::error!("Received unknown message from server");
-                if consecutive_unknown_messages_received >= MAX_CONSECUTIVE_UNKNOWN_MESSAGES {
+                if consecutive_malformed_messages_received == 1 {
+                    log::error!("Received an unreadable message from the server");
+                }
+                if consecutive_malformed_messages_received >= MAX_CONSECUTIVE_MALFORMED_MESSAGES {
+                    log::error!(
+                        "Received {} unreadable messages in a row from the server, giving up",
+                        consecutive_malformed_messages_received
+                    );
                     send_client_instructions
                         .send(ClientInstruction::Error(
-                            "Received empty unknown from server".to_string(),
+                            "The connection to the zellij server desynchronised.".to_string(),
                         ))
                         .unwrap();
                     break;
                 }
+                thread::sleep(MALFORMED_MESSAGE_BACKOFF);
             },
+            IpcRecv::Idle => {},
         }
     }
 }
