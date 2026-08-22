@@ -148,6 +148,15 @@ enum MouseAction {
     StopMovingFloatingPane {
         position: Position,
     },
+    StartMovingOverlay {
+        position: Position,
+    },
+    ContinueMovingOverlay {
+        position: Position,
+    },
+    StopMovingOverlay {
+        position: Position,
+    },
     ScrollUp {
         pane_id: PaneId,
         lines: usize,
@@ -209,6 +218,16 @@ pub struct PaneResizeState {
     pub is_floating: bool,
 }
 
+/// Which collection is holding a mouse drag, while one is in flight.
+///
+/// An enum rather than two booleans because only one drag can be in flight at a time: the two
+/// collections have separate drag state, but the pointer is one pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MouseDragTarget {
+    Floating,
+    Overlay,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClickedPaneDetails {
     pane_id: PaneId,
@@ -230,7 +249,7 @@ struct MouseEventContext {
     floating_visible: bool,
     pane_being_resized: bool,
     selecting_with_mouse: bool,
-    pane_being_moved: bool,
+    pane_being_moved: Option<MouseDragTarget>,
     clicked_pane: Option<ClickedPaneDetails>,
     pinned_selectable: Option<PaneId>,
     pinned_unselectable: Option<PaneId>,
@@ -480,7 +499,13 @@ impl MouseHandler {
             floating_visible,
             pane_being_resized: tab.pane_being_resized_with_mouse.is_some(),
             selecting_with_mouse: tab.selecting_with_mouse_in_pane.is_some(),
-            pane_being_moved: tab.floating_panes.pane_is_being_moved_with_mouse(),
+            pane_being_moved: if tab.overlay_panes.pane_is_being_moved_with_mouse() {
+                Some(MouseDragTarget::Overlay)
+            } else if tab.floating_panes.pane_is_being_moved_with_mouse() {
+                Some(MouseDragTarget::Floating)
+            } else {
+                None
+            },
             clicked_pane,
             pinned_selectable,
             pinned_unselectable,
@@ -842,6 +867,15 @@ impl MouseHandler {
             MouseAction::StopMovingFloatingPane { position } => {
                 Self::execute_stop_moving_floating_pane(tab, position, client_id)
             },
+            MouseAction::StartMovingOverlay { position } => {
+                Self::execute_move_overlay(tab, position)
+            },
+            MouseAction::ContinueMovingOverlay { position } => {
+                Self::execute_move_overlay(tab, position)
+            },
+            MouseAction::StopMovingOverlay { position } => {
+                Self::execute_stop_moving_overlay(tab, position, client_id)
+            },
             MouseAction::ScrollUp { pane_id: _, lines } => {
                 Self::handle_scrollwheel_up(tab, &event.position, lines, client_id)
                     .with_context(err_context)
@@ -1093,6 +1127,34 @@ impl MouseHandler {
         } else {
             Ok(MouseEffect::default())
         }
+    }
+
+    /// Deliberately no `swap_layouts.set_is_floating_damaged()`: an overlay is not on the floating
+    /// layer and has no slot in a swap layout, so moving one damages nothing.
+    fn execute_move_overlay(tab: &mut Tab, position: Position) -> Result<MouseEffect> {
+        if tab.overlay_panes.move_pane_with_mouse(position) {
+            tab.set_force_render();
+            Ok(MouseEffect::state_changed())
+        } else {
+            Ok(MouseEffect::default())
+        }
+    }
+
+    fn execute_stop_moving_overlay(
+        tab: &mut Tab,
+        position: Position,
+        client_id: ClientId,
+    ) -> Result<MouseEffect> {
+        let err_context = || "failed to stop moving overlay";
+        let never_moved = tab.overlay_panes.stop_moving_pane_with_mouse(position);
+        if never_moved {
+            // the press was a click after all. `focus_pane_at` is the right thing to hand it to
+            // rather than a focus of the dragged pane by id: it already routes an overlay position
+            // to the overlay collection, and it already declines to move the keyboard onto a
+            // non-modal while a modal is open.
+            Self::focus_pane_at(tab, &position, client_id).with_context(err_context)?;
+        }
+        Ok(MouseEffect::default())
     }
 
     fn execute_stop_moving_floating_pane(
@@ -1350,14 +1412,28 @@ impl MouseHandler {
             });
         }
 
-        if ctx.pane_being_moved {
+        if let Some(drag_target) = ctx.pane_being_moved {
+            let (continue_move, stop_move) = match drag_target {
+                MouseDragTarget::Floating => (
+                    MouseAction::ContinueMovingFloatingPane {
+                        position: event.position,
+                    },
+                    MouseAction::StopMovingFloatingPane {
+                        position: event.position,
+                    },
+                ),
+                MouseDragTarget::Overlay => (
+                    MouseAction::ContinueMovingOverlay {
+                        position: event.position,
+                    },
+                    MouseAction::StopMovingOverlay {
+                        position: event.position,
+                    },
+                ),
+            };
             return Ok(match event.event_type {
-                MouseEventType::Motion if event.left => MouseAction::ContinueMovingFloatingPane {
-                    position: event.position,
-                },
-                MouseEventType::Release if event.left => MouseAction::StopMovingFloatingPane {
-                    position: event.position,
-                },
+                MouseEventType::Motion if event.left => continue_move,
+                MouseEventType::Release if event.left => stop_move,
                 _ => MouseAction::NoAction,
             });
         }
@@ -1466,31 +1542,35 @@ impl MouseHandler {
                     });
                 }
 
-                // An overlay is neither draggable nor resizable, so its frame has no move or
-                // resize to start - it falls through to the ordinary focus handling below, which
-                // is already what a frame position with no edge does.
+                // An overlay drags from its own branch, with no `should_start_moving` test in
+                // front of it: that test asks whether the floating *layer* is up, and an overlay
+                // is not on a layer. Routing one through the floating branch is how clicking a
+                // modal's frame used to drag the pane underneath it - `execute_move_floating_pane`
+                // throws the pane id away and re-resolves the position through `FloatingPanes`
+                // alone. `execute_move_overlay` never re-resolves past the overlay, because the
+                // overlay collection's own hit test cannot see what an overlay is covering.
                 //
-                // `should_start_moving` is the reason this test has to be here: it asks whether
-                // the floating *layer* is up, not whether the clicked pane is on it, and
-                // `execute_move_floating_pane` then throws the pane id away and re-resolves the
-                // position through `FloatingPanes` alone. Clicking a modal's frame dragged the
-                // pane underneath it.
-                if !details.is_overlay {
-                    let should_start_moving = ctx.floating_visible || is_pinned_pane;
-                    if should_start_moving {
-                        return Ok(MouseAction::StartMovingFloatingPane {
-                            position: event.position,
-                        });
-                    }
+                // An overlay is still not *resizable*, which is why there is no `edge` branch
+                // here and none in the ctrl-press block above.
+                if details.is_overlay {
+                    return Ok(MouseAction::StartMovingOverlay {
+                        position: event.position,
+                    });
+                }
+                let should_start_moving = ctx.floating_visible || is_pinned_pane;
+                if should_start_moving {
+                    return Ok(MouseAction::StartMovingFloatingPane {
+                        position: event.position,
+                    });
+                }
 
-                    if let Some(edge) = details.edge {
-                        return Ok(MouseAction::StartResize {
-                            pane_id: details.pane_id,
-                            edge,
-                            is_floating: false,
-                            position: event.position,
-                        });
-                    }
+                if let Some(edge) = details.edge {
+                    return Ok(MouseAction::StartResize {
+                        pane_id: details.pane_id,
+                        edge,
+                        is_floating: false,
+                        position: event.position,
+                    });
                 }
             }
 
@@ -1946,7 +2026,7 @@ mod tests {
             floating_visible: false,
             pane_being_resized: false,
             selecting_with_mouse: false,
-            pane_being_moved: false,
+            pane_being_moved: None,
             clicked_pane: None,
             pinned_selectable: None,
             pinned_unselectable: None,
@@ -1968,12 +2048,13 @@ mod tests {
         }
     }
 
-    /// `should_start_moving` asks whether the floating *layer* is up, not whether the clicked
-    /// pane is on it - and `execute_move_floating_pane` then throws the pane id away and
-    /// re-resolves the position through `FloatingPanes` alone. So a press on an overlay's frame
-    /// used to start dragging whatever floating pane the overlay was covering.
+    /// An overlay drags its *own* collection. `should_start_moving` asks whether the floating
+    /// *layer* is up, not whether the clicked pane is on it - and `execute_move_floating_pane`
+    /// then throws the pane id away and re-resolves the position through `FloatingPanes` alone.
+    /// So an overlay routed through the floating branch drags whatever it is covering, which is
+    /// why the two are separate actions rather than one action with a flag.
     #[test]
-    fn a_press_on_an_overlay_frame_does_not_start_a_floating_move() {
+    fn a_press_on_an_overlay_frame_starts_an_overlay_move_and_not_a_floating_one() {
         let overlay = PaneId::Terminal(9);
         let mut context = mouse_event_context(false);
         context.floating_visible = true;
@@ -1982,6 +2063,10 @@ mod tests {
 
         let event = MouseEvent::new_left_press_event(Position::new(1, 1));
         let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(
+            matches!(action, MouseAction::StartMovingOverlay { .. }),
+            "got {action:?}"
+        );
         assert!(
             !matches!(action, MouseAction::StartMovingFloatingPane { .. }),
             "got {action:?}"
@@ -1992,6 +2077,92 @@ mod tests {
         assert!(matches!(
             MouseHandler::determine_mouse_action(&event, &context).unwrap(),
             MouseAction::StartMovingFloatingPane { .. }
+        ));
+    }
+
+    /// An overlay is not on a layer, so nothing has to be raised for its frame to be draggable.
+    /// The floating branch would refuse this press outright.
+    #[test]
+    fn an_overlay_frame_drags_with_the_floating_layer_down() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.floating_visible = false;
+        context.pane_id_at_position = Some(overlay);
+        context.clicked_pane = Some(frame_click_on(overlay, true));
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::StartMovingOverlay { .. }
+        ));
+    }
+
+    /// The drag is the frame's, not the pane's: a press in an overlay's body is still a press in
+    /// a live terminal or plugin, and must not pick the popup up.
+    #[test]
+    fn a_press_inside_an_overlay_does_not_start_a_move() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.floating_visible = true;
+        context.pane_id_at_position = Some(overlay);
+        let mut details = frame_click_on(overlay, true);
+        details.on_frame = false;
+        details.edge = None;
+        context.clicked_pane = Some(details);
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(
+            !matches!(action, MouseAction::StartMovingOverlay { .. }),
+            "got {action:?}"
+        );
+    }
+
+    /// A plugin overlay's frame buttons keep working: the interception is checked before the drag,
+    /// as it is on the floating branch.
+    #[test]
+    fn an_intercepted_overlay_frame_press_is_not_a_move() {
+        let overlay = PaneId::Plugin(9);
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(overlay);
+        let mut details = frame_click_on(overlay, true);
+        details.frame_intercepted = true;
+        context.clicked_pane = Some(details);
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::FrameIntercepted { .. }
+        ));
+    }
+
+    /// An in-flight drag routes motion and release to the collection that is holding it. Reading
+    /// the target off a single enum rather than two booleans is what makes this unambiguous.
+    #[test]
+    fn an_in_flight_drag_routes_to_the_collection_holding_it() {
+        let position = Position::new(3, 3);
+        let motion = MouseEvent::new_left_motion_event(position);
+        let release = MouseEvent::new_left_release_event(position);
+
+        let mut context = mouse_event_context(false);
+        context.pane_being_moved = Some(MouseDragTarget::Overlay);
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&motion, &context).unwrap(),
+            MouseAction::ContinueMovingOverlay { .. }
+        ));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&release, &context).unwrap(),
+            MouseAction::StopMovingOverlay { .. }
+        ));
+
+        context.pane_being_moved = Some(MouseDragTarget::Floating);
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&motion, &context).unwrap(),
+            MouseAction::ContinueMovingFloatingPane { .. }
+        ));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&release, &context).unwrap(),
+            MouseAction::StopMovingFloatingPane { .. }
         ));
     }
 

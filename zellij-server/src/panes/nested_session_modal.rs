@@ -1,3 +1,13 @@
+//! The nested-session **guest modal**: an in-pane choice dialog drawn onto a terminal pane's own
+//! cells, offering a client inside a nested session the ascend/descend/zoom shortcuts.
+//!
+//! Despite the name it has nothing to do with `OverlayKind::Modal` or the `OverlayPanes`
+//! collection. That kind of modal is a *pane*, placed on the session surface with its own geometry,
+//! focus rules and occlusion stack entry. This one is a rendering: `Pane::set_guest_modal`,
+//! `GuestModalOutcome` and `mouse_handler::intercept_guest_modal_mouse_event` paint and answer it
+//! inside a pane that already exists. Work on overlays does not touch it, and the two must not be
+//! conflated because they share a word.
+
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 use zellij_utils::data::Style;

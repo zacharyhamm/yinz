@@ -278,6 +278,100 @@ fn a_plain_floating_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
     zellij.quit();
 }
 
+/// Open a plain command pane as an overlay, well inside the tab, so a drag has somewhere to go.
+fn open_overlay_pane_in_the_tab(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
+    zellij.run_cli_action(CliAction::NewPane {
+        direction: None,
+        command: vec!["overlay-cmd".to_string()],
+        remote_host: None,
+        plugin: None,
+        cwd: None,
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: Some("70%".to_string()),
+        y: Some("20%".to_string()),
+        width: Some("20%".to_string()),
+        height: Some("20%".to_string()),
+        pinned: None,
+        overlay: Some(true),
+        modal: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+        global: false,
+        edge: None,
+        size: None,
+    });
+    zellij.expect_pty_spawn()
+}
+
+/// An overlay is drawn over whatever it covers, so the user's only way to see what is underneath
+/// is to move it. It drags by its frame the way a floating pane does - but through its own
+/// collection: the floating path re-resolves the pointer position from scratch, and pressing an
+/// overlay's frame used to drag whatever the overlay was drawn over instead.
+///
+/// Dragged against the whole session surface, so it can be carried out over a global pane, which is
+/// where a popup that is in the way most needs to go.
+#[test]
+fn an_overlay_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("{NO_BACKGROUND_PLUGINS}mouse_mode true\n"))
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"first tab shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    });
+
+    let overlay = open_overlay_pane_in_the_tab(&zellij);
+    overlay.output(b"DRAGME");
+    let snapshot = zellij.wait_until("the overlay is up", |snapshot| snapshot.contains("DRAGME"));
+
+    // the global pane takes the left half of a 120 column terminal
+    let global_pane_ends_at = TERMINAL_SIZE.cols / 2;
+    let (column, row) = position_of(&snapshot, "DRAGME");
+    assert!(
+        column >= global_pane_ends_at,
+        "the overlay starts out in the tab, right of the global pane, but it is at column {column}"
+    );
+
+    // press its top frame and drag left, past the tab's edge and onto the global pane
+    let drag_to = column - 40;
+    zellij.send_stdin(&sgr_press(column + 1, row));
+    zellij.send_stdin(&sgr_left_motion(drag_to + 1, row));
+    zellij.send_stdin(&sgr_release(drag_to + 1, row));
+
+    zellij.wait_until("the overlay is drawn over the global pane", |snapshot| {
+        snapshot.contains("DRAGME") && position_of(snapshot, "DRAGME").0 < global_pane_ends_at
+    });
+
+    let snapshot = zellij.snapshot();
+    assert!(
+        snapshot.contains("first tab shell"),
+        "the pane the overlay was covering must still be where it was, got:\n{snapshot}"
+    );
+
+    zellij.quit();
+}
+
 /// Open `quit-confirmation` the way `Action::Quit` does: born a modal on the session surface,
 /// with the geometry the plugin then keeps for itself. It is never on the tab's floating layer.
 fn open_popup(zellij: &TestSession) {
@@ -317,6 +411,51 @@ fn open_popup(zellij: &TestSession) {
         edge: None,
         size: None,
     });
+}
+
+/// The same drag on a *plugin* modal, which is what the popups in this fork actually are.
+///
+/// Worth its own test rather than trusting the command-pane one: the unit suite's plugin panes are
+/// mocks that never render, so the whole plugin-output path is untested there - which is how an
+/// earlier round of this work shipped popups that drew an empty box. And a modal is the sharper
+/// case: it must keep the keyboard across the drag, so it is still the thing `Esc` closes when the
+/// pointer lets go.
+#[test]
+fn a_modal_plugin_popup_can_be_dragged_with_the_mouse() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("{NO_BACKGROUND_PLUGINS}mouse_mode true\n"))
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"tiled shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the shell loads", |snapshot| {
+        snapshot.contains("tiled shell")
+    });
+
+    open_popup(&zellij);
+    let snapshot = zellij.wait_until("the popup is up", |snapshot| {
+        snapshot.contains("Quit Zellij?")
+    });
+    let (column, row) = position_of(&snapshot, "Quit Zellij?");
+
+    // SGR reports are 1-based, so passing the 0-based content row lands one row higher - on the
+    // popup's top frame. The floating drag above aims the same way.
+    let drag_to_row = row + 3;
+    zellij.send_stdin(&sgr_press(column + 1, row));
+    zellij.send_stdin(&sgr_left_motion(column + 1, drag_to_row));
+    zellij.send_stdin(&sgr_release(column + 1, drag_to_row));
+
+    zellij.wait_until("the popup has moved down", |snapshot| {
+        snapshot.contains("Quit Zellij?") && position_of(snapshot, "Quit Zellij?").1 > row
+    });
+
+    // a drag never moves the keyboard, so the modal is still what Esc closes
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("the popup is still the focused modal", |snapshot| {
+        !snapshot.contains("Quit Zellij?")
+    });
+
+    zellij.quit();
 }
 
 /// An overlay is not a floating pane, so putting one on screen must not put the user's hidden

@@ -10239,25 +10239,25 @@ impl Screen {
     /// Whether this client's tab takes the mouse at `event`'s position, ahead of any global pane
     /// there.
     ///
-    /// Two cases. A floating pane being dragged holds the mouse for the duration of the drag - it
-    /// has to, or it could never be dragged across the tab's edge onto a global pane at all, and
-    /// the drag would end wherever the pointer first left the tab. And a floating pane painted at
-    /// that position owns it, because floating panes draw over the global panes: what is under the
-    /// pointer is what gets clicked.
+    /// Two cases. A floating pane or an overlay being dragged holds the mouse for the duration of
+    /// the drag - it has to, or it could never be dragged across the tab's edge onto a global pane
+    /// at all, and the drag would end wherever the pointer first left the tab. And a floating pane
+    /// or overlay painted at that position owns it, because both draw over the global panes: what
+    /// is under the pointer is what gets clicked.
     ///
     /// A global pane that has already captured this client's mouse for a selection keeps it, so a
     /// selection dragged under a floating pane still ends where it was released.
     ///
-    /// The drag state is per-tab rather than per-client, so while one client drags a floating pane
-    /// another client on the same tab loses global-pane mouse routing until the drag ends. Short
-    /// lived, and not worth threading a client id through the drag bookkeeping for.
+    /// The drag state is per-tab rather than per-client, so while one client drags a pane another
+    /// client on the same tab loses global-pane mouse routing until the drag ends. Short lived, and
+    /// not worth threading a client id through the drag bookkeeping for.
     fn tab_wins_mouse_event(&self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.global_panes.is_selecting_with_mouse(client_id) {
             return false;
         }
         self.get_active_tab(client_id)
             .map(|tab| {
-                tab.floating_pane_is_being_moved_with_mouse()
+                tab.a_pane_is_being_moved_with_mouse()
                     || tab.visible_floating_pane_at(&event.position).is_some()
             })
             .unwrap_or(false)

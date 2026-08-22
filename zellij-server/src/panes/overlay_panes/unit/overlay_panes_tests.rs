@@ -685,3 +685,268 @@ fn a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it() {
         assert_eq!(panes.get_pane_z_index(*pane_id), Some(index));
     }
 }
+
+// ---- being dragged with the mouse -----------------------------------------------------------
+
+fn placed_coordinates(x: &str, y: &str, width: &str, height: &str) -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates::new(
+        Some(x.to_owned()),
+        Some(y.to_owned()),
+        Some(width.to_owned()),
+        Some(height.to_owned()),
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+/// The top-left cell of a pane is on its frame.
+fn frame_corner(panes: &OverlayPanes, id: u32) -> Position {
+    let geom = panes
+        .get(&PaneId::Terminal(id))
+        .unwrap()
+        .position_and_size();
+    Position::new(geom.y as i32, geom.x as u16)
+}
+
+fn xy(panes: &OverlayPanes, id: u32) -> (usize, usize) {
+    let geom = panes
+        .get(&PaneId::Terminal(id))
+        .unwrap()
+        .position_and_size();
+    (geom.x, geom.y)
+}
+
+#[test]
+fn a_frame_drag_moves_an_overlay_by_the_pointer_delta() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let (start_x, start_y) = xy(&panes, 1);
+
+    let press = frame_corner(&panes, 1);
+    assert!(panes.move_pane_with_mouse(press), "the frame press is ours");
+    assert!(panes.pane_is_being_moved_with_mouse());
+
+    panes.move_pane_with_mouse(Position::new(
+        press.line() as i32 + 2,
+        press.column() as u16 + 4,
+    ));
+    assert_eq!(xy(&panes, 1), (start_x + 4, start_y + 2));
+
+    let never_moved = panes.stop_moving_pane_with_mouse(Position::new(
+        press.line() as i32 + 2,
+        press.column() as u16 + 4,
+    ));
+    assert!(!never_moved, "the pointer left the cell it was pressed on");
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}
+
+/// The drag clamps against the *session surface*, so an overlay carried past the edge of the
+/// screen stops at it rather than being lost off it.
+#[test]
+fn a_frame_drag_clamps_an_overlay_inside_the_session_surface() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let press = frame_corner(&panes, 1);
+
+    panes.move_pane_with_mouse(press);
+    // far past the bottom-right corner of an 80x20 surface
+    panes.move_pane_with_mouse(Position::new(400, 400));
+    panes.stop_moving_pane_with_mouse(Position::new(400, 400));
+
+    // a 48x10 overlay on an 80x20 surface can go no further than (32, 10)
+    assert_eq!(xy(&panes, 1), (32, 10));
+
+    let press = frame_corner(&panes, 1);
+    panes.move_pane_with_mouse(press);
+    panes.move_pane_with_mouse(Position::new(-400, 0));
+    panes.stop_moving_pane_with_mouse(Position::new(-400, 0));
+    assert_eq!(xy(&panes, 1), (0, 0), "and no further than the origin");
+}
+
+/// The point of dragging against the session surface rather than the tab's viewport: a popup can
+/// be moved out of the way of what it is covering, including onto the cells a global pane owns.
+#[test]
+fn an_overlay_can_be_dragged_over_a_global_pane() {
+    let strip = GlobalPaneStrip {
+        geom: geom(0, 0, 10, 20),
+        edge: GlobalPaneEdge::Left,
+    };
+    let (mut panes, _display_area) = overlay_panes_with(80, 20, (10, 0), vec![strip]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Modal,
+        placed_coordinates("30", "2", "20", "8"),
+    );
+    // x is stated relative to the surface origin, which starts at the strip
+    assert_eq!(xy(&panes, 1), (30, 2), "pre-condition");
+
+    let press = frame_corner(&panes, 1);
+    panes.move_pane_with_mouse(press);
+    let target = Position::new(press.line() as i32, press.column() as u16 - 28);
+    panes.move_pane_with_mouse(target);
+    panes.stop_moving_pane_with_mouse(target);
+
+    assert_eq!(
+        xy(&panes, 1),
+        (2, 2),
+        "the modal sits over the global pane's columns"
+    );
+}
+
+/// The write-back is what makes this work: the drag rewrites the overlay's *coordinates*, so the
+/// position it was dropped at is re-resolved on the next surface change rather than discarded.
+/// Without it the overlay re-centres the moment the terminal is resized.
+#[test]
+fn a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+
+    let press = frame_corner(&panes, 1);
+    let target = Position::new(press.line() as i32 + 2, press.column() as u16 + 4);
+    panes.move_pane_with_mouse(press);
+    panes.move_pane_with_mouse(target);
+    panes.stop_moving_pane_with_mouse(target);
+    let dropped_at = xy(&panes, 1);
+
+    *display_area.borrow_mut() = Size {
+        cols: 120,
+        rows: 40,
+    };
+    panes.reapply_coordinates();
+
+    assert_eq!(
+        xy(&panes, 1),
+        dropped_at,
+        "the dragged position survives the resize"
+    );
+    let resized = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
+    assert_eq!(
+        (resized.cols.as_usize(), resized.rows.as_usize()),
+        (72, 20),
+        "but the size is still a percentage of the surface - only the position became the user's"
+    );
+}
+
+/// `placement_of` is what an overlay travels on when it follows a client to another tab, so the
+/// dragged position has to be visible there too.
+#[test]
+fn the_dragged_position_is_reported_by_placement_of() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    let press = frame_corner(&panes, 1);
+    let target = Position::new(press.line() as i32 + 3, press.column() as u16 + 5);
+    panes.move_pane_with_mouse(press);
+    panes.move_pane_with_mouse(target);
+    panes.stop_moving_pane_with_mouse(target);
+    let (x, y) = xy(&panes, 1);
+
+    let placement = panes.placement_of(&PaneId::Terminal(1)).unwrap();
+    assert_eq!(placement.kind, OverlayKind::Modal, "still a modal");
+    let coordinates = placement.coordinates.unwrap();
+    assert_eq!(coordinates.x, Some(PercentOrFixed::Fixed(x)));
+    assert_eq!(coordinates.y, Some(PercentOrFixed::Fixed(y)));
+}
+
+/// A press that never left its cell is a click, and the caller turns it back into a focus.
+#[test]
+fn a_press_that_never_moved_reports_never_moved() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let before = xy(&panes, 1);
+
+    let press = frame_corner(&panes, 1);
+    panes.move_pane_with_mouse(press);
+    assert!(panes.stop_moving_pane_with_mouse(press));
+    assert_eq!(xy(&panes, 1), before, "and nothing moved");
+}
+
+/// The drag is the frame's. A press in the body is a press in a live terminal or plugin.
+#[test]
+fn a_press_inside_an_overlay_does_not_start_a_drag() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let geom = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
+    let inside = Position::new(geom.y as i32 + 3, geom.x as u16 + 10);
+
+    assert!(!panes.move_pane_with_mouse(inside));
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}
+
+/// A borderless overlay has no frame to grab, exactly as a borderless floating pane has none.
+#[test]
+fn a_borderless_overlay_has_no_frame_to_be_dragged_by() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        borderless_coordinates(true),
+    );
+    let press = frame_corner(&panes, 1);
+
+    assert!(!panes.move_pane_with_mouse(press));
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}
+
+/// A press outside every overlay is not the collection's, however far the drag then travels.
+#[test]
+fn a_press_that_is_not_on_an_overlay_is_not_ours() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        placed_coordinates("40", "10", "20", "5"),
+    );
+
+    assert!(!panes.move_pane_with_mouse(Position::new(0, 0)));
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}
+
+/// A popup can dismiss itself while its own frame is held down. A drag left pointing at a pane
+/// that is gone would swallow every mouse event until a release arrived to clear it.
+#[test]
+fn closing_an_overlay_mid_drag_releases_the_mouse() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+
+    let press = frame_corner(&panes, 1);
+    panes.move_pane_with_mouse(press);
+    assert!(panes.pane_is_being_moved_with_mouse(), "pre-condition");
+
+    panes.remove_pane(PaneId::Terminal(1));
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}

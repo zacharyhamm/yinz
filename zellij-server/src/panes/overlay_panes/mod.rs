@@ -28,13 +28,30 @@
 //!   is drawn over the whole session surface already. It is not reachable from here, and since
 //!   Phase 4 `Tab`'s fullscreen paths refuse an overlay outright rather than falling through to
 //!   the tiled collection, which used to fullscreen the pane *behind* the overlay.
-//! - **No `desired_pane_positions`.** A floating pane remembers where the user dragged it. An
-//!   overlay has no such history - it is re-resolved against the surface whenever the surface
-//!   changes, which is what `reapply_coordinates` is for.
-//! - **No `pane_being_moved_with_mouse`.** Overlays are not user-draggable.
+//! - **No `desired_pane_positions`.** A floating pane remembers where the user dragged it in a
+//!   second map beside the panes. An overlay has no such history *beside* itself: a mouse drag
+//!   rewrites the overlay's own stored `coordinates` (`move_pane_to_position`), so where the user
+//!   put it is expressed in the same terms as where it was opened, and `reapply_coordinates`
+//!   re-resolves a dragged overlay exactly as it re-resolves an untouched one. That is what keeps
+//!   the sentence above - geometry is a function of coordinates and the surface - true of a
+//!   draggable overlay.
+//! - **No resize.** An overlay is moved by the user, never resized by one: `Tab::resize` no-ops
+//!   for an overlay, the ctrl-drag branch of the mouse pipeline skips one, and there is no
+//!   `ResizeStrategy` API here. An overlay's *size* stays a function of its coordinates, which is
+//!   why a percentage-sized overlay still grows with the screen after being dragged.
 //!
-//! If one of these turns out to be needed, that is a signal that the concept is not as clean as
-//! assumed. Say so rather than adding it quietly.
+//! `pane_being_moved_with_mouse` used to be on this list, as "overlays are not user-draggable".
+//! It is here now because the user asked to be able to move a popup out of the way of what it is
+//! covering. Nothing else about the concept moved: the drag never changes focus (so a modal keeps
+//! the keyboard throughout) and it edits the coordinates rather than introducing a position
+//! remembered anywhere else.
+//!
+//! If one of the remaining absences turns out to be needed, that is a signal that the concept is
+//! not as clean as assumed. Say so rather than adding it quietly.
+//!
+//! Not to be confused with the nested-session **guest modal**
+//! (`crate::panes::nested_session_modal`), which shares the word and nothing else: it is a dialog
+//! drawn onto an existing terminal pane's cells rather than a pane in its own right.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -45,7 +62,7 @@ use zellij_utils::{
         FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, Style, Styling,
     },
     errors::prelude::*,
-    input::layout::RunPluginOrAlias,
+    input::layout::{PercentOrFixed, RunPluginOrAlias},
     input::options::PaneFrameStyle,
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
     position::Position,
@@ -58,7 +75,7 @@ use crate::{
     global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
-    panes::floating_panes::floating_pane_grid::half_size_middle_geom,
+    panes::floating_panes::floating_pane_grid::{geom_moved_within, half_size_middle_geom},
     panes::{geom_is_outside_viewport, ActivePanes, PaneId, PaneLookup},
     plugins::PluginInstruction,
     thread_bus::ThreadSenders,
@@ -86,6 +103,9 @@ pub struct OverlayPanes {
     /// being rendered - see `stack_layer_ids`.
     z_indices: Vec<PaneId>,
     active_panes: ActivePanes,
+    /// `(pane id, where the press started, where the pointer was last seen)`, while a frame drag
+    /// is in flight. Per-collection rather than per-client, as the floating layer's twin is.
+    pane_being_moved_with_mouse: Option<(PaneId, Position, Position)>,
     display_area: Rc<RefCell<Size>>,
     display_area_origin: Rc<RefCell<(usize, usize)>>,
     /// The tab's own viewport, needed only to answer whether an overlay owns cells outside it -
@@ -143,6 +163,7 @@ impl OverlayPanes {
             pane_frame_style,
             window_title: None,
             dimmed_clients: HashSet::new(),
+            pane_being_moved_with_mouse: None,
         }
     }
 
@@ -251,6 +272,12 @@ impl OverlayPanes {
 
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
         self.z_indices.retain(|p_id| *p_id != pane_id);
+        // an overlay can close while its own frame is held down - a popup that dismisses itself,
+        // or its process exiting. Leaving the drag pointing at a pane that is gone would swallow
+        // every mouse event until a release arrived to clear it.
+        if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
+            self.pane_being_moved_with_mouse = None;
+        }
         self.panes.remove(&pane_id).map(|overlay| overlay.pane)
     }
 
@@ -715,6 +742,125 @@ impl OverlayPanes {
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
+    }
+
+    // ---- being dragged with the mouse -------------------------------------------------------
+
+    /// Note that `pane_id` is being dragged, and where the pointer is now.
+    ///
+    /// The initial position is preserved across calls for the same pane: `stop_moving_pane_with_mouse`
+    /// compares it against the release position, which is how a press that never moved is told apart
+    /// from a drag and turned back into a plain focus click.
+    pub fn set_pane_being_moved_with_mouse(&mut self, pane_id: PaneId, last_position: Position) {
+        if let Some((last_pane_id, initial_position)) = self
+            .pane_being_moved_with_mouse
+            .map(|(pane_id, initial_position, _)| (pane_id, initial_position))
+        {
+            if last_pane_id == pane_id {
+                self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
+                return;
+            }
+        }
+        self.pane_being_moved_with_mouse = Some((pane_id, last_position, last_position));
+    }
+    pub fn pane_is_being_moved_with_mouse(&self) -> bool {
+        self.pane_being_moved_with_mouse.is_some()
+    }
+
+    /// Carry the dragged overlay to where the pointer is now, clamped inside the session surface.
+    ///
+    /// **The move is written back into the overlay's coordinates**, not only onto its geometry.
+    /// That is what makes a dragged overlay survive everything that re-resolves one - a terminal
+    /// resize, a global pane appearing, following a client to another tab - without this collection
+    /// needing a `desired_pane_positions` of its own: where the user put it is stated in the same
+    /// terms as where it was opened. `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as
+    /// `origin + n`, so the position round-trips exactly.
+    ///
+    /// `width`/`height` are deliberately left alone. Only the *position* becomes user-stated; a
+    /// percentage-sized overlay still grows with the screen after being dragged.
+    pub fn move_pane_to_position(&mut self, click_position: &Position) -> bool {
+        // true => changed position
+        let (surface, origin) = self.surface();
+        let Some((pane_id, _initial_position, previous_position)) =
+            self.pane_being_moved_with_mouse
+        else {
+            return false;
+        };
+        if click_position == &previous_position {
+            return false;
+        }
+        let move_x_by = click_position.column() as isize - previous_position.column() as isize;
+        let move_y_by = click_position.line() - previous_position.line();
+        let Some(overlay) = self.panes.get_mut(&pane_id) else {
+            return false;
+        };
+        let geom = geom_moved_within(
+            overlay.pane.position_and_size(),
+            surface,
+            move_x_by,
+            move_y_by,
+        );
+        overlay.pane.set_geom(geom);
+        overlay.pane.set_should_render(true);
+        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
+        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
+        self.set_pane_being_moved_with_mouse(pane_id, *click_position);
+        self.set_force_render();
+        true
+    }
+
+    /// Start or continue a frame drag at `position`; `true` => the event was ours.
+    ///
+    /// Unlike the floating twin there is no fullscreen check and no layer-visibility precondition:
+    /// an overlay is drawn for as long as it exists, so there is no state in which its frame is on
+    /// screen but not draggable. And the pane is resolved through this collection's own hit test,
+    /// which is what makes this safe where the floating path was not - `visible_pane_id_at` cannot
+    /// return a pane the overlay is covering.
+    pub fn move_pane_with_mouse(&mut self, position: Position) -> bool {
+        if self.pane_being_moved_with_mouse.is_some() {
+            return self.move_pane_to_position(&position);
+        }
+        let Some(pane_id) = self.visible_pane_id_at(&position) else {
+            return false;
+        };
+        let on_frame = self
+            .panes
+            .get(&pane_id)
+            .is_some_and(|overlay| overlay.pane.position_is_on_frame(&position));
+        if !on_frame {
+            // a borderless overlay has no frame to grab, exactly as a borderless floating pane
+            // has none
+            return false;
+        }
+        self.set_pane_being_moved_with_mouse(pane_id, position);
+        self.move_pane_to_position(&position);
+        self.set_force_render();
+        true
+    }
+
+    /// End the drag; `true` => the pointer never left the cell it was pressed on, so the caller
+    /// should treat the press as an ordinary focus click.
+    pub fn stop_moving_pane_with_mouse(&mut self, position: Position) -> bool {
+        let mut never_moved = false;
+        if let Some((pane_id, initial_position, last_position)) =
+            self.pane_being_moved_with_mouse.take()
+        {
+            if initial_position == position {
+                never_moved = true;
+            } else {
+                // put the state back so the final step actually lands: the release carries its own
+                // position, and it is the authoritative one. (The floating twin `take()`s first and
+                // then calls its mover, which returns early on the `None` it just created - so its
+                // last motion is the last move. Harmless there, because a release is preceded by a
+                // motion at the same cell, but not worth copying.)
+                self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
+                self.move_pane_to_position(&position);
+                self.pane_being_moved_with_mouse = None;
+            }
+            self.set_force_render();
+        }
+        self.pane_being_moved_with_mouse = None;
+        never_moved
     }
 
     /// The absolute geometries of the overlays owning cells outside the tab's own viewport - which,

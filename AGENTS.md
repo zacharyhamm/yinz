@@ -90,6 +90,28 @@ anything skipped locally gets checked there.
 The full test and integration-test suites bind local TCP and Unix sockets, so when you do run
 them, use sandbox escalation on the first attempt.
 
+### Reading a red run
+
+Neither suite is reliable enough for a single red run to be evidence. Before believing a failure:
+
+- **Run `integration-test` with `-j 4`.** At default parallelism on a many-core machine it
+  produces ~100 timeouts purely from contention. Even at `-j 4` a handful (`no_focus`,
+  `no_ui_fullscreen`) time out at 60s and pass alone.
+- **Known pre-existing failures**, confirmed against a stashed tree: `misc::quit_with_keybinding`
+  (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
+  `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
+  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`.
+- **The `zellij-server` lib suite is flaky under parallel load**, and the failing set changes
+  between runs of the same tree — drawn from
+  `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
+  `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins` (it
+  synchronizes a real wasm plugin load with a bare `sleep(500ms)`) and
+  `screen_tests::cli_actions::send_cli_scroll_up_action`. `global_panes_focus` is racy *on its
+  own*: run alone against one unchanged binary it both passes and fails, always with the same
+  two-row shift. So "run the named test alone" is not enough for it — run it several times and
+  compare the diff, not the pass/fail count. Adding tests to this suite changes the scheduling and
+  so changes which of these surface.
+
 ## Kitty graphics conformance
 
 The kitty graphics suite is written against the protocol specification
