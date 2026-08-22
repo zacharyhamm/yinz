@@ -32,6 +32,28 @@ load_plugins clear-defaults=true {
 }
 "#;
 
+/// The modal as the shipped keybinding actually opens it: an overlay, and a modal one - the
+/// collection whose frame the mouse can drag.
+const NEW_AGENT_OVERLAY_CONFIG: &str = r#"mouse_mode true
+keybinds {
+  normal {
+    bind "Ctrl b" {
+      LaunchOrFocusPlugin "hocus-new-agent" {
+        floating true
+        overlay true
+        modal true
+        move_to_focused_tab true
+      }
+    }
+  }
+}
+plugins {
+  hocus-new-agent location="zellij:hocus-new-agent"
+}
+load_plugins clear-defaults=true {
+}
+"#;
+
 const SHELL_ONLY: &str = r#"layout {
     pane
 }
@@ -40,6 +62,9 @@ const SHELL_ONLY: &str = r#"layout {
 /// SGR mouse reports, 1-based, as `floating_pane_overlay.rs` sends them.
 fn sgr_press(column: usize, line: usize) -> Vec<u8> {
     format!("\u{1b}[<0;{column};{line}M").into_bytes()
+}
+fn sgr_left_motion(column: usize, line: usize) -> Vec<u8> {
+    format!("\u{1b}[<32;{column};{line}M").into_bytes()
 }
 fn sgr_release(column: usize, line: usize) -> Vec<u8> {
     format!("\u{1b}[<0;{column};{line}m").into_bytes()
@@ -141,6 +166,55 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
     assert!(
         snapshot.contains("New agent"),
         "the modal's title is missing, so the frame scrolled:\n{}",
+        snapshot.text
+    );
+
+    zellij.quit();
+}
+
+/// The modal is an overlay, so it drags by its frame like any other - but it is the one overlay
+/// that re-asserts its own placement on every `TabUpdate`, and a drag *is* a `TabUpdate`: moving
+/// it reported session state, the plugin answered by asking for `x: None, y: 20%` again, and the
+/// modal snapped back to where it started. It read as a popup that could not be moved at all.
+#[test]
+fn the_new_agent_modal_can_be_dragged_by_its_frame() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NEW_AGENT_OVERLAY_CONFIG)
+        .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
+        .start();
+    let _shell = zellij.expect_pty_spawn();
+
+    zellij.send_stdin(&keys::ctrl('b'));
+    let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
+        snapshot.contains("Use worktree") && snapshot.contains("[x]")
+    });
+    let (column, row) = position_of(&snapshot, "New agent");
+
+    // its top frame is the row above its title; carry it left and up
+    let drag_to_column = column - 20;
+    let drag_to_row = row - 1;
+    zellij.send_stdin(&sgr_press(column + 1, row));
+    zellij.send_stdin(&sgr_left_motion(drag_to_column + 1, drag_to_row));
+    zellij.send_stdin(&sgr_release(drag_to_column + 1, drag_to_row));
+
+    let snapshot = zellij.wait_until("the modal is where it was dropped", |snapshot| {
+        snapshot.contains("New agent")
+            && position_of(snapshot, "New agent") == (drag_to_column, drag_to_row)
+    });
+    assert!(
+        snapshot.contains("Use worktree"),
+        "the whole dialog moved with the frame, not just its title:\n{}",
+        snapshot.text
+    );
+
+    // and it stays there: the plugin gets its `TabUpdate` for the drag either way, and the
+    // position it would ask for is no longer the one that wins
+    zellij.send_stdin(&keys::ctrl('b'));
+    let snapshot = zellij.snapshot();
+    assert_eq!(
+        position_of(&snapshot, "New agent"),
+        (drag_to_column, drag_to_row),
+        "the modal went back to where it was opened:\n{}",
         snapshot.text
     );
 

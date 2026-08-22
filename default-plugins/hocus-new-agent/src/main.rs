@@ -56,6 +56,12 @@ struct State {
     duplicate_pane_id: Option<u32>,
     path_edited: bool,
     error: Option<String>,
+    /// The `(width, height)` `resize` last asked the host for, so it can decline to ask again.
+    ///
+    /// `TabUpdate` arrives for reasons that have nothing to do with this modal's size - including
+    /// every step of a mouse drag of the modal itself - and each coordinate change re-resolves the
+    /// pane. Sending only when the size actually changed keeps the drag quiet.
+    requested_size: Option<(String, String)>,
 }
 
 impl Default for State {
@@ -119,6 +125,7 @@ impl Default for State {
             duplicate_pane_id: None,
             path_edited: false,
             error: None,
+            requested_size: None,
         }
     }
 }
@@ -276,18 +283,28 @@ fn modal_height(dialog: &Dialog) -> String {
 }
 
 impl State {
-    fn resize(&self, display_columns: Option<usize>) {
+    fn resize(&mut self, display_columns: Option<usize>) {
+        let size = (modal_width(display_columns), modal_height(&self.dialog));
+        if self.requested_size.as_ref() == Some(&size) {
+            // nothing about the modal's size changed, so there is nothing to ask for. A
+            // `TabUpdate` is not evidence that this pane wants to be a different shape.
+            return;
+        }
+        let (width, height) = size.clone();
         if let Some(coordinates) = FloatingPaneCoordinates::new(
             None,
             Some("20%".into()),
-            Some(modal_width(display_columns)),
-            Some(modal_height(&self.dialog)),
+            Some(width),
+            Some(height),
             None,
             None,
         ) {
             // Already an overlay by the time this runs - the keybinding opens it as a modal. This
-            // resizes it where it is; `OverlayPanes` keeps the kind.
+            // resizes it where it is; `OverlayPanes` keeps the kind, and keeps the position too
+            // once the user has dragged the modal - which is what makes the `None` x and the 20% y
+            // an *initial* placement rather than one re-imposed for the life of the pane.
             change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
+            self.requested_size = Some(size);
         }
     }
 }

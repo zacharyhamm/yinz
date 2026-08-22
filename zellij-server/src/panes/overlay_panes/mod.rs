@@ -46,6 +46,12 @@
 //! the keyboard throughout) and it edits the coordinates rather than introducing a position
 //! remembered anywhere else.
 //!
+//! What the drag *does* add is a claim on half of those coordinates. A dragged overlay's position
+//! is the user's (`position_is_user_stated`), so `change_pane_coordinates` takes only a plugin's
+//! size from then on. Without that, an overlay whose plugin re-places itself on every `TabUpdate`
+//! is undraggable and looks it: the drag reports session state, session state is a `TabUpdate`,
+//! and the plugin answers each step of the drag by putting the overlay back.
+//!
 //! If one of the remaining absences turns out to be needed, that is a signal that the concept is
 //! not as clean as assumed. Say so rather than adding it quietly.
 //!
@@ -89,6 +95,14 @@ pub struct OverlayPane {
     pane: Box<dyn Pane>,
     kind: OverlayKind,
     coordinates: FloatingPaneCoordinates,
+    /// The user dragged this overlay, so its `x`/`y` are theirs and a plugin re-asserting its
+    /// placement no longer moves it (`change_pane_coordinates`).
+    ///
+    /// Deliberately not in `OverlayPlacement`, which is what travels when an overlay follows a
+    /// client to another tab: that struct crosses the protobuf boundary, and the *coordinates* the
+    /// drag wrote travel in it already. Only the "the user said so" bit is in-memory, and it is
+    /// worth a proto change on the day a plugin re-places an overlay it has followed across.
+    position_is_user_stated: bool,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -244,6 +258,7 @@ impl OverlayPanes {
                 pane,
                 kind,
                 coordinates,
+                position_is_user_stated: false,
             },
         );
         self.raise_within_class(pane_id);
@@ -312,6 +327,10 @@ impl OverlayPanes {
                 pane: with_pane,
                 kind: removed.kind,
                 coordinates: removed.coordinates,
+                // the slot keeps where the user put it, exactly as it keeps its kind and its
+                // coordinates - a pane swapped into a dragged overlay is the pane the user
+                // dragged
+                position_is_user_stated: removed.position_is_user_stated,
             },
         );
         if let Some(index) = self.z_indices.iter().position(|p_id| p_id == &pane_id) {
@@ -668,11 +687,19 @@ impl OverlayPanes {
 
     // ---- geometry -------------------------------------------------------------------------
 
-    /// Move or resize an overlay, keeping it an overlay.
+    /// Move or resize an overlay, keeping it an overlay - and keeping it where the user put it.
     ///
     /// `hocus-new-agent` re-asserts its placement on every resize, so overlay-ness has to survive a
     /// coordinate change. In `FloatingPanes` that was an explicit re-insert into a side map that
     /// callers could and did skip; here the stored `kind` is simply left alone.
+    ///
+    /// **A position the user dragged outranks a position a plugin asks for.** Once
+    /// `move_pane_to_position` has run, `x`/`y` here are dropped and the stored ones kept, so a
+    /// plugin re-asserting its placement resizes the overlay *where it is* rather than snapping it
+    /// back. This is the difference between a draggable overlay and one that appears immovable: a
+    /// drag reports session state, session state is a `TabUpdate`, and a plugin that re-places
+    /// itself on `TabUpdate` would otherwise undo every step of its own drag. `width`/`height`
+    /// still apply either way - the user moved the overlay, they did not take over its size.
     pub fn change_pane_coordinates(
         &mut self,
         pane_id: PaneId,
@@ -692,7 +719,13 @@ impl OverlayPanes {
         // the new coordinates *replace* the stored ones rather than merging into them, so an axis
         // this call does not name is resolved from the surface default rather than from whatever
         // a previous call happened to leave behind - which is also what the next
-        // `reapply_coordinates` would do with it anyway
+        // `reapply_coordinates` would do with it anyway. The one exception is a position the user
+        // dragged: that one is carried over, because nothing else in the system remembers it.
+        let mut new_coordinates = new_coordinates;
+        if overlay.position_is_user_stated {
+            new_coordinates.x = overlay.coordinates.x;
+            new_coordinates.y = overlay.coordinates.y;
+        }
         let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
         geom.adjust_coordinates(new_coordinates.clone(), surface, origin);
         overlay.pane.set_geom(geom);
@@ -804,6 +837,7 @@ impl OverlayPanes {
         overlay.pane.set_should_render(true);
         overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
         overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
+        overlay.position_is_user_stated = true;
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
         true
