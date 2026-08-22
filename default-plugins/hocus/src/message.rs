@@ -190,6 +190,13 @@ pub enum Status {
     AwaitingCommand,
     /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
     AwaitingSearch,
+    /// The head of `pending` is a Linear tool waiting on `WebRequestResult`.
+    ///
+    /// Its own state rather than sharing `AwaitingSearch`: both finishers guard
+    /// on the status *and* the head's id, so a shared one would leave two
+    /// claimants for the same reply and let call order decide — exactly the
+    /// coupling `on_response`'s "was this mine?" contract exists to prevent.
+    AwaitingLinear,
 }
 
 /// A prompt the plugin re-asks itself on an interval. Firing one is exactly

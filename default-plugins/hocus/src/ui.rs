@@ -1429,6 +1429,7 @@ fn help_line(state: &State) -> &'static str {
         Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Esc> abort",
         Status::AwaitingCommand => "running…  <Esc> abort  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
+        Status::AwaitingLinear => "reading linear…  <Esc> abort  <↑↓> scroll",
         Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
         Status::Idle => "<Ctrl l> new chat  <Ctrl r> focus agents  <Esc> hide",

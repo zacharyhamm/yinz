@@ -781,6 +781,54 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "linear_search",
+            "Full-text search Linear issues; returns one line each, not full issues.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer" },
+                },
+                "required": ["query"],
+            }),
+        ),
+        tool(
+            "linear_issues",
+            "List Linear issues; defaults to your own open ones. assignee is \"me\" or a display name, team a key like ENG, updated_since an ISO date.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "assignee": { "type": "string" },
+                    "team": { "type": "string" },
+                    // Closed rather than a free string: these are Linear's
+                    // workflow *types*, and a model left to itself sends a
+                    // state name like "In Progress", which matches nothing and
+                    // says nothing about why. "open" is ours: not done, not
+                    // cancelled.
+                    "state": {
+                        "type": "string",
+                        "enum": ["triage", "backlog", "unstarted", "started", "completed", "canceled", "open"],
+                    },
+                    "project": { "type": "string" },
+                    "label": { "type": "string" },
+                    "updated_since": { "type": "string" },
+                    "limit": { "type": "integer" },
+                },
+            }),
+        ),
+        tool(
+            "linear_issue",
+            "Read one Linear issue in full by identifier (ENG-123) or UUID: description, state, labels and comments.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "identifier": { "type": "string" },
+                    "comments": { "type": "boolean" },
+                },
+                "required": ["identifier"],
+            }),
+        ),
+        tool(
             "schedule",
             "Repeat a prompt until cancelled; unschedule it when done.",
             json!({
@@ -1394,6 +1442,18 @@ pub struct Args {
     pub commit: Option<String>,
     pub patch: bool,
     pub endpoint: Option<String>,
+    // The Linear tools. `query` above is `linear_search`'s term and `project`
+    // the todo tools', reused here rather than shadowed.
+    pub identifier: Option<String>,
+    pub assignee: Option<String>,
+    pub team: Option<String>,
+    pub state: Option<String>,
+    pub label: Option<String>,
+    pub updated_since: Option<String>,
+    pub limit: Option<usize>,
+    /// `Option` rather than a bare `bool` because it defaults *true* — the
+    /// plain flags in this struct all default false.
+    pub comments: Option<bool>,
 }
 
 impl Args {
@@ -1624,6 +1684,11 @@ impl Args {
         }
     }
 }
+
+/// The Linear tools. Intercepted in `run_head` rather than dispatched here, for
+/// the same two reasons `web_search` is: the API key comes from the resolved
+/// config, and the answer arrives later as a `WebRequestResult`.
+pub const LINEAR_TOOLS: [&str; 3] = ["linear_search", "linear_issues", "linear_issue"];
 
 /// The tools backed by the `dobbs` CLI. Intercepted in `run_head` rather than
 /// dispatched here, because the binary to run comes from the resolved config.
