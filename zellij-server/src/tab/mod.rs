@@ -5928,12 +5928,17 @@ impl Tab {
         if !self.lower_layer_may_take_focus(client_id) {
             return;
         }
-        self.release_overlay_focus_to_lower_layer(client_id);
+        let before = self.tiled_panes.get_active_pane_id(client_id);
         if self.tiled_panes.fullscreen_is_active() {
             self.switch_next_pane_fullscreen(client_id);
-            return;
+        } else {
+            self.tiled_panes.focus_next_pane(client_id);
         }
-        self.tiled_panes.focus_next_pane(client_id);
+        // release only after a move that happened: a cycle that lands where it started has
+        // changed nothing (see release_overlay_focus_to_lower_layer)
+        if self.tiled_panes.get_active_pane_id(client_id) != before {
+            self.release_overlay_focus_to_lower_layer(client_id);
+        }
     }
     pub fn focus_previous_pane(&mut self, client_id: ClientId) {
         if !self.has_selectable_panes() {
@@ -5942,12 +5947,17 @@ impl Tab {
         if !self.lower_layer_may_take_focus(client_id) {
             return;
         }
-        self.release_overlay_focus_to_lower_layer(client_id);
+        let before = self.tiled_panes.get_active_pane_id(client_id);
         if self.tiled_panes.fullscreen_is_active() {
             self.switch_prev_pane_fullscreen(client_id);
-            return;
+        } else {
+            self.tiled_panes.focus_previous_pane(client_id);
         }
-        self.tiled_panes.focus_previous_pane(client_id);
+        // release only after a move that happened: a cycle that lands where it started has
+        // changed nothing (see release_overlay_focus_to_lower_layer)
+        if self.tiled_panes.get_active_pane_id(client_id) != before {
+            self.release_overlay_focus_to_lower_layer(client_id);
+        }
     }
     pub fn focus_last_pane(&mut self, client_id: ClientId) {
         if !self.has_selectable_panes() {
@@ -5956,26 +5966,44 @@ impl Tab {
         if !self.lower_layer_may_take_focus(client_id) {
             return;
         }
-        self.release_overlay_focus_to_lower_layer(client_id);
+        // release only after a move that happened: with no last pane recorded nothing moves,
+        // and dismissing a popup on it would let a dead keypress close it
         if self.floating_panes.panes_are_visible() {
+            let before = self.floating_panes.active_pane_id(client_id);
             self.floating_panes.focus_last_pane(client_id);
-            return;
-        } else if self.tiled_panes.fullscreen_is_active() {
-            self.switch_last_pane_fullscreen(client_id);
-            return;
+            if self.floating_panes.active_pane_id(client_id) != before {
+                self.release_overlay_focus_to_lower_layer(client_id);
+            }
+        } else {
+            let before = self.tiled_panes.get_active_pane_id(client_id);
+            if self.tiled_panes.fullscreen_is_active() {
+                self.switch_last_pane_fullscreen(client_id);
+            } else {
+                self.tiled_panes.focus_last_pane(client_id);
+            }
+            if self.tiled_panes.get_active_pane_id(client_id) != before {
+                self.release_overlay_focus_to_lower_layer(client_id);
+            }
         }
-        self.tiled_panes.focus_last_pane(client_id);
     }
     pub fn focus_pane_on_edge(&mut self, direction: Direction, client_id: ClientId) {
         if !self.lower_layer_may_take_focus(client_id) {
             return;
         }
+        // release only after a move that happened: an edge with nothing on it moves nothing,
+        // and dismissing a popup on it would let a dead keypress close it
         if self.floating_panes.panes_are_visible() {
+            let before = self.floating_panes.active_pane_id(client_id);
             self.floating_panes.focus_pane_on_edge(direction, client_id);
-            self.release_overlay_focus_to_lower_layer(client_id);
+            if self.floating_panes.active_pane_id(client_id) != before {
+                self.release_overlay_focus_to_lower_layer(client_id);
+            }
         } else if self.has_selectable_panes() && !self.tiled_panes.fullscreen_is_active() {
+            let before = self.tiled_panes.get_active_pane_id(client_id);
             self.tiled_panes.focus_pane_on_edge(direction, client_id);
-            self.release_overlay_focus_to_lower_layer(client_id);
+            if self.tiled_panes.get_active_pane_id(client_id) != before {
+                self.release_overlay_focus_to_lower_layer(client_id);
+            }
         }
     }
     pub fn focus_pane_adjacent_to(
@@ -6016,13 +6044,11 @@ impl Tab {
                     &Direction::Left,
                 )
                 .with_context(err_context)
+        } else if !self.has_selectable_panes() {
+            Ok(false)
+        } else if self.tiled_panes.fullscreen_is_active() {
+            Ok(self.focus_pane_left_fullscreen(client_id))
         } else {
-            if !self.has_selectable_panes() {
-                return Ok(false);
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return Ok(self.focus_pane_left_fullscreen(client_id));
-            }
             Ok(self.tiled_panes.move_focus_left(client_id))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
@@ -6047,18 +6073,15 @@ impl Tab {
                     &Direction::Down,
                 )
                 .with_context(err_context)
+        } else if !self.has_selectable_panes() {
+            Ok(false)
+        } else if self.tiled_panes.fullscreen_is_active() {
+            Ok(self.focus_pane_down_fullscreen(client_id))
+        } else if self.stacked_pane_list_is_active()
+            && self.move_focus_within_stack_list(client_id, true)
+        {
+            Ok(true)
         } else {
-            if !self.has_selectable_panes() {
-                return Ok(false);
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return Ok(self.focus_pane_down_fullscreen(client_id));
-            }
-            if self.stacked_pane_list_is_active()
-                && self.move_focus_within_stack_list(client_id, true)
-            {
-                return Ok(true);
-            }
             Ok(self.tiled_panes.move_focus_down(client_id))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
@@ -6083,18 +6106,15 @@ impl Tab {
                     &Direction::Up,
                 )
                 .with_context(err_context)
+        } else if !self.has_selectable_panes() {
+            Ok(false)
+        } else if self.tiled_panes.fullscreen_is_active() {
+            Ok(self.focus_pane_up_fullscreen(client_id))
+        } else if self.stacked_pane_list_is_active()
+            && self.move_focus_within_stack_list(client_id, false)
+        {
+            Ok(true)
         } else {
-            if !self.has_selectable_panes() {
-                return Ok(false);
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return Ok(self.focus_pane_up_fullscreen(client_id));
-            }
-            if self.stacked_pane_list_is_active()
-                && self.move_focus_within_stack_list(client_id, false)
-            {
-                return Ok(true);
-            }
             Ok(self.tiled_panes.move_focus_up(client_id))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
@@ -6120,13 +6140,11 @@ impl Tab {
                     &Direction::Right,
                 )
                 .with_context(err_context)
+        } else if !self.has_selectable_panes() {
+            Ok(false)
+        } else if self.tiled_panes.fullscreen_is_active() {
+            Ok(self.focus_pane_right_fullscreen(client_id))
         } else {
-            if !self.has_selectable_panes() {
-                return Ok(false);
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return Ok(self.focus_pane_right_fullscreen(client_id));
-            }
             Ok(self.tiled_panes.move_focus_right(client_id))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
