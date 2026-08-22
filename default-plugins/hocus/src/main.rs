@@ -4,6 +4,7 @@ mod api;
 mod archive;
 mod events;
 mod history;
+mod linear;
 mod log;
 mod message;
 mod present;
