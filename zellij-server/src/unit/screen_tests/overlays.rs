@@ -3049,6 +3049,98 @@ fn focusing_a_pane_by_id_under_a_dismissible_overlay_takes_the_keyboard_from_it(
     );
 }
 
+/// A focus move made against a modal must not escalate: the keypress is a no-op, not a hop to
+/// the previous tab. `move_focus_left` answers `Ok(false)` while a modal holds the keyboard,
+/// and `move_focus_left_or_previous_tab` used to read that as "at the edge" and switch tabs.
+#[test]
+fn a_focus_move_at_the_edge_under_a_modal_does_not_switch_tabs() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    open_overlay_of_kind(&mut screen, 3, "MODAL", OverlayKind::Modal);
+    assert_eq!(screen.get_active_tab(1).expect("TEST").position, 1);
+
+    screen.move_focus_left_or_previous_tab(1).expect("TEST");
+
+    assert_eq!(
+        screen.get_active_tab(1).expect("TEST").position,
+        1,
+        "the modal owns the keyboard, so the keypress is a no-op rather than a tab switch"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "and the modal still has the keyboard"
+    );
+}
+
+/// The same move in a single-tab session used to take the other escalation: with no previous tab
+/// to switch to, the focus was bubbled out to the host session while the modal was still up.
+#[test]
+fn a_focus_move_at_the_edge_under_a_modal_does_not_bubble_to_the_host() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    screen.move_focus_left_or_previous_tab(1).expect("TEST");
+
+    while let Ok((instruction, _)) = server_receiver.try_recv() {
+        assert!(
+            !matches!(
+                instruction,
+                ServerInstruction::EmitNestedSessionFrameToClient(..)
+            ),
+            "nothing was handed to the host session"
+        );
+    }
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal still has the keyboard"
+    );
+}
+
+/// The plain directional move takes the same rule: under a modal it neither enters a global pane
+/// sitting on that edge nor bubbles the focus out to the host session.
+#[test]
+fn a_directional_focus_move_under_a_modal_neither_enters_a_global_pane_nor_bubbles() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_left_global_pane(&mut screen, 10);
+    open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    screen
+        .move_focus_in_direction_or_escalate(Direction::Left, 1)
+        .expect("TEST");
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        None,
+        "the global pane on the left edge was not entered"
+    );
+    while let Ok((instruction, _)) = server_receiver.try_recv() {
+        assert!(
+            !matches!(
+                instruction,
+                ServerInstruction::EmitNestedSessionFrameToClient(..)
+            ),
+            "nothing was handed to the host session"
+        );
+    }
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal still has the keyboard"
+    );
+}
+
 /// Switching panes while fullscreen is active is a focus move like any other, so a dismissible
 /// overlay above it has to let go. The fullscreen branch used to return before the release.
 #[test]
@@ -3222,5 +3314,43 @@ fn focus_last_pane_with_no_previous_pane_leaves_a_dismissible_overlay_holding_th
         tab.get_active_pane_id(1),
         Some(PaneId::Terminal(2)),
         "with nowhere to go back to, the popup still has the keyboard"
+    );
+}
+
+/// A nested guest handing focus back with a direction while a modal is up is a no-op, not a
+/// hand-off to the host session. A pin rather than a regression test: `clients_with_pane_focused`
+/// already answers with no clients while a modal holds the keyboard, and the handler itself now
+/// refuses the hand-off too - this is the first coverage of the FocusHost direction path at all.
+#[test]
+fn a_guest_hand_back_under_a_modal_does_not_bubble_to_the_host() {
+    use zellij_utils::nested_session::NestedSessionMessage;
+
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    screen.handle_nested_session_message_from_pane(
+        PaneId::Terminal(1),
+        NestedSessionMessage::FocusHost {
+            direction: Some(Direction::Left),
+        },
+    );
+
+    while let Ok((instruction, _)) = server_receiver.try_recv() {
+        assert!(
+            !matches!(
+                instruction,
+                ServerInstruction::EmitNestedSessionFrameToClient(..)
+            ),
+            "nothing was handed to the host session"
+        );
+    }
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal still has the keyboard"
     );
 }
