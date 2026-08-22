@@ -6,6 +6,7 @@ use std::{
 use hocus_proto::location::Location;
 use hocus_proto::{
     agents::{self, AgentPane},
+    launch,
     projects::{self, Registry},
     store::{self, Backend},
     wire::{self, PollReply},
@@ -18,6 +19,7 @@ use zellij_tile::ui_components::forms::{
 const PROJECT: &str = "project";
 const AGENT: &str = "agent";
 const MODEL: &str = "model";
+const PROMPT: &str = "prompt";
 const CREATE_BRANCH: &str = "create_branch";
 const BASE: &str = "base";
 const BRANCH: &str = "branch";
@@ -67,14 +69,28 @@ impl Default for State {
             // empty is what keeps `Default` free of host calls, which is what
             // lets the tests construct a `State`.
             .select(PROJECT, "Project", Select::new([CURRENT_DIRECTORY]))
-            .select(AGENT, "Agent", Select::new(["Codex", "Claude", "Cursor"]))
+            // Built from the shared list rather than written out, so the agents
+            // this offers and the ones `agent_spawn` advertises stay the same set.
+            .select(
+                AGENT,
+                "Agent",
+                Select::new(launch::OFFERED.iter().copied().map(capitalized)),
+            )
             .field(MODEL, "Model (optional)", TextInput::empty())
+            // What the agent is started with. The same argument `agent_spawn`
+            // takes, so asking hocus for an agent and filling this in are the
+            // same request said two ways.
+            .field(PROMPT, "Prompt (optional)", TextInput::empty())
             .checkbox(
                 CREATE_BRANCH,
                 "Create and switch branch",
                 Checkbox::new(true),
             )
-            .field(BASE, "Base", TextInput::new("main".to_owned()))
+            .field(
+                BASE,
+                "Base",
+                TextInput::new(launch::DEFAULT_BASE.to_owned()),
+            )
             .field(BRANCH, "Branch", TextInput::empty())
             .checkbox(WORKTREE, "Use worktree", Checkbox::new(true))
             .field(
@@ -83,7 +99,7 @@ impl Default for State {
                 // primary checkout, not to the pane's cwd — which differs whenever
                 // the agent asking sits in a worktree already.
                 "Worktree path (from repo root)",
-                TextInput::new(".worktrees/".to_owned()),
+                TextInput::new(launch::WORKTREE_PREFIX.to_owned()),
             )
             .button("create", Button::new("Create agent"))
             // Half a form filled in and an Enter pressed out of habit used to
@@ -382,11 +398,7 @@ fn duplicate_command(
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
     Some(CommandToRun {
-        path: if kind == "cursor" {
-            "cursor-agent".into()
-        } else {
-            kind.into()
-        },
+        path: launch::binary_for(kind).into(),
         // `/host` is translated to the plugin's launch-time caller CWD, without
         // reinterpreting a real `/tmp`, `/host`, `/data` or `/cache` path.
         cwd: Some("/host".into()),
@@ -433,8 +445,20 @@ impl State {
                 .field_by_id_mut(PATH)
                 .and_then(|field| field.input_mut())
             {
-                input.set_text(format!(".worktrees/{branch}"));
+                input.set_text(launch::worktree_path_for(&branch));
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn set_text(&mut self, id: &str, text: &str) {
+        if let Some(input) = self
+            .dialog
+            .form_mut()
+            .field_by_id_mut(id)
+            .and_then(|field| field.input_mut())
+        {
+            input.set_text(text.to_owned());
         }
     }
 
@@ -445,15 +469,14 @@ impl State {
     }
 
     fn submit(&mut self) -> bool {
-        let (command, checkout) = match request(self.dialog.form()) {
-            Ok(request) => request,
-            Err(error) => {
-                self.error = Some(error);
-                return true;
-            },
-        };
+        // `request` for the one check that is the modal's own; `launch::open` plans
+        // it again and does the work, which is the same call `agent_spawn` makes.
+        if let Err(error) = request(self.dialog.form()) {
+            self.error = Some(error);
+            return true;
+        }
         let source = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
-        match open_command_pane_in_git_checkout_near_plugin(command, source, checkout) {
+        match launch::open(&spec(self.dialog.form()), source) {
             Ok(pane_id) => {
                 hand_over_focus(pane_id);
                 false
@@ -488,50 +511,61 @@ fn hand_over_focus(pane_id: PaneId) {
     close_self();
 }
 
+/// What the form is asking for, in the terms hocus asks for the same thing.
+///
+/// Reading only — every default and every rule about what pairs with what lives in
+/// `launch`, which is also what `agent_spawn` calls. A blank field is left blank
+/// here and defaulted there, so a field the user cleared and a key the model omitted
+/// come out the same.
+fn spec(form: &Form) -> launch::Spec {
+    launch::Spec {
+        // The select's labels are the shared kinds, capitalised; `launch` lowercases.
+        kind: Some(form.text(AGENT).to_owned()),
+        command: None,
+        args: Vec::new(),
+        model: Some(form.text(MODEL).to_owned()),
+        prompt: Some(form.text(PROMPT).to_owned()),
+        // No branch is how `launch` is told to leave the repository alone, which is
+        // exactly what an unchecked box means.
+        branch: form
+            .checked(CREATE_BRANCH)
+            .then(|| form.text(BRANCH).to_owned()),
+        base: Some(form.text(BASE).to_owned()),
+        // Only read while a branch is being created: the checkbox stays checked
+        // underneath an unchecked `create_branch`, and reporting it there would ask
+        // `launch` for a worktree with nothing to put in it.
+        worktree: form.checked(CREATE_BRANCH).then(|| form.checked(WORKTREE)),
+        worktree_path: Some(form.text(PATH).to_owned()),
+    }
+}
+
+/// The form as the pair Zellij wants. Kept as its own function because the tests
+/// below check the translation, and because it is the one place the modal could
+/// still say something `launch` cannot.
 fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
-    let executable = match form.text(AGENT) {
-        "Codex" => "codex",
-        "Claude" => "claude",
-        "Cursor" => "cursor-agent",
-        _ => return Err("choose an agent".to_owned()),
-    };
-    let model = form.text(MODEL).trim();
-    let args = if model.is_empty() {
-        vec![]
-    } else {
-        vec!["--model".to_owned(), model.to_owned()]
-    };
-    let command = CommandToRun {
-        path: executable.into(),
-        args,
-        ..Default::default()
-    };
-    let checkout = if !form.checked(CREATE_BRANCH) {
-        GitCheckout::Current
-    } else {
-        let branch = form.text(BRANCH).trim();
-        let base = form.text(BASE).trim();
-        if branch.is_empty() || base.is_empty() {
+    // `launch` defaults an omitted base and an omitted worktree path, because a tool
+    // call that leaves a key out means "the usual one". A field the user cleared by
+    // hand means something else — they are looking straight at it — so the modal
+    // refuses rather than filling it back in behind them. That difference is only
+    // knowable here, which is why these three checks did not move.
+    if form.checked(CREATE_BRANCH) {
+        if form.text(BRANCH).trim().is_empty() || form.text(BASE).trim().is_empty() {
             return Err("branch and base are required".to_owned());
         }
-        if form.checked(WORKTREE) {
-            let path = form.text(PATH).trim();
-            if path.is_empty() {
-                return Err("worktree path is required".to_owned());
-            }
-            GitCheckout::NewWorktree {
-                branch: branch.to_owned(),
-                base: base.to_owned(),
-                path: path.into(),
-            }
-        } else {
-            GitCheckout::NewBranch {
-                branch: branch.to_owned(),
-                base: base.to_owned(),
-            }
+        if form.checked(WORKTREE) && form.text(PATH).trim().is_empty() {
+            return Err("worktree path is required".to_owned());
         }
-    };
-    Ok((command, checkout))
+    }
+    launch::plan(&spec(form))
+}
+
+/// A shared kind as the select shows it. Presentation, so it stays here.
+fn capitalized(kind: &str) -> String {
+    let mut chars = kind.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -569,8 +603,8 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), "16");
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 16);
+        assert_eq!(modal_height(&state.dialog), "17");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 17);
     }
 
     #[test]
@@ -590,6 +624,58 @@ mod tests {
         assert!(
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
             if branch == "topic" && base == "main" && path == PathBuf::from(".worktrees/topic"))
+        );
+    }
+
+    /// The point of the shared module: the modal's form and hocus's `agent_spawn`
+    /// arguments are two spellings of one request, and must resolve alike.
+    #[test]
+    fn the_form_and_a_bare_spec_ask_for_the_same_thing() {
+        let mut state = State::default();
+        state.set_text(BRANCH, "topic");
+        state.changed(BRANCH);
+        state.set_text(MODEL, "opus");
+        state.set_text(PROMPT, "fix the parser");
+        let (from_form, checkout) = request(state.dialog.form()).unwrap();
+        let (from_spec, spec_checkout) = launch::plan(&launch::Spec {
+            kind: Some("codex".to_owned()),
+            model: Some("opus".to_owned()),
+            prompt: Some("fix the parser".to_owned()),
+            branch: Some("topic".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(from_form.path, from_spec.path);
+        assert_eq!(from_form.args, from_spec.args);
+        assert_eq!(checkout, spec_checkout);
+    }
+
+    #[test]
+    fn the_prompt_is_handed_to_the_agent_as_it_starts() {
+        let mut state = State::default();
+        state.set_checked(CREATE_BRANCH, false);
+        state.set_text(PROMPT, "fix the parser");
+        let (command, _) = request(state.dialog.form()).unwrap();
+        assert_eq!(command.args, ["fix the parser"]);
+    }
+
+    /// A field the user cleared is not a field they left alone: `launch` would
+    /// default both of these, and the modal deliberately will not.
+    #[test]
+    fn a_field_emptied_by_hand_is_refused_rather_than_defaulted() {
+        let mut state = State::default();
+        state.set_text(BRANCH, "topic");
+        state.changed(BRANCH);
+        state.set_text(BASE, "");
+        assert_eq!(
+            request(state.dialog.form()).unwrap_err(),
+            "branch and base are required"
+        );
+        state.set_text(BASE, "main");
+        state.set_text(PATH, "");
+        assert_eq!(
+            request(state.dialog.form()).unwrap_err(),
+            "worktree path is required"
         );
     }
 

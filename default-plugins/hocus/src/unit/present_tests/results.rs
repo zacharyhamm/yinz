@@ -29,6 +29,31 @@ fn a_spawn_without_a_registration_still_reads() {
     );
 }
 
+/// The git route reports where it put the agent. That is the part the user cannot
+/// see from the pane id alone, and the part they will need to `cd` to later.
+#[test]
+fn a_spawn_that_cut_a_worktree_says_which_branch_and_where() {
+    let raw = r#"{"opened":true,"pane_id":9,"is_plugin":false,
+        "branch":"fix-parser","cwd":"/work/hocus/.worktrees/fix-parser"}"#;
+    let shown = present(&call("agent_spawn", "{}"), raw).expect("presented");
+    assert!(shown.contains("fix-parser"), "{shown}");
+    assert!(
+        shown.contains("/work/hocus/.worktrees/fix-parser"),
+        "{shown}"
+    );
+}
+
+/// A branch switched in place has no new folder to name, and saying nothing is
+/// better than naming the one it was already in.
+#[test]
+fn a_spawn_that_only_switched_branch_names_the_branch_alone() {
+    let raw = r#"{"opened":true,"pane_id":9,"branch":"topic"}"#;
+    assert_eq!(
+        present(&call("agent_spawn", "{}"), raw),
+        Some("Spawned an agent in pane 9.\nOn a new branch topic.\n".to_owned())
+    );
+}
+
 #[test]
 fn crossing_off_a_todo_names_what_else_it_moved() {
     let raw = r#"{"project":"h","id":2,"text":"child","done":true,

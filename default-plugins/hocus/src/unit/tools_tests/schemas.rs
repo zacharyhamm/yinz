@@ -30,7 +30,9 @@ fn agent_schemas_require_a_pane_and_never_a_pane_kind() {
         ("agent_send", json!(["pane_id"])),
         ("agent_control", json!(["pane_id", "action"])),
         // The one agent tool with no pane to name: its pane does not exist yet.
-        ("agent_spawn", json!(["command"])),
+        // Nothing is required at the schema either — `agent` and `command` are
+        // alternatives, which JSON Schema's `required` cannot say and dispatch can.
+        ("agent_spawn", Value::Null),
     ] {
         let parameters = specs
             .as_array()
@@ -285,4 +287,23 @@ fn linear_issues_closes_the_state_enum() {
     for state in crate::linear::STATES {
         assert!(states.iter().any(|s| s == state), "{state} is missing");
     }
+}
+
+/// The agents you may ask for are a closed set, and it is the *same* closed set the
+/// New agent modal offers — both read `launch::OFFERED`. An open string here would
+/// let the model invent `"claude-code"` and only find out when the shell reported no
+/// such program, after a worktree had already been created for it.
+#[test]
+fn agent_spawn_offers_exactly_the_agents_the_new_agent_modal_does() {
+    let specs = specs();
+    let spawn = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == "agent_spawn")
+        .unwrap();
+    assert_eq!(
+        spawn["function"]["parameters"]["properties"]["agent"]["enum"],
+        json!(launch::OFFERED),
+    );
 }

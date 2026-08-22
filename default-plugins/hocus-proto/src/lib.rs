@@ -1,16 +1,19 @@
 //! Pure logic and wire types shared by the hocus plugins.
 //!
 //! All of it tests on the host triple without the wasm dance — and the plugins
-//! that link it (`hocus`, `hocus-agentd`, `hocus-ask`, `hocus-store`) cannot
+//! that link it (`hocus`, `hocus-agentd`, `hocus-ask`, `hocus-new-agent`,
+//! `hocus-store`) cannot
 //! drift apart on a message shape, or on a stored schema, which would otherwise
 //! show up only as a silent deserialize failure at runtime.
 //!
-//! [`store`] is the one module that reaches the host, and it is arranged so that
-//! this stays true: the shims are behind a `wasm32`-only type, and everything
-//! else — including the tests of the crates that link this one — goes through
-//! the same trait backed by the real store engine over a temporary file.
+//! [`store`] and [`launch`] are the two modules that reach the host, and both are
+//! arranged so that this stays true: the shim is behind a `wasm32`-only item, with a
+//! host-triple stub that fails loudly beside it, and everything either module decides
+//! is in the pure half that the linking crates' own tests exercise. For [`store`] that
+//! pure half runs against the real store engine over a temporary file.
 
 pub mod agents;
+pub mod launch;
 pub mod llm;
 pub mod location;
 pub mod panes;

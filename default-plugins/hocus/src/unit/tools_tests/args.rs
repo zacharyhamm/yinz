@@ -388,3 +388,70 @@ fn the_floating_geometry_messages_survive_the_shared_parser() {
     // x and y may be zero; width and height may not.
     assert!(geometry(r#"{"x":"0","y":"0"}"#).is_ok());
 }
+
+/// `agent_spawn`'s arguments as a `launch::Spec` — the struct the New agent modal
+/// fills in from its form. This mapping is the whole of what makes the two entry
+/// points one feature, so it is checked field by field.
+#[test]
+fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
+    let args = Args::parse(
+        r#"{"agent":"cursor","model":"opus","prompt":"fix it","branch":"topic",
+            "base":"develop","worktree":false,"worktree_path":"/elsewhere"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        args.launch_spec(),
+        launch::Spec {
+            kind: Some("cursor".to_owned()),
+            command: None,
+            args: Vec::new(),
+            model: Some("opus".to_owned()),
+            prompt: Some("fix it".to_owned()),
+            branch: Some("topic".to_owned()),
+            base: Some("develop".to_owned()),
+            worktree: Some(false),
+            worktree_path: Some("/elsewhere".to_owned()),
+        }
+    );
+}
+
+/// `command_words` folds `args` in behind the program, which is what `new_pane`
+/// wants and not what `launch` does. Getting this backwards would run the program
+/// with its own name as the first argument.
+#[test]
+fn a_command_and_its_arguments_come_apart_again_for_launch() {
+    let spec = Args::parse(r#"{"command":"zsh","args":["-l","-c","echo hi"]}"#)
+        .unwrap()
+        .launch_spec();
+    assert_eq!(spec.command.as_deref(), Some("zsh"));
+    assert_eq!(spec.args, ["-l", "-c", "echo hi"]);
+    assert!(spec.kind.is_none());
+}
+
+/// An `agent_spawn` call from before any of this still means what it meant.
+#[test]
+fn a_bare_command_spec_is_unchanged_by_the_new_arguments() {
+    let spec = Args::parse(r#"{"command":"claude"}"#)
+        .unwrap()
+        .launch_spec();
+    assert_eq!(
+        spec,
+        launch::Spec {
+            command: Some("claude".to_owned()),
+            ..Default::default()
+        }
+    );
+}
+
+/// `command_words` answers with nothing when there is no `command`, so an `agent`
+/// call has to take its `args` from the field directly or they vanish on the way
+/// to the pane.
+#[test]
+fn an_agents_own_arguments_survive_having_no_command_to_hang_off() {
+    let spec = Args::parse(r#"{"agent":"claude","args":["--dangerously-skip-permissions"]}"#)
+        .unwrap()
+        .launch_spec();
+    assert_eq!(spec.args, ["--dangerously-skip-permissions"]);
+    let (command, _) = launch::plan(&spec).unwrap();
+    assert_eq!(command.args, ["--dangerously-skip-permissions"]);
+}

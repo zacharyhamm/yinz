@@ -1216,12 +1216,30 @@ impl State {
         }
     }
 
-    /// Open an agent pane through the tool that already opens panes, then register
-    /// the kind the caller gave against the pane id `new_pane` reports.
+    /// Start an agent, and register the kind the caller gave against the pane id.
+    ///
+    /// Two routes to a pane, one decision about what goes in it. `launch::plan` says
+    /// what to run for both — so `agent=cursor model=x prompt=y` means the same
+    /// argv here as it does behind the New agent modal's button — and the routes
+    /// differ only in where the pane lands:
+    ///
+    /// - a checkout to make means git work first, which is `launch::open`: the
+    ///   modal's own call, with the same worktree defaults and the same errors;
+    /// - nothing to make keeps this on `new_pane`, which is what it always did. Going
+    ///   through `launch::open` for those too would look tidier and be worse: it
+    ///   resolves the repository root, so `command=zsh cwd=/tmp` would start
+    ///   failing, and `floating`/`in_new_tab` would quietly stop working.
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
-        if args.command_words().is_empty() {
-            return "command is required".to_owned();
-        }
+        let spec = args.launch_spec();
+        // What to run *and* which route to take are both `launch`'s to say — down to
+        // which of `agent` and `command` is missing when both are. Routing on the
+        // checkout rather than on `args.branch` is what keeps the two in step: a
+        // branch of nothing but spaces is no branch to `launch`, and would otherwise
+        // send this down the git route to do no git work.
+        let (command, checkout) = match launch::plan(&spec) {
+            Ok(planned) => planned,
+            Err(error) => return error,
+        };
         if let Some(kind) = args.kind.as_deref() {
             if !agents::valid_kind(kind) {
                 return "kind must be 1 to 32 characters of a-z, 0-9, _ or -".to_owned();
@@ -1231,17 +1249,23 @@ impl State {
             Ok(cwd) => cwd,
             Err(error) => return error,
         };
-        let host = ToolCall {
-            id: String::new(),
-            name: "new_pane".to_owned(),
-            arguments: serde_json::json!({
-                "command": args.command,
-                "args": args.args,
-                "cwd": cwd,
-            })
-            .to_string(),
+        let result = if matches!(checkout, GitCheckout::Current) {
+            let host = ToolCall {
+                id: String::new(),
+                name: "new_pane".to_owned(),
+                arguments: serde_json::json!({
+                    // From the plan, not from `args`: `agent`, `model` and `prompt`
+                    // are all in here, and none of them is a key `new_pane` knows.
+                    "command": command.path.display().to_string(),
+                    "args": command.args,
+                    "cwd": cwd,
+                })
+                .to_string(),
+            };
+            tools::dispatch(&host)
+        } else {
+            tools::spawn_in_checkout(args, cwd)
         };
-        let result = tools::dispatch(&host);
         self.register_spawned(args.kind.as_deref(), &result)
     }
 
