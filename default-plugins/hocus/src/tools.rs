@@ -10,14 +10,15 @@
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+use hocus_proto::launch;
 use hocus_proto::location::Location;
 use hocus_proto::paths;
 use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::prelude::{
-    FloatingPaneCoordinates, GlobalPaneEdge, GlobalPanePlacement, PaneId, PercentOrFixed,
-    SessionInfo, WarpPlacement,
+    FloatingPaneCoordinates, GitCheckout, GlobalPaneEdge, GlobalPanePlacement, PaneId,
+    PercentOrFixed, SessionInfo, WarpPlacement,
 };
 
 /// One complete call requested by the model, reassembled from stream fragments.
@@ -132,9 +133,30 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             Some("close") => format!("closes {pane} and the agent running in it"),
             _ => format!("interrupts, restarts or closes the agent in {pane}"),
         },
-        "agent_spawn" => match args.command_words() {
-            words if words.is_empty() => "opens a new pane running an agent".to_owned(),
-            words => format!("opens a new pane running `{}`", words.join(" ")),
+        "agent_spawn" => {
+            // Read off the plan, never re-derived: the sentence has to promise what
+            // dispatch will do, and a default spelled out a second time here is a
+            // default that can come to differ from the one that runs.
+            let Ok((command, checkout)) = launch::plan(&args.launch_spec()) else {
+                // A call `launch` refuses opens nothing, but the prompt still goes
+                // up — the same rule every other arm follows for arguments it
+                // cannot read.
+                return Some("opens a new pane running an agent".to_owned());
+            };
+            let mut sentence = format!("opens a new pane running `{}`", command.path.display());
+            // Named in full, because this is the half that writes to the user's
+            // repository and a confirmation that hid it would be worth nothing.
+            match checkout {
+                GitCheckout::NewWorktree { base, path, .. } => sentence.push_str(&format!(
+                    ", on a new worktree `{}` branched from `{base}`",
+                    path.display()
+                )),
+                GitCheckout::NewBranch { branch, base } => sentence.push_str(&format!(
+                    ", after switching this checkout to a new branch `{branch}` off `{base}`"
+                )),
+                GitCheckout::Current => {},
+            }
+            sentence
         },
         "project_forget" => {
             let name = args.name.as_deref().unwrap_or("a project");
@@ -1015,20 +1037,42 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_spawn",
-            "Open and register a tiled agent pane.",
+            "Start a coding agent in a new pane; `branch` cuts a git worktree for it first.",
             json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string" },
+                    "agent": {
+                        "type": "string",
+                        "enum": launch::OFFERED,
+                        "description": "The agent to run. Either this or command.",
+                    },
+                    "command": { "type": "string", "description": "A program to run instead." },
                     "args": { "type": "array", "items": { "type": "string" } },
+                    "prompt": { "type": "string", "description": "What to start the agent on." },
+                    "model": { "type": "string" },
                     "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
                     "project": { "type": "string", "description": "Defaults to the active project." },
                     "kind": {
                         "type": "string",
                         "description": "For unrecognized agent commands.",
                     },
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch to create; omit to work in the current checkout.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": format!("Branched from. Defaults to {}.", launch::DEFAULT_BASE),
+                    },
+                    "worktree": {
+                        "type": "boolean",
+                        "description": "Defaults true when branch is given.",
+                    },
+                    "worktree_path": {
+                        "type": "string",
+                        "description": format!("From the repo root. Defaults to {}<branch>.", launch::WORKTREE_PREFIX),
+                    },
                 },
-                "required": ["command"],
             }),
         ),
         tool(
@@ -1403,6 +1447,15 @@ pub struct Args {
     pub show: bool,
     pub auto_confirm: bool,
     pub kind: Option<String>,
+    // Starting an agent. `command`, `args`, `cwd`, `project`, `kind` and `prompt`
+    // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
+    // shadowed. `worktree_path` is spelled out because `path` is the file tools'.
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub worktree: Option<bool>,
+    pub worktree_path: Option<String>,
     // The todo tools. `text`, `query` and `project` above are theirs as well.
     pub id: Option<u64>,
     pub parent_id: Option<u64>,
@@ -1495,6 +1548,34 @@ impl Args {
                 .filter_map(|item| item.as_str().map(str::to_owned))
                 .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// What starting this agent means, in the terms `hocus-new-agent` says it in.
+    ///
+    /// A reading, no more: every default and every rule about what pairs with what
+    /// is `launch`'s, so the modal's Create button and this tool cannot come to
+    /// disagree about what "a claude on a worktree off main" is.
+    pub fn launch_spec(&self) -> launch::Spec {
+        // `command_words` folds `args` in behind the program name, which is the shape
+        // `new_pane` wants and not `launch`'s — and it answers with nothing at all
+        // when there is no `command`, which for an `agent` call is every time. So the
+        // program comes off the front only when there was one to come off.
+        let mut words = self.command_words().into_iter();
+        let (command, args) = match words.next() {
+            Some(program) => (Some(program), words.collect()),
+            None => (None, self.args.clone()),
+        };
+        launch::Spec {
+            kind: self.agent.clone(),
+            command,
+            args,
+            model: self.model.clone(),
+            prompt: self.prompt.clone(),
+            branch: self.branch.clone(),
+            base: self.base.clone(),
+            worktree: self.worktree,
+            worktree_path: self.worktree_path.clone(),
         }
     }
 
@@ -2796,6 +2877,47 @@ mod host {
         }
     }
 
+    /// Cut the branch or worktree, then open the agent's pane in it.
+    ///
+    /// The whole of it is `launch::open`, which is also what the New agent modal's
+    /// button calls — the point being that there is one answer to "what does
+    /// starting an agent do", not two. All this adds is the reporting: the same
+    /// JSON `report_opened_pane` emits, so `present` and `register_spawned`
+    /// cannot tell the two `agent_spawn` paths apart, plus the branch and the
+    /// folder, which the caller has no other way to learn.
+    pub fn spawn_in_checkout(args: &Args, source: Option<String>) -> String {
+        // The git work resolves the repository from this folder, so unlike
+        // `new_pane` it cannot be left unset. The focused pane's cwd is the one the
+        // user would mean, which is the same fallback `new_pane` uses.
+        let source = source.map_or_else(focused_cwd, PathBuf::from);
+        let spec = args.launch_spec();
+        let checkout = match launch::plan(&spec) {
+            Ok((_, checkout)) => checkout,
+            Err(error) => return error,
+        };
+        match launch::open(&spec, source) {
+            Ok(pane) => {
+                if let Some(name) = &args.name {
+                    rename_pane_with_id(pane, name);
+                }
+                let (id, is_plugin) = split_pane_id(pane);
+                let mut opened = json!({
+                    "opened": true, "pane_id": id, "is_plugin": is_plugin,
+                });
+                match checkout {
+                    GitCheckout::NewWorktree { branch, path, .. } => {
+                        opened["branch"] = json!(branch);
+                        opened["cwd"] = json!(path.display().to_string());
+                    },
+                    GitCheckout::NewBranch { branch, .. } => opened["branch"] = json!(branch),
+                    GitCheckout::Current => {},
+                }
+                opened.to_string()
+            },
+            Err(error) => error,
+        }
+    }
+
     fn new_tab_tool(args: &Args) -> String {
         // Both parameters bind the same type parameter, so they must agree.
         let cwd = Some(
@@ -3152,11 +3274,16 @@ mod host {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use host::dispatch;
+pub use host::{dispatch, spawn_in_checkout};
 
 /// Native builds exist only to run the unit tests; nothing there dispatches.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch(_call: &ToolCall) -> String {
+    "tools are unavailable outside zellij".to_owned()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 

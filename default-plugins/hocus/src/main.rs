@@ -23,7 +23,7 @@ use worker::post_log;
 use hocus_proto::location::Location;
 use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
-use hocus_proto::{agents, projects, todos};
+use hocus_proto::{agents, launch, projects, todos};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
 use zellij_tile::ui_components::forms::{InputAction, TextInput};

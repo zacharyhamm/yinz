@@ -371,3 +371,46 @@ fn the_label_says_whose_question_the_pane_is_wearing() {
         "hocus: send_input?"
     );
 }
+
+/// The git half of `agent_spawn` is the half that writes to the user's repository,
+/// so the sentence they are asked to agree to has to name it. A confirmation
+/// reading "opens a new pane running `claude`" for a call that is about to add a
+/// worktree is a confirmation of the wrong thing.
+#[test]
+fn spawning_an_agent_on_a_branch_says_where_the_branch_and_the_worktree_go() {
+    let worktree = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"claude","branch":"fix-parser"}"#,
+    ))
+    .unwrap();
+    assert!(worktree.contains("running `claude`"), "{worktree}");
+    assert!(worktree.contains(".worktrees/fix-parser"), "{worktree}");
+    assert!(worktree.contains("`main`"), "{worktree}");
+
+    let in_place = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"codex","branch":"topic","base":"develop","worktree":false}"#,
+    ))
+    .unwrap();
+    assert!(in_place.contains("switching this checkout"), "{in_place}");
+    assert!(in_place.contains("`topic`"), "{in_place}");
+    assert!(in_place.contains("`develop`"), "{in_place}");
+    assert!(!in_place.contains("worktree"), "{in_place}");
+}
+
+/// `cursor` is the one agent that is not its own program, and the sentence names
+/// the program — telling someone you are about to run `cursor` when you are about
+/// to run `cursor-agent` is naming the editor, not the agent.
+#[test]
+fn the_consequence_names_the_program_that_will_actually_run() {
+    let sentence = consequence(&call("agent_spawn", r#"{"agent":"cursor"}"#)).unwrap();
+    assert!(sentence.contains("`cursor-agent`"), "{sentence}");
+}
+
+/// No git arguments, no git clause: `agent_spawn` still has its old, narrower
+/// consequence for the call it always took.
+#[test]
+fn spawning_without_a_branch_promises_no_repository_changes() {
+    let sentence = consequence(&call("agent_spawn", r#"{"command":"zsh"}"#)).unwrap();
+    assert_eq!(sentence, "opens a new pane running `zsh`");
+}

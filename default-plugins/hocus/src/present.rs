@@ -700,6 +700,21 @@ fn spawned(value: &Value, registered: Option<&str>) -> Option<String> {
         return None;
     }
     let mut out = format!("Spawned an agent in pane {}.\n", number(value, "pane_id"));
+    // Only the git path sets these, and it is the path that wrote to the user's
+    // repository — so where it put the agent is the part worth reading back.
+    let branch = text(value, "branch");
+    if !branch.is_empty() {
+        let cwd = text(value, "cwd");
+        if cwd.is_empty() {
+            out.push_str(&format!("On a new branch {}.\n", inline(&branch)));
+        } else {
+            out.push_str(&format!(
+                "On a new branch {} in {}.\n",
+                inline(&branch),
+                inline(&cwd)
+            ));
+        }
+    }
     if let Some(kind) = registered {
         out.push_str(&format!("Registered as {}.\n", inline(kind)));
     }

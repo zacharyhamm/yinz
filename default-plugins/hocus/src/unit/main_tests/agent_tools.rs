@@ -119,7 +119,7 @@ fn agent_spawn_rejects_no_command_and_a_kind_that_is_not_a_word() {
     let mut state = idle_state();
     assert_eq!(
         state.run_local(&agent_call("agent_spawn", "{}")),
-        Some("command is required".into()),
+        Some("an agent or a command is required".into()),
     );
     assert_eq!(
         state.run_local(&agent_call(
@@ -322,4 +322,47 @@ fn a_model_agent_action_is_confirmed_and_a_typed_one_is_not() {
     state.run_manual(r#"/agent_control pane_id=3 action=close"#);
     assert!(!matches!(state.status, Status::ConfirmingTool));
     assert_eq!(tool_results(&state).len(), 1);
+}
+
+/// The two routes `agent_spawn` takes. Neither can run here — the pane opening is
+/// a host call either way — so what is checked is *which* one was chosen, by the
+/// error each returns: `new_pane` goes through `tools::dispatch`, the git route
+/// through `launch::open`, and their stubs say different things.
+#[test]
+fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
+    let mut state = idle_state();
+    assert_eq!(
+        state.run_local(&agent_call("agent_spawn", r#"{"agent":"claude"}"#)),
+        Some("tools are unavailable outside zellij".into()),
+    );
+    assert_eq!(
+        state.run_local(&agent_call(
+            "agent_spawn",
+            r#"{"agent":"claude","branch":"fix-parser"}"#
+        )),
+        Some("tools are unavailable outside zellij".into()),
+    );
+}
+
+/// `agent` and `command` are alternatives, and the schema cannot say so — this is
+/// where a call naming neither is turned back.
+#[test]
+fn a_spawn_naming_no_agent_and_no_command_is_refused_before_any_git_work() {
+    let mut state = idle_state();
+    assert_eq!(
+        state.run_local(&agent_call("agent_spawn", r#"{"branch":"fix-parser"}"#)),
+        Some("an agent or a command is required".into()),
+    );
+    assert!(state.manual_kinds.is_empty());
+}
+
+/// The prompt and the model are the agent's own arguments, not hocus's: they reach
+/// the pane as argv, in the order `launch` puts them in.
+#[test]
+fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
+    let args =
+        tools::Args::parse(r#"{"agent":"claude","model":"opus","prompt":"fix it"}"#).unwrap();
+    let (command, _) = launch::plan(&args.launch_spec()).unwrap();
+    assert_eq!(command.path, std::path::PathBuf::from("claude"));
+    assert_eq!(command.args, ["--model", "opus", "fix it"]);
 }
