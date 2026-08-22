@@ -3411,6 +3411,14 @@ impl Screen {
         true
     }
 
+    /// Whether a modal in the client's active tab holds the keyboard. A directional focus move
+    /// is then a no-op - never an escalation to a global pane, another tab, or the host session.
+    fn active_tab_modal_holds_focus(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id)
+            .map(|tab| !tab.lower_layer_may_take_focus(client_id))
+            .unwrap_or(false)
+    }
+
     /// Handle a directional focus move made from a focused global pane. Returns `true` when the
     /// client is on a global pane, in which case the caller must not fall through to the tab.
     fn global_pane_handles_direction(&mut self, direction: Direction, client_id: ClientId) -> bool {
@@ -4506,14 +4514,21 @@ impl Screen {
                     },
                     Some(direction) => {
                         for client_id in clients_focused_on_pane {
-                            let new_pane_id = self
+                            let Some(tab) = self
                                 .tabs
                                 .values_mut()
                                 .find(|tab| tab.has_pane_with_pid(&pane_id))
-                                .and_then(|tab| {
-                                    tab.focus_pane_adjacent_to(pane_id, direction, client_id)
-                                });
-                            match new_pane_id {
+                            else {
+                                // the guest pane is gone: nowhere to land, hand back to the host
+                                self.bubble_focus_to_host(client_id, direction);
+                                continue;
+                            };
+                            // a modal owns this client's keyboard: the hand-back is a no-op,
+                            // not a hand-off to the host session
+                            if !tab.lower_layer_may_take_focus(client_id) {
+                                continue;
+                            }
+                            match tab.focus_pane_adjacent_to(pane_id, direction, client_id) {
                                 Some(new_pane_id) => {
                                     self.report_key_passthrough_state_with_direction(
                                         client_id,
@@ -7862,6 +7877,55 @@ impl Screen {
         }
         Ok(())
     }
+    /// Move the client's focus one pane in `direction`, escalating to a global pane or the host
+    /// session when the tab reports the focus stayed put. A modal holding the keyboard is checked
+    /// first: the keypress is then a no-op, never a hop to a global pane or the host.
+    pub(crate) fn move_focus_in_direction_or_escalate(
+        &mut self,
+        direction: Direction,
+        client_id: ClientId,
+    ) -> Result<()> {
+        if self.global_pane_handles_direction(direction, client_id) {
+            self.sync_scroll_mode_on_focus(client_id)?;
+            self.render(None)?;
+            return self.log_and_report_session_state();
+        }
+        if self.active_tab_modal_holds_focus(client_id) {
+            return self.log_and_report_session_state();
+        }
+        let old_pane_id = self.get_active_pane_id(&client_id);
+        active_tab_and_connected_client_id!(
+            self,
+            client_id,
+            |tab: &mut Tab, client_id: ClientId| match direction {
+                Direction::Left => tab.move_focus_left(client_id),
+                Direction::Down => tab.move_focus_down(client_id),
+                Direction::Up => tab.move_focus_up(client_id),
+                Direction::Right => tab.move_focus_right(client_id),
+            },
+            ?
+        );
+        let new_pane_id = self.get_active_pane_id(&client_id);
+        if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+            if old == new {
+                if !self.enter_global_pane_in_direction(direction, client_id) {
+                    self.bubble_focus_to_host(client_id, direction);
+                }
+            } else {
+                self.report_key_passthrough_state_with_direction(
+                    client_id,
+                    old,
+                    new,
+                    Some(direction),
+                );
+            }
+        }
+        self.clear_bell_for_focused_pane(client_id);
+        self.add_active_pane_to_group_if_marking(&client_id);
+        self.sync_scroll_mode_on_focus(client_id)?;
+        self.render(None)?;
+        self.log_and_report_session_state()
+    }
     pub fn move_focus_left_or_previous_tab(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || {
             format!(
@@ -7877,6 +7941,13 @@ impl Screen {
         };
         if let Some(client_id) = client_id {
             if self.global_pane_handles_direction(Direction::Left, client_id) {
+                return self
+                    .log_and_report_session_state()
+                    .with_context(err_context);
+            }
+            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab,
+            // a global pane, or the host session
+            if self.active_tab_modal_holds_focus(client_id) {
                 return self
                     .log_and_report_session_state()
                     .with_context(err_context);
@@ -7925,6 +7996,13 @@ impl Screen {
 
         if let Some(client_id) = client_id {
             if self.global_pane_handles_direction(Direction::Right, client_id) {
+                return self
+                    .log_and_report_session_state()
+                    .with_context(err_context);
+            }
+            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab,
+            // a global pane, or the host session
+            if self.active_tab_modal_holds_focus(client_id) {
                 return self
                     .log_and_report_session_state()
                     .with_context(err_context);
@@ -12364,39 +12442,7 @@ pub(crate) fn screen_thread_main(
                         c.set_error_message("No connected clients to move focus for".to_string());
                     }
                 } else {
-                    if screen.global_pane_handles_direction(Direction::Left, client_id) {
-                        screen.sync_scroll_mode_on_focus(client_id)?;
-                        screen.render(None)?;
-                        screen.log_and_report_session_state()?;
-                        continue;
-                    }
-                    let old_pane_id = screen.get_active_pane_id(&client_id);
-                    active_tab_and_connected_client_id!(
-                        screen,
-                        client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab.move_focus_left(client_id),
-                        ?
-                    );
-                    let new_pane_id = screen.get_active_pane_id(&client_id);
-                    if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                        if old == new {
-                            if !screen.enter_global_pane_in_direction(Direction::Left, client_id) {
-                                screen.bubble_focus_to_host(client_id, Direction::Left);
-                            }
-                        } else {
-                            screen.report_key_passthrough_state_with_direction(
-                                client_id,
-                                old,
-                                new,
-                                Some(Direction::Left),
-                            );
-                        }
-                    }
-                    screen.clear_bell_for_focused_pane(client_id);
-                    screen.add_active_pane_to_group_if_marking(&client_id);
-                    screen.sync_scroll_mode_on_focus(client_id)?;
-                    screen.render(None)?;
-                    screen.log_and_report_session_state()?;
+                    screen.move_focus_in_direction_or_escalate(Direction::Left, client_id)?;
                 }
             },
             ScreenInstruction::MoveFocusLeftOrPreviousTab(client_id, mut _completion_tx) => {
@@ -12435,39 +12481,7 @@ pub(crate) fn screen_thread_main(
                         c.set_error_message("No connected clients to move focus for".to_string());
                     }
                 } else {
-                    if screen.global_pane_handles_direction(Direction::Down, client_id) {
-                        screen.sync_scroll_mode_on_focus(client_id)?;
-                        screen.render(None)?;
-                        screen.log_and_report_session_state()?;
-                        continue;
-                    }
-                    let old_pane_id = screen.get_active_pane_id(&client_id);
-                    active_tab_and_connected_client_id!(
-                        screen,
-                        client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab.move_focus_down(client_id),
-                        ?
-                    );
-                    let new_pane_id = screen.get_active_pane_id(&client_id);
-                    if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                        if old == new {
-                            if !screen.enter_global_pane_in_direction(Direction::Down, client_id) {
-                                screen.bubble_focus_to_host(client_id, Direction::Down);
-                            }
-                        } else {
-                            screen.report_key_passthrough_state_with_direction(
-                                client_id,
-                                old,
-                                new,
-                                Some(Direction::Down),
-                            );
-                        }
-                    }
-                    screen.clear_bell_for_focused_pane(client_id);
-                    screen.add_active_pane_to_group_if_marking(&client_id);
-                    screen.sync_scroll_mode_on_focus(client_id)?;
-                    screen.render(None)?;
-                    screen.log_and_report_session_state()?;
+                    screen.move_focus_in_direction_or_escalate(Direction::Down, client_id)?;
                 }
             },
             ScreenInstruction::MoveFocusRight(client_id, mut _completion_tx) => {
@@ -12478,39 +12492,7 @@ pub(crate) fn screen_thread_main(
                         c.set_error_message("No connected clients to move focus for".to_string());
                     }
                 } else {
-                    if screen.global_pane_handles_direction(Direction::Right, client_id) {
-                        screen.sync_scroll_mode_on_focus(client_id)?;
-                        screen.render(None)?;
-                        screen.log_and_report_session_state()?;
-                        continue;
-                    }
-                    let old_pane_id = screen.get_active_pane_id(&client_id);
-                    active_tab_and_connected_client_id!(
-                        screen,
-                        client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab.move_focus_right(client_id),
-                        ?
-                    );
-                    let new_pane_id = screen.get_active_pane_id(&client_id);
-                    if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                        if old == new {
-                            if !screen.enter_global_pane_in_direction(Direction::Right, client_id) {
-                                screen.bubble_focus_to_host(client_id, Direction::Right);
-                            }
-                        } else {
-                            screen.report_key_passthrough_state_with_direction(
-                                client_id,
-                                old,
-                                new,
-                                Some(Direction::Right),
-                            );
-                        }
-                    }
-                    screen.clear_bell_for_focused_pane(client_id);
-                    screen.add_active_pane_to_group_if_marking(&client_id);
-                    screen.sync_scroll_mode_on_focus(client_id)?;
-                    screen.render(None)?;
-                    screen.log_and_report_session_state()?;
+                    screen.move_focus_in_direction_or_escalate(Direction::Right, client_id)?;
                 }
             },
             ScreenInstruction::MoveFocusRightOrNextTab(client_id, mut _completion_tx) => {
@@ -12549,39 +12531,7 @@ pub(crate) fn screen_thread_main(
                         c.set_error_message("No connected clients to move focus for".to_string());
                     }
                 } else {
-                    if screen.global_pane_handles_direction(Direction::Up, client_id) {
-                        screen.sync_scroll_mode_on_focus(client_id)?;
-                        screen.render(None)?;
-                        screen.log_and_report_session_state()?;
-                        continue;
-                    }
-                    let old_pane_id = screen.get_active_pane_id(&client_id);
-                    active_tab_and_connected_client_id!(
-                        screen,
-                        client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab.move_focus_up(client_id),
-                        ?
-                    );
-                    let new_pane_id = screen.get_active_pane_id(&client_id);
-                    if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                        if old == new {
-                            if !screen.enter_global_pane_in_direction(Direction::Up, client_id) {
-                                screen.bubble_focus_to_host(client_id, Direction::Up);
-                            }
-                        } else {
-                            screen.report_key_passthrough_state_with_direction(
-                                client_id,
-                                old,
-                                new,
-                                Some(Direction::Up),
-                            );
-                        }
-                    }
-                    screen.clear_bell_for_focused_pane(client_id);
-                    screen.add_active_pane_to_group_if_marking(&client_id);
-                    screen.sync_scroll_mode_on_focus(client_id)?;
-                    screen.render(None)?;
-                    screen.log_and_report_session_state()?;
+                    screen.move_focus_in_direction_or_escalate(Direction::Up, client_id)?;
                 }
             },
             ScreenInstruction::ClearScreen(
