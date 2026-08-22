@@ -1268,17 +1268,19 @@ fn an_overlay_owns_the_mouse_where_it_is_painted_while_the_layer_is_hidden() {
     );
 }
 
-/// While an overlay exists it masks whatever else a client is focused on: `get_active_pane_id`
-/// prefers the overlay over the tiled pane for as long as the overlay is in the occlusion stack.
-/// That is deliberate for a modal, which must never silently lose the keyboard - and it is what
-/// happens for every overlay today.
+/// While a modal exists it masks whatever else a client is focused on: `get_active_pane_id`
+/// prefers the overlay over the tiled pane for as long as the modal is in the occlusion stack.
+/// That is what a modal is for - it must never silently lose the keyboard, because it has no way
+/// to learn that it did.
 ///
 /// The tiled focus underneath is still recorded, which is what lets
 /// `a_modal_overlay_hands_focus_to_the_pane_it_opened_when_it_closes` work: it surfaces again the
-/// moment the overlay goes away. This pins both halves, for both clients of a non-mirrored
-/// session.
+/// moment the modal goes away. This pins both halves, for both clients of a non-mirrored session.
+///
+/// A *dismissible* overlay answers the other way and gets its own test below - masking is the
+/// modal's rule, not every overlay's.
 #[test]
-fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
+fn a_modal_masks_each_client_s_tiled_focus_until_it_closes() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
@@ -1298,7 +1300,7 @@ fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
             None,
         )
         .expect("TEST");
-    open_popup(&mut screen, 3, "OVERLAY");
+    open_overlay_of_kind(&mut screen, 3, "MODAL", OverlayKind::Modal);
 
     let tab = screen.get_active_tab_mut(1).unwrap();
     tab.focus_pane_with_id(PaneId::Terminal(2), false, false, 2)
@@ -1307,12 +1309,12 @@ fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
     assert_eq!(
         tab.get_active_pane_id(1),
         Some(PaneId::Terminal(3)),
-        "client 1 is on the overlay"
+        "client 1 is on the modal"
     );
     assert_eq!(
         tab.get_active_pane_id(2),
         Some(PaneId::Terminal(3)),
-        "and so is client 2 - the overlay masks the tiled pane it just focused"
+        "and so is client 2 - the modal masks the tiled pane it just focused"
     );
     assert!(
         !tab.are_floating_panes_visible(),
@@ -1324,7 +1326,7 @@ fn an_overlay_masks_each_client_s_tiled_focus_until_it_closes() {
     assert_eq!(
         tab.get_active_pane_id(2),
         Some(PaneId::Terminal(2)),
-        "once the overlay is gone, the tiled focus recorded underneath surfaces again"
+        "once the modal is gone, the tiled focus recorded underneath surfaces again"
     );
 }
 
@@ -2747,5 +2749,302 @@ fn a_non_selectable_overlay_cannot_be_focused_again() {
         Some(PaneId::Terminal(2)),
         "and focusing it by id does not put the client back onto a pane that wants no input - \
          an active overlay would outrank every other layer in this lookup"
+    );
+}
+
+/// Whatever arms the display clear, every layer that is still logically on screen has to repaint
+/// into the frame that carries it.
+///
+/// `set_should_clear_display_before_rendering` schedules a full `ESC[2J` that goes out during the
+/// tiled leg of `Tab::render`, but the overlays draw later, from
+/// `render_floating_panes_after_global_panes`. The setter used to force-render only the floating
+/// layer, so an overlay that was already on screen and clean contributed nothing to the frame that
+/// wiped it: opening a tiled pane behind a modal erased the modal while it still held the keyboard,
+/// which is a state the user cannot get out of.
+#[test]
+fn a_modal_survives_a_display_clear_armed_by_a_tiled_pane_behind_it() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_popup(&mut screen, 2, "MODAL");
+
+    let first_frame = rendered_frame(&mut screen, size);
+    assert!(
+        first_frame.contains("MODAL"),
+        "the modal is on screen to begin with, got:\n{first_frame}"
+    );
+
+    // opening a tiled pane arms the clear (see the `add_tiled_pane` path) and does not touch the
+    // overlay, which is by now clean. The new pane deliberately does *not* take focus: a focus
+    // change repaints the modal's frame on its own and would hide the bug, so this is the case
+    // that isolates it.
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(3),
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+
+    // a fresh grid, so this snapshot holds only what *this* frame emitted - exactly what the user
+    // is left looking at after the clear
+    let second_frame = rendered_frame(&mut screen, size);
+    assert!(
+        second_frame.contains("MODAL"),
+        "the frame that clears the display has to redraw the modal it wiped, got:\n{second_frame}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10: a lower layer taking focus, and what the overlay above it does about it.
+//
+// `Tab::get_active_pane_id` prefers an active overlay over every other layer, so overlay focus is
+// not one opinion among three - it is the answer. A lower collection that took focus without
+// saying so left a stale overlay entry masking it: input went on reaching the popup, and a
+// dismiss-on-defocus popup never learned it had lost the keyboard. The rule these pin has three
+// parts: a modal makes the move a no-op, a dismissible overlay gives the keyboard up, and a move
+// that did not happen dismisses nothing.
+// ---------------------------------------------------------------------------
+
+/// A floating pane at an explicit place on the surface, so that a click can be aimed at it.
+fn open_floating_pane_at(screen: &mut Screen, pane_id: u32, x: usize, y: usize) {
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    tab.new_pane(
+        PaneId::Terminal(pane_id),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(x)),
+            y: Some(PercentOrFixed::Fixed(y)),
+            width: Some(PercentOrFixed::Fixed(15)),
+            height: Some(PercentOrFixed::Fixed(5)),
+            ..Default::default()
+        })),
+        Some(1),
+        None,
+    )
+    .expect("TEST");
+}
+
+/// Two floating panes clear of the overlay's geometry - `open_overlay_of_kind` puts that at
+/// (2, 2), 60% of the width and 4 rows tall - and an overlay of `kind` above them, holding the
+/// keyboard. Floating pane 4 is the one with the floating layer's focus.
+fn screen_with_floating_panes_under_an_overlay(size: Size, kind: OverlayKind) -> Screen {
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane_at(&mut screen, 2, 60, 10);
+    open_floating_pane_at(&mut screen, 4, 5, 10);
+    open_overlay_of_kind(&mut screen, 3, "OVERLAY", kind);
+    assert!(
+        screen.tabs[&0].are_floating_panes_visible(),
+        "the floating layer is up, which is what makes the panes underneath clickable"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "and the overlay holds the keyboard to begin with"
+    );
+    screen
+}
+
+/// Clicking a floating pane underneath a dismissible overlay takes the keyboard from it.
+///
+/// `MouseHandler::focus_pane_at` swallows a click that lands *on* an overlay, but a click below
+/// one used to update `floating_panes.active_panes` alone. `get_active_pane_id` prefers the
+/// overlay, so the click focused a pane that then received nothing: the keyboard stayed on the
+/// popup, and the popup - which closes by seeing itself unfocused - was never told.
+#[test]
+fn clicking_a_floating_pane_under_a_dismissible_overlay_takes_the_keyboard_from_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_floating_panes_under_an_overlay(size, OverlayKind::Dismissible);
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(12, 65)), 1);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the click reaches the pane it landed on, keyboard and all - which it could not do while \
+         the overlay was still holding focus, since that outranks every other layer"
+    );
+}
+
+/// The same click under a modal moves nothing at all.
+///
+/// A modal owns the keyboard until it closes, so focusing the pane underneath would be a focus
+/// change the user could neither see nor act on - and would leave the floating layer pointing
+/// somewhere else for when the modal finally goes away.
+#[test]
+fn clicking_a_floating_pane_under_a_modal_moves_nothing() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_floating_panes_under_an_overlay(size, OverlayKind::Modal);
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(12, 65)), 1);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the modal keeps the keyboard"
+    );
+
+    // and the floating layer's own focus was left where it was rather than moved out of sight,
+    // which is what surfaces once the modal is gone
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .close_pane(PaneId::Terminal(3), false, None);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(4)),
+        "the click under the modal moved nothing underneath it either"
+    );
+}
+
+/// Keyboard focus movement answers the same way a click does: the dismissible overlay gives the
+/// keyboard up to the pane the move lands on.
+#[test]
+fn moving_focus_under_a_dismissible_overlay_takes_the_keyboard_from_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_floating_panes_under_an_overlay(size, OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    assert!(
+        tab.move_focus_right(1).expect("TEST"),
+        "there is a floating pane to the right of the focused one"
+    );
+
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the keyboard went with the move"
+    );
+}
+
+/// Under a modal the same move is a no-op, in both halves: it reports that nothing moved, and
+/// nothing did - not even the floating layer's own idea of where focus is.
+#[test]
+fn moving_focus_under_a_modal_is_a_no_op() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_floating_panes_under_an_overlay(size, OverlayKind::Modal);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    assert!(
+        !tab.move_focus_right(1).expect("TEST"),
+        "the modal owns the keyboard, so there is no move to report"
+    );
+    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(3)));
+
+    tab.close_pane(PaneId::Terminal(3), false, None);
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(4)),
+        "and nothing moved underneath it either, which is what surfaces once the modal is gone"
+    );
+}
+
+/// A move that found nothing dismisses nothing.
+///
+/// The release happens after the move and only if the move happened. Releasing on the way in
+/// would let a keypress with nowhere to go close the popup the user was reading - and drop the
+/// keyboard onto the tiled pane behind it, which is not what pressing "focus right" against the
+/// edge of the surface means.
+#[test]
+fn a_focus_move_that_goes_nowhere_leaves_a_dismissible_overlay_holding_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    assert!(
+        !tab.move_focus_right(1).expect("TEST"),
+        "one tiled pane, so there is nothing to the right of it"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the popup still has the keyboard"
+    );
+}
+
+/// The tiled focus cycle is the same rule again: `focus_next_pane` moves the keyboard, so a
+/// dismissible overlay above it has to let go.
+#[test]
+fn cycling_focus_under_a_dismissible_overlay_takes_the_keyboard_from_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    open_overlay_of_kind(&mut screen, 3, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.focus_next_pane(1);
+
+    assert!(
+        !matches!(tab.get_active_pane_id(1), Some(PaneId::Terminal(3))),
+        "the keyboard left the popup for the tiled pane the cycle landed on, got {:?}",
+        tab.get_active_pane_id(1)
+    );
+}
+
+/// Focusing a pane by id is an explicit "focus *this* pane", so it takes the shape Phase 9 settled
+/// on for opening a pane the user asked for: a dismissible overlay gives the keyboard up, and a
+/// modal keeps it (`a_modal_masks_each_client_s_tiled_focus_until_it_closes` pins that half).
+#[test]
+fn focusing_a_pane_by_id_under_a_dismissible_overlay_takes_the_keyboard_from_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2, false).expect("TEST");
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    open_overlay_of_kind(&mut screen, 3, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.focus_pane_with_id(PaneId::Terminal(2), false, false, 2)
+        .expect("TEST");
+
+    assert_eq!(
+        tab.get_active_pane_id(2),
+        Some(PaneId::Terminal(2)),
+        "client 2 asked for the tiled pane and got it, keyboard and all"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "and the other client, which asked for nothing, is left on the popup"
     );
 }
