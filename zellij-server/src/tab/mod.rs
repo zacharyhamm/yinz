@@ -5185,8 +5185,15 @@ impl Tab {
             .filter(|_| self.overlays_are_rendered())
             .or_else(|| self.floating_panes.visible_pane_id_at(position))
     }
-    pub fn floating_pane_is_being_moved_with_mouse(&self) -> bool {
+    /// Whether this tab is holding a mouse drag of something it draws over its tiled panes -
+    /// a floating pane or an overlay.
+    ///
+    /// Both, because the answer's one caller (`Screen::tab_wins_mouse_event`) is what keeps a drag
+    /// alive once the pointer crosses off the tab and onto a global pane. An overlay is drawn over
+    /// the whole session surface, so that is a place it can legitimately be dragged to.
+    pub fn a_pane_is_being_moved_with_mouse(&self) -> bool {
         self.floating_panes.pane_is_being_moved_with_mouse()
+            || self.overlay_panes.pane_is_being_moved_with_mouse()
     }
     /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
     /// for callers outside the tab's own render (eg. the global panes, which paint after every

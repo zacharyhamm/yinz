@@ -526,7 +526,7 @@ fn a_global_pane_selection_keeps_the_mouse_when_it_wanders_under_a_floating_pane
         "the global pane keeps the mouse for the duration of its selection"
     );
     assert!(
-        !screen.tabs[&0].floating_pane_is_being_moved_with_mouse(),
+        !screen.tabs[&0].a_pane_is_being_moved_with_mouse(),
         "and the floating pane must not have been picked up by it"
     );
 }
@@ -2368,11 +2368,12 @@ fn a_bell_in_an_overlay_is_heard_without_visual_notification() {
     );
 }
 
-/// An overlay's frame is drawn over whatever is under it, and an overlay is not draggable. But
-/// the mouse pipeline decided "start moving a floating pane" from the *global* layer-visibility
-/// flag rather than from the clicked pane, and the executor then threw the pane id away and
-/// re-resolved the position through `FloatingPanes` alone. Pressing a modal's frame therefore
-/// picked up the ordinary floating pane whose own frame lay beneath it and dragged that.
+/// An overlay's frame is drawn over whatever is under it, and it is the overlay's own frame: the
+/// drag it starts is the overlay's. The mouse pipeline used to decide "start moving a floating
+/// pane" from the *global* layer-visibility flag rather than from the clicked pane, and the
+/// executor then threw the pane id away and re-resolved the position through `FloatingPanes`
+/// alone. Pressing a modal's frame therefore picked up the ordinary floating pane whose own frame
+/// lay beneath it and dragged that.
 #[test]
 fn a_press_on_an_overlay_frame_does_not_drag_the_floating_pane_beneath_it() {
     let size = Size { cols: 80, rows: 20 };
@@ -2425,13 +2426,13 @@ fn a_press_on_an_overlay_frame_does_not_drag_the_floating_pane_beneath_it() {
     );
 }
 
-/// The second door into the same drag, and the reason swallowing the click in `focus_pane_at`
-/// was not enough on its own: when the pressed overlay is not the focused one the press
-/// classifies as an ordinary focus, and `execute_focus_pane` went on to call
+/// The same thing with the pressed overlay *unfocused*, which is a separate door: the press used
+/// to classify as an ordinary focus, and `execute_focus_pane` went on to call
 /// `move_pane_with_mouse` anyway - which re-resolves the position through `FloatingPanes` and
-/// finds the pane the overlay is covering.
+/// finds the pane the overlay is covering. It now classifies as an overlay drag, whether or not
+/// the overlay pressed is the focused one.
 #[test]
-fn focusing_one_overlay_by_its_frame_does_not_drag_the_floating_pane_beneath_it() {
+fn dragging_one_overlay_by_its_frame_does_not_drag_the_floating_pane_beneath_it() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
@@ -2488,10 +2489,11 @@ fn focusing_one_overlay_by_its_frame_does_not_drag_the_floating_pane_beneath_it(
         floating,
         "the floating pane under the overlay did not move"
     );
+    let overlay = floating_geom(&screen, 3);
     assert_eq!(
-        screen.active_pane_id(1),
-        Some(PaneId::Terminal(3)),
-        "and the press did focus the overlay it landed on"
+        overlay.x,
+        floating.x - 5,
+        "the overlay the press landed on is the one that moved"
     );
 }
 
@@ -3352,5 +3354,244 @@ fn a_guest_hand_back_under_a_modal_does_not_bubble_to_the_host() {
         screen.active_pane_id(1),
         Some(PaneId::Terminal(2)),
         "the modal still has the keyboard"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Dragging an overlay with the mouse.
+//
+// An overlay is drawn over whatever it is covering, so the user's only way to see what is
+// underneath is to move it. It drags by its frame, exactly as a floating pane does - but through
+// its own collection, because the floating path re-resolves the pointer position from scratch and
+// would pick up the pane the overlay is drawn over.
+// ---------------------------------------------------------------------------
+
+/// Press the overlay's top-left frame cell, drag it by `(columns, lines)`, release.
+fn drag_overlay_by(screen: &mut Screen, pane_id: u32, columns: i32, lines: i32) {
+    let geom = floating_geom(screen, pane_id);
+    let from = Position::new(geom.y as i32, geom.x as u16);
+    let to = Position::new(
+        geom.y as i32 + lines,
+        (geom.x as i32 + columns).max(0) as u16,
+    );
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(from), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(to), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(to), 1);
+}
+
+/// The Phase 7 bug from the other side. Pressing a modal's frame used to be routed through
+/// `FloatingPanes`, which threw the pane id away and re-resolved the position - so the drag moved
+/// whatever the modal was covering. Now it moves the modal, and only the modal.
+#[test]
+fn dragging_a_modal_moves_the_modal_and_leaves_what_it_covers_alone() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 3, "FLOATING", false);
+    open_overlay_of_kind(&mut screen, 2, "THEMODAL", OverlayKind::Modal);
+
+    let tiled_before = floating_geom(&screen, 1);
+    let floating_before = floating_geom(&screen, 3);
+    let modal_before = floating_geom(&screen, 2);
+
+    drag_overlay_by(&mut screen, 2, 6, 3);
+
+    let modal_after = floating_geom(&screen, 2);
+    assert_eq!(
+        (modal_after.x, modal_after.y),
+        (modal_before.x + 6, modal_before.y + 3),
+        "the modal follows the pointer"
+    );
+    let tiled_after = floating_geom(&screen, 1);
+    let floating_after = floating_geom(&screen, 3);
+    assert_eq!(
+        (tiled_after.x, tiled_after.y),
+        (tiled_before.x, tiled_before.y),
+        "the tiled pane behind it must not have moved"
+    );
+    assert_eq!(
+        (floating_after.x, floating_after.y),
+        (floating_before.x, floating_before.y),
+        "and neither must the floating pane behind it"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "a drag never moves the keyboard, so the modal still holds it"
+    );
+}
+
+/// A press that never left its cell is a click. It has to still focus the overlay, or an overlay
+/// under a live one could be pressed and nothing at all would happen.
+#[test]
+fn a_frame_press_that_never_moved_still_focuses_the_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "LOWER", OverlayKind::Dismissible);
+    open_overlay_with(
+        &mut screen,
+        3,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(40)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "pre-condition: the later overlay has the keyboard"
+    );
+
+    let geom = floating_geom(&screen, 2);
+    let corner = Position::new(geom.y as i32, geom.x as u16);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(corner), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(corner), 1);
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the press that never moved is a click, and a click on an overlay focuses it"
+    );
+    let after = floating_geom(&screen, 2);
+    assert_eq!((after.x, after.y), (geom.x, geom.y), "and nothing moved");
+}
+
+/// The point of the feature: a popup can be moved off whatever it is covering, including out over
+/// a global pane. `Screen::tab_wins_mouse_event` is what makes this reach past the tab's edge - the
+/// global panes get first refusal on every mouse event by position, so without it the drag ends
+/// wherever the pointer first crossed onto the global pane.
+#[test]
+fn an_overlay_can_be_dragged_over_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
+    // the tabs learn where the global pane strips are when they first render
+    screen.render_to_clients().expect("TEST");
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(30)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+
+    let origin = screen.tabs[&0].get_display_area_origin().0;
+    assert_eq!(floating_geom(&screen, 2).x, 30, "pre-condition");
+    drag_overlay_by(&mut screen, 2, -28, 0);
+
+    let after = floating_geom(&screen, 2);
+    assert_eq!(
+        after.x, 2,
+        "the overlay follows the pointer past the tab's edge"
+    );
+    assert!(
+        after.x < origin,
+        "which puts it over the global pane, whose columns end at x={origin}"
+    );
+}
+
+/// An overlay over a global pane is outside every tab's viewport, so nothing but its own tab paints
+/// those cells - and it has to keep painting them above the global pane, which renders after every
+/// tab has had its turn.
+#[test]
+fn an_overlay_dragged_over_a_global_pane_renders_above_it() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    screen.render_to_clients().expect("TEST");
+    while server_receiver.try_recv().is_ok() {}
+
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(30)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .handle_pty_bytes(2, "DRAGGED".as_bytes().to_vec())
+        .expect("TEST");
+    drag_overlay_by(&mut screen, 2, -28, 0);
+
+    assert!(
+        floating_geom(&screen, 2).x < screen.tabs[&0].get_display_area_origin().0,
+        "the overlay has to actually be over the global pane for this test to mean anything"
+    );
+
+    // the host terminal keeps what earlier frames drew, so they all go into the same grid - the
+    // pane only paints when it changes, the global pane repaints every frame
+    let mut grid = grid_for_render_snapshot(size);
+    let first = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
+    assert!(
+        first.contains("DRAGGED"),
+        "the dragged overlay must render over the global pane, got:\n{first}"
+    );
+    // make the global pane repaint on its own, which is what would paint over the overlay
+    screen.global_panes.set_force_render();
+    let second = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
+    assert!(
+        second.contains("DRAGGED"),
+        "a global pane repaint must not paint over the overlay in front of it, got:\n{second}"
+    );
+    assert_snapshot!(second);
+}
+
+/// The drag rewrites the overlay's *coordinates*, not just its geometry, so where the user put it
+/// is re-resolved on the next surface change the same way where it was opened would have been.
+/// Without that the overlay is re-centred by the first resize and walks out from under the pointer.
+#[test]
+fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
+    screen.render_to_clients().expect("TEST");
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(30)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(4)),
+            ..Default::default()
+        },
+    );
+    drag_overlay_by(&mut screen, 2, -28, 1);
+    let dropped_at = floating_geom(&screen, 2);
+
+    screen
+        .resize_to_screen(Size { cols: 90, rows: 14 })
+        .expect("TEST");
+
+    let after = floating_geom(&screen, 2);
+    assert_eq!(
+        (after.x, after.y),
+        (dropped_at.x, dropped_at.y),
+        "the overlay stays where it was dropped instead of being re-centred"
     );
 }

@@ -57,20 +57,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 .with_context(|| no_pane_id(&pane_id))
                 .with_context(err_context)?
                 .1;
-            let mut new_pane_position = pane.position_and_size();
-            let min_x = self.viewport.x as isize;
-            let min_y = self.viewport.y as isize;
-            let max_x = (self.viewport.cols + self.viewport.x)
-                .saturating_sub(new_pane_position.cols.as_usize());
-            let max_y = (self.viewport.rows + self.viewport.y)
-                .saturating_sub(new_pane_position.rows.as_usize());
-            let new_x = std::cmp::max(min_x, new_pane_position.x as isize + x);
-            let new_x = std::cmp::min(new_x, max_x as isize);
-            let new_y = std::cmp::max(min_y, new_pane_position.y as isize + y);
-            let new_y = std::cmp::min(new_y, max_y as isize);
-            new_pane_position.x = new_x as usize;
-            new_pane_position.y = new_y as usize;
-            new_pane_position
+            geom_moved_within(pane.position_and_size(), self.viewport, x, y)
         };
         self.set_pane_geom(pane_id, new_pane_position)
             .with_context(err_context)
@@ -852,6 +839,27 @@ impl<'a> FloatingPaneGrid<'a> {
         );
         return None;
     }
+}
+
+/// `geom` shifted by `(x, y)` cells and clamped so it stays wholly inside `viewport`.
+///
+/// The clamp, rather than the shift, is the reason this is shared: it is what stops a dragged pane
+/// from being carried off the edge of the surface it is drawn on. `FloatingPanes` and
+/// `OverlayPanes` drag against different surfaces - the tab's placement space and the whole
+/// session surface respectively - but the bounds arithmetic is the same one, so there is one of it.
+pub fn geom_moved_within(geom: PaneGeom, viewport: Viewport, x: isize, y: isize) -> PaneGeom {
+    let mut moved = geom;
+    let min_x = viewport.x as isize;
+    let min_y = viewport.y as isize;
+    let max_x = (viewport.cols + viewport.x).saturating_sub(moved.cols.as_usize());
+    let max_y = (viewport.rows + viewport.y).saturating_sub(moved.rows.as_usize());
+    let new_x = std::cmp::max(min_x, moved.x as isize + x);
+    let new_x = std::cmp::min(new_x, max_x as isize);
+    let new_y = std::cmp::max(min_y, moved.y as isize + y);
+    let new_y = std::cmp::min(new_y, max_y as isize);
+    moved.x = new_x as usize;
+    moved.y = new_y as usize;
+    moved
 }
 
 pub fn half_size_middle_geom(space: &Viewport, offset: usize) -> PaneGeom {
