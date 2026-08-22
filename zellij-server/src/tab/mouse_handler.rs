@@ -1662,6 +1662,14 @@ impl MouseHandler {
             // whatever it is covering
             return Ok(());
         }
+        // below the overlays, then. A modal owns the keyboard until it closes, so a click on
+        // whatever it is covering does nothing at all rather than moving a focus the user can
+        // neither see nor act on. A dismissible overlay does give way - once something underneath
+        // has actually taken the focus, which is what each `release_overlay_focus_to_lower_layer`
+        // below marks. That is how a dismiss-on-defocus popup learns to close.
+        if !tab.lower_layer_may_take_focus(client_id) {
+            return Ok(());
+        }
         if tab.floating_panes.panes_are_visible() {
             if let Some(clicked_pane) = tab
                 .floating_panes
@@ -1670,6 +1678,7 @@ impl MouseHandler {
             {
                 tab.floating_panes.focus_pane(clicked_pane, client_id);
                 tab.set_pane_active_at(clicked_pane);
+                tab.release_overlay_focus_to_lower_layer(client_id);
                 return Ok(());
             }
         }
@@ -1683,6 +1692,7 @@ impl MouseHandler {
                 tab.floating_panes.focus_pane(pane_id, client_id);
                 tab.set_pane_active_at(pane_id);
                 tab.show_floating_panes();
+                tab.release_overlay_focus_to_lower_layer(client_id);
                 return Ok(());
             }
         }
@@ -1695,6 +1705,7 @@ impl MouseHandler {
                 tab.hide_floating_panes();
                 tab.set_force_render();
             }
+            tab.release_overlay_focus_to_lower_layer(client_id);
         }
         Ok(())
     }

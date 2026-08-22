@@ -5279,6 +5279,11 @@ impl Tab {
         self.should_clear_display_before_rendering = true;
         self.floating_panes.set_force_render(); // we do this to make sure pinned panes are
                                                 // rendered even if their surface is not visible
+                                                // the overlays draw after the clear is emitted (see
+                                                // `render_floating_panes_after_global_panes`), so an overlay that is already on screen and
+                                                // clean would contribute nothing to the frame that wipes it - leaving a modal invisible
+                                                // while it still holds the keyboard
+        self.overlay_panes.set_force_render();
     }
     pub fn is_sync_panes_active(&self) -> bool {
         self.synchronize_is_active
@@ -5893,10 +5898,37 @@ impl Tab {
     pub fn is_first_pane_in_cycle(&mut self, client_id: ClientId) -> bool {
         self.has_selectable_panes() && self.tiled_panes.active_pane_is_first_in_cycle(client_id)
     }
+    /// Whether a lower layer may move this client's focus at all.
+    ///
+    /// `false` while a modal holds the keyboard: `get_active_pane_id` prefers the overlay over
+    /// every other layer, so a move made anyway would be a move nothing could observe - input
+    /// would go on reaching the modal, and the focus underneath would have been rearranged where
+    /// the user cannot see it.
+    ///
+    /// This is the *moving* half of the rule. Opening something with focus is the other half, and
+    /// answers differently: see `add_floating_pane` and `new_pane`, where a modal keeps the
+    /// keyboard and the new pane is still created behind it.
+    pub(crate) fn lower_layer_may_take_focus(&self, client_id: ClientId) -> bool {
+        !self.overlay_panes.a_modal_holds_focus(client_id)
+    }
+    /// A lower layer has just taken this client's focus, so a dismissible overlay gives the
+    /// keyboard up: it learns it is no longer focused by being told, and that is how a
+    /// dismiss-on-defocus popup closes itself.
+    ///
+    /// Called *after* the move rather than before it, and only when the move happened. A
+    /// focus-move that found nothing in the direction asked for has changed nothing, and
+    /// dismissing a popup on it would make a dead keypress close the thing the user was reading.
+    pub(crate) fn release_overlay_focus_to_lower_layer(&mut self, client_id: ClientId) {
+        self.overlay_panes.defocus_pane_if_dismissible(client_id);
+    }
     pub fn focus_next_pane(&mut self, client_id: ClientId) {
         if !self.has_selectable_panes() {
             return;
         }
+        if !self.lower_layer_may_take_focus(client_id) {
+            return;
+        }
+        self.release_overlay_focus_to_lower_layer(client_id);
         if self.tiled_panes.fullscreen_is_active() {
             self.switch_next_pane_fullscreen(client_id);
             return;
@@ -5907,6 +5939,10 @@ impl Tab {
         if !self.has_selectable_panes() {
             return;
         }
+        if !self.lower_layer_may_take_focus(client_id) {
+            return;
+        }
+        self.release_overlay_focus_to_lower_layer(client_id);
         if self.tiled_panes.fullscreen_is_active() {
             self.switch_prev_pane_fullscreen(client_id);
             return;
@@ -5917,6 +5953,10 @@ impl Tab {
         if !self.has_selectable_panes() {
             return;
         }
+        if !self.lower_layer_may_take_focus(client_id) {
+            return;
+        }
+        self.release_overlay_focus_to_lower_layer(client_id);
         if self.floating_panes.panes_are_visible() {
             self.floating_panes.focus_last_pane(client_id);
             return;
@@ -5927,10 +5967,15 @@ impl Tab {
         self.tiled_panes.focus_last_pane(client_id);
     }
     pub fn focus_pane_on_edge(&mut self, direction: Direction, client_id: ClientId) {
+        if !self.lower_layer_may_take_focus(client_id) {
+            return;
+        }
         if self.floating_panes.panes_are_visible() {
             self.floating_panes.focus_pane_on_edge(direction, client_id);
+            self.release_overlay_focus_to_lower_layer(client_id);
         } else if self.has_selectable_panes() && !self.tiled_panes.fullscreen_is_active() {
             self.tiled_panes.focus_pane_on_edge(direction, client_id);
+            self.release_overlay_focus_to_lower_layer(client_id);
         }
     }
     pub fn focus_pane_adjacent_to(
@@ -5939,22 +5984,31 @@ impl Tab {
         direction: Direction,
         client_id: ClientId,
     ) -> Option<PaneId> {
-        if self.floating_panes.panes_are_visible() {
-            return self
-                .floating_panes
-                .focus_pane_adjacent_to(pane_id, direction, client_id);
-        }
-        if self.tiled_panes.fullscreen_is_active() {
+        if !self.lower_layer_may_take_focus(client_id) {
             return None;
         }
-        self.tiled_panes
-            .focus_pane_adjacent_to(pane_id, direction, client_id)
+        let focused = if self.floating_panes.panes_are_visible() {
+            self.floating_panes
+                .focus_pane_adjacent_to(pane_id, direction, client_id)
+        } else if self.tiled_panes.fullscreen_is_active() {
+            None
+        } else {
+            self.tiled_panes
+                .focus_pane_adjacent_to(pane_id, direction, client_id)
+        };
+        if focused.is_some() {
+            self.release_overlay_focus_to_lower_layer(client_id);
+        }
+        focused
     }
     // returns a boolean that indicates whether the focus moved
     pub fn move_focus_left(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus left for client {}", client_id);
 
-        if self.floating_panes.panes_are_visible() {
+        if !self.lower_layer_may_take_focus(client_id) {
+            return Ok(false);
+        }
+        let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
                 .move_focus(
                     client_id,
@@ -5970,12 +6024,22 @@ impl Tab {
                 return Ok(self.focus_pane_left_fullscreen(client_id));
             }
             Ok(self.tiled_panes.move_focus_left(client_id))
+        };
+        // only now, and only if it happened: a move that found nothing in the direction asked for
+        // has changed nothing, and dismissing a popup on it would let a dead keypress close the
+        // thing the user was reading
+        if matches!(moved, Ok(true)) {
+            self.release_overlay_focus_to_lower_layer(client_id);
         }
+        moved
     }
     pub fn move_focus_down(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus down for client {}", client_id);
 
-        if self.floating_panes.panes_are_visible() {
+        if !self.lower_layer_may_take_focus(client_id) {
+            return Ok(false);
+        }
+        let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
                 .move_focus(
                     client_id,
@@ -5996,12 +6060,22 @@ impl Tab {
                 return Ok(true);
             }
             Ok(self.tiled_panes.move_focus_down(client_id))
+        };
+        // only now, and only if it happened: a move that found nothing in the direction asked for
+        // has changed nothing, and dismissing a popup on it would let a dead keypress close the
+        // thing the user was reading
+        if matches!(moved, Ok(true)) {
+            self.release_overlay_focus_to_lower_layer(client_id);
         }
+        moved
     }
     pub fn move_focus_up(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus up for client {}", client_id);
 
-        if self.floating_panes.panes_are_visible() {
+        if !self.lower_layer_may_take_focus(client_id) {
+            return Ok(false);
+        }
+        let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
                 .move_focus(
                     client_id,
@@ -6022,13 +6096,23 @@ impl Tab {
                 return Ok(true);
             }
             Ok(self.tiled_panes.move_focus_up(client_id))
+        };
+        // only now, and only if it happened: a move that found nothing in the direction asked for
+        // has changed nothing, and dismissing a popup on it would let a dead keypress close the
+        // thing the user was reading
+        if matches!(moved, Ok(true)) {
+            self.release_overlay_focus_to_lower_layer(client_id);
         }
+        moved
     }
     // returns a boolean that indicates whether the focus moved
     pub fn move_focus_right(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus right for client {}", client_id);
 
-        if self.floating_panes.panes_are_visible() {
+        if !self.lower_layer_may_take_focus(client_id) {
+            return Ok(false);
+        }
+        let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
                 .move_focus(
                     client_id,
@@ -6044,7 +6128,14 @@ impl Tab {
                 return Ok(self.focus_pane_right_fullscreen(client_id));
             }
             Ok(self.tiled_panes.move_focus_right(client_id))
+        };
+        // only now, and only if it happened: a move that found nothing in the direction asked for
+        // has changed nothing, and dismissing a popup on it would let a dead keypress close the
+        // thing the user was reading
+        if matches!(moved, Ok(true)) {
+            self.release_overlay_focus_to_lower_layer(client_id);
         }
+        moved
     }
     pub fn move_active_pane(&mut self, client_id: ClientId) {
         if !self.has_selectable_panes() {
@@ -6257,6 +6348,21 @@ impl Tab {
             .pane_ids()
             .chain(self.floating_panes.pane_ids())
             .chain(self.overlay_panes.pane_ids())
+            .copied()
+            .collect()
+    }
+    /// The panes a tab travels as: the ones with a slot in the tiled or floating layout.
+    ///
+    /// Overlays are deliberately absent. A terminal overlay's overlay-ness cannot be re-derived at
+    /// the far end - there is no plugin configuration to read it back out of, which is the same
+    /// reason `placement_for_extraction` has to be asked before a pane leaves - so an overlay is
+    /// not warped at all. A caller that swept one out of the tab anyway would leave nothing for
+    /// the tab close to hand to the pty thread, and the overlay's child would be left attached to
+    /// nobody.
+    pub fn tiled_and_floating_pane_ids(&self) -> Vec<PaneId> {
+        self.tiled_panes
+            .pane_ids()
+            .chain(self.floating_panes.pane_ids())
             .copied()
             .collect()
     }
@@ -7717,6 +7823,20 @@ impl Tab {
         client_id: ClientId,
     ) -> Result<()> {
         // TODO: should error if pane is not selectable
+        //
+        // A pane named by id is the pane the user just asked for, so this takes the *opening*
+        // shape of the rule rather than the moving one that `lower_layer_may_take_focus` applies
+        // to the focus-move family: a dismissible overlay gives the keyboard up so it can dismiss
+        // itself, a modal keeps it, and either way the focus underneath still lands where it was
+        // asked to - exactly as `add_floating_pane` does.
+        //
+        // Asked only for a pane that is not itself an overlay - the overlay arm of the chain below
+        // is the one place this must not fire, or a request to focus one overlay would defocus
+        // another on the way in - and only for a pane this tab actually holds, since a request
+        // naming a pane that is not here focuses nothing and should dismiss nothing.
+        if !self.overlay_panes.panes_contain(&pane_id) && self.get_pane_with_id(pane_id).is_some() {
+            self.overlay_panes.defocus_pane_if_dismissible(client_id);
+        }
         if self.focus_hidden_stack_list_member(pane_id, client_id) {
             return Ok(());
         }

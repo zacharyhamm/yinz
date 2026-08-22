@@ -569,6 +569,17 @@ impl OverlayPanes {
             None => true,
         }
     }
+    /// Whether a modal is holding this client's keyboard.
+    ///
+    /// The question a lower layer asks before it moves focus: a modal owns the keyboard until it
+    /// closes, so a focus move underneath it is one the user could neither see nor undo, and the
+    /// answer is to not move at all. A dismissible overlay is `false` here - it does give focus
+    /// up, but only once the move it is giving way to has actually happened, which is
+    /// `defocus_pane_if_dismissible`'s job rather than this one's.
+    pub fn a_modal_holds_focus(&self, client_id: ClientId) -> bool {
+        self.active_pane_id(client_id)
+            .is_some_and(|pane_id| self.is_modal(&pane_id))
+    }
     /// The every-client form of `defocus_pane_if_dismissible`, for the paths that focus a new pane
     /// for everybody rather than for one client.
     pub fn defocus_dismissible_panes(&mut self) {

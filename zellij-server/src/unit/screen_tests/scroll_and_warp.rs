@@ -1369,6 +1369,109 @@ fn warping_a_tab_does_not_kill_the_children_of_its_hidden_stack_list_members() {
     );
 }
 
+/// A tab with a tiled pane and a terminal overlay above it.
+fn screen_with_an_overlay_over_a_tab() -> Screen {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(9),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen
+}
+
+#[test]
+fn a_warped_tab_leaves_its_overlay_behind() {
+    // An overlay does not travel: there is no slot for it in a layout, and a
+    // terminal overlay's overlay-ness could not be re-derived at the far end even
+    // if there were - it is not written in a plugin configuration anywhere. So it
+    // is neither released nor carried, and the tab arrives without it.
+    let mut screen = screen_with_an_overlay_over_a_tab();
+
+    let (_, terminal_ids, prepared) = screen
+        .check_tab_can_be_warped(Some(0), 1)
+        .expect("a tab with an overlay over it should still be movable");
+
+    assert!(
+        !terminal_ids.contains(&9),
+        "the overlay's supervisor must not be released, since nobody at the far \
+         end would be holding it: {terminal_ids:?}",
+    );
+    assert!(
+        !prepared
+            .tiled_panes
+            .iter()
+            .chain(prepared.floating_panes.iter())
+            .any(|pane_id| *pane_id == PaneId::Terminal(9)),
+        "and it has no slot in the arrangement either",
+    );
+    assert_eq!(
+        prepared.tiled_panes.len(),
+        terminal_ids.len(),
+        "every terminal that would be released should already have a slot",
+    );
+}
+
+#[test]
+fn warping_a_tab_closes_the_overlay_it_leaves_behind() {
+    // The other half, and the one that used to strand a process. `empty_and_close_tab`
+    // sweeps what was handed over and says nothing to the pty thread, because those
+    // children belong to the other session now. The overlay was never handed over, so
+    // sweeping it out here would have taken it out of the tab before `close_tab_by_id`
+    // could name it - leaving a child running with nothing attached to it. Left where
+    // it is, it closes with the tab.
+    let mut screen = screen_with_an_overlay_over_a_tab();
+    let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+    screen.empty_and_close_tab(0);
+
+    let closed_by_pty: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(pane_ids) => pane_ids,
+            PtyInstruction::ClosePane(pane_id, _) => vec![pane_id],
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(
+        closed_by_pty,
+        vec![PaneId::Terminal(9)],
+        "the overlay, and only the overlay: the tab's own pane was warped and must \
+         not be closed here",
+    );
+}
+
+#[test]
+fn a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp() {
+    // The guard has to be asked of the panes that travel rather than of all of
+    // them. Asked of all of them, a tab like this passes - and then warps with an
+    // empty payload, which is an elaborate way of opening a new tab.
+    let mut screen = screen_with_an_overlay_over_a_tab();
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .close_pane(PaneId::Terminal(1), false, None);
+
+    assert_eq!(
+        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        Some("this tab has no panes with a process to move".to_owned())
+    );
+}
+
 #[test]
 fn a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped() {
     // The pair this refusal is really about, and the one an `is_scrollback_editor`

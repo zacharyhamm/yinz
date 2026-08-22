@@ -487,11 +487,11 @@ than `new_floating_pane`, where review pointed: that is where the focusing actua
 the funnel every entry point reaches, and `new_floating_pane` passes no `client_id` at all — the
 all-clients form was needed regardless.
 
-**Explicitly not done.** The same gap exists on `MouseHandler::focus_pane_at` (clicking a floating
-or tiled pane under a dismissible overlay) and on the keyboard focus-move family
-(`focus_next_pane`, `move_focus_left/down/up/right`, …). Neither is one of these findings, and
-both are a different question — *moving* focus rather than *opening* something with it. The new
-helper is the piece they would reuse.
+**Explicitly not done** — *closed by Phase 10, below.* The same gap exists on
+`MouseHandler::focus_pane_at` (clicking a floating or tiled pane under a dismissible overlay) and
+on the keyboard focus-move family (`focus_next_pane`, `move_focus_left/down/up/right`, …). Neither
+is one of these findings, and both are a different question — *moving* focus rather than *opening*
+something with it. The new helper is the piece they would reuse.
 
 **On the tests.** Three added, in `screen_tests/overlays.rs`. Each of the two bug-pinning ones was
 re-run with only its own fix reverted and failed, as Phases 7 and 8 did; the modal counterpart
@@ -504,6 +504,83 @@ changes who holds the keyboard, not how anything is drawn.
 already warns about (112 timeouts); RUNFIGURES `global_panes_focus` was checked the way the note
 above prescribes — 8 runs alone on this tree (5 pass, 3 fail) against 8 runs alone on a clean HEAD
 worktree (3 pass, 5 fail). Same both-outcomes behaviour on both trees, so not a regression.
+
+### Phase 10 — moving focus, and a tab that travels without its overlays
+
+Two review findings, unrelated to each other except in their cause: generic code that used to
+reach overlays through `floating_panes` now either reaches them where it should not, or misses
+them where it should.
+
+**A warped tab stranded its overlay's child.** `check_tab_can_be_warped` builds the payload from
+`tab_panes_for_layout`, which walks the tiled and floating collections — an overlay has no layout
+slot, so its supervisor was never released. But `empty_and_close_tab` swept
+`get_static_and_floating_pane_ids`, which Phase 4 taught to chain the overlays, and every close in
+that function deliberately says nothing to the pty thread because those children belong to the
+other session now. So the overlay was taken out of the tab *before* `close_tab_by_id` could name
+it to the pty thread: the far end never received it, and this end left a child attached to nobody.
+
+**The decision was to ignore overlays rather than carry them.** A terminal overlay cannot be
+expressed in a layout at all — overlay-ness is re-derivable only from a plugin's configuration,
+which is the same reason `placement_for_extraction` has to be asked before a pane leaves — so
+there was no version of "carry it" that did not invent a wire format for one popup. It stays with
+the source session and closes with the tab like anything else the tab still holds.
+`Tab::tiled_and_floating_pane_ids` is the new accessor that says which panes a tab travels as;
+`get_static_and_floating_pane_ids` keeps the overlays for its other callers. The same accessor
+fixes the guard above it: "this tab has no panes with a process to move" was asked of
+`get_all_pane_ids`, so a tab whose only terminal was an overlay passed it and then warped with an
+empty payload.
+
+**A dismissible overlay kept the keyboard when a lower layer took focus.** This is the gap Phase 9
+recorded as explicitly not done. `get_active_pane_id` prefers an active overlay over every other
+layer, so `MouseHandler::focus_pane_at` and the focus-move family — which updated
+`floating_panes`/`tiled_panes` alone — left a stale overlay entry masking whatever they focused:
+input went on reaching the popup, and a dismiss-on-defocus popup never learned it had lost the
+keyboard.
+
+**The rule has three parts, and the third is the one that is easy to miss:**
+
+- **A modal makes the move a no-op.** It owns the keyboard until it closes, so focusing what it
+  covers would rearrange focus where the user can neither see nor act on it — and leave the layer
+  underneath pointing somewhere else for when the modal finally goes. `lower_layer_may_take_focus`
+  is the question (`OverlayPanes::a_modal_holds_focus` under it); the focus-move family returns
+  its own "nothing moved" value, and the mouse path swallows the click.
+- **A dismissible overlay gives the keyboard up**, via `release_overlay_focus_to_lower_layer` —
+  Phase 9's `defocus_pane_if_dismissible`, reused exactly as that phase predicted.
+- **Only once the move has actually happened.** The release is *after* the move, and conditional
+  on it. Released on the way in, a focus-move that found nothing in the direction asked for would
+  dismiss the popup the user was reading and drop the keyboard onto the pane behind it — a dead
+  keypress closing something. The existing
+  `tab_integration_tests::floating::overlay_does_not_show_hidden_floating_panes` caught exactly
+  this, which is the second time this document can record a pre-existing test paying for itself.
+
+**`focus_pane_with_id` deliberately takes the other shape.** It is an explicit "focus *this* pane",
+so it belongs with Phase 9's opening paths rather than with the focus-move family: a dismissible
+overlay gives the keyboard up, a modal keeps it, and either way the focus underneath lands where it
+was asked to — as `add_floating_pane` already does. It fires only for a pane that is not itself an
+overlay (or a request to focus one overlay would defocus another on the way in) and only for a pane
+this tab actually holds (a request naming a pane that is not here focuses nothing, and should
+dismiss nothing).
+
+**One test moved.** `an_overlay_masks_each_client_s_tiled_focus_until_it_closes` pinned masking for
+a *dismissible* overlay, which is the behavior this phase changes; it is now
+`a_modal_masks_each_client_s_tiled_focus_until_it_closes`, keeping the property for the kind whose
+property it actually is, with
+`focusing_a_pane_by_id_under_a_dismissible_overlay_takes_the_keyboard_from_it` for the other half.
+
+**On the tests.** Nine added — six in `screen_tests/overlays.rs`, three in
+`screen_tests/scroll_and_warp.rs`. Each half of each fix was re-run with only itself reverted, as
+Phases 7–9 did, and each time exactly the tests that name it failed: the `empty_and_close_tab`
+sweep (`warping_a_tab_closes_the_overlay_it_leaves_behind` — nothing closed the overlay at all),
+the warp guard (`a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp` — fell through to the
+layout builder's less useful complaint), the release (the three dismissible focus tests), the
+modal guard (both modal tests), the by-id release (its own test), and the release *ordering*
+(`a_focus_move_that_goes_nowhere_leaves_a_dismissible_overlay_holding_the_keyboard`, plus the
+pre-existing floating test). `a_warped_tab_leaves_its_overlay_behind` passes either way by design —
+it guards the half that was already right. No snapshots added or moved: this changes who holds the
+keyboard and what a tab travels as, not how anything is drawn.
+
+**Run figures.** `cargo x test`: 2553 passed in `zellij-server`, 0 failed, whole suite green.
+`cargo x integration-test -- -j 4`: RUNFIGURES.
 
 ---
 

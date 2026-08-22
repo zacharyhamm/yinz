@@ -8734,8 +8734,13 @@ impl Screen {
         // tab worth moving, and saying so is more use than the layout complaint
         // an empty tab would otherwise earn. What actually gets released is
         // decided further down, from the slots.
+        //
+        // Asked of the panes with a slot rather than of all of them: an overlay
+        // does not travel, so a tab whose only terminal is an overlay has nothing
+        // to move and should be told so here rather than warp with an empty
+        // payload.
         if !tab
-            .get_all_pane_ids()
+            .tiled_and_floating_pane_ids()
             .iter()
             .any(|pane_id| matches!(pane_id, PaneId::Terminal(_)))
         {
@@ -8933,7 +8938,13 @@ impl Screen {
                 tab.close_pane(pane_id, false, None);
                 emptied.push(pane_id);
             }
-            for pane_id in tab.get_static_and_floating_pane_ids() {
+            // Only what was released, which is what the tiled and floating slots were built from.
+            // An overlay has no slot and so was never handed over (see
+            // `Tab::tiled_and_floating_pane_ids`); taking it out here would remove it from the tab
+            // before `close_tab_by_id` could tell the pty thread about it, and - because nothing
+            // in this function says a word to that thread - its child would be left running with
+            // nothing attached to it. Left where it is, it closes with the tab like any other.
+            for pane_id in tab.tiled_and_floating_pane_ids() {
                 tab.close_pane(pane_id, false, None);
                 emptied.push(pane_id);
             }
