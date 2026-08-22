@@ -18,6 +18,8 @@ fn test_config() -> Config {
         dobbs: DEFAULT_DOBBS.into(),
         dobbs_addr: None,
         dobbs_token: None,
+        linear_api_key_env: linear::DEFAULT_API_KEY_ENV.into(),
+        linear_api_key: None,
         system_prompt: None,
         // Off in most fixtures so the assertions can compare whole bodies.
         tools: false,

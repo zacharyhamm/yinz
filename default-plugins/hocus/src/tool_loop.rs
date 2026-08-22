@@ -87,6 +87,11 @@ impl State {
         if call.name == "web_search" {
             return self.start_search(call);
         }
+        // Same two reasons: the API key comes from the resolved config, and the
+        // answer arrives later as a `WebRequestResult`.
+        if tools::LINEAR_TOOLS.contains(&call.name.as_str()) {
+            return self.start_linear(call);
+        }
         // Same reason: the dobbs binary comes from the config.
         if tools::SLACK_TOOLS.contains(&call.name.as_str()) {
             return self.start_slack(call);
@@ -268,6 +273,65 @@ impl State {
         false
     }
 
+    /// Ask Linear. Deferred on a `WebRequestResult` exactly like `start_search`.
+    ///
+    /// The tools stay advertised whether or not a key is configured — the Slack
+    /// tools and `web_search` are advertised without dobbs or SearxNG too — so
+    /// "not configured" is answered here, as a tool result the model can read,
+    /// rather than by withholding the tool.
+    pub(crate) fn start_linear(&mut self, call: &ToolCall) -> bool {
+        let args = match tools::Args::parse(&call.arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+        // Cloned so the request can be issued without holding a borrow of self.
+        let configured = self
+            .cfg
+            .as_ref()
+            .ok()
+            .map(|cfg| (cfg.linear_api_key.clone(), cfg.linear_api_key_env.clone()));
+        let Some((key, key_env)) = configured else {
+            self.finish_head("hocus is not configured");
+            return true;
+        };
+        let Some(key) = key else {
+            // Names the variable actually configured, not the default, and
+            // repeats the caveat `ConfigError` gives for the LLM key: the
+            // environment we see is the session's, captured when it started.
+            self.finish_head(format!(
+                "Linear is not configured: ${key_env} is not set.\n\nSet it in the \
+                 environment the Zellij session was started from — exporting it after \
+                 launching zellij will not be picked up. Or set linear_api_key_env in the \
+                 plugin configuration to name a different variable."
+            ));
+            return true;
+        };
+        let body = match linear::request_for(&call.name, &args) {
+            Ok(body) => body,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+
+        web_request(
+            linear::ENDPOINT,
+            HttpVerb::Post,
+            linear::headers(&key),
+            body,
+            // Round-trips through the host, which is how the result is matched
+            // back to the call that made it.
+            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+        );
+        self.status = Status::AwaitingLinear;
+        self.pin_to_bottom();
+        self.arm_timer(FRAME_SECONDS);
+        false
+    }
+
     /// Run one of the Slack tools by shelling out to dobbs. The result comes back
     /// as `RunCommandResult` carrying this call's id, which is the only deferred
     /// path left through `on_command_result`.
@@ -431,6 +495,41 @@ impl State {
         } else {
             api::api_error_message(status, body)
         };
+
+        self.status = Status::Idle;
+        self.finish_head(result);
+        self.pump_tools();
+        true
+    }
+
+    /// The deferred half of the Linear tools, and the twin of `finish_search`.
+    ///
+    /// The status guard is what keeps the two apart: a `WebRequestResult` is
+    /// only ours while a Linear call is the one outstanding.
+    pub(crate) fn finish_linear(
+        &mut self,
+        status: u16,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> bool {
+        if !matches!(self.status, Status::AwaitingLinear) {
+            return false;
+        }
+        // A call we already aborted, or someone else's request.
+        let Some(head) = self.pending.front() else {
+            return false;
+        };
+        if context.get("tool_call_id") != Some(&head.id) {
+            return false;
+        }
+
+        let name = head.name.clone();
+        let key_env = self
+            .cfg
+            .as_ref()
+            .map(|cfg| cfg.linear_api_key_env.clone())
+            .unwrap_or_else(|_| linear::DEFAULT_API_KEY_ENV.to_owned());
+        let result = linear::format(&name, status, body, &key_env);
 
         self.status = Status::Idle;
         self.finish_head(result);

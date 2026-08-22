@@ -325,6 +325,12 @@ plugins {
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="zellij:file-finder"
     // The agent conversation, bound to Ctrl e c above.
+    //
+    //   linear_api_key_env  the *name* of the variable holding a Linear personal API
+    //                       key - never the key itself, which belongs in the environment
+    //                       the session was started from. Defaults to LINEAR_API_KEY.
+    //                       Unset, the `linear_*` tools stay advertised and answer with a
+    //                       sentence saying which variable to set; nothing else changes.
     hocus location="zellij:hocus" {
         shared true
     }

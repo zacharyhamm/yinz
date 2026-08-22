@@ -36,7 +36,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Call `agent_list` before agent actions. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions. Make independent calls together."
     );
 }
 
@@ -98,7 +98,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 57);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 60);
 }
 
 /// The tool payload is paid for on every turn, so it is capped rather than left to
@@ -106,13 +106,19 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
 /// *any* new tool fail this test rather than only an extravagant one. Raised to 21kb
 /// when `set_global_pane_placement` was added — a ceiling with no headroom stops
 /// measuring growth and starts forbidding it. Trim descriptions before raising it again.
+///
+/// Raised to 23kb when the three Linear tools arrived, and for the same reason: 21kb
+/// had again been consumed to the last dozen bytes, so the cap was refusing any new
+/// tool rather than measuring the cost of one. Their schemas were trimmed first —
+/// property descriptions folded into the one tool description, which is where the
+/// guidance costs a single copy of each JSON key instead of one per property.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_21_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_23_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")], true);
     assert!(
-        body.len() < 21_000,
+        body.len() < 23_000,
         "tool payload grew to {} bytes",
         body.len()
     );

@@ -10,6 +10,7 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::linear;
 use crate::tools::{self, ToolCall};
 use crate::{Message, Reasoning, ReasoningKey, Role};
 
@@ -31,7 +32,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Call `agent_list` before agent actions. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions. Make independent calls together.";
 /// Sent in place of the tool set on the last round of the tool budget, so the
 /// model answers from what it has instead of insisting it needs another call.
 const BUDGET_SPENT_PROMPT: &str =
@@ -62,6 +63,13 @@ pub struct Config {
     /// order: `~/.dobbs/remote.addr`, then the local daemon's addr file.
     pub dobbs_addr: Option<String>,
     pub dobbs_token: Option<String>,
+    /// The *name* of the variable holding the Linear personal API key, and the
+    /// key itself if that variable is set.
+    ///
+    /// `None` is not a configuration error: hocus has to start without Linear,
+    /// so the tools stay advertised and answer with a sentence when called.
+    pub linear_api_key_env: String,
+    pub linear_api_key: Option<String>,
     pub system_prompt: Option<String>,
     /// Whether to advertise the Zellij tool set. On by default, but hocus points
     /// at arbitrary endpoints and plenty of local models fail outright when sent
@@ -118,6 +126,11 @@ impl Config {
         );
         let dobbs_addr = non_empty(kdl, "dobbs_addr").or_else(|| non_empty(env, "DOBBS_ADDR"));
         let dobbs_token = non_empty(kdl, "dobbs_token").or_else(|| non_empty(env, "DOBBS_TOKEN"));
+        let linear_api_key_env = non_empty(kdl, "linear_api_key_env")
+            .unwrap_or_else(|| linear::DEFAULT_API_KEY_ENV.to_owned());
+        // Absent is fine, and deliberately not folded into the `Err` arm below:
+        // a missing Linear key must never stop hocus from starting.
+        let linear_api_key = non_empty(env, &linear_api_key_env);
         let system_prompt = non_empty(kdl, "system_prompt");
         // Anything but an explicit "false" leaves tools on: a typo should not
         // silently disable them.
@@ -147,6 +160,8 @@ impl Config {
                 dobbs,
                 dobbs_addr,
                 dobbs_token,
+                linear_api_key_env,
+                linear_api_key,
                 system_prompt,
                 tools,
                 max_tool_rounds,

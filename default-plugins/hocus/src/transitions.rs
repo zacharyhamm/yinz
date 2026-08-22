@@ -200,7 +200,7 @@ impl State {
     /// predicate the whole waiting indicator keys off.
     pub(crate) fn is_loading(&self) -> bool {
         match self.status {
-            Status::AwaitingCommand | Status::AwaitingSearch => true,
+            Status::AwaitingCommand | Status::AwaitingSearch | Status::AwaitingLinear => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply. Once its
             // first token lands the arriving text is its own proof of life; a
@@ -237,6 +237,12 @@ impl State {
             let args = head.and_then(|call| tools::Args::parse(&call.arguments).ok());
             if let Some(query) = args.and_then(|args| args.query) {
                 return Some(format!("{spinner} searching: {query}"));
+            }
+        } else if matches!(self.status, Status::AwaitingLinear) {
+            // The tool rather than the query, the way the Slack arm does it:
+            // `linear_issues` often has no query worth showing.
+            if let Some(call) = head {
+                return Some(format!("{spinner} linear: {}", call.name));
             }
         }
 

@@ -637,6 +637,7 @@ mod data_store;
 mod file_tools;
 mod jobs;
 mod keys;
+mod linear_tools;
 mod picker;
 mod project_assignment;
 mod project_discovery;
