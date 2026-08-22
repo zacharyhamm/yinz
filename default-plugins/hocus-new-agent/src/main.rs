@@ -13,7 +13,7 @@ use hocus_proto::{
 };
 use zellij_tile::prelude::*;
 use zellij_tile::ui_components::forms::{
-    Button, Checkbox, Dialog, Form, FormEvent, Rect, Select, TextInput,
+    Button, Checkbox, Combo, Dialog, Form, FormEvent, Rect, Select, TextInput,
 };
 
 const PROJECT: &str = "project";
@@ -25,6 +25,12 @@ const BASE: &str = "base";
 const BRANCH: &str = "branch";
 const WORKTREE: &str = "worktree";
 const PATH: &str = "path";
+/// Which question a `RunCommandResult` is answering, and which round it belongs
+/// to. Both travel in the command's context, which comes back verbatim.
+const GIT_PROBE: &str = "git_probe";
+const GIT_PROBE_ID: &str = "git_probe_id";
+const BRANCHES_PROBE: &str = "branches";
+const WORKTREES_PROBE: &str = "worktrees";
 const DUPLICATE_FOCUSED: &str = "duplicate_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
@@ -62,6 +68,13 @@ struct State {
     /// every step of a mouse drag of the modal itself - and each coordinate change re-resolves the
     /// pane. Sending only when the size actually changed keeps the drag quiet.
     requested_size: Option<(String, String)>,
+    /// Which round of Git probes the suggestions on screen belong to.
+    ///
+    /// The project can change while a probe is in flight, and the answer that
+    /// comes back is about the folder it was asked in - branches of the project
+    /// the user has just left. Bumped by every refresh, so a late reply can be
+    /// told apart from the current one and dropped.
+    git_probe: u32,
 }
 
 impl Default for State {
@@ -92,20 +105,22 @@ impl Default for State {
                 "Create and switch branch",
                 Checkbox::new(true),
             )
-            .field(
-                BASE,
-                "Base",
-                TextInput::new(launch::DEFAULT_BASE.to_owned()),
-            )
-            .field(BRANCH, "Branch", TextInput::empty())
+            // The three Git fields are combos rather than plain inputs: each one
+            // is free text - a branch nobody has made yet is the common case -
+            // that is very often one of the values already in the repository.
+            // Their suggestions are empty here and filled by
+            // `refresh_git_suggestions`, for the same reason the project select
+            // starts on a placeholder: `Default` makes no host calls.
+            .combo(BASE, "Base", Combo::empty().with_text(launch::DEFAULT_BASE))
+            .combo(BRANCH, "Branch", Combo::empty())
             .checkbox(WORKTREE, "Use worktree", Checkbox::new(true))
-            .field(
+            .combo(
                 PATH,
                 // Named because a relative path is anchored to the repository's
                 // primary checkout, not to the pane's cwd — which differs whenever
                 // the agent asking sits in a worktree already.
                 "Worktree path (from repo root)",
-                TextInput::new(launch::WORKTREE_PREFIX.to_owned()),
+                Combo::empty().with_text(launch::WORKTREE_PREFIX),
             )
             .button("create", Button::new("Create agent"))
             // Half a form filled in and an Enter pressed out of habit used to
@@ -126,6 +141,7 @@ impl Default for State {
             path_edited: false,
             error: None,
             requested_size: None,
+            git_probe: 0,
         }
     }
 }
@@ -154,8 +170,10 @@ impl ZellijPlugin for State {
             EventType::Mouse,
             EventType::TabUpdate,
             EventType::PastedText,
+            EventType::RunCommandResult,
             EventType::Visible,
         ]);
+        self.refresh_git_suggestions();
         set_selectable(true);
         rename_plugin_pane(self.plugin_id, "new agent");
         self.resize(None);
@@ -183,6 +201,9 @@ impl ZellijPlugin for State {
                     true
                 },
                 None => false,
+            },
+            Event::RunCommandResult(exit_code, stdout, _stderr, context) => {
+                self.finish_git_probe(exit_code, &String::from_utf8_lossy(&stdout), &context)
             },
             Event::Visible(false) => {
                 close_self();
@@ -254,6 +275,17 @@ fn help_for(form: &Form) -> &'static str {
             "<Enter> choose  <↑↓> move  <Esc> close"
         } else {
             "<Enter> open  <Tab> next  <Esc> cancel"
+        };
+    }
+    if let Some(combo) = field.combo() {
+        // Three states, not the select's two: a combo is a text field as well
+        // as a list, and Enter means something different in each of them.
+        return if combo.is_open() {
+            "<↑↓> pick  <Enter> use  <Esc> close"
+        } else if form.is_editing() {
+            "<Enter> done  <↓> list  <Tab> next"
+        } else {
+            "<Enter> edit  <Tab> next  <Esc> cancel"
         };
     }
     if field.checkbox().is_some() {
@@ -342,6 +374,132 @@ impl State {
             select.select_index(selected);
         }
     }
+
+    /// Ask Git what this project already has, for the three combos to suggest.
+    ///
+    /// Asynchronous, through `RunCommandResult`, because a plugin has no way to
+    /// run a process and wait: see `finish_git_probe` for the other half. Run in
+    /// the same folder the submit path resolves - the suggestions have to be
+    /// about the repository the agent would be created in, not the one the modal
+    /// was opened from.
+    ///
+    /// Nothing here can fail loudly. A folder that is not a checkout answers
+    /// non-zero and simply has nothing to offer; the fields are free text and
+    /// stay usable with no list at all.
+    fn refresh_git_suggestions(&mut self) {
+        let cwd = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
+        self.git_probe += 1;
+        let context = |kind: &str| {
+            BTreeMap::from([
+                (GIT_PROBE.to_owned(), kind.to_owned()),
+                (GIT_PROBE_ID.to_owned(), self.git_probe.to_string()),
+            ])
+        };
+        run_command_with_env_variables_and_cwd(
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                // Most recent first: the branch a base is taken from is nearly
+                // always one of the last few touched, and the combo filters by
+                // typing anyway.
+                "--sort=-committerdate",
+                "--count=200",
+                "refs/heads",
+            ],
+            BTreeMap::new(),
+            cwd.clone(),
+            context(BRANCHES_PROBE),
+        );
+        run_command_with_env_variables_and_cwd(
+            &["git", "worktree", "list", "--porcelain"],
+            BTreeMap::new(),
+            cwd,
+            context(WORKTREES_PROBE),
+        );
+    }
+
+    /// File one probe's answer into the combos it belongs to.
+    fn finish_git_probe(
+        &mut self,
+        exit_code: Option<i32>,
+        stdout: &str,
+        context: &BTreeMap<String, String>,
+    ) -> bool {
+        let Some(kind) = context.get(GIT_PROBE) else {
+            return false;
+        };
+        // A reply from a round before the current one is about another project's
+        // folder, and would offer its branches for this one.
+        if context.get(GIT_PROBE_ID).map(String::as_str) != Some(&self.git_probe.to_string()) {
+            return false;
+        }
+        if exit_code.unwrap_or(0) != 0 {
+            return false;
+        }
+        match kind.as_str() {
+            BRANCHES_PROBE => {
+                let branches = branch_suggestions(stdout);
+                // Both, and for the same reason: a base is always an existing
+                // branch, and a branch is one whenever the agent is meant to
+                // carry on work that is already there.
+                for id in [BASE, BRANCH] {
+                    if let Some(combo) = self.dialog.form_mut().combo_by_id_mut(id) {
+                        combo.set_suggestions(branches.clone());
+                    }
+                }
+                true
+            },
+            WORKTREES_PROBE => {
+                let paths = worktree_suggestions(stdout);
+                if let Some(combo) = self.dialog.form_mut().combo_by_id_mut(PATH) {
+                    combo.set_suggestions(paths);
+                }
+                true
+            },
+            _ => false,
+        }
+    }
+}
+
+/// One branch per line, as `for-each-ref` prints them.
+fn branch_suggestions(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The repository's linked worktrees, written the way the field is labelled.
+///
+/// `git worktree list --porcelain` opens each block with a `worktree <path>`
+/// line and lists the primary checkout first. That first entry is dropped: it is
+/// the repository itself, which is what "use worktree" unticked already means,
+/// and offering it as a worktree path would be offering to work in the main
+/// checkout under another name.
+///
+/// The rest are relativised against it, because the field is anchored to the
+/// primary checkout ("from repo root") - and left absolute when they live
+/// outside it, which is where a relative path could not reach them.
+fn worktree_suggestions(porcelain: &str) -> Vec<String> {
+    let mut paths = porcelain
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let Some(primary) = paths.next() else {
+        return vec![];
+    };
+    paths
+        .map(|path| {
+            Path::new(path)
+                .strip_prefix(primary)
+                .map(|relative| relative.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.to_owned())
+        })
+        .collect()
 }
 
 /// What the project select offers, and the index of the one that starts
@@ -445,6 +603,11 @@ impl State {
 
     fn changed(&mut self, id: &str) {
         self.error = None;
+        // The branches and worktrees on offer are the selected project's, so a
+        // different project means a different list.
+        if id == PROJECT {
+            self.refresh_git_suggestions();
+        }
         if id == CREATE_BRANCH && !self.dialog.form().checked(CREATE_BRANCH) {
             self.set_checked(WORKTREE, false);
         }
@@ -456,13 +619,8 @@ impl State {
         }
         if id == BRANCH && !self.path_edited {
             let branch = self.dialog.form().text(BRANCH).to_owned();
-            if let Some(input) = self
-                .dialog
-                .form_mut()
-                .field_by_id_mut(PATH)
-                .and_then(|field| field.input_mut())
-            {
-                input.set_text(launch::worktree_path_for(&branch));
+            if let Some(combo) = self.dialog.form_mut().combo_by_id_mut(PATH) {
+                combo.set_text(launch::worktree_path_for(&branch));
             }
         }
     }
@@ -742,7 +900,7 @@ mod tests {
         let narrowest: usize = modal_width(Some(80)).parse().unwrap();
         let mut state = State::default();
         let mut lines = vec![];
-        for id in [PROJECT, AGENT, MODEL, CREATE_BRANCH, "create"] {
+        for id in [PROJECT, AGENT, MODEL, CREATE_BRANCH, BASE, "create"] {
             state.dialog.form_mut().focus_on(id);
             lines.push(help_for(state.dialog.form()));
         }
@@ -759,6 +917,19 @@ mod tests {
         state
             .dialog
             .handle_key(KeyWithModifier::new(BareKey::Enter));
+        lines.push(help_for(state.dialog.form()));
+        // And the three a combo has: closed, editing, and with its list open.
+        state.dialog.form_mut().focus_on(BASE);
+        state
+            .dialog
+            .handle_key(KeyWithModifier::new(BareKey::Enter));
+        lines.push(help_for(state.dialog.form()));
+        state
+            .dialog
+            .form_mut()
+            .combo_by_id_mut(BASE)
+            .unwrap()
+            .open();
         lines.push(help_for(state.dialog.form()));
 
         for line in lines {
@@ -892,6 +1063,85 @@ mod tests {
             ),
             PathBuf::from("/elsewhere")
         );
+    }
+
+    /// The primary checkout is not a worktree path anyone can ask for - leaving
+    /// the "use worktree" box unticked is what running there means - and the
+    /// rest are written the way the field is labelled.
+    #[test]
+    fn the_worktree_suggestions_are_the_linked_checkouts_relative_to_the_root() {
+        let porcelain = "worktree /work/zellij\nHEAD abcd\nbranch refs/heads/main\n\
+             \nworktree /work/zellij/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
+             \nworktree /elsewhere/detached\nHEAD 2345\ndetached\n";
+        assert_eq!(
+            worktree_suggestions(porcelain),
+            // The one outside the root cannot be written relative to it.
+            [".worktrees/topic", "/elsewhere/detached"]
+        );
+        // A repository with no linked worktrees has nothing to suggest, and a
+        // folder that is not a checkout answers with nothing at all.
+        assert!(worktree_suggestions("worktree /work/zellij\nbranch refs/heads/main\n").is_empty());
+        assert!(worktree_suggestions("").is_empty());
+    }
+
+    #[test]
+    fn a_finished_probe_fills_the_combos_it_is_about() {
+        let mut state = State::default();
+        state.git_probe = 3;
+        let context = |kind: &str, id: u32| {
+            BTreeMap::from([
+                (GIT_PROBE.to_owned(), kind.to_owned()),
+                (GIT_PROBE_ID.to_owned(), id.to_string()),
+            ])
+        };
+
+        assert!(state.finish_git_probe(Some(0), "topic\nmain\n\n", &context(BRANCHES_PROBE, 3)));
+        // A base is an existing branch; so is a branch whenever the agent is
+        // meant to carry on work that is already there.
+        for id in [BASE, BRANCH] {
+            assert_eq!(
+                state.dialog.form().combo_by_id(id).unwrap().suggestions(),
+                ["topic", "main"],
+                "{id}"
+            );
+        }
+        assert!(state.finish_git_probe(
+            Some(0),
+            "worktree /work/zellij\n\nworktree /work/zellij/.worktrees/topic\n",
+            &context(WORKTREES_PROBE, 3),
+        ));
+        assert_eq!(
+            state.dialog.form().combo_by_id(PATH).unwrap().suggestions(),
+            [".worktrees/topic"]
+        );
+        // The text the field started with is the value; a suggestion list never
+        // touches it.
+        assert_eq!(state.dialog.form().text(BASE), "main");
+        assert_eq!(state.dialog.form().text(PATH), ".worktrees/");
+    }
+
+    /// A reply about the folder the user has just left would offer another
+    /// project's branches for this one, and a probe that failed - a folder that
+    /// is not a checkout - has nothing to say either.
+    #[test]
+    fn a_stale_or_failed_probe_leaves_the_suggestions_alone() {
+        let mut state = State::default();
+        state.git_probe = 2;
+        let probe = |id: u32| {
+            BTreeMap::from([
+                (GIT_PROBE.to_owned(), BRANCHES_PROBE.to_owned()),
+                (GIT_PROBE_ID.to_owned(), id.to_string()),
+            ])
+        };
+        assert!(!state.finish_git_probe(Some(0), "old-project-branch\n", &probe(1)));
+        assert!(!state.finish_git_probe(Some(128), "\n", &probe(2)));
+        assert!(state
+            .dialog
+            .form()
+            .combo_by_id(BASE)
+            .unwrap()
+            .suggestions()
+            .is_empty());
     }
 
     #[test]
