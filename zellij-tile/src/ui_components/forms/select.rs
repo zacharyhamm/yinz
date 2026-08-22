@@ -9,9 +9,8 @@
 //! The pieces are the ones already in this module: the filter is a `TextInput`,
 //! so it gets the same editing keys as any other field; the filter row is laid
 //! out by [`viewport`](super::viewport), so the cursor lands in the right column
-//! next to a CJK character; the dropdown is windowed by
-//! [`list_window`](super::list_window) and highlighted from
-//! [`fuzzy_filter`](super::fuzzy_filter).
+//! next to a CJK character; the list itself is a `Dropdown`, the same one
+//! [`Combo`](super::Combo) drops under its row.
 //!
 //! ## The dropdown overlays
 //!
@@ -30,17 +29,13 @@
 //! over the list — see [`Form::overlay_rect`](super::Form::overlay_rect) for how
 //! a screen keeps its chrome out of the way.
 
-use super::fuzzy::{fuzzy_filter, Match};
-use super::list::list_window;
+use super::dropdown::{Dropdown, HasDropdown};
 use super::text_input::{InputAction, TextInput};
 use super::viewport::{take_columns, viewport};
 use super::Rect;
 use crate::prelude::*;
 use crate::ui_components::{print_text_with_coordinates, Text};
 use unicode_width::UnicodeWidthStr;
-
-/// Option rows a dropdown shows before it starts scrolling.
-pub const DEFAULT_MAX_VISIBLE_OPTIONS: usize = 6;
 
 /// Drawn at the right of a collapsed select, so a row that is a list and a row
 /// that is a text field do not look alike.
@@ -66,15 +61,10 @@ pub struct Select {
     placeholder: String,
     open: bool,
     filter: TextInput,
-    /// Options matching the filter, best first. Only meaningful while open.
-    matches: Vec<Match>,
-    /// Position *within `matches`* of the row under the highlight.
-    highlighted: usize,
-    max_visible_options: usize,
+    /// The list under the row: what matches, and what the highlight is on.
+    dropdown: Dropdown,
     /// The collapsed row, for hit-testing. `None` until it has been drawn.
     last_rendered: Option<Rect>,
-    /// The option rows currently on screen, as `(option index, rectangle)`.
-    last_option_rects: Vec<(usize, Rect)>,
 }
 
 impl Select {
@@ -91,11 +81,8 @@ impl Select {
             placeholder: String::new(),
             open: false,
             filter: TextInput::empty(),
-            matches: vec![],
-            highlighted: 0,
-            max_visible_options: DEFAULT_MAX_VISIBLE_OPTIONS,
+            dropdown: Dropdown::default(),
             last_rendered: None,
-            last_option_rects: vec![],
         }
     }
 
@@ -112,7 +99,7 @@ impl Select {
     }
 
     pub fn max_visible_options(mut self, rows: usize) -> Self {
-        self.max_visible_options = rows.max(1);
+        self.dropdown.set_max_visible_options(rows);
         self
     }
 
@@ -183,10 +170,8 @@ impl Select {
         self.open = true;
         self.filter.clear();
         self.refilter();
-        if let Some(selected) = self.selected {
-            if let Some(position) = self.matches.iter().position(|m| m.index == selected) {
-                self.highlighted = position;
-            }
+        if let Some(position) = self.selected.and_then(|s| self.dropdown.position_of(s)) {
+            self.dropdown.set_highlighted(Some(position));
         }
     }
 
@@ -194,9 +179,7 @@ impl Select {
     pub fn close(&mut self) {
         self.open = false;
         self.filter.clear();
-        self.matches.clear();
-        self.highlighted = 0;
-        self.last_option_rects.clear();
+        self.dropdown.clear();
     }
 
     /// The text currently in the filter. Empty while closed.
@@ -212,28 +195,20 @@ impl Select {
     }
 
     fn highlighted_index(&self) -> Option<usize> {
-        self.matches.get(self.highlighted).map(|m| m.index)
+        self.dropdown.highlighted_index()
     }
 
     fn refilter(&mut self) {
-        self.matches = fuzzy_filter(&self.options, self.filter.get_text());
-        // Narrowing the filter can leave the highlight past the end of what is
-        // left; clamping is what keeps Enter from committing nothing.
-        if self.highlighted >= self.matches.len() {
-            self.highlighted = self.matches.len().saturating_sub(1);
-        }
+        self.dropdown
+            .refilter(&self.options, self.filter.get_text());
+        // A select always commits *something*, so a list with rows in it always
+        // has one of them highlighted - unlike a combo, where nothing
+        // highlighted is what keeps typed text from being replaced.
+        self.dropdown.ensure_highlight();
     }
 
     fn move_highlight(&mut self, forward: bool) -> SelectAction {
-        if self.matches.is_empty() {
-            return SelectAction::Continue;
-        }
-        let count = self.matches.len();
-        self.highlighted = if forward {
-            (self.highlighted + 1) % count
-        } else {
-            (self.highlighted + count - 1) % count
-        };
+        self.dropdown.move_highlight(forward);
         SelectAction::Continue
     }
 
@@ -315,13 +290,7 @@ impl Select {
         if !self.open {
             return None;
         }
-        let (_, first) = self.last_option_rects.first()?;
-        Some(Rect::new(
-            first.x,
-            first.y,
-            first.columns,
-            self.last_option_rects.len(),
-        ))
+        self.dropdown.overlay_rect()
     }
 
     /// The line the collapsed row draws, e.g. `"Layout: default ▾"`.
@@ -390,63 +359,20 @@ impl Select {
 
     /// Draw the dropdown, if it is open, over whatever is already there.
     pub(super) fn render_overlay(&mut self, max_rows: usize) {
-        self.last_option_rects.clear();
-        if !self.open || max_rows == 0 {
+        if !self.open {
+            self.dropdown.clear_rendered();
             return;
         }
         let Some(row) = self.last_rendered else {
+            self.dropdown.clear_rendered();
             return;
         };
-        let visible_rows = self.max_visible_options.min(max_rows);
-        let (start, _, end) = list_window(
-            self.matches.len(),
-            visible_rows,
-            if self.matches.is_empty() {
-                None
-            } else {
-                Some(self.highlighted)
-            },
-        );
-
-        for (offset, position) in (start..end).enumerate() {
-            let Some(matched) = self.matches.get(position) else {
-                continue;
-            };
-            let Some(option) = self.options.get(matched.index) else {
-                continue;
-            };
-            let y = row.y + 1 + offset;
-            // Padded to the full width so the row underneath is covered rather
-            // than showing through to the right of a short option.
-            let label = take_columns(option, row.columns);
-            let padding = " ".repeat(row.columns.saturating_sub(label.width()));
-            let mut text = Text::new(format!("{}{}", label, padding));
-            let shown_chars = label.chars().count();
-            let indices: Vec<usize> = matched
-                .indices
-                .iter()
-                .copied()
-                .filter(|i| *i < shown_chars)
-                .collect();
-            if !indices.is_empty() {
-                text = text.color_indices(3, indices);
-            }
-            if position == self.highlighted {
-                text = text.selected();
-            }
-            print_text_with_coordinates(text, row.x, y, Some(row.columns), None);
-            self.last_option_rects
-                .push((matched.index, Rect::new(row.x, y, row.columns, 1)));
-        }
+        self.dropdown.render(&self.options, row, max_rows);
     }
 
     pub(super) fn clear_rendered(&mut self) {
         self.last_rendered = None;
-        self.last_option_rects.clear();
-    }
-
-    pub(super) fn row_rect(&self) -> Option<Rect> {
-        self.last_rendered
+        self.dropdown.clear_rendered();
     }
 
     /// Whether a click at `(x, y)` lands on the collapsed row.
@@ -458,23 +384,14 @@ impl Select {
 
     /// Which option a click at `(x, y)` lands on, if any are on screen.
     pub(super) fn option_at(&self, x: usize, y: usize) -> Option<usize> {
-        self.last_option_rects
-            .iter()
-            .find(|(_, rect)| rect.contains(x, y))
-            .map(|(index, _)| *index)
+        self.dropdown.option_at(x, y)
     }
 
     /// Move the highlight to an option, by its index in the full list.
     ///
     /// Returns whether the highlight moved, so a hover can skip a render.
     pub(super) fn highlight_option(&mut self, index: usize) -> bool {
-        match self.matches.iter().position(|m| m.index == index) {
-            Some(position) if position != self.highlighted => {
-                self.highlighted = position;
-                true
-            },
-            _ => false,
-        }
+        self.dropdown.highlight_option(index)
     }
 
     /// Choose the option a click landed on and close.
@@ -485,6 +402,49 @@ impl Select {
         self.selected = Some(index);
         self.close();
         true
+    }
+}
+
+/// The form does not care which widget a list belongs to — see `HasDropdown`.
+impl HasDropdown for Select {
+    fn is_open(&self) -> bool {
+        Select::is_open(self)
+    }
+
+    fn open(&mut self) {
+        Select::open(self)
+    }
+
+    fn close(&mut self) {
+        Select::close(self)
+    }
+
+    fn row_rect(&self) -> Option<Rect> {
+        self.last_rendered
+    }
+
+    fn row_contains(&self, x: usize, y: usize) -> bool {
+        Select::row_contains(self, x, y)
+    }
+
+    fn option_at(&self, x: usize, y: usize) -> Option<usize> {
+        Select::option_at(self, x, y)
+    }
+
+    fn highlight_option(&mut self, index: usize) -> bool {
+        Select::highlight_option(self, index)
+    }
+
+    fn commit_option(&mut self, index: usize) -> bool {
+        Select::commit_option(self, index)
+    }
+
+    fn overlay_rect(&self) -> Option<Rect> {
+        Select::overlay_rect(self)
+    }
+
+    fn render_overlay(&mut self, max_rows: usize) {
+        Select::render_overlay(self, max_rows)
     }
 }
 
@@ -556,10 +516,10 @@ mod tests {
         assert!(select.is_open());
         assert_eq!(select.filter_text(), "c");
         assert_eq!(
-            select.matches.len(),
+            select.dropdown.matches().len(),
             1,
             "only 'compact' contains a 'c': {:?}",
-            select.matches
+            select.dropdown.matches()
         );
         assert_eq!(select.highlighted_option(), Some("compact"));
     }
@@ -642,9 +602,14 @@ mod tests {
         let mut select = a_select();
         select.open();
         select.handle_key(char_key('z'));
-        assert!(select.matches.is_empty());
+        assert!(select.dropdown.is_empty());
         select.handle_key(key(BareKey::Backspace));
-        assert_eq!(select.matches.len(), 3);
+        assert_eq!(select.dropdown.matches().len(), 3);
+        assert_eq!(
+            select.highlighted_option(),
+            Some("default"),
+            "a list with rows in it always has one of them highlighted"
+        );
     }
 
     #[test]
@@ -756,14 +721,13 @@ mod tests {
         for c in query.chars() {
             select.handle_key(char_key(c));
         }
-        if select.matches.is_empty() {
+        if select.dropdown.is_empty() {
             assert_eq!(select.highlighted_option(), None);
         } else {
             assert!(
-                select.highlighted < select.matches.len(),
-                "highlight {} of {} matches",
-                select.highlighted,
-                select.matches.len()
+                select.highlighted_option().is_some(),
+                "an open select with {} matches highlighted nothing",
+                select.dropdown.matches().len()
             );
         }
     }
