@@ -2612,7 +2612,7 @@ fn open_overlay_of_kind(screen: &mut Screen, pane_id: u32, contents: &str, kind:
         OverlayKind::Modal => OverlayPlacement::modal(Some(coordinates)),
         OverlayKind::Dismissible => OverlayPlacement::dismissible(Some(coordinates)),
     };
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
     tab.new_pane(
         PaneId::Terminal(pane_id),
         None,
@@ -3046,5 +3046,181 @@ fn focusing_a_pane_by_id_under_a_dismissible_overlay_takes_the_keyboard_from_it(
         tab.get_active_pane_id(1),
         Some(PaneId::Terminal(3)),
         "and the other client, which asked for nothing, is left on the popup"
+    );
+}
+
+/// Switching panes while fullscreen is active is a focus move like any other, so a dismissible
+/// overlay above it has to let go. The fullscreen branch used to return before the release.
+#[test]
+fn switching_panes_in_fullscreen_releases_a_dismissible_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .toggle_active_pane_fullscreen(1);
+    open_overlay_of_kind(&mut screen, 3, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    // the split orientation decides which direction leads back to pane 1; the failed attempt
+    // moves nothing and so must not release either
+    let moved = tab.move_focus_left(1).expect("TEST") || tab.move_focus_up(1).expect("TEST");
+
+    assert!(moved, "one of the two directions leads to the other pane");
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "the keyboard left the popup for the pane the fullscreen switch landed on"
+    );
+}
+
+/// Moving within a stack list is a focus move like any other, so a dismissible overlay above it
+/// has to let go. The stack-list branch used to return before the release.
+#[test]
+fn moving_within_a_stack_list_releases_a_dismissible_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    *screen.stacked_pane_list.borrow_mut() = true;
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: None,
+                borderless: None,
+            },
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    }
+    assert!(tab.has_stack_lists(), "the fixture formed a stack list");
+    open_overlay_of_kind(&mut screen, 4, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    assert!(
+        tab.move_focus_up(1).expect("TEST"),
+        "the visible member is the last in the stack, so up moves within the list"
+    );
+    assert!(
+        !matches!(tab.get_active_pane_id(1), Some(PaneId::Terminal(4))),
+        "the keyboard left the popup for the stack member the move landed on, got {:?}",
+        tab.get_active_pane_id(1)
+    );
+}
+
+/// A cycle with nowhere to go dismisses nothing: with a single selectable pane the cycle lands
+/// where it started, and releasing on the way in would let that dead keypress close the popup.
+#[test]
+fn cycling_focus_with_a_single_pane_leaves_a_dismissible_overlay_holding_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.focus_next_pane(1);
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the cycle landed where it started, so the popup still has the keyboard"
+    );
+    tab.focus_previous_pane(1);
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the same going the other way"
+    );
+}
+
+/// An edge move that goes nowhere dismisses nothing either.
+#[test]
+fn focus_pane_on_edge_that_goes_nowhere_leaves_a_dismissible_overlay_holding_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.focus_pane_on_edge(Direction::Left, 1);
+
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the only pane is already on every edge, so nothing moved and the popup keeps the keyboard"
+    );
+}
+
+/// And the positive half: an edge move that does land somewhere releases the popup.
+#[test]
+fn focus_pane_on_edge_that_moves_releases_a_dismissible_overlay() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    open_overlay_of_kind(&mut screen, 3, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    // the direction is the direction of travel - entering rightwards lands on the leftmost pane -
+    // and the split orientation decides which call moves; the focus ends up on pane 1 either way,
+    // and the call that moves nothing must not release
+    tab.focus_pane_on_edge(Direction::Right, 1);
+    tab.focus_pane_on_edge(Direction::Down, 1);
+
+    assert!(
+        !matches!(tab.get_active_pane_id(1), Some(PaneId::Terminal(3))),
+        "the keyboard left the popup for the pane on the edge, got {:?}",
+        tab.get_active_pane_id(1)
+    );
+}
+
+/// "Focus the last pane" with no last pane recorded moves nothing, and so dismisses nothing.
+#[test]
+fn focus_last_pane_with_no_previous_pane_leaves_a_dismissible_overlay_holding_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
+
+    let tab = screen.get_active_tab_mut(1).expect("TEST");
+    tab.focus_last_pane(1);
+
+    assert_eq!(
+        tab.get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "with nowhere to go back to, the popup still has the keyboard"
     );
 }
