@@ -21,6 +21,7 @@
 //!     .checkbox("frames", "Pane frames", Checkbox::new(true))
 //!     .radio("mode", "Mode", RadioGroup::new(["Normal", "Locked"]))
 //!     .select("layout", "Layout", Select::new(["default", "compact"]))
+//!     .combo("model", "Model", Combo::new(["opus", "sonnet"]))
 //!     .button("save", Button::new("Save"));
 //!
 //! # let key = KeyWithModifier::new(BareKey::Enter);
@@ -47,9 +48,13 @@
 //!   keeps its own bindings.
 //! - Traversal keys are configurable ([`Form::with_traversal_keys`]) because
 //!   `Tab` is already spoken for in most plugins.
-//! - An open [`Select`] dropdown *overlays* the rows below it, so a screen that
-//!   prints its own chrome after the form should check
+//! - An open [`Select`] or [`Combo`] dropdown *overlays* the rows below it, so a
+//!   screen that prints its own chrome after the form should check
 //!   [`Form::overlay_rect`].
+//! - A [`Combo`] is the field for a value that is free text but is usually one
+//!   of the values that already exist: typing filters a list of suggestions,
+//!   and nothing is highlighted in it until an arrow key asks for it, so Enter
+//!   commits what was typed.
 //! - [`Form::handle_mouse`] wants the whole click, not just the press: widgets
 //!   act on `Mouse::Release`, and only when it lands back where the
 //!   `Mouse::LeftClick` did. A plugin that subscribes to `EventType::Mouse` and
@@ -61,7 +66,9 @@
 
 mod button;
 mod choice;
+mod combo;
 mod dialog;
+mod dropdown;
 mod form;
 mod fuzzy;
 mod label;
@@ -72,11 +79,13 @@ mod viewport;
 
 pub use button::{Button, ButtonStyle, Rect};
 pub use choice::{Checkbox, RadioGroup};
+pub use combo::{Combo, ComboAction};
 pub use dialog::Dialog;
+pub use dropdown::DEFAULT_MAX_VISIBLE_OPTIONS;
 pub use form::{Field, FieldId, Form, FormEvent};
 pub use fuzzy::{fuzzy_filter, Match};
 pub use label::{Label, DEFAULT_LABEL_LEVEL};
 pub use list::list_window;
-pub use select::{Select, SelectAction, DEFAULT_MAX_VISIBLE_OPTIONS};
+pub use select::{Select, SelectAction};
 pub use text_input::{InputAction, TextInput};
 pub use viewport::{column_to_cursor, take_columns, viewport, viewport_window};

@@ -2984,13 +2984,25 @@ pub struct CommandToRun {
 }
 
 /// Git setup Zellij performs before opening a command pane.
+///
+/// `New` in both branch variants means *the one named*, created when it is not
+/// there already: a branch or a worktree that exists is reused rather than
+/// refused, and `base` then has nothing to say - an existing branch has its own
+/// history. See `prepare_git_checkout_in` in the server for the exact order the
+/// two kinds of reuse are tried in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitCheckout {
     Current,
+    /// The branch, in the checkout the request came from. Reuse means switching
+    /// to it, or - when another worktree holds it, which git allows only one of
+    /// - running in that worktree instead.
     NewBranch {
         branch: String,
         base: String,
     },
+    /// The branch, in a worktree of its own at `path`. A worktree already at
+    /// `path` is used as it stands; failing that, the worktree already holding
+    /// `branch` is.
     NewWorktree {
         branch: String,
         base: String,

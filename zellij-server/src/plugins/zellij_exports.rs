@@ -2440,6 +2440,15 @@ fn prepare_git_checkout(
     prepare_git_checkout_in(source_directory, checkout)
 }
 
+/// Put the repository into the state the request describes, and answer with the
+/// folder the command should run in.
+///
+/// "New" in [`GitCheckout::NewBranch`] and [`GitCheckout::NewWorktree`] means
+/// *the one asked for*, created if it is not there yet. A branch or a worktree
+/// that already exists is not a collision to report - it is the work the caller
+/// is pointing at, and the agent belongs in it. Only a path that exists without
+/// being a worktree of this repository still fails, because that is a genuine
+/// clash rather than something to reuse.
 fn prepare_git_checkout_in(
     source_directory: PathBuf,
     checkout: GitCheckout,
@@ -2458,11 +2467,21 @@ fn prepare_git_checkout_in(
         GitCheckout::Current => Ok(root),
         GitCheckout::NewBranch { branch, base } => {
             validate_git_names(&root, &branch, &base)?;
-            run_git(
-                &root,
-                &["switch", "-c", &branch, &base],
-                "create and switch to the branch",
-            )?;
+            // A branch checked out somewhere else cannot be switched to here -
+            // git allows one checkout of a branch at a time - so the agent goes
+            // to the worktree already holding it rather than nowhere at all.
+            if let Some(worktree) = worktree_holding(&root, &branch)? {
+                return Ok(worktree);
+            }
+            if branch_exists(&root, &branch) {
+                run_git(&root, &["switch", &branch], "switch to the branch")?;
+            } else {
+                run_git(
+                    &root,
+                    &["switch", "-c", &branch, &base],
+                    "create and switch to the branch",
+                )?;
+            }
             Ok(root)
         },
         GitCheckout::NewWorktree { branch, base, path } => {
@@ -2477,12 +2496,25 @@ fn prepare_git_checkout_in(
             } else {
                 root.join(path)
             };
+            // The path first, because it is the more specific of the two ways a
+            // request can already be satisfied: a worktree sitting there is the
+            // folder the caller named, whatever branch it happens to hold, and
+            // nothing about it is changed.
+            if let Some(existing) = worktree_at(&root, &path)? {
+                return Ok(existing);
+            }
+            if let Some(existing) = worktree_holding(&root, &branch)? {
+                return Ok(existing);
+            }
             let path_string = path.to_string_lossy().into_owned();
-            run_git(
-                &root,
-                &["worktree", "add", "-b", &branch, "--", &path_string, &base],
-                "create the worktree",
-            )?;
+            // An existing branch already has a history, so it is checked out as
+            // it stands and the base has nothing to say about it.
+            let args: Vec<&str> = if branch_exists(&root, &branch) {
+                vec!["worktree", "add", "--", &path_string, &branch]
+            } else {
+                vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
+            };
+            run_git(&root, &args, "create the worktree")?;
             Ok(path)
         },
     }
@@ -2498,6 +2530,28 @@ fn prepare_git_checkout_in(
 /// `.git` sitting inside its checkout, which `--separate-git-dir` and `$GIT_DIR`
 /// both break.
 fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String> {
+    worktrees(root)?
+        .into_iter()
+        .next()
+        .map(|worktree| worktree.path)
+        .ok_or_else(|| "git could not find the primary worktree".to_owned())
+}
+
+/// One checkout of a repository: where it is, and which branch it holds.
+///
+/// `branch` is `None` for a detached head and for the bare entry a bare
+/// repository lists first - neither can be reused for a branch request.
+struct Worktree {
+    path: PathBuf,
+    branch: Option<String>,
+}
+
+/// Every checkout of the repository, primary first.
+///
+/// One `git worktree list --porcelain` for all three questions asked of it
+/// (which folder anchors a relative path, is this folder already a worktree, who
+/// holds this branch), so a request costs one process rather than three.
+fn worktrees(root: &std::path::Path) -> Result<Vec<Worktree>, String> {
     let output = process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -2507,13 +2561,75 @@ fn primary_worktree(root: &std::path::Path) -> Result<PathBuf, String> {
     if !output.status.success() {
         return Err(git_error("list the worktrees", &output.stderr));
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("worktree "))
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| git_error("find the primary worktree", &output.stderr))
+    Ok(parse_worktrees(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Porcelain blocks, one per checkout, separated by blank lines: a `worktree`
+/// line opens each and `branch refs/heads/<name>` follows it unless the checkout
+/// is detached or bare.
+fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
+    let mut worktrees: Vec<Worktree> = vec![];
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if !path.is_empty() {
+                worktrees.push(Worktree {
+                    path: PathBuf::from(path),
+                    branch: None,
+                });
+            }
+        } else if let Some(reference) = line.strip_prefix("branch ") {
+            if let Some(worktree) = worktrees.last_mut() {
+                worktree.branch = reference
+                    .strip_prefix("refs/heads/")
+                    .filter(|branch| !branch.is_empty())
+                    .map(str::to_owned);
+            }
+        }
+    }
+    worktrees
+}
+
+/// The checkout already sitting at `path`, if one is.
+fn worktree_at(root: &std::path::Path, path: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    Ok(worktrees(root)?
+        .into_iter()
+        .find(|worktree| same_path(&worktree.path, path))
+        .map(|worktree| worktree.path))
+}
+
+/// The checkout that has `branch` out, if any has.
+fn worktree_holding(root: &std::path::Path, branch: &str) -> Result<Option<PathBuf>, String> {
+    Ok(worktrees(root)?
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some(branch))
+        .map(|worktree| worktree.path))
+}
+
+/// Whether `branch` is a local branch of this repository.
+///
+/// Exit status only: "no such branch" is an answer here, not a failure worth a
+/// message, so this deliberately does not go through `run_git`.
+fn branch_exists(root: &std::path::Path, branch: &str) -> bool {
+    process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Whether two paths name the same folder.
+///
+/// Git answers with physical paths while a requested worktree path is usually
+/// one that does not exist yet, so the resolved comparison is tried first and
+/// the literal one is what is left when either side cannot be resolved.
+fn same_path(one: &std::path::Path, other: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(one), std::fs::canonicalize(other)) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => one == other,
+    }
 }
 
 fn validate_git_names(root: &std::path::Path, branch: &str, base: &str) -> Result<(), String> {
@@ -6710,5 +6826,174 @@ mod permission_tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "topic");
+    }
+
+    /// The branch a checkout is on, or `None` when it is detached.
+    fn branch_of(worktree: &std::path::Path) -> Option<String> {
+        let output = process::Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!branch.is_empty()).then_some(branch)
+    }
+
+    /// Create a local branch without checking it out anywhere.
+    fn branch(primary: &std::path::Path, name: &str) {
+        assert!(process::Command::new("git")
+            .arg("-C")
+            .arg(primary)
+            .args(["branch", name])
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// The point of the whole reuse path: an agent asked for where work already
+    /// is, rather than an error saying it is already there.
+    #[test]
+    fn a_worktree_that_already_exists_at_the_path_is_reused_as_it_stands() {
+        let repository = repository();
+        let existing = worktree(repository.path(), "topic", "topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                // Neither the branch nor the base the worktree was made with:
+                // the folder is the request, and it is used as it stands.
+                branch: "other".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved(&cwd), resolved(&existing));
+        assert_eq!(branch_of(&existing).as_deref(), Some("topic"));
+        // Nothing was created for the branch that was asked for and not used.
+        assert!(!branch_exists(repository.path(), "other"));
+    }
+
+    /// Git allows one checkout of a branch at a time, so the worktree holding it
+    /// is the only place an agent can work on it.
+    #[test]
+    fn a_branch_checked_out_elsewhere_answers_with_that_worktree() {
+        let repository = repository();
+        let existing = worktree(repository.path(), "first", "topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+                // A path of its own, which is not where the branch turned out to
+                // live.
+                path: PathBuf::from(".worktrees/second"),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved(&cwd), resolved(&existing));
+        assert!(!repository.path().join(".worktrees/second").exists());
+    }
+
+    #[test]
+    fn an_existing_branch_gets_a_worktree_without_being_recreated() {
+        let repository = repository();
+        branch(repository.path(), "topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                // Not a branch at all: an existing branch has its own history,
+                // so the base is never consulted.
+                base: "no-such-base".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&cwd),
+            resolved(&repository.path().join(".worktrees/topic"))
+        );
+        assert_eq!(branch_of(&cwd).as_deref(), Some("topic"));
+    }
+
+    #[test]
+    fn an_existing_branch_is_switched_to_rather_than_recreated() {
+        let repository = repository();
+        branch(repository.path(), "topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewBranch {
+                branch: "topic".to_owned(),
+                base: "no-such-base".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved(&cwd), resolved(repository.path()));
+        assert_eq!(branch_of(repository.path()).as_deref(), Some("topic"));
+    }
+
+    #[test]
+    fn a_branch_request_for_a_branch_held_elsewhere_answers_with_that_worktree() {
+        let repository = repository();
+        let existing = worktree(repository.path(), "first", "topic");
+        let cwd = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewBranch {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved(&cwd), resolved(&existing));
+        // The checkout the request came from was left where it was.
+        assert_eq!(branch_of(repository.path()).as_deref(), Some("main"));
+    }
+
+    /// A folder in the way that is not a worktree is a real clash, and still one
+    /// git gets to report.
+    #[test]
+    fn a_path_that_is_not_a_worktree_still_fails() {
+        let repository = repository();
+        let occupied = repository.path().join(".worktrees/topic");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("file"), "content").unwrap();
+        let error = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with("git could not create the worktree"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_porcelain_listing_reads_a_path_and_a_branch_per_checkout() {
+        let worktrees = parse_worktrees(
+            "worktree /work/repo\nHEAD abcd\nbranch refs/heads/main\n\
+             \nworktree /work/repo/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
+             \nworktree /work/detached\nHEAD 2345\ndetached\n",
+        );
+        let read: Vec<_> = worktrees
+            .iter()
+            .map(|worktree| (worktree.path.clone(), worktree.branch.clone()))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (PathBuf::from("/work/repo"), Some("main".to_owned())),
+                (
+                    PathBuf::from("/work/repo/.worktrees/topic"),
+                    Some("topic".to_owned())
+                ),
+                (PathBuf::from("/work/detached"), None),
+            ]
+        );
     }
 }

@@ -33,6 +33,8 @@
 
 use super::button::{Button, Rect};
 use super::choice::{Checkbox, RadioGroup};
+use super::combo::{Combo, ComboAction};
+use super::dropdown::HasDropdown;
 use super::label::Label;
 use super::select::{Select, SelectAction};
 use super::text_input::{InputAction, TextInput};
@@ -77,6 +79,7 @@ impl FormEvent {
 enum Widget {
     Text(TextInput),
     Select(Select),
+    Combo(Combo),
     Checkbox(Checkbox),
     Radio(RadioGroup),
 }
@@ -109,6 +112,15 @@ impl Field {
         }
     }
 
+    pub fn new_combo<I: ToString, L: ToString>(id: I, label: L, combo: Combo) -> Self {
+        Field {
+            id: id.to_string(),
+            label: Label::new(label),
+            widget: Widget::Combo(combo),
+            last_rendered: None,
+        }
+    }
+
     pub fn new_checkbox<I: ToString, L: ToString>(id: I, label: L, checkbox: Checkbox) -> Self {
         Field {
             id: id.to_string(),
@@ -131,10 +143,18 @@ impl Field {
         &self.id
     }
 
-    /// The text editor behind this field, or `None` for another widget type.
+    /// The text editor behind this field, or `None` for a widget with no text
+    /// in it.
+    ///
+    /// A [`Combo`] answers with its own editor: its value *is* typed text, so
+    /// everything a form does to a text field - place the caret where a click
+    /// landed, take a paste, run the input-mode dance under
+    /// [`enter_never_submits`](Form::enter_never_submits) - it wants done to it
+    /// too.
     pub fn input(&self) -> Option<&TextInput> {
         match &self.widget {
             Widget::Text(input) => Some(input),
+            Widget::Combo(combo) => Some(combo.input()),
             _ => None,
         }
     }
@@ -142,6 +162,22 @@ impl Field {
     pub fn input_mut(&mut self) -> Option<&mut TextInput> {
         match &mut self.widget {
             Widget::Text(input) => Some(input),
+            Widget::Combo(combo) => Some(combo.input_mut()),
+            _ => None,
+        }
+    }
+
+    /// The combo behind this field, or `None` for another widget type.
+    pub fn combo(&self) -> Option<&Combo> {
+        match &self.widget {
+            Widget::Combo(combo) => Some(combo),
+            _ => None,
+        }
+    }
+
+    pub fn combo_mut(&mut self) -> Option<&mut Combo> {
+        match &mut self.widget {
+            Widget::Combo(combo) => Some(combo),
             _ => None,
         }
     }
@@ -193,12 +229,50 @@ impl Field {
         matches!(self.widget, Widget::Select(_))
     }
 
+    pub fn is_combo(&self) -> bool {
+        matches!(self.widget, Widget::Combo(_))
+    }
+
+    /// The widget's dropdown, for the parts of a form that mean "the field with
+    /// a list" rather than any particular kind of field.
+    fn dropdown(&self) -> Option<&dyn HasDropdown> {
+        match &self.widget {
+            Widget::Select(select) => Some(select),
+            Widget::Combo(combo) => Some(combo),
+            _ => None,
+        }
+    }
+
+    fn dropdown_mut(&mut self) -> Option<&mut dyn HasDropdown> {
+        match &mut self.widget {
+            Widget::Select(select) => Some(select),
+            Widget::Combo(combo) => Some(combo),
+            _ => None,
+        }
+    }
+
+    /// Hand a key to the editor behind this field, keeping whatever else the
+    /// widget hangs off a text change - a combo's list of suggestions.
+    fn handle_input_key(&mut self, key: KeyWithModifier) -> InputAction {
+        match &mut self.widget {
+            Widget::Text(input) => input.handle_key(key),
+            Widget::Combo(combo) => match combo.handle_key(key) {
+                ComboAction::Continue | ComboAction::Committed | ComboAction::Cancelled => {
+                    InputAction::Continue
+                },
+                ComboAction::Input(action) => action,
+            },
+            _ => InputAction::NoAction,
+        }
+    }
+
     /// What this field currently holds: typed text or a chosen select/radio option.
     ///
     /// A select or radio group with nothing chosen reads as `""`.
     pub fn text(&self) -> &str {
         match &self.widget {
             Widget::Text(input) => input.get_text(),
+            Widget::Combo(combo) => combo.text(),
             Widget::Select(select) => select.selected_option().unwrap_or(""),
             Widget::Radio(radio) => radio.selected_option().unwrap_or(""),
             Widget::Checkbox(_) => "",
@@ -246,11 +320,11 @@ enum PressTarget {
     Checkbox(usize),
     /// Field index and the option under the pointer.
     Radio(usize, usize),
-    /// A select's own row: released on it, a collapsed list opens and an open
-    /// one closes again.
-    SelectRow(usize),
+    /// The row of a widget with a list: released on it, a closed list opens and
+    /// an open one closes again.
+    DropdownRow(usize),
     /// Field index and the option in the open dropdown.
-    SelectOption(usize, usize),
+    DropdownOption(usize, usize),
 }
 
 impl Default for Form {
@@ -285,6 +359,16 @@ impl Form {
     /// Add a select field. The first widget added takes focus.
     pub fn select<I: ToString, L: ToString>(mut self, id: I, label: L, select: Select) -> Self {
         self.fields.push(Field::new_select(id, label, select));
+        if self.focus.is_none() {
+            self.focus = Some(Focus::Field(0));
+        }
+        self
+    }
+
+    /// Add a combo field: free text with a dropdown of suggestions. The first
+    /// widget added takes focus.
+    pub fn combo<I: ToString, L: ToString>(mut self, id: I, label: L, combo: Combo) -> Self {
+        self.fields.push(Field::new_combo(id, label, combo));
         if self.focus.is_none() {
             self.focus = Some(Focus::Field(0));
         }
@@ -375,6 +459,14 @@ impl Form {
         self.field_by_id(id).and_then(|field| field.select())
     }
 
+    pub fn combo_by_id(&self, id: &str) -> Option<&Combo> {
+        self.field_by_id(id).and_then(|field| field.combo())
+    }
+
+    pub fn combo_by_id_mut(&mut self, id: &str) -> Option<&mut Combo> {
+        self.field_by_id_mut(id).and_then(|field| field.combo_mut())
+    }
+
     pub fn select_by_id_mut(&mut self, id: &str) -> Option<&mut Select> {
         self.field_by_id_mut(id)
             .and_then(|field| field.select_mut())
@@ -440,7 +532,7 @@ impl Form {
         // A dropdown left open over a field the user has moved away from keeps
         // taking up the rows below it with a list nothing is pointing at.
         if self.focus != Some(focus) {
-            self.close_open_select();
+            self.close_open_dropdown();
         }
         // Unguarded, unlike the dropdown above: `focus_on` onto the field that
         // already has focus is a request to start over on it, not a no-op.
@@ -451,13 +543,13 @@ impl Form {
         }
     }
 
-    /// Close whichever select is open, if any. At most one ever is: opening
+    /// Close whichever dropdown is open, if any. At most one ever is: opening
     /// one requires focus, and moving focus closes the one being left.
-    fn close_open_select(&mut self) {
+    fn close_open_dropdown(&mut self) {
         for field in self.fields.iter_mut() {
-            if let Some(select) = field.select_mut() {
-                if select.is_open() {
-                    select.close();
+            if let Some(dropdown) = field.dropdown_mut() {
+                if dropdown.is_open() {
+                    dropdown.close();
                 }
             }
         }
@@ -470,8 +562,8 @@ impl Form {
     pub fn overlay_rect(&self) -> Option<Rect> {
         self.fields
             .iter()
-            .filter_map(|field| field.select())
-            .find_map(|select| select.overlay_rect())
+            .filter_map(|field| field.dropdown())
+            .find_map(|dropdown| dropdown.overlay_rect())
     }
 
     fn widget_count(&self) -> usize {
@@ -569,6 +661,23 @@ impl Form {
                             _ => FormEvent::Ignored,
                         },
                     },
+                    Widget::Combo(combo) => match combo.handle_key(key) {
+                        ComboAction::Continue | ComboAction::Committed => {
+                            FormEvent::FieldChanged(id)
+                        },
+                        // Esc closed the list. It did not cancel the form: one
+                        // Esc per thing being backed out of.
+                        ComboAction::Cancelled => FormEvent::FocusMoved,
+                        // Whatever the list did not want is a text field's key,
+                        // and means here what it means in one.
+                        ComboAction::Input(action) => match action {
+                            InputAction::Continue => FormEvent::FieldChanged(id),
+                            InputAction::Submit => FormEvent::Submit,
+                            InputAction::Cancel => FormEvent::Cancel,
+                            InputAction::Complete => FormEvent::Complete(id),
+                            InputAction::NoAction => FormEvent::Ignored,
+                        },
+                    },
                     Widget::Checkbox(checkbox) => match key.bare_key {
                         BareKey::Char(' ') if key.has_no_modifiers() => {
                             checkbox.toggle();
@@ -617,9 +726,21 @@ impl Form {
     fn handle_key_strict(&mut self, key: KeyWithModifier) -> FormEvent {
         match self.focus {
             Some(Focus::Field(i)) => {
+                // A combo with its list open is the one field where Enter and
+                // Esc belong to the list rather than to the input mode below.
+                if self
+                    .fields
+                    .get(i)
+                    .and_then(Field::combo)
+                    .map(|combo| combo.is_open())
+                    == Some(true)
+                {
+                    return self.handle_key_combo(i, key);
+                }
                 // Text is split out because it is the one widget whose Enter
                 // changes form-level state, which cannot be done while a field
-                // is borrowed out of `self.fields`.
+                // is borrowed out of `self.fields`. A combo goes the same way:
+                // closed, it is a text field with a list waiting behind it.
                 if self.fields.get(i).map(|field| field.input().is_some()) == Some(true) {
                     return self.handle_key_text(i, key);
                 }
@@ -628,8 +749,8 @@ impl Form {
                 };
                 let id = field.id.clone();
                 match &mut field.widget {
-                    // Handled above; `input()` said this is not a text field.
-                    Widget::Text(_) => FormEvent::Ignored,
+                    // Handled above; `input()` said these have no editor.
+                    Widget::Text(_) | Widget::Combo(_) => FormEvent::Ignored,
                     Widget::Select(select) => match select.handle_key(key.clone()) {
                         SelectAction::Continue | SelectAction::Committed => {
                             FormEvent::FieldChanged(id)
@@ -716,16 +837,43 @@ impl Form {
             return FormEvent::Ignored;
         };
         let id = field.id.clone();
-        let Some(input) = field.input_mut() else {
-            return FormEvent::Ignored;
-        };
-        match input.handle_key(key) {
+        match field.handle_input_key(key) {
             InputAction::Continue => FormEvent::FieldChanged(id),
             InputAction::Cancel => FormEvent::Cancel,
             InputAction::Complete => FormEvent::Complete(id),
             // Enter was dealt with above, whatever its modifiers.
             InputAction::Submit => FormEvent::FocusMoved,
             InputAction::NoAction => FormEvent::Ignored,
+        }
+    }
+
+    /// A focused combo with its list open, under
+    /// [`enter_never_submits`](Self::enter_never_submits).
+    ///
+    /// Enter takes the highlighted suggestion, or - with nothing highlighted -
+    /// leaves the input mode the way Enter does in any other field. Esc closes
+    /// the list first, the input mode second, the dialog third.
+    fn handle_key_combo(&mut self, i: usize, key: KeyWithModifier) -> FormEvent {
+        let Some(field) = self.fields.get_mut(i) else {
+            return FormEvent::Ignored;
+        };
+        let id = field.id.clone();
+        let Some(combo) = field.combo_mut() else {
+            return FormEvent::Ignored;
+        };
+        match combo.handle_key(key) {
+            ComboAction::Continue | ComboAction::Committed => FormEvent::FieldChanged(id),
+            ComboAction::Cancelled => FormEvent::FocusMoved,
+            // The list handed the key back: it is the input mode's now, and
+            // that is form-level state.
+            ComboAction::Input(InputAction::Submit) => {
+                self.editing = !self.editing;
+                FormEvent::FocusMoved
+            },
+            ComboAction::Input(InputAction::Continue) => FormEvent::FieldChanged(id),
+            ComboAction::Input(InputAction::Cancel) => FormEvent::Cancel,
+            ComboAction::Input(InputAction::Complete) => FormEvent::Complete(id),
+            ComboAction::Input(InputAction::NoAction) => FormEvent::Ignored,
         }
     }
 
@@ -759,7 +907,13 @@ impl Form {
         };
         let field = self.fields.get_mut(i)?;
         let id = field.id.clone();
-        field.input_mut()?.insert_text(text);
+        match &mut field.widget {
+            Widget::Text(input) => input.insert_text(text),
+            // Through the combo rather than its editor, so the suggestions
+            // follow the pasted text like they follow a typed character.
+            Widget::Combo(combo) => combo.insert_pasted_text(text),
+            _ => return None,
+        }
         // Text arriving in a field that shows no cursor reads as a paste that
         // went somewhere else.
         self.editing = true;
@@ -817,25 +971,24 @@ impl Form {
 
         // The dropdown is drawn on top, so it is hit-tested first: a press that
         // lands on it belongs to it whatever is underneath.
-        if let Some(i) = self.open_select_index() {
-            let select = self.fields[i]
-                .select_mut()
-                .expect("open selects are select fields");
-            if let Some(option) = select.option_at(x, y) {
-                self.pressed = Some(PressTarget::SelectOption(i, option));
+        if let Some(i) = self.open_dropdown_index() {
+            let dropdown = self.fields[i]
+                .dropdown_mut()
+                .expect("an open list belongs to a field that has one");
+            if let Some(option) = dropdown.option_at(x, y) {
+                self.pressed = Some(PressTarget::DropdownOption(i, option));
                 self.set_focus(Focus::Field(i));
                 return FormEvent::FocusMoved;
             }
-            if select.row_contains(x, y) {
-                // Pressing the row that opened the list closes it again.
-                self.pressed = Some(PressTarget::SelectRow(i));
-                self.set_focus(Focus::Field(i));
-                return FormEvent::FocusMoved;
+            if !dropdown.row_contains(x, y) {
+                // Anything off the widget dismisses the list at once - a list
+                // left open under a pointer that has already moved on is a list
+                // in the way - and then the press lands where it was aimed. A
+                // press on the row itself is left to the loop below, which knows
+                // whether that row is a select to toggle or a combo to put the
+                // caret in.
+                dropdown.close();
             }
-            // Anything else dismisses the list at once - a list left open under
-            // a pointer that has already moved on is a list in the way - and
-            // then the press lands where it was aimed.
-            select.close();
         }
 
         for i in 0..self.buttons.len() {
@@ -871,7 +1024,25 @@ impl Form {
                     );
                     input.set_cursor_position(cursor);
                 },
-                Widget::Select(_) => self.pressed = Some(PressTarget::SelectRow(i)),
+                Widget::Select(_) => self.pressed = Some(PressTarget::DropdownRow(i)),
+                // A combo is a text field with a marker on the end: the marker
+                // is the control, and the rest of the row is text to put the
+                // caret in.
+                Widget::Combo(combo) => {
+                    if combo.marker_contains(x) {
+                        self.pressed = Some(PressTarget::DropdownRow(i));
+                    } else {
+                        let input = combo.input_mut();
+                        let cursor = column_to_cursor(
+                            &prompt,
+                            input.get_text(),
+                            input.get_cursor_position(),
+                            rect.columns,
+                            x - rect.x,
+                        );
+                        input.set_cursor_position(cursor);
+                    }
+                },
                 Widget::Checkbox(_) => self.pressed = Some(PressTarget::Checkbox(i)),
                 Widget::Radio(radio) => {
                     if let Some(option) = radio.option_at(x, y) {
@@ -936,34 +1107,34 @@ impl Form {
                     FormEvent::Ignored
                 }
             },
-            PressTarget::SelectRow(i) => {
+            PressTarget::DropdownRow(i) => {
                 let on_row = self.field_row_contains(i, x, y);
-                let Some(select) = self.fields.get_mut(i).and_then(Field::select_mut) else {
+                let Some(dropdown) = self.fields.get_mut(i).and_then(Field::dropdown_mut) else {
                     return FormEvent::Ignored;
                 };
-                if select.is_open() {
-                    if !select.row_contains(x, y) {
+                if dropdown.is_open() {
+                    if !dropdown.row_contains(x, y) {
                         return FormEvent::Ignored;
                     }
-                    select.close();
+                    dropdown.close();
                 } else {
                     if !on_row {
                         return FormEvent::Ignored;
                     }
-                    select.open();
+                    dropdown.open();
                 }
                 FormEvent::FocusMoved
             },
-            PressTarget::SelectOption(i, option) => {
+            PressTarget::DropdownOption(i, option) => {
                 let field = &mut self.fields[i];
                 let id = field.id.clone();
-                let Some(select) = field.select_mut() else {
+                let Some(dropdown) = field.dropdown_mut() else {
                     return FormEvent::Ignored;
                 };
-                if select.option_at(x, y) != Some(option) {
+                if dropdown.option_at(x, y) != Some(option) {
                     return FormEvent::Ignored;
                 }
-                select.commit_option(option);
+                dropdown.commit_option(option);
                 FormEvent::FieldChanged(id)
             },
         }
@@ -977,23 +1148,23 @@ impl Form {
             .unwrap_or(false)
     }
 
-    /// The field index of the select with an open dropdown, if there is one.
-    fn open_select_index(&self) -> Option<usize> {
+    /// The field index of the widget with an open dropdown, if there is one.
+    fn open_dropdown_index(&self) -> Option<usize> {
         self.fields
             .iter()
-            .position(|field| field.select().map(|s| s.is_open()).unwrap_or(false))
+            .position(|field| field.dropdown().map(|d| d.is_open()).unwrap_or(false))
     }
 
     fn handle_hover(&mut self, x: usize, y: usize) -> FormEvent {
         let mut changed = false;
-        if let Some(i) = self.open_select_index() {
-            let select = self.fields[i]
-                .select_mut()
-                .expect("open selects are select fields");
-            if let Some(option) = select.option_at(x, y) {
+        if let Some(i) = self.open_dropdown_index() {
+            let dropdown = self.fields[i]
+                .dropdown_mut()
+                .expect("an open list belongs to a field that has one");
+            if let Some(option) = dropdown.option_at(x, y) {
                 // Moving the pointer down the list moves the highlight, so
                 // clicking and pressing Enter pick the same row.
-                changed |= select.highlight_option(option);
+                changed |= dropdown.highlight_option(option);
             }
         }
         for (_, button) in self.buttons.iter_mut() {
@@ -1105,6 +1276,7 @@ impl Form {
             field.last_rendered = None;
             match &mut field.widget {
                 Widget::Select(select) => select.clear_rendered(),
+                Widget::Combo(combo) => combo.clear_rendered(),
                 Widget::Radio(radio) => radio.clear_rendered(),
                 Widget::Checkbox(checkbox) => checkbox.clear_rendered(),
                 _ => {},
@@ -1137,6 +1309,11 @@ impl Form {
                         // A collapsed select is not typed into, so it gets no
                         // cursor; an open one gets it in its filter.
                         Widget::Select(select) => select.cursor_column(&prompt, width),
+                        // A combo is typed into whether its list is open or
+                        // not, so it keeps the caret the whole time - but only
+                        // once the field is in input mode, like any text field.
+                        Widget::Combo(_) if !typing => None,
+                        Widget::Combo(combo) => Some(combo.cursor_column(&prompt, width)),
                         Widget::Checkbox(_) | Widget::Radio(_) => None,
                     };
                     column.map(|column| (x + column, y + i - start))
@@ -1185,6 +1362,7 @@ impl Form {
                     print_text_with_coordinates(text, x, row_y, Some(width), None);
                 },
                 Widget::Select(select) => select.render_row(&prompt, x, row_y, width, focused),
+                Widget::Combo(combo) => combo.render_row(&prompt, x, row_y, width, focused, typing),
                 Widget::Checkbox(checkbox) => {
                     checkbox.render_row(&prompt, x, row_y, width, focused)
                 },
@@ -1215,8 +1393,8 @@ impl Form {
 
         // 3. The dropdown last, so it lands on top of the rows it covers.
         for field in self.fields.iter_mut() {
-            if let Some(select) = field.select_mut() {
-                let max_rows = select
+            if let Some(dropdown) = field.dropdown_mut() {
+                let max_rows = dropdown
                     .row_rect()
                     .map(|row| {
                         overlay_bottom
@@ -1224,7 +1402,7 @@ impl Form {
                             .unwrap_or(usize::MAX)
                     })
                     .unwrap_or(0);
-                select.render_overlay(max_rows);
+                dropdown.render_overlay(max_rows);
             }
         }
     }
@@ -2007,5 +2185,195 @@ mod tests {
         assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
         form.focus_on("mode");
         assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+    }
+
+    fn a_form_with_a_combo() -> Form {
+        Form::new()
+            .field("name", "Name", TextInput::empty())
+            .combo("model", "Model", Combo::new(["opus", "sonnet", "haiku"]))
+            .button("save", Button::new("Save"))
+    }
+
+    #[test]
+    fn a_combo_field_reads_back_as_its_text() {
+        let mut form = a_form_with_a_combo();
+        assert_eq!(form.text("model"), "");
+        form.combo_by_id_mut("model").unwrap().set_text("gpt-5");
+        assert_eq!(
+            form.text("model"),
+            "gpt-5",
+            "a combo holds text, not an option index"
+        );
+        assert!(form.combo_by_id("model").is_some());
+        assert!(form.field_by_id("model").unwrap().is_combo());
+        assert!(form.combo_by_id("name").is_none());
+    }
+
+    #[test]
+    fn typing_into_a_focused_combo_fills_it_in_and_offers_the_matches() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        assert_eq!(
+            form.handle_key(key(BareKey::Char('o'))),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(form.text("model"), "o");
+        assert!(form.combo_by_id("model").unwrap().is_open());
+    }
+
+    /// The guarantee the widget exists for: a value nobody picked off the list
+    /// is still the value.
+    #[test]
+    fn enter_on_a_combo_submits_what_was_typed() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Char('o')));
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(form.text("model"), "o");
+    }
+
+    #[test]
+    fn arrowing_into_the_list_makes_enter_take_a_suggestion() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Char('o')));
+        assert_eq!(
+            form.handle_key(key(BareKey::Down)),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(form.text("model"), "opus");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::Submit,
+            "with the list closed, Enter submits again"
+        );
+    }
+
+    #[test]
+    fn esc_closes_a_combo_list_before_it_cancels_the_form() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Down));
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
+        assert!(!form.combo_by_id("model").unwrap().is_open());
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+    }
+
+    #[test]
+    fn traversing_away_closes_an_open_combo_list() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Down));
+        assert!(form.combo_by_id("model").unwrap().is_open());
+        form.handle_key(key(BareKey::Tab));
+        assert_eq!(form.focused_id(), Some("save"));
+        assert!(!form.combo_by_id("model").unwrap().is_open());
+    }
+
+    #[test]
+    fn a_paste_into_a_combo_lands_in_it_and_offers_the_matches() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        assert_eq!(form.insert_pasted_text("son"), Some("model".to_string()));
+        assert_eq!(form.text("model"), "son");
+        assert!(form.combo_by_id("model").unwrap().is_open());
+    }
+
+    #[test]
+    fn an_open_combo_list_is_an_overlay_like_a_dropdown() {
+        let mut form = a_form_with_a_combo();
+        let closed_height = form.height();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Down));
+        assert_eq!(form.height(), closed_height);
+        assert_eq!(
+            form.overlay_rect(),
+            None,
+            "a list that has never rendered covers nothing"
+        );
+        form.render(0, 0, 40);
+        assert_eq!(form.overlay_rect(), Some(Rect::new(0, 2, 40, 3)));
+    }
+
+    #[test]
+    fn clicking_a_suggestion_takes_it() {
+        let mut form = a_form_with_a_combo();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Down));
+        form.render(0, 0, 40);
+        assert_eq!(
+            click(&mut form, 3, 0),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(form.text("model"), "sonnet");
+        assert!(!form.combo_by_id("model").unwrap().is_open());
+    }
+
+    /// The marker is the only part of the row that is a control: everywhere else
+    /// is text, and a click there is a click into text.
+    #[test]
+    fn the_marker_toggles_the_list_and_the_rest_of_the_row_takes_the_caret() {
+        let mut form = a_form_with_a_combo();
+        form.combo_by_id_mut("model").unwrap().set_text("sonnet");
+        form.render(0, 0, 40);
+
+        assert_eq!(click(&mut form, 1, 39), FormEvent::FocusMoved);
+        assert!(form.combo_by_id("model").unwrap().is_open());
+        form.render(0, 0, 40);
+        assert_eq!(click(&mut form, 1, 39), FormEvent::FocusMoved);
+        assert!(!form.combo_by_id("model").unwrap().is_open());
+
+        assert_eq!(
+            click(&mut form, 1, 9),
+            FormEvent::Ignored,
+            "a click into the text is not a click on anything to activate"
+        );
+        assert!(!form.combo_by_id("model").unwrap().is_open());
+        assert_eq!(
+            form.field_by_id("model")
+                .and_then(Field::input)
+                .map(TextInput::get_cursor_position),
+            Some(2),
+            "the caret goes where the click landed"
+        );
+    }
+
+    #[test]
+    fn a_combo_under_enter_never_submits_never_submits() {
+        let mut form = a_form_with_a_combo().enter_never_submits();
+        form.focus_on("model");
+        assert_eq!(
+            form.handle_key(key(BareKey::Char('o'))),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(
+            form.handle_key(key(BareKey::Down)),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("model".to_string())
+        );
+        assert_eq!(form.text("model"), "opus");
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FocusMoved,
+            "with the list closed, Enter is the input mode's again"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_combo_list_with_nothing_highlighted_leaves_the_input_mode() {
+        let mut form = a_form_with_a_combo().enter_never_submits();
+        form.focus_on("model");
+        form.handle_key(key(BareKey::Char('o')));
+        assert!(form.combo_by_id("model").unwrap().is_open());
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert_eq!(form.text("model"), "o");
+        assert!(!form.editing, "the second Enter left the input mode");
     }
 }
