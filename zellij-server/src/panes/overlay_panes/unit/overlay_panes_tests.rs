@@ -950,3 +950,114 @@ fn closing_an_overlay_mid_drag_releases_the_mouse() {
     panes.remove_pane(PaneId::Terminal(1));
     assert!(!panes.pane_is_being_moved_with_mouse());
 }
+
+// ---- a dragged position is the user's ---------------------------------------------------------
+
+/// What a plugin re-asserting its placement sends: a size, a `y`, and no `x` at all - the shape
+/// `hocus-new-agent` sends on every `TabUpdate`.
+fn plugin_placement(y: &str, width: &str, height: &str) -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates::new(
+        None,
+        Some(y.to_owned()),
+        Some(width.to_owned()),
+        Some(height.to_owned()),
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+fn drag_by(panes: &mut OverlayPanes, id: u32, columns: u16, lines: i32) {
+    let press = frame_corner(panes, id);
+    let target = Position::new(press.line() as i32 + lines, press.column() as u16 + columns);
+    panes.move_pane_with_mouse(press);
+    panes.move_pane_with_mouse(target);
+    panes.stop_moving_pane_with_mouse(target);
+}
+
+/// A drag reports session state, session state is a `TabUpdate`, and a plugin that re-places
+/// itself on `TabUpdate` answers every step of its own drag by putting the overlay back. That is
+/// what made the new-agent modal look immovable while the file finder moved.
+#[test]
+fn a_plugin_re_asserting_its_placement_does_not_undo_a_drag() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    drag_by(&mut panes, 1, 5, 3);
+    let dropped_at = xy(&panes, 1);
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "60%", "10"))
+        .unwrap();
+
+    assert_eq!(
+        xy(&panes, 1),
+        dropped_at,
+        "the position the user dragged to outranks the one the plugin asks for"
+    );
+}
+
+/// Only the *position* becomes the user's. A plugin whose dialog grew still grows the overlay -
+/// in place.
+#[test]
+fn a_plugin_resize_after_a_drag_still_resizes() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    drag_by(&mut panes, 1, 5, 3);
+    let dropped_at = xy(&panes, 1);
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "40", "12"))
+        .unwrap();
+
+    let geom = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
+    assert_eq!(
+        (geom.cols.as_usize(), geom.rows.as_usize()),
+        (40, 12),
+        "the size the plugin asked for"
+    );
+    assert_eq!(xy(&panes, 1), dropped_at, "at the position the user chose");
+}
+
+/// The replace semantics are unchanged for an overlay nobody dragged: an axis the call does not
+/// name is resolved from the surface default rather than from what happened to be there.
+#[test]
+fn an_overlay_nobody_dragged_is_still_re_placed_by_a_plugin() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Modal,
+        placed_coordinates("10", "15", "60%", "10"),
+    );
+    assert_eq!(xy(&panes, 1), (10, 15), "pre-condition");
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "40", "10"))
+        .unwrap();
+
+    // x unnamed => centred on the surface; y named => 20% of it
+    assert_eq!(xy(&panes, 1), (20, 4));
+}
+
+/// A pane swapped into a dragged overlay's slot is the pane the user dragged, so the slot keeps
+/// where they put it - as it already keeps its kind and its coordinates.
+#[test]
+fn a_replaced_pane_keeps_the_dragged_position() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    drag_by(&mut panes, 1, 5, 3);
+    let dropped_at = xy(&panes, 1);
+
+    let replacement = PaneId::Terminal(9);
+    panes
+        .replace_pane(PaneId::Terminal(1), mock_pane(replacement))
+        .unwrap();
+    panes
+        .change_pane_coordinates(replacement, plugin_placement("20%", "60%", "10"))
+        .unwrap();
+
+    assert_eq!(xy(&panes, 9), dropped_at);
+}
