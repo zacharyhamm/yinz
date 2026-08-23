@@ -1,0 +1,17 @@
+[package]
+name = "zellij-test-support"
+description = "Test-only synchronization helpers shared across the Zellij workspace"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+# Intentionally dependency-free. This is a leaf crate so that any workspace member
+# can dev-depend on it without creating a cycle (`zellij-integration-tests` depends
+# on `zellij-server`, so it cannot host helpers that `zellij-server` needs).
+
+[lints]
+workspace = true
+
+[dependencies]

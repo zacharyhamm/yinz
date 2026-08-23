@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,7 +24,7 @@ pub fn close_tab_with_index_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::CloseTabWithIndex,
@@ -65,7 +66,6 @@ pub fn close_tab_with_index_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::CloseTabWithIndex(..) = i {
@@ -101,7 +101,7 @@ pub fn break_panes_to_new_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::BreakPanesToNewTab,
@@ -143,7 +143,6 @@ pub fn break_panes_to_new_tab_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::BreakPanesToNewTab { .. } = i {
@@ -179,7 +178,7 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::BreakPanesToTabWithIndex,
@@ -221,7 +220,6 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::BreakPanesToTabWithIndex { .. } = i {
@@ -257,7 +255,7 @@ pub fn break_panes_to_tab_with_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::BreakPanesToTabWithId,
@@ -303,7 +301,6 @@ pub fn break_panes_to_tab_with_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::BreakPanesToTabWithId { .. } = i {

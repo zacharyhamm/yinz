@@ -254,7 +254,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             checkout,
-            GitCheckout::NewWorktree { path, .. } if path == PathBuf::from("/elsewhere/topic")
+            GitCheckout::NewWorktree { path, .. } if path == *"/elsewhere/topic"
         ));
     }
 

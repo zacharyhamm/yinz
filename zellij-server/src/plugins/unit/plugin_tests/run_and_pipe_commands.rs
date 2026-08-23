@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,14 +24,14 @@ pub fn run_command_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_background_jobs_instructions = Arc::new(Mutex::new(vec![]));
+    let received_background_jobs_instructions = Watched::new(vec![]);
     let background_jobs_thread = log_actions_in_thread!(
         received_background_jobs_instructions,
         BackgroundJob::RunCommand,
         background_jobs_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -72,7 +73,6 @@ pub fn run_command_plugin_command() {
     teardown();
     let new_background_job = received_background_jobs_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let BackgroundJob::RunCommand(..) = i {
@@ -108,14 +108,14 @@ pub fn run_command_with_env_vars_and_cwd_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_background_jobs_instructions = Arc::new(Mutex::new(vec![]));
+    let received_background_jobs_instructions = Watched::new(vec![]);
     let background_jobs_thread = log_actions_in_thread!(
         received_background_jobs_instructions,
         BackgroundJob::RunCommand,
         background_jobs_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -157,7 +157,6 @@ pub fn run_command_with_env_vars_and_cwd_plugin_command() {
     teardown();
     let new_tab_event = received_background_jobs_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let BackgroundJob::RunCommand(..) = i {
@@ -193,14 +192,14 @@ pub fn web_request_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_background_jobs_instructions = Arc::new(Mutex::new(vec![]));
+    let received_background_jobs_instructions = Watched::new(vec![]);
     let background_jobs_thread = log_actions_in_thread!(
         received_background_jobs_instructions,
         BackgroundJob::WebRequest,
         background_jobs_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -242,7 +241,6 @@ pub fn web_request_plugin_command() {
     teardown();
     let new_tab_event = received_background_jobs_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let BackgroundJob::WebRequest(..) = i {
@@ -278,7 +276,7 @@ pub fn unblock_input_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -330,7 +328,6 @@ pub fn unblock_input_plugin_command() {
     teardown();
     let plugin_bytes_events = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -367,7 +364,7 @@ pub fn block_input_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -420,7 +417,6 @@ pub fn block_input_plugin_command() {
     teardown();
     let plugin_bytes_events = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -457,7 +453,7 @@ pub fn pipe_output_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -468,7 +464,7 @@ pub fn pipe_output_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::CliPipeOutput,
@@ -517,7 +513,6 @@ pub fn pipe_output_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let plugin_bytes_events = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -554,7 +549,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -604,24 +599,20 @@ pub fn pipe_message_to_plugin_plugin_command() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     teardown();
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Payload from self:") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Payload from self:") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -648,7 +639,7 @@ pub fn switch_session_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -659,7 +650,7 @@ pub fn switch_session_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::SwitchSession,
@@ -699,7 +690,6 @@ pub fn switch_session_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -739,7 +729,7 @@ pub fn switch_session_with_layout_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -750,7 +740,7 @@ pub fn switch_session_with_layout_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::SwitchSession,
@@ -790,7 +780,6 @@ pub fn switch_session_with_layout_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -830,7 +819,7 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -841,7 +830,7 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::SwitchSession,
@@ -881,7 +870,6 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -918,7 +906,7 @@ pub fn disconnect_other_clients_plugins_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -929,7 +917,7 @@ pub fn disconnect_other_clients_plugins_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::DisconnectAllClientsExcept,
@@ -969,7 +957,6 @@ pub fn disconnect_other_clients_plugins_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -1006,7 +993,7 @@ pub fn reconfigure_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -1017,7 +1004,7 @@ pub fn reconfigure_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread_struct!(
         received_server_instruction,
         ServerInstruction::Reconfigure,
@@ -1057,7 +1044,6 @@ pub fn reconfigure_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let reconfigure_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -1098,7 +1084,7 @@ pub fn run_plugin_in_specific_cwd() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -1109,7 +1095,7 @@ pub fn run_plugin_in_specific_cwd() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::ClientExit,

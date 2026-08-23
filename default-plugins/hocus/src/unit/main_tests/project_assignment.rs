@@ -121,7 +121,7 @@ fn an_agent_in_a_subdirectory_keeps_the_project_of_its_checkout() {
         Some("hocus")
     );
     assert!(
-        state.pane_branches().get(&3).is_none(),
+        !state.pane_branches().contains_key(&3),
         "but a branch is never borrowed from a folder above",
     );
 }

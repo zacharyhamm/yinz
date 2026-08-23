@@ -6350,7 +6350,7 @@ mod tests {
         let decoded: PluginCommand = protobuf.try_into().unwrap();
         assert!(matches!(decoded,
             PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path })
-            if source == PathBuf::from("/work/project") && branch == "topic" && base == "main" && path == PathBuf::from(".worktrees/topic")));
+            if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic"));
     }
 
     #[test]

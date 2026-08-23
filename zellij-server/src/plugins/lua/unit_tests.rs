@@ -277,7 +277,9 @@ fn requesting_permissions_is_recorded_against_the_plugin() {
     plugin.load(&BTreeMap::new()).unwrap();
     // The grant itself is asynchronous (the user is prompted), so what we can check here is that
     // the command was understood rather than rejected as unknown.
-    assert!(PermissionType::ChangeApplicationState.to_string().len() > 0);
+    assert!(!PermissionType::ChangeApplicationState
+        .to_string()
+        .is_empty());
 }
 
 #[test]

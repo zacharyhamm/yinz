@@ -6,6 +6,10 @@ edition.workspace = true
 description = "A small client-side library for writing Zellij plugins"
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 fuzzy-matcher = { workspace = true }
 prost = { workspace = true }

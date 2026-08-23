@@ -1376,7 +1376,7 @@ pub fn ansi_capital_t() {
         explicitly_disable_kitty_keyboard_protocol,
     );
     let content = "foo\u{1b}[14Tbar".as_bytes();
-    vte_parser.advance(&mut grid, &content);
+    vte_parser.advance(&mut grid, content);
     assert_snapshot!(format!("{:?}", grid));
 }
 
@@ -1407,7 +1407,7 @@ pub fn ansi_capital_s() {
         explicitly_disable_kitty_keyboard_protocol,
     );
     let content = "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nfoo\u{1b}[14Sbar".as_bytes();
-    vte_parser.advance(&mut grid, &content);
+    vte_parser.advance(&mut grid, content);
     assert_snapshot!(format!("{:?}", grid));
 }
 
@@ -1526,6 +1526,6 @@ pub fn ansi_csi_at_sign() {
         explicitly_disable_kitty_keyboard_protocol,
     );
     let content = "foo\u{1b}[2D\u{1b}[2@".as_bytes();
-    vte_parser.advance(&mut grid, &content);
+    vte_parser.advance(&mut grid, content);
     assert_snapshot!(format!("{:?}", grid));
 }

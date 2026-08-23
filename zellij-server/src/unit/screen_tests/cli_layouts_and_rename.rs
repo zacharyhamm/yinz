@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 pub fn send_cli_new_tab_action_with_layout_string() {
@@ -12,7 +13,7 @@ pub fn send_cli_new_tab_action_with_layout_string() {
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
@@ -40,7 +41,6 @@ pub fn send_cli_new_tab_action_with_layout_string() {
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
     let new_tab_instruction = received_plugin_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find(|i| {
@@ -68,7 +68,7 @@ pub fn send_cli_new_tab_action_with_layout_string_and_name() {
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
@@ -95,7 +95,6 @@ pub fn send_cli_new_tab_action_with_layout_string_and_name() {
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
     let new_tab_instruction = received_plugin_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find(|i| {
@@ -127,7 +126,7 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         ..Default::default()
     };
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -172,7 +171,7 @@ pub fn send_cli_new_pane_action_with_tab_id() {
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
-    let pty_instructions = received_pty_instructions.lock().unwrap();
+    let pty_instructions = received_pty_instructions.lock();
     // Verify that the PTY instruction uses TabIndex(0) instead of ClientId
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
@@ -198,7 +197,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         ..Default::default()
     };
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -243,7 +242,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
-    let pty_instructions = received_pty_instructions.lock().unwrap();
+    let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
         pty_debug.contains("TabIndex(0)"),
@@ -268,7 +267,7 @@ pub fn send_cli_edit_action_with_tab_id() {
         ..Default::default()
     };
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -297,7 +296,7 @@ pub fn send_cli_edit_action_with_tab_id() {
     send_cli_action_to_server(&session_metadata, cli_edit_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
-    let pty_instructions = received_pty_instructions.lock().unwrap();
+    let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
         pty_debug.contains("TabIndex(0)"),
@@ -322,7 +321,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         ..Default::default()
     };
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -367,7 +366,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
-    let pty_instructions = received_pty_instructions.lock().unwrap();
+    let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
         pty_debug.contains("TabIndex(0)"),
@@ -392,7 +391,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         ..Default::default()
     };
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -437,7 +436,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
-    let pty_instructions = received_pty_instructions.lock().unwrap();
+    let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
         pty_debug.contains("TabIndex(0)"),
@@ -548,7 +547,7 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,

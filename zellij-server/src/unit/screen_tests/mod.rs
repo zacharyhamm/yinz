@@ -8,6 +8,7 @@ use crate::{
     channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
     thread_bus::Bus, ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
+use zellij_test_support::Watched;
 
 use insta::assert_snapshot;
 use std::net::{IpAddr, Ipv4Addr};
@@ -125,6 +126,47 @@ fn take_snapshots_and_cursor_coordinates_from_render_events<'a>(
         })
         .collect();
     snapshots
+}
+
+/// Blocks until the screen has rendered a frame satisfying `is_settled`, and returns it.
+///
+/// This is the replacement for `sleep(...)` followed by `snapshots.last()`. Renders are emitted
+/// asynchronously and coalesce, so *which* frame is last — and how many arrive at all — depends on
+/// timing. Asserting on the last one therefore asserts on the scheduler. Waiting for a frame whose
+/// **content** shows the state under test is stable regardless of how the renders were batched.
+///
+/// The grid is cumulative, so every frame is replayed from the beginning each time. That is
+/// quadratic in the number of renders and entirely fine at test sizes.
+fn wait_for_settled_render(
+    received_server_instructions: &Watched<Vec<ServerInstruction>>,
+    screen_size: Size,
+    what: &str,
+    is_settled: impl Fn(&str) -> bool,
+) -> String {
+    received_server_instructions.wait_until_described(
+        what,
+        zellij_test_support::default_timeout(),
+        |events| {
+            take_snapshots_and_cursor_coordinates_from_render_events(events.iter(), screen_size)
+                .into_iter()
+                .find(|(_, snapshot)| is_settled(snapshot))
+                .map(|(_, snapshot)| snapshot)
+        },
+        |events| {
+            let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+                events.iter(),
+                screen_size,
+            );
+            match snapshots.last() {
+                Some((_, last)) => format!(
+                    "{} instruction(s), {} render(s); last render was:\n{last}",
+                    events.len(),
+                    snapshots.len()
+                ),
+                None => format!("{} instruction(s) and no renders at all", events.len()),
+            }
+        },
+    )
 }
 
 fn send_cli_action_to_server(
@@ -379,7 +421,7 @@ struct MockScreen {
     pub pty_writer_receiver: Option<Receiver<(PtyWriteInstruction, ErrorContext)>>,
     #[allow(dead_code)]
     pub background_jobs_receiver: Option<Receiver<(BackgroundJob, ErrorContext)>>,
-    pub received_background_jobs: Arc<Mutex<Vec<BackgroundJob>>>,
+    pub received_background_jobs: Watched<Vec<BackgroundJob>>,
     pub screen_receiver: Option<Receiver<(ScreenInstruction, ErrorContext)>>,
     pub server_receiver: Option<Receiver<(ServerInstruction, ErrorContext)>>,
     pub plugin_receiver: Option<Receiver<(PluginInstruction, ErrorContext)>>,
@@ -668,6 +710,15 @@ impl MockScreen {
         ));
         self.last_opened_tab_index = Some(tab_index);
     }
+    /// Shuts the fake session down and re-raises any panic from the threads it joins.
+    ///
+    /// Discarding the join results - as this used to - means a panicked screen thread shows up as
+    /// a test failing on a wrong or missing snapshot, which sends the reader looking at the
+    /// assertion instead of at the panic that caused it. Re-raising puts the original panic, with
+    /// its own message and location, back in front of them.
+    ///
+    /// The sends are still allowed to fail: a thread that has already exited has already done what
+    /// the Exit message would have asked of it, and its `join` below is the real check.
     pub fn teardown(&mut self, threads: Vec<std::thread::JoinHandle<()>>) {
         let _ = self.to_pty.send(PtyInstruction::Exit);
         let _ = self.to_pty_writer.send(PtyWriteInstruction::Exit);
@@ -676,7 +727,9 @@ impl MockScreen {
         let _ = self.to_plugin.send(PluginInstruction::Exit);
         let _ = self.to_background_jobs.send(BackgroundJob::Exit);
         for thread in threads {
-            let _ = thread.join();
+            if let Err(panic) = thread.join() {
+                std::panic::resume_unwind(panic);
+            }
         }
     }
     pub fn clone_session_metadata(&self) -> SessionMetaData {
@@ -762,7 +815,7 @@ impl MockScreen {
 
         let _ = to_screen.send(ScreenInstruction::RecomputeTabSize(main_client_id, size));
 
-        let received_background_jobs = Arc::new(Mutex::new(vec![]));
+        let received_background_jobs = Watched::new(vec![]);
         std::thread::Builder::new()
             .name("background_jobs_thread".to_string())
             .spawn({
@@ -772,7 +825,7 @@ impl MockScreen {
                     let (event, _err_ctx) = background_jobs_receiver
                         .recv()
                         .expect("failed to receive event on channel");
-                    received_background_jobs.lock().unwrap().push(event.clone());
+                    received_background_jobs.lock().push(event.clone());
                     match event {
                         BackgroundJob::RenderToClients => {
                             let _ = to_screen.send(ScreenInstruction::RenderToClients);
@@ -853,11 +906,11 @@ macro_rules! log_actions_in_thread {
                         .expect("failed to receive event on channel");
                     match event {
                         $exit_event => {
-                            log.lock().unwrap().push(event.clone());
+                            log.lock().push(event.clone());
                             break;
                         },
                         _ => {
-                            log.lock().unwrap().push(event.clone());
+                            log.lock().push(event.clone());
                         },
                     }
                 }
@@ -1997,12 +2050,11 @@ fn fill_pane_zero(mock_screen: &MockScreen) {
 }
 
 fn last_change_mode_for_client(
-    received_server_instructions: &Arc<Mutex<Vec<ServerInstruction>>>,
+    received_server_instructions: &Watched<Vec<ServerInstruction>>,
     client_id: ClientId,
 ) -> Option<InputMode> {
     received_server_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|instruction| match instruction {
@@ -2023,7 +2075,7 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
     let client_id = mock_screen.main_client_id;
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,

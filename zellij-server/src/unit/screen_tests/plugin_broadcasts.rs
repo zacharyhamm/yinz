@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
@@ -30,7 +31,7 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
@@ -40,7 +41,7 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
 
     // Drain initial setup instructions before the GoToTab action
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let instructions_before_switch = received_plugin_instructions.lock().unwrap().len();
+    let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
     let goto_tab = CliAction::GoToTab { index: 1 };
@@ -49,7 +50,7 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
 
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
 
-    let instructions = received_plugin_instructions.lock().unwrap();
+    let instructions = received_plugin_instructions.lock();
     // Only examine instructions sent after the switch
     let instructions_after_switch = &instructions[instructions_before_switch..];
     let mut plugin_ids_that_received_tab_update: Vec<u32> = vec![];
@@ -123,7 +124,7 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
 
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
@@ -133,7 +134,7 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
 
     // Drain initial setup instructions before the GoToTab action
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let instructions_before_switch = received_plugin_instructions.lock().unwrap().len();
+    let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
     let goto_tab = CliAction::GoToTab { index: 1 };
@@ -142,7 +143,7 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
 
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
 
-    let instructions = received_plugin_instructions.lock().unwrap();
+    let instructions = received_plugin_instructions.lock();
     let instructions_after_switch = &instructions[instructions_before_switch..];
     let mut plugin_ids_that_received_updates: Vec<u32> = vec![];
     for instruction in instructions_after_switch.iter() {
@@ -186,7 +187,7 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
 
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
@@ -196,7 +197,7 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
 
     // Drain initial setup instructions before the GoToTab action
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let instructions_before_switch = received_plugin_instructions.lock().unwrap().len();
+    let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
     let goto_tab = CliAction::GoToTab { index: 1 };
@@ -205,7 +206,7 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
 
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
 
-    let instructions = received_plugin_instructions.lock().unwrap();
+    let instructions = received_plugin_instructions.lock();
     let instructions_after_switch = &instructions[instructions_before_switch..];
     let tab_update_for_plugin_2 = instructions_after_switch.iter().find_map(|instruction| {
         if let PluginInstruction::Update(updates) = instruction {

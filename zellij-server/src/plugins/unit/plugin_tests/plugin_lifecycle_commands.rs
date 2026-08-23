@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,7 +24,7 @@ pub fn reload_plugin_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::RequestStateUpdateForPlugins, // happens on successful plugin (re)load
@@ -65,7 +66,6 @@ pub fn reload_plugin_plugin_command() {
     teardown();
     let request_state_update_requests = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter(|i| matches!(i, ScreenInstruction::RequestStateUpdateForPlugins))
         .count();
@@ -95,7 +95,7 @@ pub fn load_new_plugin_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::RequestStateUpdateForPlugins, // happens on successful plugin (re)load
@@ -137,7 +137,6 @@ pub fn load_new_plugin_plugin_command() {
     teardown();
     let request_state_update_requests = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter(|i| matches!(i, ScreenInstruction::RequestStateUpdateForPlugins))
         .count();
@@ -167,7 +166,7 @@ pub fn rebind_keys_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -178,7 +177,7 @@ pub fn rebind_keys_plugin_command() {
         plugin_thread_sender,
         client_id
     );
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread_struct!(
         received_server_instruction,
         ServerInstruction::RebindKeys,
@@ -218,7 +217,6 @@ pub fn rebind_keys_plugin_command() {
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let rebind_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -255,7 +253,7 @@ pub fn list_clients_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ListClientsToPlugin,
@@ -297,7 +295,6 @@ pub fn list_clients_plugin_command() {
     teardown();
     let list_clients_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ListClientsToPlugin(..) = i {
@@ -333,7 +330,7 @@ pub fn before_close_plugin_event() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::HighlightAndUnhighlightPanes,
@@ -375,7 +372,6 @@ pub fn before_close_plugin_event() {
     teardown();
     let sent_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::HighlightAndUnhighlightPanes(..) = i {
@@ -411,7 +407,7 @@ pub fn show_cursor_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ShowPluginCursor,
@@ -455,17 +451,13 @@ pub fn show_cursor_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let show_cursor_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::ShowPluginCursor(plugin_id, client_id, cursor_position) = i {
-                Some((*plugin_id, *client_id, *cursor_position))
-            } else {
-                None
-            }
-        });
+    let show_cursor_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::ShowPluginCursor(plugin_id, client_id, cursor_position) = i {
+            Some((*plugin_id, *client_id, *cursor_position))
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", show_cursor_instruction));
 }
@@ -493,7 +485,7 @@ pub fn hide_cursor_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ShowPluginCursor,
@@ -538,17 +530,13 @@ pub fn hide_cursor_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let hide_cursor_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::ShowPluginCursor(plugin_id, client_id, cursor_position) = i {
-                Some((*plugin_id, *client_id, *cursor_position))
-            } else {
-                None
-            }
-        });
+    let hide_cursor_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::ShowPluginCursor(plugin_id, client_id, cursor_position) = i {
+            Some((*plugin_id, *client_id, *cursor_position))
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", hide_cursor_instruction));
 }
@@ -576,7 +564,7 @@ pub fn copy_to_clipboard_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::CopyTextToClipboard,
@@ -620,17 +608,13 @@ pub fn copy_to_clipboard_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let copy_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::CopyTextToClipboard(text, plugin_id) = i {
-                Some((text.clone(), *plugin_id))
-            } else {
-                None
-            }
-        });
+    let copy_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::CopyTextToClipboard(text, plugin_id) = i {
+            Some((text.clone(), *plugin_id))
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", copy_instruction));
 }
@@ -658,7 +642,7 @@ pub fn run_action_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::MoveFocusLeft,
@@ -702,17 +686,13 @@ pub fn run_action_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let move_focus_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::MoveFocusLeft(client_id, notification_end) = i {
-                Some((*client_id, notification_end.clone()))
-            } else {
-                None
-            }
-        });
+    let move_focus_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::MoveFocusLeft(client_id, notification_end) = i {
+            Some((*client_id, notification_end.clone()))
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", move_focus_instruction));
 }
@@ -726,7 +706,7 @@ pub fn send_sigint_to_pane_id_plugin_command() {
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
 
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     let pty_thread = log_actions_in_thread!(
@@ -736,7 +716,7 @@ pub fn send_sigint_to_pane_id_plugin_command() {
         1
     );
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -794,17 +774,13 @@ pub fn send_sigint_to_pane_id_plugin_command() {
     pty_thread.join().unwrap();
     teardown();
 
-    let sigint_instruction = received_pty_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let PtyInstruction::SendSigintToPaneId(pane_id) = i {
-                Some(*pane_id)
-            } else {
-                None
-            }
-        });
+    let sigint_instruction = received_pty_instructions.lock().iter().find_map(|i| {
+        if let PtyInstruction::SendSigintToPaneId(pane_id) = i {
+            Some(*pane_id)
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", sigint_instruction));
 }
@@ -818,7 +794,7 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
 
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     let pty_thread = log_actions_in_thread!(
@@ -828,7 +804,7 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
         1
     );
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -886,17 +862,13 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
     pty_thread.join().unwrap();
     teardown();
 
-    let sigkill_instruction = received_pty_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let PtyInstruction::SendSigkillToPaneId(pane_id) = i {
-                Some(*pane_id)
-            } else {
-                None
-            }
-        });
+    let sigkill_instruction = received_pty_instructions.lock().iter().find_map(|i| {
+        if let PtyInstruction::SendSigkillToPaneId(pane_id) = i {
+            Some(*pane_id)
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", sigkill_instruction));
 }
@@ -910,7 +882,7 @@ pub fn copy_to_clipboard_without_permission() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     // This test denies the permission and expects no CopyTextToClipboard instruction
@@ -975,17 +947,13 @@ pub fn copy_to_clipboard_without_permission() {
     screen_thread.join().unwrap();
     teardown();
 
-    let copy_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::CopyTextToClipboard(text, plugin_id) = i {
-                Some((text.clone(), *plugin_id))
-            } else {
-                None
-            }
-        });
+    let copy_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::CopyTextToClipboard(text, plugin_id) = i {
+            Some((text.clone(), *plugin_id))
+        } else {
+            None
+        }
+    });
 
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", copy_instruction));
@@ -1000,7 +968,7 @@ pub fn run_action_without_permission() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     let screen_thread = deny_permissions_and_log_actions_in_thread!(
@@ -1063,17 +1031,13 @@ pub fn run_action_without_permission() {
     screen_thread.join().unwrap();
     teardown();
 
-    let move_focus_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::MoveFocusLeft(client_id, notification_end) = i {
-                Some((*client_id, notification_end.clone()))
-            } else {
-                None
-            }
-        });
+    let move_focus_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::MoveFocusLeft(client_id, notification_end) = i {
+            Some((*client_id, notification_end.clone()))
+        } else {
+            None
+        }
+    });
 
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", move_focus_instruction));

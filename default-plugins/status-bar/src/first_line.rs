@@ -459,7 +459,6 @@ fn swap_layout_status(
 ///   to get back to normal mode from any input mode, but they aren't of interest when searching
 ///   for the super key. If for any input mode the user has bound only these keys to switching back
 ///   to `InputMode::Normal`, a '?' will be displayed as keybinding instead.
-/// ' ', '\n' and 'Esc': the default bindings to get back to normal mode from any input mode.
 ///
 /// They say nothing about how the user reaches a mode, so anything reasoning about mode shortcuts -
 /// which key to show for a mode, which modifier they all share - has to look past them.

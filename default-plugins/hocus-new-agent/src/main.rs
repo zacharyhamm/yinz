@@ -798,7 +798,7 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("codex"));
         assert!(
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
-            if branch == "topic" && base == "main" && path == PathBuf::from(".worktrees/topic"))
+            if branch == "topic" && base == "main" && path == *".worktrees/topic")
         );
     }
 
@@ -942,10 +942,12 @@ mod tests {
 
     #[test]
     fn the_project_field_is_first_and_defaults_to_the_active_project() {
-        let mut state = State::default();
-        state.projects = registry();
         // A worktree below the project root is still the project's.
-        state.source_directory = PathBuf::from("/work/zellij/.worktrees/topic");
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/work/zellij/.worktrees/topic"),
+            ..Default::default()
+        };
         state.fill_projects();
 
         assert_eq!(state.dialog.form().fields()[0].id(), PROJECT);
@@ -960,10 +962,12 @@ mod tests {
     /// modal was opened from.
     #[test]
     fn the_current_directory_is_offered_from_inside_a_project() {
-        let mut state = State::default();
-        state.projects = registry();
         let worktree = PathBuf::from("/work/zellij/.worktrees/topic");
-        state.source_directory = worktree.clone();
+        let mut state = State {
+            projects: registry(),
+            source_directory: worktree.clone(),
+            ..Default::default()
+        };
         state.fill_projects();
 
         let select = state.dialog.form_mut().select_by_id_mut(PROJECT).unwrap();
@@ -983,9 +987,11 @@ mod tests {
     /// sentinel cannot be a name.
     #[test]
     fn a_project_named_like_the_sentinel_does_not_shadow_it() {
-        let mut state = State::default();
-        state.projects = Registry::from([project(CURRENT_DIRECTORY, "/work/oddly-named")]);
-        state.source_directory = PathBuf::from("/elsewhere");
+        let mut state = State {
+            projects: Registry::from([project(CURRENT_DIRECTORY, "/work/oddly-named")]),
+            source_directory: PathBuf::from("/elsewhere"),
+            ..Default::default()
+        };
         state.fill_projects();
 
         let select = state.dialog.form_mut().select_by_id_mut(PROJECT).unwrap();
@@ -1017,9 +1023,11 @@ mod tests {
     /// the behaviour this modal had before the field existed.
     #[test]
     fn a_cwd_in_no_project_offers_the_current_directory() {
-        let mut state = State::default();
-        state.projects = registry();
-        state.source_directory = PathBuf::from("/elsewhere");
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/elsewhere"),
+            ..Default::default()
+        };
         state.fill_projects();
 
         let select = state.dialog.form().select_by_id(PROJECT).unwrap();
@@ -1033,9 +1041,11 @@ mod tests {
 
     #[test]
     fn the_agent_is_created_in_the_selected_projects_root() {
-        let mut state = State::default();
-        state.projects = registry();
-        state.source_directory = PathBuf::from("/work/zellij");
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/work/zellij"),
+            ..Default::default()
+        };
         state.fill_projects();
         // The point of the field: an agent for a project the caller is not in.
         state
@@ -1086,8 +1096,10 @@ mod tests {
 
     #[test]
     fn a_finished_probe_fills_the_combos_it_is_about() {
-        let mut state = State::default();
-        state.git_probe = 3;
+        let mut state = State {
+            git_probe: 3,
+            ..Default::default()
+        };
         let context = |kind: &str, id: u32| {
             BTreeMap::from([
                 (GIT_PROBE.to_owned(), kind.to_owned()),
@@ -1125,8 +1137,10 @@ mod tests {
     /// is not a checkout - has nothing to say either.
     #[test]
     fn a_stale_or_failed_probe_leaves_the_suggestions_alone() {
-        let mut state = State::default();
-        state.git_probe = 2;
+        let mut state = State {
+            git_probe: 2,
+            ..Default::default()
+        };
         let probe = |id: u32| {
             BTreeMap::from([
                 (GIT_PROBE.to_owned(), BRANCHES_PROBE.to_owned()),

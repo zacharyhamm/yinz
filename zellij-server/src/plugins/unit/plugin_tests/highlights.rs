@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -21,7 +22,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::SetPluginRegexHighlights,
@@ -65,22 +66,18 @@ pub fn set_pane_regex_highlights_via_plugin() {
     screen_thread.join().unwrap();
     teardown();
 
-    let highlight_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::SetPluginRegexHighlights {
-                pane_id,
-                plugin_id,
-                highlights,
-            } = i
-            {
-                Some((*pane_id, *plugin_id, highlights.clone()))
-            } else {
-                None
-            }
-        });
+    let highlight_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::SetPluginRegexHighlights {
+            pane_id,
+            plugin_id,
+            highlights,
+        } = i
+        {
+            Some((*pane_id, *plugin_id, highlights.clone()))
+        } else {
+            None
+        }
+    });
 
     assert!(
         highlight_instruction.is_some(),
@@ -115,7 +112,7 @@ pub fn clear_pane_highlights_via_plugin() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::ClearPluginHighlights,
@@ -159,17 +156,13 @@ pub fn clear_pane_highlights_via_plugin() {
     screen_thread.join().unwrap();
     teardown();
 
-    let clear_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::ClearPluginHighlights { pane_id, plugin_id } = i {
-                Some((*pane_id, *plugin_id))
-            } else {
-                None
-            }
-        });
+    let clear_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::ClearPluginHighlights { pane_id, plugin_id } = i {
+            Some((*pane_id, *plugin_id))
+        } else {
+            None
+        }
+    });
 
     assert!(
         clear_instruction.is_some(),
@@ -200,7 +193,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -247,22 +240,18 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("HighlightClicked") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("HighlightClicked") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert!(
         plugin_bytes_event.is_some(),
         "Expected PluginBytes containing 'HighlightClicked'"

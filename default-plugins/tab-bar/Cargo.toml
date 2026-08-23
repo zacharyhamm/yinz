@@ -5,6 +5,10 @@ authors = ["Jonah Caplan <jonahcaplan@gmail.com>"]
 edition.workspace = true
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 ansi_term = { workspace = true }
 unicode-width = { workspace = true }

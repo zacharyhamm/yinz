@@ -1,7 +1,7 @@
 //! Tasks related to zellij CI
 use crate::{
     assets, build,
-    flags::{self, BuildRelease, CiCmd, Cross, E2e},
+    flags::{self, BuildRelease, Check, CiCmd, Cross, E2e},
     metadata,
 };
 use anyhow::Context;
@@ -15,6 +15,7 @@ pub fn main(sh: &Shell, flags: flags::Ci) -> anyhow::Result<()> {
     let err_context = "failed to run CI task";
 
     match flags.subcommand {
+        CiCmd::Check(Check { no_web }) => check(sh, no_web).context(err_context),
         CiCmd::E2e(E2e {
             build: false,
             test: false,
@@ -319,4 +320,57 @@ fn cross() -> anyhow::Result<PathBuf> {
             Err(e).context("couldn't find 'cross' executable")
         },
     }
+}
+
+/// The pre-handoff gate.
+///
+/// This fork has no CI - `.github/workflows` was deleted deliberately - so nothing runs these
+/// checks unless a person does. This is the one command to run before handing off a branch, and
+/// the reason it exists as a command rather than as a list in a document is that a list in a
+/// document is not runnable.
+///
+/// The phases are ordered cheapest-first, and each is allowed to fail so that one failure does
+/// not hide the others.
+fn check(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
+    let mut failed: Vec<&str> = Vec::new();
+
+    if crate::format::format(sh, flags::Format { check: true }).is_err() {
+        failed.push("format --check");
+    }
+    if crate::lint::lint(
+        sh,
+        flags::Lint {
+            fix: false,
+            no_web,
+            args: vec![],
+        },
+    )
+    .is_err()
+    {
+        failed.push("lint");
+    }
+    if assets::assets(sh, flags::Assets { check: true }).is_err() {
+        failed.push("assets --check");
+    }
+    if crate::test::test(
+        sh,
+        flags::Test {
+            no_web,
+            args: vec![],
+        },
+    )
+    .is_err()
+    {
+        failed.push("test");
+    }
+
+    if failed.is_empty() {
+        crate::status(">> All checks passed");
+        println!("\n>> All checks passed");
+        return Ok(());
+    }
+    let msg = format!(">> Failed: {}", failed.join(", "));
+    crate::status(&msg);
+    println!("\n{msg}");
+    Err(anyhow::anyhow!("checks failed: {}", failed.join(", ")))
 }
