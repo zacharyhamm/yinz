@@ -4,12 +4,15 @@ A survey of this fork found three dominant pieces of debt. The third — nothing
 is **done**, and is described in CLAUDE.md rather than here. This document is the research behind
 the other two, written down so picking them up later does not mean deriving it again.
 
-Both are large. Neither is urgent. What follows is what was measured, what the seam actually is,
-and — as important — what was considered and rejected.
+**The file split in section A is now done** (see "What was actually done", below). What remains of
+A is the two riders it deliberately left alone. B is untouched.
+
+What follows is what was measured, what the seam actually is, and — as important — what was
+considered and rejected.
 
 ---
 
-# A. `screen.rs` is a 17,287-line god file
+# A. `screen.rs` was a 17,287-line god file — **split, done**
 
 ## The shape
 
@@ -82,13 +85,68 @@ not a rename, not a `.context()`, not a lint fix. After each step,
 paired test command plus `cargo check -p zellij-server` should pass. Escalate to full
 `cargo x test` at #8, #13 and #15.
 
+## What was actually done
+
+Seventeen commits, `2200b844e..f1fe10691`. `screen.rs` is now `screen/` — `mod.rs` at 4,016 lines
+plus sixteen topic modules. Every commit was verified byte-identical against the previous `mod.rs`
+before landing, and the full `cargo x test` suite is green at each of the three escalation points.
+
+| File | Lines | | File | Lines |
+|---|---|---|---|---|
+| `mod.rs` | 4,016 | | `tabs.rs` | 520 |
+| `thread_main.rs` | 5,848 | | `render.rs` | 535 |
+| `instruction.rs` | 1,163 | | `break_panes.rs` | 415 |
+| `nested.rs` | 1,071 | | `global_pane_focus.rs` | 441 |
+| `warp_ops.rs` | 830 | | `sizing.rs` | 375 |
+| `plugin_state.rs` | 689 | | `host_query.rs` | 319 |
+| `mouse.rs` | 295 | | `notifications.rs` | 277 |
+| `input_modes.rs` | 258 | | `subscriptions.rs` | 243 |
+| `global_pane_layout.rs` | 179 | | `capabilities.rs` | 112 |
+
+### Where this document was wrong, and what to trust instead
+
+The plan above was written before the work and its line table had drifted. Corrections, for anyone
+reading it as history:
+
+- **The child modules keep `impl Screen`, but with explicit imports, not `use super::*;`.** The
+  glob was proposed as the pragmatic choice; it turned out to be unnecessary. Deriving each
+  import list mechanically — compile with the glob to prove the cut, then delete it and let rustc
+  enumerate what is missing — is about as cheap and leaves files that read like `tab/`'s.
+- **Privacy does *not* flow the way this document implied.** "The defining module and all its
+  descendants" is right, but it means a *child* sees the *parent's* privates, never the reverse.
+  Every method a moved run still owes to `mod.rs` needed `pub(super)`. That is 90-odd keywords
+  across the split, and it is the only non-move content in any of the commits.
+- **Four of the fifteen proposed ranges cut mid-run** and would have produced a broken tree:
+  `capabilities` merged two topics and orphaned `resume_pane_after_forward`; `warp_ops` stopped
+  inside `empty_and_close_tab`; `input_modes` cut into the focus-movement run; `tabs` started on
+  `client_is_web`, which belongs to neither. Derive boundaries from method names, never line
+  numbers.
+- **Notifications became its own file**, rather than riding inside `global_pane_layout.rs`. It is
+  a self-contained overlay subsystem sharing only `Viewport` with the geometry around it.
+- **Extraction order barely matters.** Bottom-up was chosen so ranges would not drift, but adding
+  each `mod x;` line shifts everything below it anyway, so boundaries have to be re-derived every
+  step regardless.
+
+### Left undone, deliberately
+
+Both riders below were in scope of section A as written and are **not** done:
+
+- the `From<&ScreenInstruction> for ScreenContext` strum rewrite (next section) — `instruction.rs`
+  moved the impl verbatim and did not touch its body;
+- the `has_pane_with_pid` cleanup, which this document says to do per-module *after* the split.
+  That precondition now holds.
+
+The render/report epilogue remains rejected, for the reasons below.
+
 ## The 406-line `From` impl — a standalone rider
 
 Worth doing on its own; it needs no file split and no new dependencies.
 
 `zellij-utils/src/errors.rs:212` already carries the answer as a FIXME: *"Just deriving
 EnumDiscriminants from strum will remove the need for any of this!!!"*. `strum`/`strum_macros` are
-already workspace dependencies.
+already workspace dependencies — but note they are *not* dependencies of `zellij-server`, only of
+`zellij-utils`, so this rider starts with one line added to `zellij-server/Cargo.toml`.
+`ScreenInstruction` now lives in `zellij-server/src/screen/instruction.rs`.
 
 1. `strum_macros::IntoStaticStr` on `ScreenInstruction` — it works on data-carrying enums and
    yields the variant name, so no `EnumDiscriminants` layer is needed despite the FIXME's wording.

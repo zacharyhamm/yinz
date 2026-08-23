@@ -296,7 +296,7 @@ and write a context message somehow mentioning this.
 We want to propagate errors as far up as we can. This way, every function along
 the way can at least attach a context message giving us an idea what chain of
 events lead to the error. Where do we terminate execution in `Screen`? If you
-study the code in `screen.rs`, you'll notice all the components of zellij
+study the code in `screen/`, you'll notice all the components of zellij
 interact with the `Screen` instance by means of IPC messages. These messages
 are handled in the `screen_thread_main` function. Here's an excerpt:
 
