@@ -5,6 +5,10 @@ authors = ["Alexander Kenji Berthold <aks.kenji@protonmail.com>" ]
 edition.workspace = true
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 ansi_term = { workspace = true }
 unicode-width = { workspace = true }

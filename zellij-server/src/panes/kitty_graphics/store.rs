@@ -279,9 +279,7 @@ impl KittyImageStore {
     /// old one — the scaled variants the render path reads and their base64 encodings.
     pub fn set_current_frame(&mut self, id: InternalImageId, frame_number: u32) -> Option<()> {
         let stored = self.images.get_mut(&id)?;
-        if stored.image.frame_rgba(frame_number).is_none() {
-            return None;
-        }
+        stored.image.frame_rgba(frame_number)?;
         if stored.image.current_frame != frame_number as usize {
             stored.image.current_frame = frame_number as usize;
             let freed: usize = stored.image.scaled_variants.values().map(Vec::len).sum();

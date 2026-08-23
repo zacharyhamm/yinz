@@ -1047,7 +1047,7 @@ mod tests {
     #[test]
     fn a_folder_on_another_machine_is_not_inside_a_local_project() {
         let project = validate("hocus", "/work/hocus").unwrap();
-        let projects = registry(&[project.clone()]);
+        let projects = registry(std::slice::from_ref(&project));
         let there = Location::new(Some("build-box"), "/work/hocus/src");
 
         assert!(!contains(&project, &there));

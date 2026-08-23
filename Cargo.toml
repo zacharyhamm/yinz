@@ -13,6 +13,10 @@ rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
@@ -80,6 +84,22 @@ repository = "https://github.com/zellij-org/zellij"
 version = "0.45.0"
 # NOTE: When updating this, modify `channel` in `rust-toolchain.toml` accordingly
 rust-version = "1.97"
+
+[workspace.lints.clippy]
+# The gate is `-D warnings` (see `cargo x lint`), so everything not named here must be fixed
+# rather than tolerated. Each entry below is a standing decision with a reason, and the list is
+# the ratchet: removing an entry is a self-contained piece of work, and adding one should be
+# argued for. Prefer a narrowly scoped `#[allow]` with a comment over a new entry here.
+
+# The wide instruction enums - `ScreenInstruction`, `PluginCommand`, `Action` - carry their
+# payloads by value because those payloads are the wire format. Boxing the large variants would
+# put an allocation on every message through the server's hot channels.
+large_enum_variant = "allow"
+
+# `Tab::new`, `route_action` and a handful of their neighbours thread session state through by
+# hand. The fix is parameter structs, which is a refactor of the call graph rather than a lint
+# fix - see docs/TECH_DEBT.md.
+too_many_arguments = "allow"
 
 [workspace.dependencies]
 ansi_term = { version = "0.12.1", default-features = false }

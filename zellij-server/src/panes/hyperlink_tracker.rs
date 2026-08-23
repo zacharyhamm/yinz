@@ -1343,16 +1343,12 @@ mod tests {
 
                 if let Some(ref anchor) = character.styles.link_anchor {
                     match anchor {
-                        LinkAnchor::Start(id) => {
-                            if expected_link_id.is_none() {
-                                expected_link_id = Some(*id);
-                            } else {
-                                assert_eq!(
-                                    expected_link_id.unwrap(),
-                                    *id,
-                                    "All characters should have the same link ID"
-                                );
-                            }
+                        LinkAnchor::Start(id) => match expected_link_id {
+                            None => expected_link_id = Some(*id),
+                            Some(expected) => assert_eq!(
+                                expected, *id,
+                                "All characters should have the same link ID"
+                            ),
                         },
                         LinkAnchor::End => {
                             if i != url.len().saturating_sub(1) {

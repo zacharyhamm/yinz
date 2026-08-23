@@ -5,6 +5,10 @@ authors = ["Aram Drevekenin <aram@poor.dev>"]
 edition.workspace = true
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
 url = { workspace = true }

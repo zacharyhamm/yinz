@@ -748,7 +748,7 @@ fn cannot_escape_scroll_region() {
         explicitly_disable_kitty_keyboard_protocol,
     );
     let content = "\u{1b}[1;42r\u{1b}[42;1HHi there!".as_bytes();
-    vte_parser.advance(&mut grid, &content);
+    vte_parser.advance(&mut grid, content);
     assert_snapshot!(format!("{:?}", grid));
 }
 
