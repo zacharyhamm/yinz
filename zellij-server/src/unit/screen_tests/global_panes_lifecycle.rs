@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 fn global_close_cleans_up_once_before_a_failing_reflow() {
@@ -156,7 +157,7 @@ fn global_plugin_launch_retains_placement_when_not_loaded() {
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -182,7 +183,6 @@ fn global_plugin_launch_retains_placement_when_not_loaded() {
 
     assert!(received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .any(|instruction| matches!(
             instruction,

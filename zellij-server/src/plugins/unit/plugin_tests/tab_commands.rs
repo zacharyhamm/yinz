@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,7 +24,7 @@ pub fn toggle_active_tab_sync_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ToggleActiveSyncTab,
@@ -65,7 +66,6 @@ pub fn toggle_active_tab_sync_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ToggleActiveSyncTab(..) = i {
@@ -101,7 +101,7 @@ pub fn close_focused_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::CloseTab,
@@ -143,7 +143,6 @@ pub fn close_focused_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::CloseTab(..) = i {
@@ -179,7 +178,7 @@ pub fn undo_rename_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::UndoRenameTab,
@@ -221,7 +220,6 @@ pub fn undo_rename_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::UndoRenameTab(..) = i {
@@ -257,7 +255,7 @@ pub fn previous_swap_layout_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PreviousSwapLayout,
@@ -299,7 +297,6 @@ pub fn previous_swap_layout_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::PreviousSwapLayout(..) = i {
@@ -335,7 +332,7 @@ pub fn next_swap_layout_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::NextSwapLayout,
@@ -377,7 +374,6 @@ pub fn next_swap_layout_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::NextSwapLayout(..) = i {
@@ -413,7 +409,7 @@ pub fn go_to_tab_name_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::GoToTabName,
@@ -455,7 +451,6 @@ pub fn go_to_tab_name_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::GoToTabName(..) = i {
@@ -491,7 +486,7 @@ pub fn focus_or_create_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::GoToTabName,
@@ -533,7 +528,6 @@ pub fn focus_or_create_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::GoToTabName(..) = i {
@@ -569,7 +563,7 @@ pub fn go_to_tab() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::GoToTab,
@@ -611,7 +605,6 @@ pub fn go_to_tab() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::GoToTab(..) = i {

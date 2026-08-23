@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 use std::io::{Read as _, Write};
 use std::os::unix::net::UnixStream;
@@ -399,12 +400,15 @@ async fn a_resize_made_during_an_outage_is_sent_again_on_reconnect() {
 
     // The link dies, and the user reshapes the window while it is down.
     drop(peer);
-    let taken = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // The reconnect is picked up on a helper thread and handed back through a `Watched`, so the
+    // wait below is for the socket actually arriving rather than for a duration. The two used to
+    // disagree - the helper allowed 10s, the main flow gave up after ~5 and then read the slot -
+    // so a reconnect landing in between failed the test with "never produced a socket".
+    let taken: Watched<Option<UnixStream>> = Watched::default();
     let sink = taken.clone();
     std::thread::spawn(move || {
-        if let Ok(peer) = peer_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            *sink.lock().expect("poisoned") = Some(peer);
-            std::thread::sleep(std::time::Duration::from_secs(5));
+        if let Ok(peer) = peer_rx.recv_timeout(zellij_test_support::default_timeout()) {
+            *sink.lock() = Some(peer);
         }
     });
 
@@ -422,11 +426,12 @@ async fn a_resize_made_during_an_outage_is_sent_again_on_reconnect() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut read).await;
 
     // Whatever the broker is told after the reconnect must include the new size.
-    let mut peer = taken
-        .lock()
-        .expect("poisoned")
-        .take()
-        .expect("the reconnect never produced a socket");
+    taken.wait_until(
+        "the reconnect to produce a socket",
+        zellij_test_support::default_timeout(),
+        |slot| slot.is_some().then_some(()),
+    );
+    let mut peer = taken.lock().take().expect("just waited for it to arrive");
     peer.set_read_timeout(Some(std::time::Duration::from_secs(2)))
         .expect("failed to set a read timeout");
     let mut seen = Vec::new();

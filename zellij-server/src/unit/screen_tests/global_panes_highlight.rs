@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 fn focusing_a_global_pane_highlights_the_border_it_shares_with_the_tab() {
@@ -706,7 +707,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
     let mut mock_screen = MockScreen::new(size);
     mock_screen.drop_all_pty_messages();
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
@@ -803,7 +804,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let received_server_instructions = received_server_instructions.lock();
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.iter(),
         size,
@@ -822,7 +823,7 @@ fn early_global_plugin_bytes_replay_before_already_queued_later_bytes() {
     let mut mock_screen = MockScreen::new(size);
     mock_screen.drop_all_pty_messages();
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
@@ -879,7 +880,7 @@ fn early_global_plugin_bytes_replay_before_already_queued_later_bytes() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let received_server_instructions = received_server_instructions.lock();
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.iter(),
         size,
@@ -897,7 +898,7 @@ fn early_global_plugin_events_are_replayed_after_insertion() {
     let mut mock_screen = MockScreen::new(size);
     mock_screen.drop_all_pty_messages();
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
@@ -1012,7 +1013,7 @@ fn early_global_plugin_events_are_replayed_after_insertion() {
         .collect();
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let received_server_instructions = received_server_instructions.lock().unwrap();
+    let received_server_instructions = received_server_instructions.lock();
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.iter(),
         size,
@@ -1041,7 +1042,7 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
     let mut mock_screen = MockScreen::new(size);
     mock_screen.drop_all_pty_messages();
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,

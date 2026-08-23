@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,7 +24,7 @@ pub fn hide_pane_with_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::SuppressPane,
@@ -65,7 +66,6 @@ pub fn hide_pane_with_id_plugin_command() {
     teardown();
     let suppress_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::SuppressPane(..) = i {
@@ -101,7 +101,7 @@ pub fn show_pane_with_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::FocusPaneWithId,
@@ -143,7 +143,6 @@ pub fn show_pane_with_id_plugin_command() {
     teardown();
     let focus_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::FocusPaneWithId(..) = i {
@@ -179,14 +178,14 @@ pub fn open_command_pane_background_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -228,7 +227,6 @@ pub fn open_command_pane_background_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -268,7 +266,7 @@ pub fn rerun_command_pane_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::RerunCommandPane,
@@ -310,7 +308,6 @@ pub fn rerun_command_pane_plugin_command() {
     teardown();
     let rerun_command_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::RerunCommandPane(..) = i {
@@ -346,7 +343,7 @@ pub fn resize_pane_with_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ResizePaneWithId,
@@ -388,7 +385,6 @@ pub fn resize_pane_with_id_plugin_command() {
     teardown();
     let rerun_command_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ResizePaneWithId(..) = i {
@@ -424,7 +420,7 @@ pub fn edit_scrollback_for_pane_with_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::EditScrollbackForPaneWithId,
@@ -466,7 +462,6 @@ pub fn edit_scrollback_for_pane_with_id_plugin_command() {
     teardown();
     let rerun_command_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::EditScrollbackForPaneWithId(..) = i {
@@ -502,7 +497,7 @@ pub fn write_to_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::WriteToPaneId,
@@ -544,7 +539,6 @@ pub fn write_to_pane_id_plugin_command() {
     teardown();
     let rerun_command_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::WriteToPaneId(..) = i {
@@ -580,7 +574,7 @@ pub fn write_chars_to_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::WriteToPaneId,
@@ -622,7 +616,6 @@ pub fn write_chars_to_pane_id_plugin_command() {
     teardown();
     let rerun_command_pane_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::WriteToPaneId(..) = i {
@@ -658,7 +651,7 @@ pub fn move_pane_with_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::MovePaneWithPaneId,
@@ -700,7 +693,6 @@ pub fn move_pane_with_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::MovePaneWithPaneId(..) = i {
@@ -736,7 +728,7 @@ pub fn move_pane_with_pane_id_in_direction_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::MovePaneWithPaneIdInDirection,
@@ -778,7 +770,6 @@ pub fn move_pane_with_pane_id_in_direction_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::MovePaneWithPaneIdInDirection(..) = i {
@@ -814,7 +805,7 @@ pub fn clear_screen_for_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ClearScreenForPaneId,
@@ -856,7 +847,6 @@ pub fn clear_screen_for_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ClearScreenForPaneId(..) = i {
@@ -892,7 +882,7 @@ pub fn scroll_up_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ScrollUpInPaneId,
@@ -934,7 +924,6 @@ pub fn scroll_up_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ScrollUpInPaneId(..) = i {
@@ -970,7 +959,7 @@ pub fn scroll_down_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ScrollDownInPaneId,
@@ -1012,7 +1001,6 @@ pub fn scroll_down_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ScrollDownInPaneId(..) = i {
@@ -1048,7 +1036,7 @@ pub fn scroll_to_top_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ScrollToTopInPaneId,
@@ -1090,7 +1078,6 @@ pub fn scroll_to_top_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ScrollToTopInPaneId(..) = i {
@@ -1126,7 +1113,7 @@ pub fn scroll_to_bottom_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ScrollToBottomInPaneId,
@@ -1168,7 +1155,6 @@ pub fn scroll_to_bottom_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ScrollToBottomInPaneId(..) = i {
@@ -1204,7 +1190,7 @@ pub fn page_scroll_up_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PageScrollUpInPaneId,
@@ -1246,7 +1232,6 @@ pub fn page_scroll_up_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::PageScrollUpInPaneId(..) = i {
@@ -1282,7 +1267,7 @@ pub fn page_scroll_down_in_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PageScrollDownInPaneId,
@@ -1324,7 +1309,6 @@ pub fn page_scroll_down_in_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::PageScrollDownInPaneId(..) = i {
@@ -1360,7 +1344,7 @@ pub fn toggle_pane_id_fullscreen_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::TogglePaneIdFullscreen,
@@ -1402,7 +1386,6 @@ pub fn toggle_pane_id_fullscreen_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::TogglePaneIdFullscreen(..) = i {
@@ -1438,7 +1421,7 @@ pub fn toggle_pane_embed_or_eject_for_pane_id_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::TogglePaneEmbedOrEjectForPaneId,
@@ -1480,7 +1463,6 @@ pub fn toggle_pane_embed_or_eject_for_pane_id_plugin_command() {
     teardown();
     let screen_instruction = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(..) = i {

@@ -23,7 +23,6 @@ use crate::background_jobs::BackgroundJob;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{plugins::PluginInstruction, pty::PtyInstruction};
 use std::env::set_var;
-use std::sync::{Arc, Mutex};
 use zellij_utils::channels::{self, ChannelWithContext, Receiver};
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::input::plugins::PluginAliases;
@@ -53,7 +52,7 @@ fn recv_from_fake_screen<T>(
                 "fake screen thread waited {:?} for the next event and gave up ({err}). It had \
                  seen {exit_events_seen} of {exit_events_expected} expected exit events. This \
                  usually means the plugin never loaded — fixture in use: {}",
-                FAKE_SCREEN_RECV_TIMEOUT, &*PLUGIN_FIXTURE
+                FAKE_SCREEN_RECV_TIMEOUT, *PLUGIN_FIXTURE
             )
         })
 }
@@ -71,13 +70,13 @@ macro_rules! log_actions_in_thread {
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -99,13 +98,13 @@ macro_rules! log_actions_in_thread_struct {
                     match event {
                         $exit_event { .. } => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -129,7 +128,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
@@ -158,7 +157,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                             }
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -182,7 +181,7 @@ macro_rules! deny_permissions_and_log_actions_in_thread {
                     match event {
                         $exit_event(..) => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
@@ -200,7 +199,7 @@ macro_rules! deny_permissions_and_log_actions_in_thread {
                             break;
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -224,7 +223,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                     match event {
                         $exit_event => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
@@ -253,7 +252,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                             }
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -277,7 +276,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                     match event {
                         $exit_event { .. } => {
                             exit_event_count += 1;
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                             if exit_event_count == $exit_after_count {
                                 break;
                             }
@@ -306,7 +305,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                             }
                         },
                         _ => {
-                            log.lock().unwrap().push(event);
+                            log.lock().push(event);
                         },
                     }
                 }
@@ -379,9 +378,9 @@ fn create_plugin_thread(
     let mut plugin_aliases = PluginAliases::default();
     plugin_aliases.aliases.insert(
         "fixture_plugin_for_tests".to_owned(),
-        RunPlugin::from_url(&format!("file:{}", &*PLUGIN_FIXTURE)).unwrap(),
+        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
     );
-    let mut modal_fixture = RunPlugin::from_url(&format!("file:{}", &*PLUGIN_FIXTURE)).unwrap();
+    let mut modal_fixture = RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap();
     modal_fixture.configuration.insert("modal", "true");
     plugin_aliases
         .aliases

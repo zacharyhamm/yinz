@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -9,7 +10,7 @@ pub fn generate_random_name_permission_denied() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     let screen_thread = deny_permissions_and_log_actions_in_thread!(
@@ -78,22 +79,18 @@ pub fn generate_random_name_permission_denied() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_with_name = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Generated name:") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_with_name = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Generated name:") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
 
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", plugin_bytes_with_name));
@@ -108,7 +105,7 @@ pub fn save_layout_permission_denied() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
     let screen_thread = deny_permissions_and_log_actions_in_thread!(
@@ -177,22 +174,18 @@ pub fn save_layout_permission_denied() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_with_save = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Save layout") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_with_save = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Save layout") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
 
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", plugin_bytes_with_save));
@@ -226,7 +219,7 @@ pub fn plugin_receives_config_change_event() {
         rows: 20,
     };
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -283,7 +276,6 @@ pub fn plugin_receives_config_change_event() {
 
     let plugin_renders = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter_map(|i| {
             if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
@@ -348,7 +340,7 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
         rows: 20,
     };
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -411,7 +403,6 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
     // Verify plugin did NOT receive PluginConfigurationChanged event
     let plugin_renders = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter_map(|i| {
             if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
@@ -451,7 +442,7 @@ pub fn get_session_environment_variables_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), Some(test_env_vars));
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -514,23 +505,17 @@ pub fn get_session_environment_variables_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Got")
-                        && plugin_bytes.contains("environment variables")
-                    {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Got") && plugin_bytes.contains("environment variables") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }

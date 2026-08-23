@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,7 +24,7 @@ pub fn start_or_reload_plugin() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::StartOrReloadPluginPane,
@@ -65,7 +66,6 @@ pub fn start_or_reload_plugin() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::StartOrReloadPluginPane(..) = i {
@@ -101,14 +101,14 @@ pub fn quit_zellij_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::ClientExit,
         server_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -150,7 +150,6 @@ pub fn quit_zellij_plugin_command() {
     teardown();
     let new_tab_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ServerInstruction::ClientExit(..) = i {
@@ -186,14 +185,14 @@ pub fn detach_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_server_instruction = Arc::new(Mutex::new(vec![]));
+    let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instruction,
         ServerInstruction::DetachSession,
         server_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -235,7 +234,6 @@ pub fn detach_plugin_command() {
     teardown();
     let new_tab_event = received_server_instruction
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ServerInstruction::DetachSession(..) = i {
@@ -271,14 +269,14 @@ pub fn open_file_floating_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -320,7 +318,6 @@ pub fn open_file_floating_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -360,14 +357,14 @@ pub fn open_file_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -409,7 +406,6 @@ pub fn open_file_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -449,7 +445,7 @@ pub fn open_file_with_line_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
@@ -457,7 +453,7 @@ pub fn open_file_with_line_plugin_command() {
         1
     );
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -499,7 +495,6 @@ pub fn open_file_with_line_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -539,14 +534,14 @@ pub fn open_file_with_line_floating_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -588,7 +583,6 @@ pub fn open_file_with_line_floating_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -628,14 +622,14 @@ pub fn open_terminal_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -677,7 +671,6 @@ pub fn open_terminal_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -713,14 +706,14 @@ pub fn open_terminal_floating_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -762,7 +755,6 @@ pub fn open_terminal_floating_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -798,14 +790,14 @@ pub fn open_command_pane_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -847,7 +839,6 @@ pub fn open_command_pane_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
@@ -883,14 +874,14 @@ pub fn open_command_pane_floating_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -932,7 +923,6 @@ pub fn open_command_pane_floating_plugin_command() {
     teardown();
     let new_tab_event = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let PtyInstruction::SpawnTerminal(..) = i {
