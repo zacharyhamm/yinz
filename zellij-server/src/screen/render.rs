@@ -1,13 +1,13 @@
 use zellij_utils::errors::prelude::*;
 
-use std::collections::{BTreeMap, HashMap};
-use zellij_utils::pane_size::{Size, Viewport};
-use crate::{ClientId, ServerInstruction};
+use super::Screen;
 use crate::background_jobs::BackgroundJob;
 use crate::output::Output;
 use crate::panes::PaneId;
 use crate::plugins::{PluginInstruction, PluginRenderAsset};
-use super::Screen;
+use crate::{ClientId, ServerInstruction};
+use std::collections::{BTreeMap, HashMap};
+use zellij_utils::pane_size::{Size, Viewport};
 
 impl Screen {
     pub fn render(&mut self, plugin_render_assets: Option<Vec<PluginRenderAsset>>) -> Result<()> {
@@ -532,5 +532,4 @@ impl Screen {
 
         Ok(())
     }
-
 }
