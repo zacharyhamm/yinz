@@ -1,6 +1,7 @@
 use super::*;
 use crate::screen::Notification;
 use crate::ui::notification::notification_width;
+use zellij_test_support::Watched;
 
 #[test]
 fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
@@ -127,7 +128,7 @@ pub fn mouse_hover_effect() {
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -143,7 +144,7 @@ pub fn mouse_hover_effect() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     for (_cursor_coordinates, snapshot) in snapshots {
@@ -166,7 +167,7 @@ pub fn disabled_mouse_hover_effect() {
     let mut mock_screen = MockScreen::new(size);
     mock_screen.set_advanced_hover_effects(false);
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -182,7 +183,7 @@ pub fn disabled_mouse_hover_effect() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     for (_cursor_coordinates, snapshot) in snapshots {

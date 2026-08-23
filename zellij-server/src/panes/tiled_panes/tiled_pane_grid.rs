@@ -1393,24 +1393,27 @@ impl<'a> TiledPaneGrid<'a> {
             .iter()
             .filter(|(_, p)| p.selectable() && !p.current_geom().is_stacked())
             .collect();
-        let (_largest_pane_size, pane_id_to_split) = pane_sequence.iter().fold(
-            (0, None),
-            |(current_largest_pane_size, current_pane_id_to_split), id_and_pane_to_check| {
-                let (id_of_pane_to_check, pane_to_check) = id_and_pane_to_check;
+        // `panes` is a `HashMap`, so its iteration order is randomized per process. Ranking by
+        // size alone therefore left ties - two panes of equal area, the common case in any
+        // symmetric layout - to be broken by the hash seed, and the same layout could grow a new
+        // pane in two different places on two runs of the same binary. Ranking by `(size, id)`
+        // makes the choice total and reproducible; on a tie the most recently opened pane (the
+        // highest id) is split, which is the one the user was most likely just working in.
+        let pane_id_to_split = pane_sequence
+            .iter()
+            .filter(|(_, pane_to_check)| {
+                pane_to_check.cols() >= MIN_TERMINAL_WIDTH
+                    && pane_to_check.rows() >= MIN_TERMINAL_HEIGHT
+                    && ((pane_to_check.cols() > pane_to_check.min_width() * 2)
+                        || (pane_to_check.rows() > pane_to_check.min_height() * 2))
+            })
+            .max_by_key(|(id_of_pane_to_check, pane_to_check)| {
                 let pane_size = (pane_to_check.rows()
                     * cursor_height_width_ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO))
                     * pane_to_check.cols();
-                let pane_can_be_split = pane_to_check.cols() >= MIN_TERMINAL_WIDTH
-                    && pane_to_check.rows() >= MIN_TERMINAL_HEIGHT
-                    && ((pane_to_check.cols() > pane_to_check.min_width() * 2)
-                        || (pane_to_check.rows() > pane_to_check.min_height() * 2));
-                if pane_can_be_split && pane_size > current_largest_pane_size {
-                    (pane_size, Some(*id_of_pane_to_check))
-                } else {
-                    (current_largest_pane_size, current_pane_id_to_split)
-                }
-            },
-        );
+                (pane_size, **id_of_pane_to_check)
+            })
+            .map(|(id_of_pane_to_check, _)| *id_of_pane_to_check);
         pane_id_to_split.and_then(|t_id_to_split| {
             let pane_to_split = panes.get(t_id_to_split)?;
             let direction = if pane_to_split.rows()

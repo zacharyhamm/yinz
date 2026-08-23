@@ -192,11 +192,11 @@ fn row_text(row: &super::super::Row) -> String {
 }
 
 fn scrollback_texts(grid: &Grid) -> Vec<String> {
-    grid.lines_above.iter().map(|r| row_text(r)).collect()
+    grid.lines_above.iter().map(row_text).collect()
 }
 
 fn viewport_texts(grid: &Grid) -> Vec<String> {
-    grid.viewport.iter().map(|r| row_text(r)).collect()
+    grid.viewport.iter().map(row_text).collect()
 }
 
 fn create_grid_with_size_and_raw(rows: usize, cols: usize, content: &[u8]) -> Grid {
@@ -219,7 +219,7 @@ fn create_grid_with_size_and_raw(rows: usize, cols: usize, content: &[u8]) -> Gr
         true,
         false,
     );
-    vte_parser.advance(&mut grid, &content);
+    vte_parser.advance(&mut grid, content);
     grid
 }
 

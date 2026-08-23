@@ -3,6 +3,10 @@ name = "hocus"
 version = "0.1.0"
 edition.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }

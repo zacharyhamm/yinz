@@ -47,6 +47,9 @@ impl std::fmt::Debug for FakeClientOsApi {
     }
 }
 
+// A test helper offers the whole builder surface whether or not every test uses every part of it;
+// a constructor going unused for a while is the toolkit being complete, not code going stale.
+#[allow(dead_code)]
 impl FakeClientOsApi {
     pub fn new() -> Self {
         Self::default()

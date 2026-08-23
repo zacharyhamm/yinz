@@ -5,6 +5,10 @@ authors = ["Brooks J Rady <b.j.rady@gmail.com>"]
 edition.workspace = true
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 ansi_term = { workspace = true }
 lazy_static = { workspace = true }

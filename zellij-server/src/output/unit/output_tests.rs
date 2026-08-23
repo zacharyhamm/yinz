@@ -38,8 +38,7 @@ fn create_test_output() -> Output {
 
 /// Helper to create a simple CharacterChunk with text
 fn create_character_chunk_from_str(text: &str, x: usize, y: usize) -> CharacterChunk {
-    let terminal_chars: Vec<TerminalCharacter> =
-        text.chars().map(|c| TerminalCharacter::new(c)).collect();
+    let terminal_chars: Vec<TerminalCharacter> = text.chars().map(TerminalCharacter::new).collect();
     CharacterChunk::new(terminal_chars, x, y)
 }
 
@@ -1844,7 +1843,7 @@ fn kitty_emitted_bytes_roundtrip_through_our_parser() {
     chunk.cell_offset_y = 4;
     chunk.z_index = -1;
     chunk.dest_cells = (2, 2);
-    let output = run_kitty_frame(&parts, vec![chunk.clone()], None);
+    let output = run_kitty_frame(&parts, vec![chunk], None);
     let commands = extract_kitty_commands(&output);
     assert!(
         !commands.is_empty(),

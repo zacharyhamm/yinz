@@ -6,6 +6,10 @@ edition.workspace = true
 description = "A simplified ranger clone written as a Zellij plugin"
 license.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
 pretty-bytes = { workspace = true }

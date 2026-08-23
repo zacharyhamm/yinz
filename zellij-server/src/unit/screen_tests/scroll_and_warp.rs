@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 pub fn scroll_position_is_preserved_across_move_focus() {
@@ -12,7 +13,7 @@ pub fn scroll_position_is_preserved_across_move_focus() {
     let client_id = mock_screen.main_client_id;
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -62,7 +63,7 @@ pub fn scroll_position_is_preserved_across_move_focus() {
 
     mock_screen.teardown(vec![server_thread, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let (_cursor_position, last_snapshot) = snapshots.last().unwrap();

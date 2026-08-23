@@ -1214,7 +1214,6 @@ impl KittyGrid {
         // only when the `d` key is equal to `i`, `I`, `r`, `R`, `n` or `N`." The rest are
         // positional, and a virtual placement has no position to select it by.
         if matches!(lower, 'i' | 'n' | 'r') {
-            let target_image_id = target_image_id;
             let placement_id = command.placement_id;
             let (id_low, id_high) = (command.source_x, command.source_y);
             self.remove_virtual_placements(|virtual_placement| match lower {

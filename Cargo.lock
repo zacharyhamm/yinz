@@ -5525,8 +5525,13 @@ dependencies = [
  "wasmi",
  "wasmi_core",
  "wasmi_wasi",
+ "zellij-test-support",
  "zellij-utils",
 ]
+
+[[package]]
+name = "zellij-test-support"
+version = "0.45.0"
 
 [[package]]
 name = "zellij-tile"

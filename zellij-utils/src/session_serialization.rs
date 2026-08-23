@@ -2709,9 +2709,13 @@ mod tests {
     // ---------------------------------------------------------------------
 
     fn manifest_at(x: usize, y: usize, cols: usize, rows: usize) -> PaneLayoutManifest {
-        let mut geom = PaneGeom::default();
-        geom.x = x;
-        geom.y = y;
+        // `cols`/`rows` are `Dimension`s and are set through `set_inner` rather than assigned, so the
+        // struct literal covers x and y and the two dimensions follow.
+        let mut geom = PaneGeom {
+            x,
+            y,
+            ..Default::default()
+        };
         geom.cols.set_inner(cols);
         geom.rows.set_inner(rows);
         PaneLayoutManifest {

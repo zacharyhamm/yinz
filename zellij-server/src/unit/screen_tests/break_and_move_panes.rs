@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 pub fn screen_can_suppress_pane() {
@@ -10,7 +11,7 @@ pub fn screen_can_suppress_pane() {
     };
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -24,7 +25,7 @@ pub fn screen_can_suppress_pane() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -54,7 +55,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -96,7 +97,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -112,7 +113,7 @@ pub fn screen_cannot_break_last_selectable_pane_to_a_new_tab() {
     let initial_layout = TiledPaneLayout::default();
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -128,7 +129,7 @@ pub fn screen_cannot_break_last_selectable_pane_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -159,7 +160,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), floating_panes_layout.clone());
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -202,7 +203,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -243,7 +244,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
 
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -292,7 +293,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -331,7 +332,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -373,7 +374,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -410,7 +411,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), floating_panes_layout.clone());
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -453,7 +454,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -481,7 +482,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
     };
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -519,7 +520,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -547,7 +548,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
     };
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -583,7 +584,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -611,7 +612,7 @@ pub fn send_cli_stack_panes_action() {
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -624,7 +625,6 @@ pub fn send_cli_stack_panes_action() {
     send_cli_action_to_server(&session_metadata, stack_panes_action, client_id);
     let render_count = received_server_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
         .count();
@@ -635,7 +635,6 @@ pub fn send_cli_stack_panes_action() {
     let started_at = std::time::Instant::now();
     while received_server_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter(|instruction| matches!(instruction, ServerInstruction::Render(_)))
         .count()
@@ -649,7 +648,7 @@ pub fn send_cli_stack_panes_action() {
     }
     mock_screen.teardown(vec![server_thread, screen_thread]);
     let (_, snapshot) = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     )
     .into_iter()
@@ -668,7 +667,7 @@ pub fn send_cli_change_floating_pane_coordinates_action() {
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(Some(initial_tiled_layout), initial_floating_panes);
 
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -692,7 +691,7 @@ pub fn send_cli_change_floating_pane_coordinates_action() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
+        received_server_instructions.lock().iter(),
         size,
     );
     let snapshot_count = snapshots.len();
@@ -763,7 +762,7 @@ pub fn send_cli_go_to_tab_by_id_action() {
     mock_screen.new_tab(TiledPaneLayout::default());
 
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -784,7 +783,6 @@ pub fn send_cli_go_to_tab_by_id_action() {
     // Verify that CLI action caused screen updates (Render instructions sent)
     let render_count = received_server_instructions
         .lock()
-        .unwrap()
         .iter()
         .filter(|instr| matches!(instr, ServerInstruction::Render(_)))
         .count();
@@ -844,7 +842,7 @@ pub fn send_cli_rename_tab_by_id_action() {
     mock_screen.new_tab(TiledPaneLayout::default());
 
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -935,7 +933,7 @@ pub fn send_cli_close_tab_by_id_action() {
     mock_screen.new_tab(TiledPaneLayout::default());
 
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -971,7 +969,7 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -1019,7 +1017,6 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
 
     let spawn_in_place_instruction = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find(|instruction| matches!(instruction, PtyInstruction::SpawnInPlaceTerminal(..)))
         .cloned();
@@ -1038,7 +1035,7 @@ pub fn send_cli_edit_in_place_with_close_replaced_pane() {
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -1070,7 +1067,6 @@ pub fn send_cli_edit_in_place_with_close_replaced_pane() {
 
     let spawn_in_place_instruction = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find(|instruction| matches!(instruction, PtyInstruction::SpawnInPlaceTerminal(..)))
         .cloned();
@@ -1091,7 +1087,7 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::Exit,
@@ -1116,7 +1112,6 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
 
     let fill_plugin_cwd_instruction = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .find(|instruction| matches!(instruction, PtyInstruction::FillPluginCwd(..)))
         .cloned();

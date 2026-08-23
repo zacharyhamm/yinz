@@ -8,10 +8,12 @@ plugins compiled to wasm.
 ```sh
 cargo x build            # builds plugins (wasm32-wasip1) then the binary
 cargo x test             # plugin tests + per-crate tests
-cargo x format           # rustfmt; --check in CI
+cargo x lint             # clippy at -D warnings; --fix applies the suggestions
+cargo x format           # rustfmt; --check to verify instead of rewrite
+cargo x ci check         # the pre-handoff gate: format --check, lint, assets --check, test
 cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
-cargo x bench            # render throughput benchmarks (criterion); not part of CI
+cargo x bench            # render throughput benchmarks (criterion); not part of the gate
 cargo x remote-test --build && cargo x remote-test --test  # remote panes, real ssh in docker
 ```
 
@@ -29,9 +31,16 @@ This is normal and expected — wasm builds are not byte-reproducible. Restore t
 `git checkout -- zellij-utils/assets/plugins` before committing unless the plugin sources
 actually changed, and don't report the churn.
 
-CI runs: `cargo x build`, `cargo x test`, `cargo x test --no-web`,
-`cargo x integration-test`, `cargo x assets --check`, `cargo x format --check`,
-`cargo test -p xtask` — on Linux and macOS.
+**There is no CI in this fork.** `.github/workflows` was deleted deliberately (`c456d1cdf`), so
+nothing checks a branch unless a person runs it. The gate is:
+
+```sh
+cargo x ci check     # format --check, lint, assets --check, test
+```
+
+Run it before handing off a branch or opening a PR. Every phase runs even if an earlier one
+fails, so one failure does not hide the rest. `cargo x integration-test -- -j 4` is a separate
+run — see "Reading a red run" below for why it is not part of the gate.
 
 ### Passing arguments
 
@@ -101,16 +110,38 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
   `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
   group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`.
-- **The `zellij-server` lib suite is flaky under parallel load**, and the failing set changes
-  between runs of the same tree — drawn from
-  `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
-  `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins` (it
-  synchronizes a real wasm plugin load with a bare `sleep(500ms)`) and
-  `screen_tests::cli_actions::send_cli_scroll_up_action`. `global_panes_focus` is racy *on its
-  own*: run alone against one unchanged binary it both passes and fails, always with the same
-  two-row shift. So "run the named test alone" is not enough for it — run it several times and
-  compare the diff, not the pass/fail count. Adding tests to this suite changes the scheduling and
-  so changes which of these surface.
+- **The three known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
+  loop: `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
+  `screen_tests::cli_actions::send_cli_scroll_up_action` and
+  `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.
+  Two of the three were fixed in the test; the first needed a **production** fix, because the
+  cause was real nondeterminism — see `docs/TECH_DEBT.md`.
+- **A fourth flake, `pty_host_remote_reader_tests::a_resize_made_during_an_outage_is_sent_again_on_reconnect`,
+  was found by the new gate** and fixed the same way. Its helper thread allowed 10s for the
+  reconnect while the main flow gave up after ~5 and then read the slot, so a reconnect landing in
+  between failed with "the reconnect never produced a socket". It passes alone either way — only
+  a loaded machine reveals it, which is exactly what `cargo x ci check` provides.
+
+### Waiting in tests: use `Watched`, not `sleep`
+
+`zellij-test-support` provides `Watched<T>` — shared state plus a bounded
+`wait_until(what, timeout, predicate)` that panics with a diagnostic instead of hanging. The test
+loggers in `unit/screen_tests/` and `plugins/unit/plugin_tests/` already hold their instruction
+logs in one, so a test can wait for the condition it actually cares about.
+
+Two rules learned the hard way, both from tests that were flaky for years:
+
+- **Never assert on `snapshots.last()` or on a render count.** Renders are asynchronous and
+  coalesce, so *which* frame is last and *how many* arrive are properties of the scheduler, not of
+  the behaviour under test. Wait for a frame whose **content** shows the state you mean —
+  `wait_for_settled_render` in `unit/screen_tests/mod.rs` does exactly this.
+- **A sleep is not a synchronisation primitive.** Instructions sent to the screen or plugin thread
+  are drained in order, so ordering never needs a sleep; only *observing the result* does, and
+  that is what `wait_until` is for.
+
+~580 `sleep()` calls remain in other tests. They are a mechanical follow-up, deliberately not
+converted in bulk: changing scheduling everywhere at once is a bigger perturbation than the
+problem, and this suite's flakes shift when scheduling does.
 
 ## Kitty graphics conformance
 

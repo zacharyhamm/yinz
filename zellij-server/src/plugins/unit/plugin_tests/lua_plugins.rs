@@ -5,6 +5,7 @@
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
 use super::*;
+use zellij_test_support::Watched;
 
 /// Load the Lua fixture and return everything the screen was told to draw for it.
 fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -45,7 +46,7 @@ pub fn lua_plugin_loads_and_renders() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -83,7 +84,7 @@ pub fn lua_plugin_loads_and_renders() {
     screen_thread.join().unwrap();
     teardown();
 
-    let rendered = rendered_output(&received_screen_instructions.lock().unwrap());
+    let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered.iter().any(|r| r.contains("hello from lua")),
         "expected the plugin's render output, got: {:?}",
@@ -114,7 +115,7 @@ pub fn lua_plugin_receives_its_configuration() {
     // The fixture defaults this to "hello"; the prelude merges the user's value over the top.
     configuration.insert("greeting".to_owned(), "configured".to_owned());
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -151,7 +152,7 @@ pub fn lua_plugin_receives_its_configuration() {
     screen_thread.join().unwrap();
     teardown();
 
-    let rendered = rendered_output(&received_screen_instructions.lock().unwrap());
+    let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered.iter().any(|r| r.contains("configured from lua")),
         "expected the merged configuration to reach `load`, got: {:?}",
@@ -168,7 +169,7 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         create_plugin_thread(Some(plugin_host_folder), None);
     let client_id = 1;
     let size = Size { cols: 80, rows: 10 };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -212,7 +213,7 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     screen_thread.join().unwrap();
     teardown();
 
-    let rendered = rendered_output(&received_screen_instructions.lock().unwrap());
+    let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered.iter().any(|r| r.contains("presses 1")),
         "the subscribed key event should have been delivered, got: {:?}",
@@ -239,14 +240,14 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
     let client_id = 1;
     let size = Size { cols: 80, rows: 10 };
 
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnTerminal,
         pty_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -290,13 +291,12 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
 
     let spawned = received_pty_instructions
         .lock()
-        .unwrap()
         .iter()
         .any(|instruction| matches!(instruction, PtyInstruction::SpawnTerminal(..)));
     assert!(
         spawned,
         "expected `zellij.open_terminal` to reach the pty thread, got: {:?}",
-        received_pty_instructions.lock().unwrap()
+        received_pty_instructions.lock()
     );
 }
 
@@ -323,7 +323,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         ..Default::default()
     });
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -360,7 +360,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
     screen_thread.join().unwrap();
     teardown();
 
-    let rendered = rendered_output(&received_screen_instructions.lock().unwrap());
+    let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered.iter().any(|r| r.contains("payload carried")),
         "the reserved-word key should have survived to `load`, got: {:?}",

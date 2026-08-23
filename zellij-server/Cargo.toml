@@ -8,6 +8,10 @@ license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+[lints]
+workspace = true
+
 [dependencies]
 ansi_term = { workspace = true }
 anyhow = { workspace = true }
@@ -69,6 +73,7 @@ signal-hook = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 hegeltest = "0.29.3"
+zellij-test-support = { path = "../zellij-test-support" }
 insta = "1.48"
 # The plugin tests share process-global state (`ZELLIJ_SESSION_NAME` and the directories derived
 # from it), so they are serialized against each other with `#[serial(plugin_tests)]`. Only that

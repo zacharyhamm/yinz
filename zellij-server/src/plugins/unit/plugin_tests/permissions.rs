@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -32,7 +33,7 @@ pub fn send_configuration_to_plugins() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::GoToTabName,
@@ -77,7 +78,6 @@ pub fn send_configuration_to_plugins() {
 
     let go_to_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::GoToTabName(..) = i {
@@ -111,7 +111,7 @@ pub fn request_plugin_permissions() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::RequestPluginPermissions,
@@ -149,7 +149,6 @@ pub fn request_plugin_permissions() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::RequestPluginPermissions(_, plugin_permission) = i {

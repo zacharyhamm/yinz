@@ -763,9 +763,13 @@ fn a_tab_keeps_its_shape_at_a_size_it_was_never_arranged_for(tc: hegel::TestCase
 // process in it, so every one of them still has to travel.
 
 fn manifest(x: usize, y: usize, cols: usize, rows: usize, run: Run) -> PaneLayoutManifest {
-    let mut geom = PaneGeom::default();
-    geom.x = x;
-    geom.y = y;
+    // `cols`/`rows` are `Dimension`s and are set through `set_inner` rather than assigned, so the
+    // struct literal covers x and y and the two dimensions follow.
+    let mut geom = PaneGeom {
+        x,
+        y,
+        ..Default::default()
+    };
     geom.cols.set_inner(cols);
     geom.rows.set_inner(rows);
     PaneLayoutManifest {

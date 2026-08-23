@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 fn subscriber_receives_initial_delivery() {
@@ -514,14 +515,14 @@ fn close_pane_notifies_subscribers_via_instruction() {
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,
@@ -572,14 +573,14 @@ fn integration_pty_bytes_delivered_to_subscriber() {
     let screen_thread = mock_screen.run(None, vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,
@@ -647,14 +648,14 @@ fn integration_pty_bytes_not_delivered_when_viewport_unchanged() {
     let screen_thread = mock_screen.run(None, vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,
@@ -704,14 +705,14 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
     let screen_thread = mock_screen.run(None, vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,
@@ -821,14 +822,14 @@ fn integration_no_scrollback_when_not_requested() {
     let screen_thread = mock_screen.run(None, vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,
@@ -891,14 +892,14 @@ fn integration_subscriber_survives_after_regular_client_detach() {
     let screen_thread = mock_screen.run(None, vec![]);
 
     let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::KillSession,
         server_receiver
     );
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
+    let received_plugin_instructions = Watched::new(vec![]);
     let plugin_thread = log_actions_in_thread!(
         received_plugin_instructions,
         PluginInstruction::Exit,

@@ -4278,7 +4278,7 @@ impl Tab {
         self.tiled_panes.panes_contain(pid)
             || self.floating_panes.panes_contain(pid)
             || self.overlay_panes.panes_contain(pid)
-            || self.suppressed_panes.contains_key(&*pid)
+            || self.suppressed_panes.contains_key(pid)
     }
     pub fn has_non_suppressed_pane_with_pid(&self, pid: &PaneId) -> bool {
         self.tiled_panes.panes_contain(pid)

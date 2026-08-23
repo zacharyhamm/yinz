@@ -759,7 +759,7 @@ fn exec_with_control_fd(
 
 #[test]
 fn placing_the_control_fd_moves_it_to_fd_three() {
-    let got = exec_with_control_fd("printf moved >&3", |raw| place_control_fd(raw));
+    let got = exec_with_control_fd("printf moved >&3", place_control_fd);
     assert_eq!(
         got, "moved",
         "the exec'd process could not write to fd 3, so the control socket never arrived"

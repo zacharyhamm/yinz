@@ -1935,7 +1935,7 @@ fn last_field(output: &str, name: &str) -> Option<String> {
     output
         .split_whitespace()
         .filter_map(|word| word.strip_prefix(name))
-        .last()
+        .next_back()
         .map(|value| value.trim().to_owned())
 }
 

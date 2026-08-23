@@ -32,6 +32,12 @@ xflags::xflags! {
                 optional --no-web
             }
 
+            /// The pre-handoff gate: format --check, lint, assets --check, test
+            cmd check {
+                /// Check without web server support
+                optional --no-web
+            }
+
             /// Native release build (plugins + binary, no cross-compilation)
             cmd build-release {
                 /// Compile without web server support
@@ -98,6 +104,16 @@ xflags::xflags! {
         cmd format {
             /// Run `cargo fmt` in check mode
             optional --check
+        }
+
+        /// Run `cargo clippy` on all crates, denying warnings
+        cmd lint {
+            /// Apply clippy's automatic suggestions instead of only reporting them
+            optional --fix
+            /// Lint without web server support
+            optional --no-web
+            /// Arguments to pass after `cargo clippy --`
+            repeated args: OsString
         }
 
         /// Run application tests
@@ -174,6 +190,7 @@ pub enum XtaskCmd {
     Install(Install),
     Run(Run),
     Format(Format),
+    Lint(Lint),
     Test(Test),
     IntegrationTest(IntegrationTest),
     RemoteTest(RemoteTest),
@@ -195,6 +212,7 @@ pub struct Ci {
 pub enum CiCmd {
     E2e(E2e),
     Cross(Cross),
+    Check(Check),
     BuildRelease(BuildRelease),
 }
 
@@ -210,6 +228,11 @@ pub struct E2e {
 pub struct Cross {
     pub triple: OsString,
 
+    pub no_web: bool,
+}
+
+#[derive(Debug)]
+pub struct Check {
     pub no_web: bool,
 }
 
@@ -262,6 +285,14 @@ pub struct Run {
 #[derive(Debug)]
 pub struct Format {
     pub check: bool,
+}
+
+#[derive(Debug)]
+pub struct Lint {
+    pub args: Vec<OsString>,
+
+    pub fix: bool,
+    pub no_web: bool,
 }
 
 #[derive(Debug)]

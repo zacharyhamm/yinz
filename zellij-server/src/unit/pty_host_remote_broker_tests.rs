@@ -213,7 +213,6 @@ fn pump_over_session(
     inspect: impl FnOnce(&Arc<PaneSession>, &Arc<PaneRegistry>),
 ) -> (UnixStream, std::thread::JoinHandle<Result<Outcome>>) {
     use crate::pty_host::client::PtyHostHandle;
-    use std::os::fd::OwnedFd;
 
     let pty = nix::pty::openpty(None, None).expect("openpty failed");
     let (control, control_peer) = UnixStream::pair().expect("socketpair failed");
@@ -224,7 +223,7 @@ fn pump_over_session(
         "token".to_owned(),
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
-        OwnedFd::from(pty.master),
+        pty.master,
         std::process::id(),
     ));
     let registry = Arc::new(PaneRegistry::new());
@@ -614,7 +613,7 @@ fn an_explicit_command_pane_gets_an_environment_but_no_login_shell() {
 /// answer is worth sending, and inside the pump thread the refresh interval is
 /// reachable only by waiting a minute for it.
 mod git_probe_pump {
-    use super::*;
+
     use crate::pty_host::remote::broker::GitProbePump;
     use crate::pty_host::remote::status::GitProbe;
     use std::cell::Cell;

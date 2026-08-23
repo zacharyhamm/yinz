@@ -620,7 +620,7 @@ impl State {
         );
         // A fresh tool budget, same as a typed question.
         self.tool_rounds = 0;
-        self.start_request(&cfg);
+        self.start_request(cfg);
         true
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -9,7 +10,7 @@ pub fn generate_random_name_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -73,22 +74,18 @@ pub fn generate_random_name_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Generated name") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Generated name") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -101,7 +98,7 @@ pub fn dump_layout_success_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -165,22 +162,18 @@ pub fn dump_layout_success_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Layout dump") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Layout dump") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -198,7 +191,7 @@ pub fn data_store_plugin_commands() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -262,22 +255,18 @@ pub fn data_store_plugin_commands() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Data store") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Data store") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -290,7 +279,7 @@ pub fn dump_layout_not_found_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -354,22 +343,18 @@ pub fn dump_layout_not_found_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Layout dump error") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Layout dump error") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -382,7 +367,7 @@ pub fn get_layout_dir_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -446,22 +431,18 @@ pub fn get_layout_dir_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Got layout folder") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Got layout folder") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -474,7 +455,7 @@ pub fn get_focused_pane_info_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread_struct_variant!(
         received_screen_instructions,
         ScreenInstruction::GetFocusedPaneInfo,
@@ -538,17 +519,13 @@ pub fn get_focused_pane_info_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let focused_pane_info_query = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::GetFocusedPaneInfo { .. } = i {
-                return Some(i.clone());
-            } else {
-                None
-            }
-        });
+    let focused_pane_info_query = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::GetFocusedPaneInfo { .. } = i {
+            Some(i.clone())
+        } else {
+            None
+        }
+    });
     assert_snapshot!(format!("{:#?}", focused_pane_info_query));
 }
 
@@ -561,7 +538,7 @@ pub fn dump_session_layout_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -625,16 +602,12 @@ pub fn dump_session_layout_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let dump_layout_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
-                return Some(i.clone());
-            }
-            None
-        });
+    let dump_layout_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
+            return Some(i.clone());
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", dump_layout_instruction));
 }
 
@@ -647,7 +620,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -711,16 +684,12 @@ pub fn dump_session_layout_for_tab_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let dump_layout_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
-                return Some(i.clone());
-            }
-            None
-        });
+    let dump_layout_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
+            return Some(i.clone());
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", dump_layout_instruction));
 }
 
@@ -733,7 +702,7 @@ pub fn parse_layout_success_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -797,22 +766,18 @@ pub fn parse_layout_success_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Parse success") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Parse success") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -825,7 +790,7 @@ pub fn parse_layout_error_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -889,22 +854,18 @@ pub fn parse_layout_error_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Parse error:") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Parse error:") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -917,7 +878,7 @@ pub fn save_layout_success_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -981,22 +942,18 @@ pub fn save_layout_success_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Save layout") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Save layout") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1009,7 +966,7 @@ pub fn save_layout_already_exists_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1088,7 +1045,6 @@ pub fn save_layout_already_exists_plugin_command() {
 
     let plugin_bytes_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -1115,7 +1071,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1179,22 +1135,18 @@ pub fn save_layout_with_overwrite_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Save layout") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Save layout") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1207,7 +1159,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1271,22 +1223,18 @@ pub fn save_layout_invalid_kdl_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("invalid layout error") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("invalid layout error") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1299,7 +1247,7 @@ pub fn rename_layout_success_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1378,7 +1326,6 @@ pub fn rename_layout_success_plugin_command() {
 
     let plugin_bytes_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -1405,7 +1352,7 @@ pub fn rename_layout_not_found_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1469,22 +1416,18 @@ pub fn rename_layout_not_found_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Rename") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Rename") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1497,7 +1440,7 @@ pub fn delete_layout_success_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1589,7 +1532,6 @@ pub fn delete_layout_success_plugin_command() {
 
     let plugin_bytes_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -1616,7 +1558,7 @@ pub fn delete_layout_not_found_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1680,22 +1622,18 @@ pub fn delete_layout_not_found_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Delete") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Delete") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1708,7 +1646,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -1772,22 +1710,18 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Path traversal") {
-                        return Some(plugin_bytes);
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Path traversal") {
+                    return Some(plugin_bytes);
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -1806,8 +1740,8 @@ pub fn edit_layout_plugin_command() {
             None,
         );
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
+    let received_pty_instructions = Watched::new(vec![]);
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
         PtyInstruction::SpawnInPlaceTerminal,
@@ -1878,18 +1812,13 @@ pub fn edit_layout_plugin_command() {
     teardown();
 
     // this is the editor pane for the layout being spawned
-    let spawn_terminal_instruction =
-        received_pty_instructions
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|i| {
-                if let PtyInstruction::SpawnInPlaceTerminal(..) = i {
-                    Some(i.clone())
-                } else {
-                    None
-                }
-            });
+    let spawn_terminal_instruction = received_pty_instructions.lock().iter().find_map(|i| {
+        if let PtyInstruction::SpawnInPlaceTerminal(..) = i {
+            Some(i.clone())
+        } else {
+            None
+        }
+    });
 
     assert_snapshot!(format!("{:#?}", spawn_terminal_instruction).replace(
         &format!("{}", temp_layout_folder.path().display()),
@@ -1906,7 +1835,7 @@ pub fn override_layout_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), None);
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::OverrideLayout,
@@ -1970,16 +1899,12 @@ pub fn override_layout_plugin_command() {
     screen_thread.join().unwrap();
     teardown();
 
-    let override_layout_instruction = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::OverrideLayout(..) = i {
-                Some(i.clone())
-            } else {
-                None
-            }
-        });
+    let override_layout_instruction = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::OverrideLayout(..) = i {
+            Some(i.clone())
+        } else {
+            None
+        }
+    });
     assert_snapshot!(format!("{:#?}", override_layout_instruction));
 }

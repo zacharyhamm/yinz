@@ -1,4 +1,51 @@
 use super::*;
+use zellij_test_support::Watched;
+
+/// Blocks until `plugin_id` has rendered at least once, which is the observable signal that the
+/// plugin finished loading.
+///
+/// Loading a plugin compiles and instantiates a real wasm module, so how long it takes depends
+/// entirely on the machine and its current load. Sleeping a fixed 500ms for it is a guess that is
+/// wasteful when it is too long and flaky when it is too short.
+fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32) {
+    log.wait_until_described(
+        &format!("plugin {plugin_id} to load and render"),
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .any(|instruction| match instruction {
+                    ScreenInstruction::PluginBytes(assets) => {
+                        assets.iter().any(|asset| asset.plugin_id == plugin_id)
+                    },
+                    _ => false,
+                })
+                .then_some(())
+        },
+        |instructions| {
+            format!(
+                "{} instruction(s) so far, from plugin id(s) {:?}. The fixture in use is {}",
+                instructions.len(),
+                plugin_render_ids(instructions),
+                *PLUGIN_FIXTURE
+            )
+        },
+    )
+}
+
+fn plugin_render_ids(instructions: &[ScreenInstruction]) -> Vec<u32> {
+    let mut ids: Vec<u32> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets.iter().map(|a| a.plugin_id)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 #[test]
 #[serial(plugin_tests)]
@@ -38,7 +85,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         ..Default::default()
     });
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     // Spawn a screen thread that grants permissions and collects all instructions until Exit
     let screen_thread = std::thread::Builder::new()
         .name("fake_screen_thread".to_string())
@@ -65,7 +112,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
                         break;
                     },
                     _ => {
-                        log.lock().unwrap().push(event);
+                        log.lock().push(event);
                     },
                 }
             }
@@ -93,7 +140,8 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_plugin_to_load(&received_screen_instructions, 0);
+
     // Load plugin B
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
         plugin_should_float,
@@ -114,7 +162,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_plugin_to_load(&received_screen_instructions, 1);
 
     // Set keybinds on all plugins via Reconfigure so that Plugin A (legacy)
     // will have non-empty keybinds in its internal state
@@ -133,7 +181,8 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         builtin_plugins_dir: None,
         was_written_to_disk: false,
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // No wait here: both plugins are loaded and the plugin thread drains its channel in order, so
+    // the Reconfigure below is applied before the ModeUpdate that follows it.
 
     // Send ModeUpdate to all plugins (None = broadcast)
     // The keybinds field here doesn't matter — apply_event_to_plugin replaces it
@@ -146,31 +195,31 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         Some(client_id),
         Event::ModeUpdate(mode_info),
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Wait for both ModeUpdate renders rather than sleeping and then hoping both arrived. The
+    // assertions below are what the wait is for, so a timeout here reports the same failure the
+    // asserts would - just with the evidence attached.
+    let (plugin_a_has_keybinds, plugin_b_has_empty_keybinds) = received_screen_instructions
+        .wait_until_described(
+            "both plugins to receive their ModeUpdate",
+            zellij_test_support::default_timeout(),
+            |instructions| {
+                let (a, b) = mode_update_payloads(instructions);
+                (a && b).then_some((a, b))
+            },
+            |instructions| {
+                let (a, b) = mode_update_payloads(instructions);
+                format!(
+                    "plugin A got keybinds: {a}, plugin B got a stripped ModeUpdate: {b} \
+                     (after {} instruction(s) from plugin id(s) {:?})",
+                    instructions.len(),
+                    plugin_render_ids(instructions),
+                )
+            },
+        );
 
     teardown();
     screen_thread.join().unwrap();
-
-    let instructions = received_screen_instructions.lock().unwrap();
-    let mut plugin_a_has_keybinds = false;
-    let mut plugin_b_has_empty_keybinds = false;
-
-    for instruction in instructions.iter() {
-        if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
-            for asset in plugin_render_assets {
-                let bytes = String::from_utf8_lossy(&asset.bytes).to_string();
-                if bytes.contains("ModeUpdate") {
-                    // Plugin A (plugin_id 0) should have keybinds with 'q' -> Quit
-                    // Plugin B (plugin_id 1) should have empty keybinds
-                    if bytes.contains("Quit") {
-                        plugin_a_has_keybinds = true;
-                    } else if bytes.contains("ModeUpdate") && !bytes.contains("Quit") {
-                        plugin_b_has_empty_keybinds = true;
-                    }
-                }
-            }
-        }
-    }
 
     assert!(
         plugin_a_has_keybinds,
@@ -180,6 +229,31 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         plugin_b_has_empty_keybinds,
         "Plugin B (InitialKeybinds subscriber) should receive ModeUpdate with empty keybinds"
     );
+}
+
+/// `(plugin A received keybinds, plugin B received a ModeUpdate with them stripped)`.
+///
+/// Plugin A subscribes to `ModeUpdate` alone and so should still be sent the full keybinds, which
+/// show up as `Quit` in its payload. Plugin B also subscribes to `InitialKeybinds` and so should
+/// get a `ModeUpdate` with the keybinds stripped out.
+fn mode_update_payloads(instructions: &[ScreenInstruction]) -> (bool, bool) {
+    let mut plugin_a_has_keybinds = false;
+    let mut plugin_b_has_empty_keybinds = false;
+    for instruction in instructions {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
+            for asset in plugin_render_assets {
+                let bytes = String::from_utf8_lossy(&asset.bytes).to_string();
+                if bytes.contains("ModeUpdate") {
+                    if bytes.contains("Quit") {
+                        plugin_a_has_keybinds = true;
+                    } else {
+                        plugin_b_has_empty_keybinds = true;
+                    }
+                }
+            }
+        }
+    }
+    (plugin_a_has_keybinds, plugin_b_has_empty_keybinds)
 }
 
 #[test]
@@ -208,7 +282,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         ..Default::default()
     });
 
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     // Spawn a screen thread that grants permissions and collects all instructions until Exit
     let screen_thread = std::thread::Builder::new()
         .name("fake_screen_thread".to_string())
@@ -235,7 +309,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
                         break;
                     },
                     _ => {
-                        log.lock().unwrap().push(event);
+                        log.lock().push(event);
                     },
                 }
             }
@@ -286,7 +360,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
     teardown();
     screen_thread.join().unwrap();
 
-    let instructions = received_screen_instructions.lock().unwrap();
+    let instructions = received_screen_instructions.lock();
     let initial_keybinds_event = instructions.iter().find_map(|instruction| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
             for asset in plugin_render_assets {

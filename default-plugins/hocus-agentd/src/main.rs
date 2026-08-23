@@ -1193,10 +1193,10 @@ impl State {
                 // Still owed: the cooldown, an in-flight request or a baseline that has not
                 // moved refused this settling, and none of those mean it was not real. Keep
                 // offering it until one of them lets it through.
-                (Some(Phase::Waiting { owed: true }), agents::Observed::Idle { .. }) => {
-                    if usable && ask(self, pane_id, &reading.text) {
-                        self.phase.insert(pane_id, Phase::Waiting { owed: false });
-                    }
+                (Some(Phase::Waiting { owed: true }), agents::Observed::Idle { .. })
+                    if usable && ask(self, pane_id, &reading.text) =>
+                {
+                    self.phase.insert(pane_id, Phase::Waiting { owed: false });
                 },
                 // Settling, or settled and paid for.
                 _ => {},
@@ -1865,10 +1865,9 @@ mod tests {
         });
 
         assert!(
-            state
+            !state
                 .repositories
-                .get(&remote("build-box", "/work/hocus/deep"))
-                .is_none(),
+                .contains_key(&remote("build-box", "/work/hocus/deep")),
             "the pane's own folder has not been answered for yet",
         );
         assert!(state
