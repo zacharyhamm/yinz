@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -23,14 +24,14 @@ pub fn switch_to_mode_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
         ServerInstruction::ChangeMode,
         server_receiver,
         1
     );
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
         ScreenInstruction::Exit,
@@ -73,7 +74,6 @@ pub fn switch_to_mode_plugin_command() {
     teardown();
     let switch_to_mode_event = received_server_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ServerInstruction::ChangeMode(..) = i {
@@ -109,7 +109,7 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = deny_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::ChangeMode,
@@ -152,7 +152,6 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
     teardown();
     let switch_to_mode_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::ChangeMode(..) = i {
@@ -188,7 +187,7 @@ pub fn new_tabs_with_layout_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::NewTab,
@@ -231,7 +230,6 @@ pub fn new_tabs_with_layout_plugin_command() {
     teardown();
     let first_new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::NewTab(..) = i {
@@ -243,7 +241,6 @@ pub fn new_tabs_with_layout_plugin_command() {
         .clone();
     let second_new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .rev()
         .find_map(|i| {
@@ -281,7 +278,7 @@ pub fn new_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::NewTab,
@@ -324,7 +321,6 @@ pub fn new_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::NewTab(..) = i {
@@ -360,7 +356,7 @@ pub fn go_to_next_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::SwitchTabNext,
@@ -402,7 +398,6 @@ pub fn go_to_next_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::SwitchTabNext(..) = i {
@@ -438,7 +433,7 @@ pub fn go_to_previous_tab_plugin_command() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::SwitchTabPrev,
@@ -480,7 +475,6 @@ pub fn go_to_previous_tab_plugin_command() {
     teardown();
     let new_tab_event = received_screen_instructions
         .lock()
-        .unwrap()
         .iter()
         .find_map(|i| {
             if let ScreenInstruction::SwitchTabPrev(..) = i {

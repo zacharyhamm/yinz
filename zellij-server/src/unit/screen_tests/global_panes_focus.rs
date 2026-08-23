@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 fn focus_cycle_walks_through_global_panes_and_back_into_the_tab() {
@@ -652,7 +653,7 @@ fn no_new_pane_reaches_the_global_area_through_the_screen_thread() {
     let client_id = 10;
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(None, vec![]);
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
@@ -682,7 +683,10 @@ fn no_new_pane_reaches_the_global_area_through_the_screen_thread() {
             declaration_order: None,
             split: None,
         });
-    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // No sleep between sends: the screen thread drains this channel in order, so each
+    // instruction is fully handled before the next is dequeued. Only the *renders* are
+    // asynchronous, and those are waited for by content below.
 
     // the client arm: a new pane while the global pane holds the focus
     let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
@@ -696,7 +700,6 @@ fn no_new_pane_reaches_the_global_area_through_the_screen_thread() {
         None,
         false, // set_blocking
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // the pane-id arm: a new pane anchored *on* the global pane
     let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
@@ -710,17 +713,19 @@ fn no_new_pane_reaches_the_global_area_through_the_screen_thread() {
         None,
         false,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Both panes opened into the tab, so the settled frame is the one showing both titles.
+    // Waiting on that rather than on `snapshots.last()` is what makes this test deterministic:
+    // the previous version sampled whichever render happened to be last when the sleeps expired,
+    // which is why it failed intermittently with a two-row shift.
+    let settled = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "a render showing both the client-opened and anchor-opened panes",
+        |snapshot| snapshot.contains("from client") && snapshot.contains("from anchor"),
+    );
 
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
-        size,
-    );
-    let (_, last_snapshot) = snapshots
-        .last()
-        .expect("the screen should have rendered")
-        .clone();
-    assert_snapshot!(last_snapshot);
+    assert_snapshot!(settled);
 }

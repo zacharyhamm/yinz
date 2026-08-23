@@ -1,4 +1,5 @@
 use super::*;
+use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
@@ -69,7 +70,7 @@ pub fn load_new_plugin_from_hd() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -109,24 +110,20 @@ pub fn load_new_plugin_from_hd() {
     )])); // will be cached and sent to the plugin once it's loaded
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("InputReceived") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("InputReceived") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -154,7 +151,7 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -198,7 +195,7 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
     screen_thread.join().unwrap();
     teardown();
     let mut clients_that_rendered_the_event = vec![];
-    for screen_instruction in received_screen_instructions.lock().unwrap().iter() {
+    for screen_instruction in received_screen_instructions.lock().iter() {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = screen_instruction {
             for plugin_render_asset in plugin_render_assets {
                 let plugin_bytes =
@@ -244,7 +241,7 @@ pub fn load_new_plugin_with_plugin_alias() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -284,24 +281,20 @@ pub fn load_new_plugin_with_plugin_alias() {
     )])); // will be cached and sent to the plugin once it's loaded
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("InputReceived") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("InputReceived") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -327,7 +320,7 @@ pub fn plugin_workers() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -371,24 +364,20 @@ pub fn plugin_workers() {
     )])); // will be cached and sent to the plugin once it's loaded
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("Payload from worker") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("Payload from worker") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -414,7 +403,7 @@ pub fn plugin_workers_persist_state() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -467,24 +456,20 @@ pub fn plugin_workers_persist_state() {
     )]));
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("received 2 messages") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("received 2 messages") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
@@ -511,7 +496,7 @@ pub fn can_subscribe_to_hd_events() {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Arc::new(Mutex::new(vec![]));
+    let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
         received_screen_instructions,
         ScreenInstruction::PluginBytes,
@@ -553,23 +538,19 @@ pub fn can_subscribe_to_hd_events() {
         .unwrap();
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    let plugin_bytes_event = received_screen_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                for plugin_render_asset in plugin_render_assets {
-                    let plugin_id = plugin_render_asset.plugin_id;
-                    let client_id = plugin_render_asset.client_id;
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                    if plugin_bytes.contains("FileSystemCreate") {
-                        return Some((plugin_id, client_id, plugin_bytes));
-                    }
+    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
+        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
+            for plugin_render_asset in plugin_render_assets {
+                let plugin_id = plugin_render_asset.plugin_id;
+                let client_id = plugin_render_asset.client_id;
+                let plugin_bytes = plugin_render_asset.bytes.clone();
+                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
+                if plugin_bytes.contains("FileSystemCreate") {
+                    return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
-            None
-        });
+        }
+        None
+    });
     assert!(plugin_bytes_event.is_some());
 }

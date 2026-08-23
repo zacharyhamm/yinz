@@ -13,6 +13,7 @@ mod ci;
 mod flags;
 mod format;
 mod integration_test;
+mod lint;
 mod metadata;
 mod pipelines;
 mod remote_test;
@@ -152,6 +153,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-test-support",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: ".",
                 build: true,
             },
@@ -169,6 +174,7 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Deprecated(_flags) => deprecation_notice(),
         flags::XtaskCmd::Build(flags) => build::build(shell, flags),
         flags::XtaskCmd::Format(flags) => format::format(shell, flags),
+        flags::XtaskCmd::Lint(flags) => lint::lint(shell, flags),
         flags::XtaskCmd::Test(flags) => test::test(shell, flags),
         flags::XtaskCmd::IntegrationTest(flags) => integration_test::integration_test(shell, flags),
         flags::XtaskCmd::RemoteTest(flags) => remote_test::main(shell, flags),
