@@ -8,6 +8,10 @@ edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-client = { path = "../zellij-client", version = "0.45.0" }
 zellij-server = { path = "../zellij-server", version = "0.45.0" }

@@ -444,7 +444,7 @@ fn the_cell_offsets_shift_the_image_within_its_first_cell() {
     let placement = &model.kitty.placements()[0];
     assert_eq!(placement.cell_offset, (3, 4));
     assert_eq!(placement.display_rect.x, 2 * CELL.width + 3);
-    assert_eq!(placement.display_rect.y, (1 * CELL.height + 4) as isize);
+    assert_eq!(placement.display_rect.y, (CELL.height + 4) as isize);
 }
 
 #[test]

@@ -343,8 +343,11 @@ pub fn png(width: u32, height: u32, kind: PngKind) -> Vec<u8> {
     let samples = kind.samples_per_pixel();
     let mut raw = Vec::with_capacity((height as usize) * (1 + width as usize * samples));
     let mut next = 0u8;
+    // Every scanline really does begin with the same byte - PNG filter type 0 ("None") - so the
+    // repeated push below is the format, not an oversight.
+    #[allow(clippy::same_item_push)]
     for _ in 0..height {
-        raw.push(0); // filter type: None
+        raw.push(0);
         for _ in 0..width {
             for _ in 0..samples {
                 raw.push(next);

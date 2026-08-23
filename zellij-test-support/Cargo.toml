@@ -11,4 +11,7 @@ publish = false
 # can dev-depend on it without creating a cycle (`zellij-integration-tests` depends
 # on `zellij-server`, so it cannot host helpers that `zellij-server` needs).
 
+[lints]
+workspace = true
+
 [dependencies]

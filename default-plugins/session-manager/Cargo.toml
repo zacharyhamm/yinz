@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Aram Drevekenin <aram@poor.dev>"]
 edition.workspace = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
 fuzzy-matcher = { workspace = true }

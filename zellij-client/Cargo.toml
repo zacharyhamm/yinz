@@ -8,6 +8,10 @@ license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+[lints]
+workspace = true
+
 [dependencies]
 # TODO: we might want to move these to be workspace dependencies as well, but
 # work is currently being done on moving all our async stuff to tokio from async_std,

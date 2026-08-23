@@ -128,7 +128,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
         remote_host: Some("build-box".to_owned()),
         ..Default::default()
     })
-    .map(|cmd| cmd.try_into().expect("TEST"));
+    .map(|cmd| cmd.into());
     match Action::try_from(adopt_pane(cmd)) {
         Ok(Action::AdoptPane { payload, .. }) => {
             let remote = payload.remote.expect("the handoff should have survived");

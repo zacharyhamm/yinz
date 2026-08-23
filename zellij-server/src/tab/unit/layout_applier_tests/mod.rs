@@ -203,7 +203,7 @@ fn create_layout_applier_fixtures(
         session_is_mirrored,
         draw_pane_frames,
         default_mode_info.clone(),
-        style.clone(),
+        style,
         os_api.box_clone(),
         senders.clone(),
     );
@@ -222,7 +222,7 @@ fn create_layout_applier_fixtures(
         draw_pane_frames,
         session_is_mirrored,
         default_mode_info,
-        style.clone(),
+        style,
         os_api.box_clone(),
         senders.clone(),
     );
@@ -347,7 +347,7 @@ fn create_layout_applier_fixtures_with_receivers(
         session_is_mirrored,
         draw_pane_frames,
         default_mode_info.clone(),
-        style.clone(),
+        style,
         os_api.box_clone(),
         senders.clone(),
     );
@@ -366,7 +366,7 @@ fn create_layout_applier_fixtures_with_receivers(
         draw_pane_frames,
         session_is_mirrored,
         default_mode_info,
-        style.clone(),
+        style,
         os_api.box_clone(),
         senders.clone(),
     );
