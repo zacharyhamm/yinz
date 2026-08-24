@@ -43,6 +43,17 @@ impl Screen {
             .find(|tab| tab.has_pane_with_pid(&pane_id))
     }
 
+    /// The stable id of the tab holding `pane_id`.
+    pub(super) fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+        self.tab_containing_pane(pane_id).map(|tab| tab.id)
+    }
+
+    /// The display position of the tab holding `pane_id`, for the callers that go on to look the
+    /// tab up by position rather than by id.
+    pub(super) fn tab_position_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+        self.tab_containing_pane(pane_id).map(|tab| tab.position)
+    }
+
     /// The mutable half of [`Screen::tab_containing_pane`].
     pub(super) fn tab_containing_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Tab> {
         self.tabs
