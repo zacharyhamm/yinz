@@ -366,7 +366,8 @@ impl Screen {
                         if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
                             self.report_key_passthrough_state(affected_client_id, old, new);
                         }
-                        let _ = self.sync_scroll_mode_on_focus(affected_client_id);
+                        self.sync_scroll_mode_on_focus(affected_client_id)
+                            .non_fatal();
                     }
                     return self.render(None).with_context(err_context);
                 },

@@ -222,7 +222,8 @@ impl Screen {
             }
             // A mouse focus change or wheel scroll on a global pane syncs the scroll mode
             // too, same as a keyboard focus move or tab-pane scroll.
-            let _ = self.sync_scroll_mode_if_scroll_changed(client_id, active_pane_was_scrolled);
+            self.sync_scroll_mode_if_scroll_changed(client_id, active_pane_was_scrolled)
+                .non_fatal();
             self.render(None).non_fatal();
             return;
         }
@@ -273,7 +274,7 @@ impl Screen {
                         }
                         // A mouse focus change (click, click-through, focus-follows-mouse)
                         // syncs the scroll mode too, same as a keyboard focus move.
-                        let _ = self.sync_scroll_mode_on_focus(client_id);
+                        self.sync_scroll_mode_on_focus(client_id).non_fatal();
                     }
                     should_render = true;
                 }
@@ -281,8 +282,8 @@ impl Screen {
                     self.notify_plugins_of_input(client_id);
                     should_render = true;
                 }
-                let _ =
-                    self.sync_scroll_mode_if_scroll_changed(client_id, active_pane_was_scrolled);
+                self.sync_scroll_mode_if_scroll_changed(client_id, active_pane_was_scrolled)
+                    .non_fatal();
                 if should_render {
                     self.render(None).non_fatal();
                 }
