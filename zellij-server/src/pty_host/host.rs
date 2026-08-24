@@ -12,10 +12,29 @@
 //! the sole reader. Nothing is lost across the transition: bytes the child writes
 //! in the gap sit in the kernel's pty buffer, and if that fills the child blocks
 //! in `write()` rather than losing output.
+//!
+//! # Job control
+//!
+//! The supervisor owns the pane's pty as its *controlling terminal*, and the
+//! child runs in a process group inside the supervisor's session. This is what
+//! makes `^Z` work, and it is a deliberate replacement for `login_tty`.
+//!
+//! `login_tty` gives the child a session of its own, which by definition makes
+//! its process group orphaned: no member has a parent in a different group of the
+//! same session. Linux discards `SIGTSTP`, `SIGTTIN` and `SIGTTOU` aimed at an
+//! orphaned group, so `^Z` in a command pane did nothing at all — the pane's
+//! command was never suspended, however much a full-screen program that had
+//! already torn its UI down in anticipation looked as if it had been.
+//!
+//! With the supervisor as session leader the child's group has a parent in the
+//! same session, so it is not orphaned: `^Z` really stops it, `spawn_child_waiter`
+//! sees the stop because it waits with `WUNTRACED`, and `SIGCONT` wakes it again.
+//! See `acquire_controlling_tty`. A supervisor that cannot take the terminal
+//! falls back to `login_tty` and the pane behaves exactly as it did before.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -28,6 +47,7 @@ use nix::{
     poll::{poll, PollFd, PollFlags, PollTimeout},
     pty::{openpty, Winsize},
     sys::signal::{kill, Signal},
+    sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
 use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunCommand};
@@ -59,6 +79,12 @@ enum State {
 
 enum HostEvent {
     ChildExited(Option<i32>),
+    /// The child stopped, almost always because `^Z` made the line discipline
+    /// send it `SIGTSTP`. A command pane has no shell above the child to `fg`
+    /// it, so unless the server is told, the pane simply goes silent forever.
+    ChildStopped(i32),
+    /// The child was continued again — by us, or by anyone else's `SIGCONT`.
+    ChildContinued,
     TerminateRequested,
 }
 
@@ -150,6 +176,14 @@ pub fn run_pty_host(label: String) -> ! {
     unsafe {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        // Once we own the pane's pty, we are a background process for it as soon
+        // as the child takes the foreground. Without these, handing the terminal
+        // over — or any stray job-control signal aimed at our group — would stop
+        // the supervisor itself, and the pane would freeze with nobody reading
+        // its pty. The child resets all three before it execs.
+        libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::signal(libc::SIGTTIN, libc::SIG_IGN);
+        libc::signal(libc::SIGTSTP, libc::SIG_IGN);
     }
 
     let control = match control_stream_from_fd() {
@@ -278,6 +312,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         arg0,
         env,
         login_session,
+        job_control,
     } = spawn
     else {
         cleanup_socket(&host_id);
@@ -317,6 +352,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
             vars: &env,
             login_session,
         },
+        job_control,
         &event_tx,
         &wake_tx,
     ) {
@@ -490,6 +526,20 @@ fn event_loop(
                             HostEvent::ChildExited(status) => {
                                 on_child_exited(ctx, status, attached_control.as_mut())?;
                             },
+                            HostEvent::ChildStopped(signal) => {
+                                on_child_run_state(
+                                    ctx,
+                                    HostToServerMsg::ChildStopped { signal },
+                                    attached_control.as_mut(),
+                                )?;
+                            },
+                            HostEvent::ChildContinued => {
+                                on_child_run_state(
+                                    ctx,
+                                    HostToServerMsg::ChildContinued,
+                                    attached_control.as_mut(),
+                                )?;
+                            },
                             HostEvent::TerminateRequested => {
                                 terminate(ctx, &event_rx);
                                 return Ok(());
@@ -605,6 +655,29 @@ fn on_child_exited(
     if let Some(control) = control {
         write_msg(control, &HostToServerMsg::ChildExited { status })
             .context("failed to report the child's exit")?;
+    }
+    Ok(())
+}
+
+/// Report a stop or a continue to the attached server.
+///
+/// Unlike an exit this changes nothing here: the child is still ours, the pty is
+/// still open, and a detached supervisor has nobody to tell — the transition is
+/// simply dropped, which is why the server re-derives nothing on attach.
+fn on_child_run_state(
+    ctx: &mut HostContext,
+    msg: HostToServerMsg,
+    control: Option<&mut UnixStream>,
+) -> Result<()> {
+    if ctx
+        .session
+        .as_ref()
+        .is_some_and(|session| session.exit_status.is_some())
+    {
+        return Ok(());
+    }
+    if let Some(control) = control {
+        write_msg(control, &msg).context("failed to report the child's run state")?;
     }
     Ok(())
 }
@@ -859,6 +932,11 @@ fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
         return;
     }
     let pid = Pid::from_raw(session.child_pid as i32);
+    // A stopped child does not act on SIGHUP until it runs again, so a pane
+    // closed while suspended would sit out the whole grace period and then be
+    // SIGKILLed — no hangup for its descendants. Wake it first; SIGCONT is
+    // delivered even to a stopped process.
+    let _ = kill(pid, Some(Signal::SIGCONT));
     let _ = kill(pid, Some(Signal::SIGHUP));
     let deadline = std::time::Instant::now() + TERMINATE_GRACE;
     loop {
@@ -872,6 +950,10 @@ fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
         }
         match event_rx.recv_timeout(remaining) {
             Ok(HostEvent::ChildExited(_)) => break,
+            // A child that is merely stopped has not gone anywhere: SIGKILL is
+            // not blockable, so keep waiting for the exit rather than mistaking
+            // a suspend for one.
+            Ok(HostEvent::ChildStopped(_)) | Ok(HostEvent::ChildContinued) => continue,
             Ok(HostEvent::TerminateRequested) => continue,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -972,6 +1054,9 @@ fn start_session(
     initial_size: Option<&WireWinsize>,
     arg0: Option<&str>,
     child_env: ChildEnv<'_>,
+    // Whether the caller wants — and can finish — job control. See
+    // `ServerToHostMsg::Spawn::job_control`.
+    job_control: bool,
     event_tx: &Sender<HostEvent>,
     wake_tx: &UnixStream,
 ) -> Result<Session> {
@@ -1032,6 +1117,7 @@ fn start_session(
                     // it describes the machine and the terminal, both of which
                     // the failover runs on just the same.
                     child_env,
+                    job_control,
                     event_tx,
                     wake_tx,
                 );
@@ -1095,6 +1181,10 @@ fn start_session(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Take the pane's pty as *our* controlling terminal, so the child can have a
+    // process group instead of a whole session — see `acquire_controlling_tty`.
+    let job_control = job_control && acquire_controlling_tty(slave_raw);
+
     unsafe {
         command.pre_exec(move || -> std::io::Result<()> {
             // `run_pty_host` ignores these so the supervisor outlives the
@@ -1110,7 +1200,30 @@ fn start_session(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            if libc::login_tty(slave_raw) != 0 {
+            if job_control {
+                // A process group of our own, inside the supervisor's session.
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Claim the terminal. SIGTTOU has to stay ignored across this:
+                // we are still a background group until the call returns, and
+                // the default action would stop us before we ever exec.
+                if libc::tcsetpgrp(slave_raw, libc::getpid()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Only now put the job-control signals back, so `^Z` reaches
+                // the pane's command with its default meaning.
+                for signal in [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
+                    if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                for target in [0, 1, 2] {
+                    if libc::dup2(slave_raw, target) != target {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+            } else if libc::login_tty(slave_raw) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             // Mandatory, not hygiene: closes the master, the control socket, the
@@ -1124,6 +1237,15 @@ fn start_session(
         .spawn()
         .with_context(|| format!("failed to spawn '{}'", cmd.command.to_string_lossy()))?;
     let child_pid = child.id();
+    if job_control {
+        // Both sides do this, because either one alone is a race: the child may
+        // not have run yet when we return, and it may already have exec'd and
+        // read from the tty before we get here. Both are idempotent.
+        unsafe {
+            libc::setpgid(child_pid as i32, child_pid as i32);
+            libc::tcsetpgrp(slave_raw, child_pid as i32);
+        }
+    }
 
     spawn_child_waiter(child, event_tx.clone(), wake_tx.try_clone()?);
 
@@ -1136,12 +1258,79 @@ fn start_session(
     })
 }
 
-fn spawn_child_waiter(mut child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
+/// Watch the child for good, not just for its exit.
+///
+/// `Child::wait` cannot be used here: it is `waitpid` without `WUNTRACED`, so a
+/// stopped child is indistinguishable from a busy one and `^Z` in a command pane
+/// looks exactly like a hang. `nix`'s `waitpid` reaps the child itself, so the
+/// `Child` is deliberately never waited on — it is only kept alive so nothing
+/// else reaps the pid out from under this loop.
+/// Make the pane's pty this supervisor's controlling terminal.
+///
+/// This is what makes `^Z` work at all. `login_tty` — what this replaces — puts
+/// the child in a *new session*, which makes its process group orphaned by
+/// definition: no member has a parent in a different group of the same session.
+/// Linux discards `SIGTSTP`/`SIGTTIN`/`SIGTTOU` aimed at an orphaned group, so
+/// `^Z` in a command pane did nothing whatsoever — the pane's command was never
+/// suspended, however much it behaved as if it had been.
+///
+/// The supervisor is already a session leader with no controlling terminal
+/// (`run_pty_host` calls `setsid`), which is exactly the shape job control wants:
+/// it takes the tty, and the child gets a process group inside *our* session,
+/// with us as its parent in a different group. Not orphaned, so `^Z` stops it and
+/// `SIGCONT` wakes it.
+///
+/// Returns false if we could not take the terminal — a second `Spawn` on the same
+/// supervisor, or `serve()` driven in-process by a test, where this process is
+/// somebody else's session member. The caller then falls back to `login_tty` and
+/// the pane behaves exactly as it did before.
+fn acquire_controlling_tty(slave_raw: RawFd) -> bool {
+    // Only a session leader may take a controlling terminal, and asking when we
+    // are not one is not merely futile: `serve()` is driven in-process by tests,
+    // and a process that happened to qualify would hand its whole session's
+    // terminal over to a test pane.
+    let is_session_leader = unsafe { libc::getsid(0) } == unsafe { libc::getpid() };
+    if !is_session_leader {
+        log::info!("pty-host is not a session leader; the pane will not have job control");
+        return false;
+    }
+    if unsafe { libc::ioctl(slave_raw, libc::TIOCSCTTY as _, 0) } != 0 {
+        log::info!(
+            "pty-host could not take the pane's pty as its controlling terminal ({}); \
+             the pane will not have job control",
+            std::io::Error::last_os_error()
+        );
+        return false;
+    }
+    true
+}
+
+fn spawn_child_waiter(child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
     let mut wake_tx = wake_tx;
     std::thread::spawn(move || {
-        let status = child.wait().ok().and_then(|status| status.code());
-        let _ = event_tx.send(HostEvent::ChildExited(status));
-        let _ = wake_tx.write_all(b"w");
+        let pid = Pid::from_raw(child.id() as i32);
+        let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+        loop {
+            let event = match waitpid(pid, Some(flags)) {
+                Ok(WaitStatus::Exited(_, code)) => HostEvent::ChildExited(Some(code)),
+                Ok(WaitStatus::Signaled(_, _, _)) => HostEvent::ChildExited(None),
+                Ok(WaitStatus::Stopped(_, signal)) => HostEvent::ChildStopped(signal as i32),
+                Ok(WaitStatus::Continued(_)) => HostEvent::ChildContinued,
+                Ok(_) => continue,
+                Err(Errno::EINTR) => continue,
+                // ECHILD and friends: there is nothing left to wait for, and a
+                // waiter that returned without reporting would leave the pane
+                // open forever. Report an unknown status instead.
+                Err(_) => HostEvent::ChildExited(None),
+            };
+            let is_exit = matches!(event, HostEvent::ChildExited(_));
+            let _ = event_tx.send(event);
+            let _ = wake_tx.write_all(b"w");
+            if is_exit {
+                break;
+            }
+        }
+        drop(child);
     });
 }
 

@@ -94,6 +94,7 @@ fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
         }),
         arg0: None,
         env: vec![],
+        job_control: true,
         login_session: false,
     }
 }
@@ -391,7 +392,8 @@ fn reported(reports: &Reports) -> Vec<(PaneId, Option<i32>)> {
 fn a_pane_is_reported_closed_exactly_once_even_if_its_supervisor_then_dies() {
     let (server_end, mut host_end) = UnixStream::pair().expect("socketpair failed");
     let reports: Reports = Arc::default();
-    let _spawned = pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports));
+    let _spawned =
+        pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports), None);
 
     write_msg(
         &mut host_end,
@@ -418,7 +420,8 @@ fn a_pane_is_reported_closed_exactly_once_even_if_its_supervisor_then_dies() {
 fn a_supervisor_that_dies_without_reporting_still_closes_its_pane() {
     let (server_end, host_end) = UnixStream::pair().expect("socketpair failed");
     let reports: Reports = Arc::default();
-    let _spawned = pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports));
+    let _spawned =
+        pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports), None);
 
     drop(host_end);
     wait_until(
@@ -442,7 +445,7 @@ fn terminating_a_pane_does_not_also_synthesize_a_close() {
     let (server_end, host_end) = UnixStream::pair().expect("socketpair failed");
     let reports: Reports = Arc::default();
     let mut spawned =
-        pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports));
+        pending_host(server_end, finished_child()).finish(recording_quit_cb(&reports), None);
 
     spawned.handle.terminate();
     drop(host_end);
@@ -486,7 +489,7 @@ fn finishing_a_pending_host_leaves_its_supervisor_alone() {
     let host_pid = child.id();
 
     let reports: Reports = Arc::default();
-    let mut spawned = pending_host(server_end, child).finish(recording_quit_cb(&reports));
+    let mut spawned = pending_host(server_end, child).finish(recording_quit_cb(&reports), None);
     std::thread::sleep(Duration::from_millis(100));
     assert!(
         process_alive(host_pid),
@@ -854,6 +857,7 @@ impl Drop for KillOnDrop {
 fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
     let wrapper = write_host_wrapper(dir);
     let params = |cmd: RunCommand| SpawnParams {
+        job_control: true,
         host_bin: &wrapper,
         terminal_id: 7,
         session_name: Some("client-tests".to_owned()),
@@ -900,7 +904,7 @@ fn spawning_a_real_supervisor_yields_a_pty_the_server_can_read() {
     let guard = KillOnDrop(pending.host_pid);
 
     let reports: Reports = Arc::default();
-    let mut spawned = pending.finish(recording_quit_cb(&reports));
+    let mut spawned = pending.finish(recording_quit_cb(&reports), None);
     assert!(spawned.child_pid > 0, "the pane's child should have a pid");
 
     let mut master = std::fs::File::from(
@@ -966,7 +970,7 @@ fn a_pane_survives_the_server_that_started_it() {
         .expect("the supervisor should have bound a socket");
 
     let reports: Reports = Arc::default();
-    let spawned = pending.finish(recording_quit_cb(&reports));
+    let spawned = pending.finish(recording_quit_cb(&reports), None);
     let child_pid = spawned.child_pid;
 
     // The server goes away without terminating anything — a crash, or a `kill -9`.
@@ -1053,7 +1057,7 @@ fn releasing_a_pane_detaches_its_supervisor() {
         .expect("the supervisor should have bound a socket");
 
     let reports: Reports = Arc::default();
-    let spawned = pending.finish(recording_quit_cb(&reports));
+    let spawned = pending.finish(recording_quit_cb(&reports), None);
     let child_pid = spawned.child_pid;
     assert!(
         query(&control_socket)
@@ -1101,7 +1105,7 @@ fn a_released_supervisor_is_not_reaped_or_killed() {
         .expect("the supervisor should have bound a socket");
 
     let reports: Reports = Arc::default();
-    let spawned = pending.finish(recording_quit_cb(&reports));
+    let spawned = pending.finish(recording_quit_cb(&reports), None);
     let child_pid = spawned.child_pid;
     spawned.handle.release();
 
@@ -1148,7 +1152,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
         .expect("the supervisor should have bound a socket");
 
     let first_reports: Reports = Arc::default();
-    let spawned = pending.finish(recording_quit_cb(&first_reports));
+    let spawned = pending.finish(recording_quit_cb(&first_reports), None);
     let child_pid = spawned.child_pid;
     let mut first_master = std::fs::File::from(
         spawned
@@ -1222,7 +1226,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
     );
 
     let second_reports: Reports = Arc::default();
-    let attached = pending.finish(recording_quit_cb(&second_reports));
+    let attached = pending.finish(recording_quit_cb(&second_reports), None);
     assert_eq!(attached.child_pid, child_pid);
     assert!(
         String::from_utf8_lossy(&attached.buffered).contains("got:during-the-gap"),
@@ -1262,7 +1266,7 @@ fn attaching_to_a_pane_someone_else_holds_is_refused() {
         .expect("the supervisor should have bound a socket");
 
     let reports: Reports = Arc::default();
-    let mut spawned = pending.finish(recording_quit_cb(&reports));
+    let mut spawned = pending.finish(recording_quit_cb(&reports), None);
 
     let err = match attach(AttachParams {
         control_socket: &control_socket,

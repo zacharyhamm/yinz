@@ -46,7 +46,8 @@ use crate::pane_groups::PaneGroups;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::screen::{CopyOptions, GuestModalOutcome, ScreenInstruction};
 use crate::ui::hint_text::{
-    held_hint_variants, hover_hint_variants, resize_hint_variants, HintExitStatus,
+    held_hint_variants, hover_hint_variants, resize_hint_variants, suspended_hint_variants,
+    HintExitStatus,
 };
 use crate::ui::{
     loading_indication::LoadingIndication, pane_boundaries_frame::FrameParams,
@@ -786,6 +787,10 @@ pub trait Pane {
     fn hold(&mut self, _exit_status: Option<i32>, _is_first_run: bool, _run_command: RunCommand) {
         // No-op by default, only terminal panes support holding
     }
+    /// The pane's root process was stopped, or started running again.
+    fn set_suspended(&mut self, _suspended: bool) {
+        // No-op by default, only terminal panes have a root process
+    }
     fn has_bell(&self) -> bool {
         false
     }
@@ -832,6 +837,10 @@ pub trait Pane {
         (0, 0)
     }
     fn is_held(&self) -> bool {
+        false
+    }
+    /// The pane's root process is stopped and can only be woken from out here.
+    fn is_suspended(&self) -> bool {
         false
     }
     fn exited(&self) -> bool {
@@ -914,9 +923,15 @@ pub enum GuestChoiceIndicator {
 pub enum AdjustedInput {
     WriteBytesToTerminal(Vec<u8>),
     ReRunCommandInThisPane(RunCommand),
+    /// Send `SIGCONT` to a pane whose root process was stopped by `^Z`. Nothing
+    /// inside the pane can do this: the process is stopped, and a command pane
+    /// has no shell above it to run `fg`.
+    ResumeSuspendedProcessInThisPane,
     PermissionRequestResult(Vec<PermissionType>, PermissionStatus),
     CloseThisPane,
-    DropToShellInThisPane { working_dir: Option<PathBuf> },
+    DropToShellInThisPane {
+        working_dir: Option<PathBuf>,
+    },
     WriteKeyToPlugin(KeyWithModifier),
     GuestModalSelectionChanged,
     GuestModalZoom,
@@ -2312,6 +2327,9 @@ impl Tab {
             }
         }
         if let Some(focused_pane) = self.get_active_pane(client_id) {
+            if focused_pane.is_suspended() {
+                return suspended_hint_variants();
+            }
             if focused_pane.is_held() {
                 let exited = focused_pane.exited();
                 let is_first_run = !exited;
@@ -4805,6 +4823,13 @@ impl Tab {
                             .with_context(err_context)?;
                         should_update_ui = true;
                     },
+                    Some(AdjustedInput::ResumeSuspendedProcessInThisPane) => {
+                        self.senders
+                            .send_to_pty(PtyInstruction::ResumeSuspendedPane(PaneId::Terminal(
+                                active_terminal_id,
+                            )))
+                            .with_context(err_context)?;
+                    },
                     Some(AdjustedInput::CloseThisPane) => {
                         self.close_pane(PaneId::Terminal(active_terminal_id), false, None);
                         should_update_ui = true;
@@ -6715,6 +6740,18 @@ impl Tab {
         } else if let Some(pane) = self.suppressed_panes.get_mut(&id) {
             pane.pane.hold(exit_status, is_first_run, run_command);
         }
+    }
+    /// Mark a pane's root process stopped or running.
+    ///
+    /// Unlike `hold_pane` this is not buffered while the tab is pending: a pane
+    /// that does not exist yet cannot have suspended, so there is nothing to
+    /// replay.
+    pub fn set_pane_suspended(&mut self, id: PaneId, suspended: bool) -> Result<()> {
+        if let Some(pane) = self.get_pane_with_id_mut(id) {
+            pane.set_suspended(suspended);
+        }
+        self.emit_hint_text_if_changed()?;
+        Ok(())
     }
     /// Swap the pane hidden behind `pane_id` back into the place `pane_id` was
     /// holding for it, and hand `pane_id` itself back.

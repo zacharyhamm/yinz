@@ -28,6 +28,7 @@ fn framed_messages_round_trip() {
             zellij_version: zellij_utils::consts::VERSION.to_owned(),
         },
         ServerToHostMsg::Spawn {
+            job_control: true,
             terminal_id: 7,
             session_name: Some("warp-test".to_owned()),
             cmd: sample_run_command(),
@@ -267,6 +268,7 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
             zellij_version: tc.draw(generators::text()),
         },
         1 => ServerToHostMsg::Spawn {
+            job_control: tc.draw(generators::booleans()),
             terminal_id: tc.draw(generators::integers::<u32>()),
             session_name: tc.draw(generators::optional(generators::text())),
             cmd: tc.draw(run_commands()),
@@ -291,7 +293,11 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
 
 #[hegel::composite]
 fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
-    match tc.draw(generators::integers::<u8>().max_value(6)) {
+    match tc.draw(generators::integers::<u8>().max_value(8)) {
+        7 => HostToServerMsg::ChildStopped {
+            signal: tc.draw(generators::integers::<i32>()),
+        },
+        8 => HostToServerMsg::ChildContinued,
         5 => HostToServerMsg::AttachAck {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
@@ -510,6 +516,7 @@ fn write_msg_refuses_a_body_over_the_frame_limit() {
     let mut cmd = sample_run_command();
     cmd.args = vec!["x".repeat(MAX_FRAME_LEN as usize + 1)];
     let msg = ServerToHostMsg::Spawn {
+        job_control: true,
         terminal_id: 0,
         session_name: None,
         cmd,

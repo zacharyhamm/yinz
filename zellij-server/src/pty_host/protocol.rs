@@ -69,6 +69,20 @@ pub enum ServerToHostMsg {
         /// and set `SSH_TTY` to the pty this pane is about to get - a path only
         /// this process, after `openpty`, is in a position to name.
         login_session: bool,
+        /// Give the pane real job control: the supervisor takes the pty as its
+        /// controlling terminal and the child gets a process group, so `^Z`
+        /// actually stops the command. See the module docs in `host.rs`.
+        ///
+        /// Asked for rather than assumed, because a suspended pane is only
+        /// recoverable if somebody is listening for `ChildStopped` and can send
+        /// `SIGCONT` back. The remote broker is not — it leaves this false, so a
+        /// remote pane keeps the `login_tty` behaviour where `^Z` is discarded
+        /// and no pane can be stopped with no way out.
+        ///
+        /// `serde(default)` so an older server driving a newer supervisor gets
+        /// exactly what it got before, rather than a feature it cannot finish.
+        #[serde(default)]
+        job_control: bool,
     },
     // Note: there is deliberately no `Respawn`. `re_run_command_in_terminal`
     // terminates the supervisor and spawns a fresh one, which matches today's
@@ -125,6 +139,22 @@ pub enum HostToServerMsg {
     ChildExited {
         status: Option<i32>,
     },
+    /// The child stopped — `SIGTSTP` from `^Z`, almost always.
+    ///
+    /// Deliberately not modelled as a kind of exit: the pane is still alive and
+    /// still owns its pty, it simply cannot be woken from inside itself. A
+    /// command pane has no shell above the child to `fg` it, so without this the
+    /// pane is unrecoverable.
+    ///
+    /// This needs no `PROTOCOL_VERSION` bump. The handshake already requires an
+    /// exact match (`client.rs`), so a supervisor is never a different build
+    /// than the server talking to it.
+    ChildStopped {
+        signal: i32,
+    },
+    /// The child is running again, whether or not we are the ones who continued
+    /// it — an external `kill -CONT` clears the pane's suspended state too.
+    ChildContinued,
     Status(HostStatus),
     /// Sent with the pty master fd as `SCM_RIGHTS` ancillary data, exactly like
     /// `Spawned`. The connection this arrives on is the new control channel.

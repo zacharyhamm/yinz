@@ -1325,3 +1325,73 @@ pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_es
         "the kitty sequence was queued, not handled, so it is not lost"
     );
 }
+
+fn suspended_pane() -> TerminalPane {
+    let mut pane = create_guest_modal_pane();
+    pane.set_suspended(true);
+    pane
+}
+
+/// A suspended pane's process cannot read its pty, so forwarding keystrokes to
+/// it would only fill a buffer nobody will ever drain. The two keys that mean
+/// something out here are the only ones that do anything.
+#[test]
+fn a_suspended_pane_resumes_on_enter_and_swallows_everything_else() {
+    use crate::tab::AdjustedInput;
+    use zellij_utils::data::BareKey;
+
+    let mut pane = suspended_pane();
+    assert!(matches!(
+        press_key(&mut pane, BareKey::Enter, 1),
+        Some(AdjustedInput::ResumeSuspendedProcessInThisPane)
+    ));
+
+    let mut pane = suspended_pane();
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&None, vec![b' '], false, Some(1)),
+        Some(AdjustedInput::ResumeSuspendedProcessInThisPane)
+    ));
+
+    let mut pane = suspended_pane();
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&None, vec![3], false, Some(1)),
+        Some(AdjustedInput::CloseThisPane)
+    ));
+
+    let mut pane = suspended_pane();
+    assert!(
+        press_key(&mut pane, BareKey::Char('x'), 1).is_none(),
+        "an ordinary key must not reach a stopped process"
+    );
+
+    // Esc means "drop to shell" for a held pane; a suspended pane has a live
+    // process and nothing to drop out of.
+    let mut pane = suspended_pane();
+    assert!(press_key(&mut pane, BareKey::Esc, 1).is_none());
+}
+
+/// Once the process is gone the resume hint is a lie, and the pane would keep
+/// swallowing every key with no way back.
+#[test]
+fn holding_a_suspended_pane_clears_its_suspension() {
+    let mut pane = suspended_pane();
+    assert!(pane.is_suspended());
+    pane.hold(Some(1), false, RunCommand::default());
+    assert!(!pane.is_suspended());
+}
+
+/// A pane that suspends and then goes back to running must forward keys again -
+/// `WCONTINUED` is what makes an external `kill -CONT` clear this too, not just
+/// our own resume.
+#[test]
+fn a_resumed_pane_forwards_input_again() {
+    use crate::tab::AdjustedInput;
+    use zellij_utils::data::BareKey;
+
+    let mut pane = suspended_pane();
+    pane.set_suspended(false);
+    assert!(matches!(
+        press_key(&mut pane, BareKey::Char('x'), 1),
+        Some(AdjustedInput::WriteBytesToTerminal(_))
+    ));
+}

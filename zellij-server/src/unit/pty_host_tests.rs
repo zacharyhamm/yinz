@@ -110,6 +110,7 @@ impl TestHost {
         login_session: bool,
     ) -> (u32, std::fs::File) {
         self.send(&ServerToHostMsg::Spawn {
+            job_control: true,
             terminal_id: 0,
             session_name: Some("pty-host-tests".to_owned()),
             cmd,
@@ -575,6 +576,7 @@ fn a_detached_supervisor_does_not_spin_after_its_child_exits() {
 fn a_missing_command_is_reported_rather_than_panicking() {
     let (mut host, _host_id, _sock) = TestHost::start();
     host.send(&ServerToHostMsg::Spawn {
+        job_control: true,
         terminal_id: 0,
         session_name: None,
         cmd: RunCommand {
@@ -1489,4 +1491,70 @@ fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
     std::env::remove_var("SSH_CLIENT");
     std::env::remove_var("SSH_AUTH_SOCK");
     std::env::remove_var("ZELLIJ_SESSION_NAME");
+}
+
+/// `^Z` in a command pane stops the pane's root process, and nothing inside the
+/// pane can undo that: the process is stopped, and a command pane has no shell
+/// above it to run `fg`. The supervisor is the only thing in a position to
+/// notice, which it can only do because it waits with `WUNTRACED`.
+#[test]
+fn a_stopped_child_is_reported_and_so_is_its_continue() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    // `exec` so the pid the supervisor watches is `sleep` itself rather than a
+    // shell that may or may not have exec'd it away.
+    let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
+    read_until(&mut master, "ready");
+
+    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    match host.recv() {
+        HostToServerMsg::ChildStopped { signal } => {
+            assert_eq!(
+                signal,
+                Signal::SIGSTOP as i32,
+                "the stop should name the signal that caused it"
+            );
+        },
+        other => panic!("expected ChildStopped, got {other:?}"),
+    }
+
+    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGCONT))
+        .expect("could not continue the child");
+    match host.recv() {
+        HostToServerMsg::ChildContinued => {},
+        other => panic!("expected ChildContinued, got {other:?}"),
+    }
+
+    // The waiter has to survive both transitions: a stop that swallowed the
+    // exit would leave the pane open forever.
+    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGKILL)).expect("could not kill the child");
+    match host.recv() {
+        HostToServerMsg::ChildExited { status } => assert_eq!(status, None),
+        other => panic!("expected ChildExited, got {other:?}"),
+    }
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// A stop is not an exit. `Terminate` waits for the child to really be gone, and
+/// mistaking a suspend for that would leave the pane's process running while the
+/// supervisor walked away from it.
+#[test]
+fn terminating_a_stopped_child_still_waits_for_its_real_exit() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
+    read_until(&mut master, "ready");
+
+    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    match host.recv() {
+        HostToServerMsg::ChildStopped { .. } => {},
+        other => panic!("expected ChildStopped, got {other:?}"),
+    }
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    wait_until(
+        || !process_alive(child_pid),
+        "the stopped child to be reaped by Terminate",
+    );
 }

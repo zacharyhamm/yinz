@@ -1118,6 +1118,16 @@ impl Screen {
                     ))?;
                 should_update_ui = true;
             },
+            (
+                PaneId::Terminal(terminal_id),
+                Some(AdjustedInput::ResumeSuspendedProcessInThisPane),
+            ) => {
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ResumeSuspendedPane(PaneId::Terminal(
+                        terminal_id,
+                    )))?;
+            },
             (PaneId::Terminal(_), Some(AdjustedInput::CloseThisPane)) => {
                 self.close_global_pane(pane_id, completion_tx)?;
                 should_update_ui = true;

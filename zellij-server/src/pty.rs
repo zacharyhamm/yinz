@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::pty_host::client::ReleasedPane;
+use crate::pty_host::client::{ChildRunState, ReleasedPane};
 use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
@@ -358,6 +358,8 @@ pub enum PtyInstruction {
     ReportPluginCwd(PluginId, PathBuf),
     SendSigintToPaneId(PaneId),
     SendSigkillToPaneId(PaneId),
+    /// Continue a pane whose root process was stopped by `^Z`.
+    ResumeSuspendedPane(PaneId),
     GetPanePid {
         pane_id: PaneId,
         response_channel: crossbeam::channel::Sender<GetPanePidResponse>,
@@ -421,6 +423,7 @@ pub(crate) struct Pty {
 }
 
 pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
+    pty.register_child_state_callback();
     loop {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         err_ctx.add_call(ContextType::Pty((&event).into()));
@@ -1176,6 +1179,9 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             },
             PtyInstruction::SendSigkillToPaneId(pane_id) => {
                 pty.send_sigkill_to_pane(pane_id);
+            },
+            PtyInstruction::ResumeSuspendedPane(pane_id) => {
+                pty.resume_suspended_pane(pane_id);
             },
             PtyInstruction::GetPanePid {
                 pane_id,
@@ -2250,6 +2256,7 @@ impl Pty {
                     ChildSignal::Hup => os_input.kill(child_pid),
                     ChildSignal::Int => os_input.send_sigint(child_pid),
                     ChildSignal::Kill => os_input.force_kill(child_pid),
+                    ChildSignal::Cont => os_input.send_sigcont(child_pid),
                 };
                 result.with_context(err_context).non_fatal();
             },
@@ -3054,6 +3061,40 @@ impl Pty {
             },
             PaneId::Plugin(plugin_id) => {
                 log::warn!("Cannot send SIGINT to plugin pane {}", plugin_id);
+            },
+        }
+    }
+
+    /// Tell the OS layer where to send suspend/resume news.
+    ///
+    /// Registered once for the whole session rather than per pane: unlike
+    /// `quit_cb` this carries no per-pane policy, so one closure serves every
+    /// pane and no spawn signature has to grow a parameter for it.
+    pub fn register_child_state_callback(&self) {
+        let Some(os_input) = self.bus.os_input.as_ref() else {
+            return;
+        };
+        let senders = self.bus.senders.clone();
+        os_input.set_child_state_callback(Arc::new(move |terminal_id, state| {
+            let suspended = matches!(state, ChildRunState::Stopped);
+            let _ = senders.send_to_screen(ScreenInstruction::SetPaneSuspended(
+                PaneId::Terminal(terminal_id),
+                suspended,
+            ));
+        }));
+    }
+
+    /// Wake a pane whose root process was stopped by `^Z`.
+    ///
+    /// The pane's own `SIGCONT` can never come from inside it: the process is
+    /// stopped, and a command pane has no shell above it to run `fg`.
+    pub fn resume_suspended_pane(&self, pane_id: PaneId) {
+        match pane_id {
+            PaneId::Terminal(terminal_id) => {
+                self.signal_pane_child(terminal_id, ChildSignal::Cont);
+            },
+            PaneId::Plugin(plugin_id) => {
+                log::warn!("Cannot resume plugin pane {}", plugin_id);
             },
         }
     }

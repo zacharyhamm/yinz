@@ -372,6 +372,11 @@ fn start_pane(
         // gets no login shell and so no profile, which makes it the case that
         // needs a composed environment most - `ssh host cmd` is handed one too.
         login_session: true,
+        // Deliberately off: nothing reports a remote pane's suspension back to
+        // the asking server, so a `^Z` that really stopped the child would leave
+        // a pane nobody could wake. Without job control the signal is discarded,
+        // which is what remote panes have always done.
+        job_control: false,
     }) {
         Ok(pending) => pending,
         Err(e) => {
@@ -404,22 +409,28 @@ fn start_pane(
     // registration below picks it up.
     let session_slot = Arc::new(Mutex::new(PaneSlot::Pending(None)));
     let cb_slot = session_slot.clone();
-    let spawned = pending.finish(Box::new(move |_pane_id, status, _cmd| {
-        let session = match cb_slot.lock() {
-            Ok(mut slot) => match &mut *slot {
-                PaneSlot::Live(session) => session.clone(),
-                PaneSlot::Pending(early) => {
-                    *early = Some(status);
-                    return;
+    let spawned = pending.finish(
+        Box::new(move |_pane_id, status, _cmd| {
+            let session = match cb_slot.lock() {
+                Ok(mut slot) => match &mut *slot {
+                    PaneSlot::Live(session) => session.clone(),
+                    PaneSlot::Pending(early) => {
+                        *early = Some(status);
+                        return;
+                    },
                 },
-            },
-            Err(_) => return,
-        };
-        session.set_child_exit(status);
-        // Not sent from here. The child being gone is only half of it; the pty
-        // may still have its last words in flight.
-        report_exit_if_complete(&session);
-    }));
+                Err(_) => return,
+            };
+            session.set_child_exit(status);
+            // Not sent from here. The child being gone is only half of it; the pty
+            // may still have its last words in flight.
+            report_exit_if_complete(&session);
+        }),
+        // Remote panes do not report suspension: the asking server is on another
+        // machine and has no way to resume the child, so there would be nothing to
+        // do with the news. See `docs/` and the plan for what covering them entails.
+        None,
+    );
 
     // Built from the resolved command rather than `cmd.to_string()`: a
     // default-shell pane still carries the flag that makes `Display` answer
@@ -918,6 +929,16 @@ fn signal_child(child_pid: u32, signal: ChildSignal) {
         ChildSignal::Hup => nix::sys::signal::Signal::SIGHUP,
         ChildSignal::Int => nix::sys::signal::Signal::SIGINT,
         ChildSignal::Kill => nix::sys::signal::Signal::SIGKILL,
+        // Aimed at the process group, like the local `send_sigcont` — see there
+        // for why the leader alone is not enough. Unreachable today: no remote
+        // pane ever reports a suspend, so nothing asks for this.
+        ChildSignal::Cont => {
+            let group = nix::unistd::Pid::from_raw(-(child_pid as i32));
+            if nix::sys::signal::kill(group, Some(nix::sys::signal::Signal::SIGCONT)).is_err() {
+                let _ = nix::sys::signal::kill(pid, Some(nix::sys::signal::Signal::SIGCONT));
+            }
+            return;
+        },
     };
     let _ = nix::sys::signal::kill(pid, Some(sig));
 }

@@ -146,6 +146,9 @@ impl ServerOsApi for MockServerOsApi {
     fn send_sigint(&self, _pid: u32) -> Result<()> {
         Ok(())
     }
+    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+        Ok(())
+    }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
     }
@@ -543,6 +546,9 @@ fn pty_writer_records_successful_resize() {
             Ok(())
         }
         fn send_sigint(&self, _pid: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn send_sigcont(&self, _pid: u32) -> anyhow::Result<()> {
             Ok(())
         }
         fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> {

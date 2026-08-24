@@ -15,7 +15,7 @@ use crate::pty_host::remote::{
 // implementing that trait outside this crate — the integration tests' fake
 // backend — needs to be able to name it.
 pub use crate::os_input_output_unix::AdoptedTerminal;
-use crate::pty_host::client::ReleasedPane;
+use crate::pty_host::client::{ChildStateCb, ReleasedPane};
 use zellij_utils::data::RemotePaneHandoff;
 
 use interprocess;
@@ -639,6 +639,14 @@ pub trait ServerOsApi: Send + Sync {
     fn force_kill(&self, pid: u32) -> Result<()>;
     /// Send SIGINT to the process with process ID `pid`
     fn send_sigint(&self, pid: u32) -> Result<()>;
+    /// Continue a stopped process group, the way a shell's `fg` does.
+    fn send_sigcont(&self, pid: u32) -> Result<()>;
+    /// Register the callback told whenever a pane's root process stops or
+    /// resumes.
+    ///
+    /// A default no-op rather than a required method: only the real Unix backend
+    /// can observe this, and no test fake has anything to say about it.
+    fn set_child_state_callback(&self, _cb: ChildStateCb) {}
     /// Returns a [`Box`] pointer to this [`ServerOsApi`] struct.
     fn box_clone(&self) -> Box<dyn ServerOsApi>;
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()>;
@@ -880,6 +888,12 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn send_sigint(&self, pid: u32) -> Result<()> {
         self.pty_backend.send_sigint(pid)
+    }
+    fn send_sigcont(&self, pid: u32) -> Result<()> {
+        self.pty_backend.send_sigcont(pid)
+    }
+    fn set_child_state_callback(&self, cb: ChildStateCb) {
+        self.pty_backend.set_child_state_callback(cb)
     }
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");

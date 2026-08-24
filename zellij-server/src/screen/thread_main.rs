@@ -1898,6 +1898,23 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.log_and_report_session_state()?;
             },
+            ScreenInstruction::SetPaneSuspended(id, suspended) => {
+                // Unlike a hold this is not buffered for a pane that does not
+                // exist yet: a pane cannot suspend before it has been created,
+                // so a miss here means the pane is already gone and the news is
+                // stale rather than early.
+                if let Some(pane) = screen.global_panes.pane_mut(id) {
+                    pane.set_suspended(suspended);
+                } else {
+                    for tab in screen.tabs.values_mut() {
+                        if tab.get_all_pane_ids().contains(&id) {
+                            tab.set_pane_suspended(id, suspended)?;
+                            break;
+                        }
+                    }
+                }
+                screen.render(None)?;
+            },
             ScreenInstruction::UpdatePaneName(
                 c,
                 client_id,

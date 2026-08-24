@@ -2438,6 +2438,40 @@ fn resize_hint_text_tracks_mouse_scroll_resize_updates() {
         .all(|hint| hint.text.contains("MouseScroll")));
 }
 
+/// A suspended pane's hint has to win over the resize help: the pane is stuck,
+/// and telling the user how to resize it instead of how to wake it is the one
+/// thing the hint must never do.
+#[test]
+fn a_suspended_pane_says_how_to_resume_itself() {
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    tab.mouse_help_text_visible.insert(client_id, true);
+
+    let focused = tab.get_active_pane_id(client_id).expect("no focused pane");
+    tab.set_pane_suspended(focused, true).unwrap();
+
+    let hints = tab.resolve_hint_text(client_id);
+    assert!(!hints.is_empty(), "a suspended pane must say something");
+    assert!(
+        hints
+            .values()
+            .all(|hint| hint.text.contains("SUSPENDED") && hint.text.contains("resume")),
+        "every width of the hint must name the state and the way out: {hints:?}"
+    );
+
+    // ...and it goes away again once the process is running, rather than
+    // sticking around over a pane that is perfectly usable.
+    tab.set_pane_suspended(focused, false).unwrap();
+    let hints = tab.resolve_hint_text(client_id);
+    assert!(hints.values().all(|hint| !hint.text.contains("SUSPENDED")));
+}
+
 #[test]
 fn in_place_pane_with_close_replaced_pane_false_restores_original() {
     // When an in-place pane is closed and close_replaced_pane=false (the default),

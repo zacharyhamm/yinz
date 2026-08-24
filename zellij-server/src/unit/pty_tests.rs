@@ -158,6 +158,10 @@ impl ServerOsApi for MockOsApi {
         self.local_signals.lock().unwrap().push((pid, "SIGINT"));
         Ok(())
     }
+    fn send_sigcont(&self, pid: u32) -> anyhow::Result<()> {
+        self.local_signals.lock().unwrap().push((pid, "SIGCONT"));
+        Ok(())
+    }
     fn is_remote_pane(&self, terminal_id: u32) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
     }
