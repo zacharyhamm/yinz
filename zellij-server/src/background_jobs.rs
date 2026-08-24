@@ -3,6 +3,8 @@ use zellij_utils::consts::{
     session_info_cache_file_name, session_info_folder_for_session, session_layout_cache_file_name,
     VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
 };
+
+use std::str::FromStr;
 #[allow(unused_imports)]
 use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo, WebServerStatus};
 use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
@@ -129,7 +131,9 @@ struct WebRequestStreamState {
     finished: bool,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Hash, strum_macros::IntoStaticStr, strum_macros::VariantNames,
+)]
 pub enum BackgroundJob {
     DisplayPaneError(Vec<PaneId>, String),
     AnimatePluginLoading(u32),                            // u32 - plugin_id
@@ -181,39 +185,19 @@ pub enum BackgroundJob {
 
 impl From<&BackgroundJob> for BackgroundJobContext {
     fn from(background_job: &BackgroundJob) -> Self {
-        match *background_job {
-            BackgroundJob::DisplayPaneError(..) => BackgroundJobContext::DisplayPaneError,
-            BackgroundJob::AnimatePluginLoading(..) => BackgroundJobContext::AnimatePluginLoading,
-            BackgroundJob::StopPluginLoadingAnimation(..) => {
-                BackgroundJobContext::StopPluginLoadingAnimation
+        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
+        // a variant is added without either a matching `BackgroundJobContext` or an arm here.
+        match background_job {
+            BackgroundJob::CancelWebRequest(..) | BackgroundJob::WebRequestStreamFinished(..) => {
+                BackgroundJobContext::WebRequest
             },
-            BackgroundJob::ReportSessionInfo(..) => BackgroundJobContext::ReportSessionInfo,
-            BackgroundJob::ReportLayoutInfo(..) => BackgroundJobContext::ReportLayoutInfo,
-            BackgroundJob::RunCommand(..) => BackgroundJobContext::RunCommand,
-            BackgroundJob::WebRequest(..)
-            | BackgroundJob::CancelWebRequest(..)
-            | BackgroundJob::WebRequestStreamFinished(..) => BackgroundJobContext::WebRequest,
-            BackgroundJob::ReportPluginList(..) => BackgroundJobContext::ReportPluginList,
-            BackgroundJob::RenderToClients => BackgroundJobContext::ReportPluginList,
-            BackgroundJob::HighlightPanesWithMessage(..) => {
-                BackgroundJobContext::HighlightPanesWithMessage
+            other => {
+                let name: &'static str = other.into();
+                BackgroundJobContext::from_str(name).unwrap_or_else(|_| {
+                    debug_assert!(false, "no BackgroundJobContext variant named {name}");
+                    BackgroundJobContext::Exit
+                })
             },
-            BackgroundJob::DismissNotification(..) => BackgroundJobContext::DismissNotification,
-            BackgroundJob::AnimateNotifications => BackgroundJobContext::AnimateNotifications,
-            BackgroundJob::StopAnimateNotifications => {
-                BackgroundJobContext::StopAnimateNotifications
-            },
-            BackgroundJob::QueryZellijWebServerStatus => {
-                BackgroundJobContext::QueryZellijWebServerStatus
-            },
-            BackgroundJob::ClearHelpText { .. } => BackgroundJobContext::ClearHelpText,
-            BackgroundJob::FlashPaneBell(..) => BackgroundJobContext::FlashPaneBell,
-            BackgroundJob::StopFlashPaneBell(..) => BackgroundJobContext::StopFlashPaneBell,
-            BackgroundJob::FlashTabBell(..) => BackgroundJobContext::FlashTabBell,
-            BackgroundJob::StopFlashTabBell(..) => BackgroundJobContext::StopFlashTabBell,
-            BackgroundJob::StartNestedGuestPing(..) => BackgroundJobContext::StartNestedGuestPing,
-            BackgroundJob::StopNestedGuestPing(..) => BackgroundJobContext::StopNestedGuestPing,
-            BackgroundJob::Exit => BackgroundJobContext::Exit,
         }
     }
 }

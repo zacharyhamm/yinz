@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::str::FromStr;
 use std::time::Duration;
 
 use zellij_utils::channels;
@@ -11,7 +12,7 @@ use crate::thread_bus::Bus;
 // you write into their STDIN while reading from their STDOUT (I'm looking at you, vim)
 // while the same has not been observed to happen with resizes, it could conceivably happen and we have this
 // here anyway, so
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
     Write(Vec<u8>, u32, Option<NotificationEnd>),
     ResizePty(u32, u16, u16, Option<u16>, Option<u16>),
@@ -21,14 +22,14 @@ pub enum PtyWriteInstruction {
 }
 
 impl From<&PtyWriteInstruction> for PtyWriteContext {
-    fn from(tty_write_instruction: &PtyWriteInstruction) -> Self {
-        match *tty_write_instruction {
-            PtyWriteInstruction::Write(..) => PtyWriteContext::Write,
-            PtyWriteInstruction::ResizePty(..) => PtyWriteContext::ResizePty,
-            PtyWriteInstruction::ApplyCachedResizes => PtyWriteContext::ApplyCachedResizes,
-            PtyWriteInstruction::StartCachingResizes => PtyWriteContext::StartCachingResizes,
-            PtyWriteInstruction::Exit => PtyWriteContext::Exit,
-        }
+    fn from(pty_write_instruction: &PtyWriteInstruction) -> Self {
+        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
+        // a variant is added without either a matching `PtyWriteContext` or an arm here.
+        let name: &'static str = pty_write_instruction.into();
+        PtyWriteContext::from_str(name).unwrap_or_else(|_| {
+            debug_assert!(false, "no PtyWriteContext variant named {name}");
+            PtyWriteContext::Exit
+        })
     }
 }
 

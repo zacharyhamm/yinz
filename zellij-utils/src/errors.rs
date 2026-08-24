@@ -488,12 +488,19 @@ pub enum ScreenContext {
 }
 
 /// Stack call representations corresponding to the different types of [`PtyInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PtyContext {
     SpawnTerminal,
     OpenInPlaceEditor,
-    SpawnTerminalVertically,
-    SpawnTerminalHorizontally,
     UpdateActivePane,
     GoToTab,
     NewTab,
@@ -530,12 +537,20 @@ pub enum PtyContext {
 }
 
 /// Stack call representations corresponding to the different types of [`PluginInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PluginContext {
     Load,
     LoadBackgroundPlugin,
     Update,
-    Render,
     Unload,
     Reload,
     ReloadPluginWithId,
@@ -554,7 +569,6 @@ pub enum PluginContext {
     DumpLayout,
     LogLayoutToHd,
     CliPipe,
-    Message,
     CachePluginEvents,
     MessageFromPlugin,
     UnblockCliPipes,
@@ -605,7 +619,16 @@ pub enum ClientContext {
 }
 
 /// Stack call representations corresponding to the different types of [`ServerInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum ServerContext {
     NewClient,
     Render,
@@ -642,7 +665,16 @@ pub enum ServerContext {
     EmitNestedSessionFrameToClient,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PtyWriteContext {
     Write,
     ResizePty,
@@ -651,7 +683,16 @@ pub enum PtyWriteContext {
     Exit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum BackgroundJobContext {
     DisplayPaneError,
     AnimatePluginLoading,
@@ -661,7 +702,6 @@ pub enum BackgroundJobContext {
     RunCommand,
     WebRequest,
     ReportPluginList,
-    ListWebSessions,
     RenderToClients,
     HighlightPanesWithMessage,
     DismissNotification,

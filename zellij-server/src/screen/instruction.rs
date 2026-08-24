@@ -37,7 +37,8 @@ use zellij_utils::position::Position;
 /// Instructions that can be sent to the [`Screen`].
 ///
 /// `IntoStaticStr` yields the variant name, which is what `From<&ScreenInstruction> for
-/// ScreenContext` maps through; `VariantNames` lets the test below prove that mapping is total.
+/// ScreenContext` maps through; `VariantNames` lets `unit/instruction_context_tests.rs` prove
+/// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
     PtyBytes(u32, VteBytes),
@@ -762,7 +763,7 @@ pub enum ScreenInstruction {
 impl From<&ScreenInstruction> for ScreenContext {
     fn from(screen_instruction: &ScreenInstruction) -> Self {
         // The two enums are kept name-for-name deliberately, so all but a handful of the 250-odd
-        // variants resolve by name. `variant_name_is_total` below fails the build's test run if a
+        // variants resolve by name. `unit/instruction_context_tests.rs` fails the test run if a
         // new instruction is added without either a matching `ScreenContext` variant or an arm
         // here, which is a stronger guarantee than the exhaustive match this replaced: it also
         // catches the two names silently drifting apart.
@@ -803,105 +804,13 @@ impl From<&ScreenInstruction> for ScreenContext {
             other => {
                 let name: &'static str = other.into();
                 ScreenContext::from_str(name).unwrap_or_else(|_| {
-                    // `variant_name_is_total` makes this unreachable in a tested build; in a
-                    // release build a missing name should not take the session down over what is
-                    // only an error-context label.
+                    // the guard tests make this unreachable in a tested build; in a release build
+                    // a missing name should not take the session down over what is only an
+                    // error-context label.
                     debug_assert!(false, "no ScreenContext variant named {name}");
                     ScreenContext::Exit
                 })
             },
-        }
-    }
-}
-
-#[cfg(test)]
-mod variant_name_tests {
-    use super::*;
-    use strum::VariantNames;
-
-    /// The only `ScreenContext` variants that no instruction of the same name can reach: the
-    /// `Resize` fan-out, plus the one rename whose target is not itself an instruction name.
-    const REACHED_ONLY_BY_SPECIAL_CASE: &[&str] = &[
-        "HandlePtyBytes",
-        "ResizeIncreaseAll",
-        "ResizeIncreaseLeft",
-        "ResizeIncreaseDown",
-        "ResizeIncreaseUp",
-        "ResizeIncreaseRight",
-        "ResizeDecreaseAll",
-        "ResizeDecreaseLeft",
-        "ResizeDecreaseDown",
-        "ResizeDecreaseUp",
-        "ResizeDecreaseRight",
-    ];
-
-    /// The names spelled out by hand in `From<&ScreenInstruction> for ScreenContext`, either
-    /// because the context is chosen by payload or because the two enums name it differently.
-    const SPECIAL_CASED: &[&str] = &[
-        "Resize",
-        "PtyBytes",
-        "NewGlobalPane",
-        "LaunchOrFocusGlobalPaneSplit",
-        "ClearAllPluginHighlights",
-        "SetGlobalPanePlacement",
-    ];
-
-    /// Stands in for the exhaustive match this conversion used to be. Every instruction must
-    /// either be special-cased above or share its name with a `ScreenContext` variant.
-    #[test]
-    fn variant_name_is_total() {
-        let unmapped: Vec<&str> = ScreenInstruction::VARIANTS
-            .iter()
-            .copied()
-            .filter(|name| !SPECIAL_CASED.contains(name))
-            .filter(|name| ScreenContext::from_str(name).is_err())
-            .collect();
-        assert!(
-            unmapped.is_empty(),
-            "these ScreenInstruction variants have no ScreenContext of the same name; \
-             add the variant to ScreenContext or special-case it in the From impl: {unmapped:?}"
-        );
-    }
-
-    /// The other direction: a `ScreenContext` no instruction can produce is dead weight, and
-    /// eighteen of them had quietly accumulated. Nothing but this test stops that recurring.
-    #[test]
-    fn every_context_is_reachable() {
-        let unreachable: Vec<&str> = ScreenContext::VARIANTS
-            .iter()
-            .copied()
-            .filter(|name| !REACHED_ONLY_BY_SPECIAL_CASE.contains(name))
-            .filter(|name| !ScreenInstruction::VARIANTS.contains(name))
-            .collect();
-        assert!(
-            unreachable.is_empty(),
-            "no ScreenInstruction can produce these ScreenContext variants, so they are dead: \
-             {unreachable:?}"
-        );
-    }
-
-    /// Guards the mechanism from both ends: every special case must be one `from_str` genuinely
-    /// cannot resolve, which also proves `from_str` reports a missing name rather than guessing.
-    #[test]
-    fn special_cases_are_not_resolvable_by_name() {
-        for name in SPECIAL_CASED {
-            assert!(
-                ScreenContext::from_str(name).is_err(),
-                "{name} now names a ScreenContext variant too, so its arm in the From impl is \
-                 redundant and should be deleted along with this entry"
-            );
-        }
-    }
-
-    /// A name in `SPECIAL_CASED` that no longer exists is a stale entry, and would quietly widen
-    /// the test above into passing for a variant nobody handles.
-    #[test]
-    fn special_cases_all_still_exist() {
-        for name in SPECIAL_CASED {
-            assert!(
-                ScreenInstruction::VARIANTS.contains(name),
-                "SPECIAL_CASED lists {name}, which is no longer a ScreenInstruction variant"
-            );
         }
     }
 }
