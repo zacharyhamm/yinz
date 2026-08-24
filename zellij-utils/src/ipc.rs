@@ -155,7 +155,15 @@ pub struct MobileStatePayload {
 
 // Types of messages sent from the client to the server
 #[allow(clippy::large_enum_variant)]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
 pub enum ClientToServerMsg {
     DetachSession {
         client_ids: Vec<ClientId>,
@@ -244,7 +252,15 @@ pub enum ClientToServerMsg {
 }
 
 // Types of messages sent from the server to the client
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
 pub enum ServerToClientMsg {
     Render {
         content: String,

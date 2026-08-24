@@ -209,9 +209,21 @@ impl Display for ContextType {
     }
 }
 
-// FIXME: Just deriving EnumDiscriminants from strum will remove the need for any of this!!!
 /// Stack call representations corresponding to the different types of [`ScreenInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// Almost every variant is named after the `ScreenInstruction` variant it stands for, and
+/// `From<&ScreenInstruction>` relies on that: it resolves the common case through `EnumString`
+/// and only spells out the handful of pairs whose names differ.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum ScreenContext {
     HandlePtyBytes,
     PluginBytes,
@@ -224,8 +236,6 @@ pub enum ScreenContext {
     HideFloatingPanes,
     AreFloatingPanesVisible,
     TogglePaneEmbedOrFloating,
-    HorizontalSplit,
-    VerticalSplit,
     WriteCharacter,
     ResizeIncreaseAll,
     ResizeIncreaseLeft,
@@ -237,17 +247,10 @@ pub enum ScreenContext {
     ResizeDecreaseDown,
     ResizeDecreaseUp,
     ResizeDecreaseRight,
-    ResizeLeft,
-    ResizeRight,
-    ResizeDown,
-    ResizeUp,
-    ResizeIncrease,
-    ResizeDecrease,
     SwitchFocus,
     FocusNextPane,
     FocusPreviousPane,
     FocusLastPane,
-    FocusPaneAt,
     MoveFocusLeft,
     MoveFocusLeftOrPreviousTab,
     MoveFocusDown,
@@ -286,9 +289,6 @@ pub enum ScreenContext {
     SetPaneFrameStyle,
     SetSelectable,
     ShowPluginCursor,
-    SetInvisibleBorders,
-    SetFixedHeight,
-    SetFixedWidth,
     ClosePane,
     HoldPane,
     UpdatePaneName,
@@ -331,12 +331,6 @@ pub enum ScreenContext {
     ToggleTheme,
     ChangeMode,
     ChangeModeForAllClients,
-    LeftClick,
-    RightClick,
-    MiddleClick,
-    LeftMouseRelease,
-    RightMouseRelease,
-    MiddleMouseRelease,
     MouseEvent,
     Copy,
     ToggleTab,
@@ -494,12 +488,19 @@ pub enum ScreenContext {
 }
 
 /// Stack call representations corresponding to the different types of [`PtyInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PtyContext {
     SpawnTerminal,
     OpenInPlaceEditor,
-    SpawnTerminalVertically,
-    SpawnTerminalHorizontally,
     UpdateActivePane,
     GoToTab,
     NewTab,
@@ -536,12 +537,20 @@ pub enum PtyContext {
 }
 
 /// Stack call representations corresponding to the different types of [`PluginInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PluginContext {
     Load,
     LoadBackgroundPlugin,
     Update,
-    Render,
     Unload,
     Reload,
     ReloadPluginWithId,
@@ -560,7 +569,6 @@ pub enum PluginContext {
     DumpLayout,
     LogLayoutToHd,
     CliPipe,
-    Message,
     CachePluginEvents,
     MessageFromPlugin,
     UnblockCliPipes,
@@ -611,7 +619,16 @@ pub enum ClientContext {
 }
 
 /// Stack call representations corresponding to the different types of [`ServerInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum ServerContext {
     NewClient,
     Render,
@@ -648,7 +665,16 @@ pub enum ServerContext {
     EmitNestedSessionFrameToClient,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum PtyWriteContext {
     Write,
     ResizePty,
@@ -657,7 +683,16 @@ pub enum PtyWriteContext {
     Exit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::VariantNames,
+)]
 pub enum BackgroundJobContext {
     DisplayPaneError,
     AnimatePluginLoading,
@@ -667,7 +702,6 @@ pub enum BackgroundJobContext {
     RunCommand,
     WebRequest,
     ReportPluginList,
-    ListWebSessions,
     RenderToClients,
     HighlightPanesWithMessage,
     DismissNotification,

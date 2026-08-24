@@ -5515,6 +5515,8 @@ dependencies = [
  "signal-hook",
  "sixel-image",
  "sixel-tokenizer",
+ "strum",
+ "strum_macros",
  "sysinfo",
  "tempfile",
  "tokio",

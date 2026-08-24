@@ -4,8 +4,9 @@ A survey of this fork found three dominant pieces of debt. The third — nothing
 is **done**, and is described in CLAUDE.md rather than here. This document is the research behind
 the other two, written down so picking them up later does not mean deriving it again.
 
-**The file split in section A is now done** (see "What was actually done", below). What remains of
-A is the two riders it deliberately left alone. B is untouched.
+**The file split in section A is done**, and so are both riders it deliberately left alone (see
+"What was actually done", below, and "What the follow-up pass did" at the end). Of B, only the
+cheap round-trip coverage guard is done; B1 proper, B2 and B3 are untouched.
 
 What follows is what was measured, what the seam actually is, and — as important — what was
 considered and rejected.
@@ -127,14 +128,13 @@ reading it as history:
   each `mod x;` line shifts everything below it anyway, so boundaries have to be re-derived every
   step regardless.
 
-### Left undone, deliberately
+### The two riders — both now done
 
-Both riders below were in scope of section A as written and are **not** done:
+Both riders below were in scope of section A as written and were left for a later pass. Both are
+now done; see "What the follow-up pass did" at the end of this document.
 
-- the `From<&ScreenInstruction> for ScreenContext` strum rewrite (next section) — `instruction.rs`
-  moved the impl verbatim and did not touch its body;
+- the `From<&ScreenInstruction> for ScreenContext` strum rewrite (next section);
 - the `has_pane_with_pid` cleanup, which this document says to do per-module *after* the split.
-  That precondition now holds.
 
 The render/report epilogue remains rejected, for the reasons below.
 
@@ -156,6 +156,13 @@ already workspace dependencies — but note they are *not* dependencies of `zell
    `ScreenContext::NewPane` — falling through to `ScreenContext::from_str(instruction.into())`.
 
 406 lines becomes roughly 50.
+
+> **Done.** It came out at 47 lines, and the arm count was better than this estimate: only **six**
+> arms are not 1:1, not ~25. The plan was also right that `EnumDiscriminants` is unnecessary. Two
+> things it did not anticipate: eighteen `ScreenContext` variants turned out to be unreachable
+> (nothing constructs them at all), and the same treatment applies to the other five
+> instruction/context pairs, which had two more name-drift bugs and five more dead variants
+> between them.
 
 **The cost, which must be paid, not skipped.** Today's match is compiler-exhaustive: add a variant
 and the build breaks. `from_str` is not. Restore the guarantee with a test that derives
@@ -186,6 +193,12 @@ Move the match into `screen/thread_main.rs` (#15) and stop there.
 `tab_id_containing_pane` (`screen.rs:3865`) — and is almost unused, while `with_pane` (`:3155`) is
 used 36 times and is the model to copy. Do this **per extracted module after the split**, so each
 batch is small and its tests are already targeted. Not before.
+
+> **Done**, in two commits — `thread_main.rs` first, then the other seven modules. 88 uses became
+> four. `with_pane` was indeed the model: the helpers are `tab_containing_pane{,_mut}` plus
+> `report_pane_not_found` for the eighteen sites that copied the same "not found" tail verbatim.
+> `tab_id_containing_pane` moved to `screen/tabs.rs` and gained a `tab_position_containing_pane`
+> sibling for the callers that look the tab back up by position.
 
 ---
 
@@ -236,6 +249,13 @@ Expect this step to find bugs. That is the point of doing it first.
 Cheap and independent of everything else: add a `VariantNames`-vs-invocation-list assertion to
 `ipc/tests/roundtrip_tests.rs` (~20 lines). 374 hand-built values with no completeness guarantee is
 a lot of effort producing false confidence.
+
+> **Done.** Not by comparing against an invocation list — the two macros record the variant name
+> they were handed, and `server_client_contract` compares that against `VariantNames` for both
+> enums after both halves have run. It found three untested `ClientToServerMsg` variants
+> immediately (`AttachWatcherClient`, `DesktopNotificationResponse`,
+> `SoftKeyboardVisibilityChanged`), all now covered. `ServerToClientMsg` was already complete.
+> The prediction that this step finds things held on the first run.
 
 ## B2 — The Lua unblock, and the gate it must not skip
 
@@ -364,16 +384,15 @@ Logged, not fixed — except the first, which had to be fixed because it made a 
   concern with no known divergence — the one suspected divergence is the entry above, and it was a
   false alarm.
 
-- **`global_panes.rs` uses the wrong error type.** 21 signatures return `Result<_, String>` instead
-  of the project's `errors::prelude` Result, and the file uses `.non_fatal()` **zero** times against
-  114 uses in `screen.rs`. Callers bridge the two worlds with 12 `map_err` in `screen.rs`. Its
-  1,753-line inline `#[cfg(test)] mod tests` (`:2309-4062`, 43% of the file) also breaks the repo's
-  `#[path]`-to-`unit/` convention.
+- **FIXED — `global_panes.rs` used the wrong error type.** It was 24 signatures, not 21, and 14
+  bridges rather than 12 — the file also bridged the other way, turning two `anyhow` send errors
+  into strings. All of them are gone. The inline test module moved to
+  `unit/global_panes_tests.rs`, taking the file from 4,060 lines to 2,302.
 
-- **`let _ =` on fallible internal methods.** `screen.rs:2520,:3227,:3240` discard
-  `sync_scroll_mode_on_focus`'s error. Distinct from the 202 `let _ = ….send(…)` sites, which are a
-  separate policy question about channel sends during shutdown. These will be easier to find and
-  fix module-by-module after the `screen.rs` split.
+- **FIXED — `let _ =` on the scroll-mode sync.** The six calls to `sync_scroll_mode_on_focus` /
+  `sync_scroll_mode_if_scroll_changed` now use `.non_fatal()`. The 202 `let _ = ….send(…)` sites
+  and the `let _ = self.render(…)` / `log_and_report_session_state()` sites are untouched: those
+  are the separate policy question about failures on shutdown paths, where logging would be noise.
 
 - **`zellij-tile/src/shim.rs` — 341 identical `try_into().unwrap()`** at the **public plugin API**
   boundary (e.g. `:95`), each an unexplained plugin abort. One pattern and one decision, not 341
@@ -382,9 +401,59 @@ Logged, not fixed — except the first, which had to be fixed because it made a 
 - **`zellij-server/src/lib.rs` — ~145 unwraps**, dominated by `RwLock` poisoning in the accept and
   shutdown paths. The honest fix is a poison policy, not `?`.
 
-- **`panes/tiled_panes/mod.rs:104` — `#[allow(dead_code)]` on the whole `TiledPanes` struct**,
-  hiding unused fields in a 3,425-line core type.
+- **FIXED — `#[allow(dead_code)]` on the whole `TiledPanes` struct.** It hid exactly one unused
+  field, `stacked_pane_list`, threaded in from `Tab` and never read there. Field, constructor
+  parameter and allow are gone, so the type is under dead-code analysis again.
 
 - **`default-plugins/status-bar/` — `one_line_ui.rs` and `second_line.rs` are a near-verbatim
   fork**, sharing the same typo (`dedpulicate`) and the same FIXME. Real duplication, unrelated to
   everything above, and deliberately out of scope for any of it.
+
+---
+
+# What the follow-up pass did
+
+Nine commits after the `screen.rs` split, all against the "concrete and low-risk" end of the
+list above. Both of section A's riders, the cheap half of B1, and four of the logged smells.
+
+| # | What | Effect |
+|---|---|---|
+| 1 | `ScreenContext` resolved by variant name | 406 lines → 47, plus three drift guards |
+| 2 | eighteen unreachable `ScreenContext` variants dropped | dead code, and a reverse guard so it does not recur |
+| 3–4 | `has_pane_with_pid` → `tab_containing_pane{,_mut}` | 88 uses → 4, ~600 lines |
+| 5 | `TiledPanes`' blanket `dead_code` allow | one dead field, analysis restored |
+| 6 | round-trip macros record what they cover | three untested IPC variants found and covered |
+| 7 | scroll-mode sync errors logged, not discarded | |
+| 8–9 | `global_panes.rs` on the project's `Result`, tests to `unit/` | 14 bridges gone, 4,060 lines → 2,302 |
+| 10 | the other five instruction/context pairs | 198 lines → 60, one mislabel fixed, five more dead variants |
+
+## Two things worth knowing before the next pass
+
+**The name-driven conversion generalises, and its guards are the point.** Six instruction enums
+now resolve their `*Context` by variant name, with `unit/instruction_context_tests.rs` asserting
+in both directions: every instruction has a context, and every context is reachable. Writing
+those guards found a mislabelled arm (`BackgroundJob::RenderToClients` reported itself as
+`ReportPluginList`) and 23 dead context variants that years of exhaustive matches
+never surfaced, because an exhaustive match proves only that each arm exists — not that it is
+right, and not that the target is used. **This is the pattern to reach for elsewhere in the
+codebase: replace a mechanical match with a name lookup, then spend the saved lines on a test
+that the match could not have been.**
+
+**Coverage instrumentation beats a checked-in list.** B1's plan proposed pinning variant lists
+with `expect-test`. For the IPC round-trips it was cheaper and stronger to have the test macros
+record what they were actually handed and compare that to `VariantNames` — no list to update, and
+it measures the tests rather than a transcription of them. Prefer that shape for the `PluginCommand`
+/ `Action` / `Event` work in B1 proper.
+
+## Still open, in rough order of value
+
+- **B1 proper** — the round-trip *properties* for `PluginCommand`, `Action` and `Event`. The
+  coverage guard above is only the cheap rider; 412 hand-written conversions still have 25 tests.
+- **B2 and B3**, unchanged, and B2's security gate still has to precede the derive.
+- **`zellij-tile/src/shim.rs`'s 224 `try_into().unwrap()`** (the doc said 341; it is 224 now).
+  Still one decision, not 224 sites.
+- **`zellij-server/src/lib.rs`'s RwLock unwraps** — still wants a poison policy.
+- **`default-plugins/status-bar/`'s near-verbatim fork**, still out of scope of everything else.
+- **`tab/mod.rs`'s eight directional copy-paste methods** — untouched; the same "give the shape a
+  name" treatment applies, but the parameter is a `Direction` rather than a lookup, so it is a
+  different-shaped edit.

@@ -261,7 +261,7 @@ fn global_pane_commands_resolve_generic_ids_and_reject_tab_only_ids() {
 
     let snapshot = (
         screen.global_pane_placement(global_id),
-        screen.global_panes.is_hidden(global_id),
+        screen.global_panes.is_hidden(global_id).ok(),
         screen
             .with_pane(global_id, |pane| pane.current_title())
             .unwrap(),
@@ -287,7 +287,7 @@ fn global_pane_commands_resolve_generic_ids_and_reject_tab_only_ids() {
         assert_eq!(
             (
                 screen.global_pane_placement(global_id),
-                screen.global_panes.is_hidden(global_id),
+                screen.global_panes.is_hidden(global_id).ok(),
                 screen
                     .with_pane(global_id, |pane| pane.current_title())
                     .unwrap(),

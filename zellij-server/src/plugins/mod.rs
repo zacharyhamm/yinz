@@ -16,6 +16,7 @@ mod wasm_bridge;
 mod watch_filesystem;
 mod zellij_exports;
 use log::info;
+use std::str::FromStr;
 
 pub use pinned_executor::PinnedExecutor;
 use std::{
@@ -67,7 +68,7 @@ pub struct DumpSessionLayoutResponse {
     pub metadata: Option<zellij_utils::data::LayoutMetadata>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
     Load(
         Option<bool>,   // should float
@@ -243,65 +244,19 @@ pub enum PluginInstruction {
 
 impl From<&PluginInstruction> for PluginContext {
     fn from(plugin_instruction: &PluginInstruction) -> Self {
-        match *plugin_instruction {
-            PluginInstruction::Load(..) => PluginContext::Load,
-            PluginInstruction::LoadBackgroundPlugin(..) => PluginContext::LoadBackgroundPlugin,
-            PluginInstruction::Update(..) => PluginContext::Update,
-            PluginInstruction::Unload(..) => PluginContext::Unload,
-            PluginInstruction::Reload(..) => PluginContext::Reload,
-            PluginInstruction::ReloadPluginWithId(..) => PluginContext::ReloadPluginWithId,
-            PluginInstruction::Resize(..) => PluginContext::Resize,
-            PluginInstruction::Exit => PluginContext::Exit,
-            PluginInstruction::AddClient(_) => PluginContext::AddClient,
-            PluginInstruction::RemoveClient(_) => PluginContext::RemoveClient,
-            PluginInstruction::NewTab(..) => PluginContext::NewTab,
-            PluginInstruction::OverrideLayout(..) => PluginContext::OverrideLayout,
-            PluginInstruction::ApplyCachedEvents { .. } => PluginContext::ApplyCachedEvents,
-            PluginInstruction::ApplyCachedWorkerMessages(..) => {
-                PluginContext::ApplyCachedWorkerMessages
-            },
+        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
+        // a variant is added without either a matching `PluginContext` or an arm here.
+        match plugin_instruction {
             PluginInstruction::PostMessagesToPluginWorker(..) => {
                 PluginContext::PostMessageToPluginWorker
             },
-            PluginInstruction::PostMessageToPlugin(..) => PluginContext::PostMessageToPlugin,
-            PluginInstruction::PluginSubscribedToEvents(..) => {
-                PluginContext::PluginSubscribedToEvents
+            other => {
+                let name: &'static str = other.into();
+                PluginContext::from_str(name).unwrap_or_else(|_| {
+                    debug_assert!(false, "no PluginContext variant named {name}");
+                    PluginContext::Exit
+                })
             },
-            PluginInstruction::PermissionRequestResult(..) => {
-                PluginContext::PermissionRequestResult
-            },
-            PluginInstruction::DumpLayout(..) => PluginContext::DumpLayout,
-            PluginInstruction::ListClientsMetadata(..) => PluginContext::ListClientsMetadata,
-            PluginInstruction::LogLayoutToHd(..) => PluginContext::LogLayoutToHd,
-            PluginInstruction::CliPipe { .. } => PluginContext::CliPipe,
-            PluginInstruction::CachePluginEvents { .. } => PluginContext::CachePluginEvents,
-            PluginInstruction::MessageFromPlugin { .. } => PluginContext::MessageFromPlugin,
-            PluginInstruction::UnblockCliPipes { .. } => PluginContext::UnblockCliPipes,
-            PluginInstruction::WatchFilesystem => PluginContext::WatchFilesystem,
-            PluginInstruction::KeybindPipe { .. } => PluginContext::KeybindPipe,
-            PluginInstruction::DumpLayoutToPlugin { .. } => PluginContext::DumpLayoutToPlugin,
-            PluginInstruction::Reconfigure { .. } => PluginContext::Reconfigure,
-            PluginInstruction::FailedToWriteConfigToDisk { .. } => {
-                PluginContext::FailedToWriteConfigToDisk
-            },
-            PluginInstruction::ListClientsToPlugin(..) => PluginContext::ListClientsToPlugin,
-            PluginInstruction::ChangePluginHostDir(..) => PluginContext::ChangePluginHostDir,
-            PluginInstruction::WebServerStarted(..) => PluginContext::WebServerStarted,
-            PluginInstruction::FailedToStartWebServer(..) => PluginContext::FailedToStartWebServer,
-            PluginInstruction::PaneRenderReport(..) => PluginContext::PaneRenderReport,
-            PluginInstruction::UserInput { .. } => PluginContext::UserInput,
-            PluginInstruction::LayoutListUpdate(..) => PluginContext::LayoutListUpdate,
-            PluginInstruction::RequestStateUpdateForPlugin(..) => {
-                PluginContext::RequestStateUpdateForPlugin
-            },
-            PluginInstruction::UpdateSessionSaveTime(..) => PluginContext::UpdateSessionSaveTime,
-            PluginInstruction::GetLastSessionSaveTime { .. } => {
-                PluginContext::GetLastSessionSaveTime
-            },
-            PluginInstruction::DetectPluginConfigChanges(..) => {
-                PluginContext::DetectPluginConfigChanges
-            },
-            PluginInstruction::HighlightClicked { .. } => PluginContext::HighlightClicked,
         }
     }
 }
