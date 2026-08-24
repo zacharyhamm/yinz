@@ -600,3 +600,55 @@ fn every_command_zellij_knows_is_a_name_serde_accepts() {
         );
     }
 }
+
+#[test]
+fn a_command_that_answers_hands_back_a_table() {
+    // `get_plugin_ids` is answered by the host itself rather than by another thread, so it is one
+    // of the two queries a plugin with no channels behind it can actually run. Before the reply
+    // was decoded this arrived as a string of protobuf bytes.
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          local ids = zellij.get_plugin_ids()
+          M.shape = type(ids)
+          M.plugin_id = ids.plugin_id
+          M.cwd = ids.initial_cwd
+        end
+        function M.render()
+          return string.format("%s %s %s", M.shape, tostring(M.plugin_id), tostring(M.cwd))
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 60).unwrap()).unwrap(),
+        "table 1 ."
+    );
+}
+
+#[test]
+fn a_scalar_answer_arrives_as_a_scalar() {
+    // Not every reply is a table: `get_zellij_version` answers with one string, and wrapping it
+    // in a table to be uniform would only make it worse to use.
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() M.version = zellij.get_zellij_version() end
+        function M.render() return type(M.version) .. " " .. tostring(M.version) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 40).unwrap()).unwrap();
+    assert_eq!(
+        rendered,
+        format!("string {}", zellij_utils::consts::VERSION),
+        "the version should arrive readable, not as protobuf bytes"
+    );
+}
