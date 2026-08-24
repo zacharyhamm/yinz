@@ -20,6 +20,7 @@ use crate::{
     thread_bus::{Bus, ThreadSenders},
     ClientId, ServerInstruction,
 };
+use std::str::FromStr;
 use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
@@ -197,7 +198,7 @@ impl AdoptedTabTerminal {
 pub type AdoptedTabTerminals = (Vec<AdoptedTabTerminal>, Vec<AdoptedTabTerminal>);
 
 /// Instructions related to PTYs (pseudoterminals).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyInstruction {
     SpawnTerminal(
         Option<TerminalAction>,
@@ -380,43 +381,13 @@ pub enum PtyInstruction {
 
 impl From<&PtyInstruction> for PtyContext {
     fn from(pty_instruction: &PtyInstruction) -> Self {
-        match *pty_instruction {
-            PtyInstruction::SpawnTerminal(..) => PtyContext::SpawnTerminal,
-            PtyInstruction::OpenInPlaceEditor(..) => PtyContext::OpenInPlaceEditor,
-            PtyInstruction::UpdateActivePane(..) => PtyContext::UpdateActivePane,
-            PtyInstruction::GoToTab(..) => PtyContext::GoToTab,
-            PtyInstruction::ClosePane(..) => PtyContext::ClosePane,
-            PtyInstruction::CloseTab(_) => PtyContext::CloseTab,
-            PtyInstruction::ReleaseTerminalForWarp { .. } => PtyContext::ReleaseTerminalForWarp,
-            PtyInstruction::AdoptTerminal { .. } => PtyContext::AdoptTerminal,
-            PtyInstruction::ReleaseTerminalsForWarp { .. } => PtyContext::ReleaseTerminalsForWarp,
-            PtyInstruction::StrandPaneAfterWarp { .. } => PtyContext::StrandPaneAfterWarp,
-            PtyInstruction::AdoptTab { .. } => PtyContext::AdoptTab,
-            PtyInstruction::ClaimAdoptedTab { .. } => PtyContext::ClaimAdoptedTab,
-            PtyInstruction::NewTab(..) => PtyContext::NewTab,
-            PtyInstruction::OverrideLayout(..) => PtyContext::OverrideLayout,
-            PtyInstruction::ReRunCommandInPane(..) => PtyContext::ReRunCommandInPane,
-            PtyInstruction::DropToShellInPane { .. } => PtyContext::DropToShellInPane,
-            PtyInstruction::SpawnInPlaceTerminal(..) => PtyContext::SpawnInPlaceTerminal,
-            PtyInstruction::DumpLayout(..) => PtyContext::DumpLayout,
-            PtyInstruction::DumpLayoutToPlugin { .. } => PtyContext::DumpLayoutToPlugin,
-            PtyInstruction::LogLayoutToHd(..) => PtyContext::LogLayoutToHd,
-            PtyInstruction::SaveSessionToDisk { .. } => PtyContext::SaveSessionToDisk,
-            PtyInstruction::FillPluginCwd(..) => PtyContext::FillPluginCwd,
-            PtyInstruction::ListClientsMetadata(..) => PtyContext::ListClientsMetadata,
-            PtyInstruction::Reconfigure { .. } => PtyContext::Reconfigure,
-            PtyInstruction::ListClientsToPlugin(..) => PtyContext::ListClientsToPlugin,
-            PtyInstruction::ReportPluginCwd(..) => PtyContext::ReportPluginCwd,
-            PtyInstruction::SendSigintToPaneId(..) => PtyContext::SendSigintToPaneId,
-            PtyInstruction::SendSigkillToPaneId(..) => PtyContext::SendSigkillToPaneId,
-            PtyInstruction::GetPanePid { .. } => PtyContext::GetPanePid,
-            PtyInstruction::GetPaneRunningCommand { .. } => PtyContext::GetPaneRunningCommand,
-            PtyInstruction::GetPaneCwd { .. } => PtyContext::GetPaneCwd,
-            PtyInstruction::GetPaneGitProbe { .. } => PtyContext::GetPaneGitProbe,
-            PtyInstruction::UpdateAndReportCwds => PtyContext::UpdateAndReportCwds,
-            PtyInstruction::NotifyCwdFromOsc7(..) => PtyContext::NotifyCwdFromOsc7,
-            PtyInstruction::Exit => PtyContext::Exit,
-        }
+        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
+        // a variant is added without either a matching `PtyContext` or an arm here.
+        let name: &'static str = pty_instruction.into();
+        PtyContext::from_str(name).unwrap_or_else(|_| {
+            debug_assert!(false, "no PtyContext variant named {name}");
+            PtyContext::Exit
+        })
     }
 }
 
