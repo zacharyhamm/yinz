@@ -102,7 +102,7 @@ impl Screen {
             tab.set_force_render();
         }
         self.global_panes.set_force_render();
-        let _ = self.sync_scroll_mode_on_focus(client_id);
+        self.sync_scroll_mode_on_focus(client_id).non_fatal();
         Ok(())
     }
 
@@ -115,7 +115,7 @@ impl Screen {
             tab.set_force_render();
         }
         self.global_panes.set_force_render();
-        let _ = self.sync_scroll_mode_on_focus(client_id);
+        self.sync_scroll_mode_on_focus(client_id).non_fatal();
     }
 
     pub(super) fn activate_overlay(&mut self, pane_id: PaneId) {
