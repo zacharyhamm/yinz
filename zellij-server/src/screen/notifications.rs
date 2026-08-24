@@ -208,10 +208,7 @@ impl Screen {
 
         self.dismiss_notification(notification_id).non_fatal();
         let pane_exists = self.global_panes.pane(pane_id).is_some()
-            || self
-                .tabs
-                .values()
-                .any(|tab| tab.has_pane_with_pid(&pane_id));
+            || self.tab_containing_pane(pane_id).is_some();
         if pane_exists {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
                 self.focus_pane_with_id(pane_id, true, false, client_id)

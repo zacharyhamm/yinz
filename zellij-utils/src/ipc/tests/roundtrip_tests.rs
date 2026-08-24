@@ -26,6 +26,7 @@ use crate::pane_size::{Size, SizeInPixels};
 use crate::position::Position;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use strum::VariantNames;
 
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -36,6 +37,23 @@ fn server_client_contract() {
         .spawn(|| {
             test_client_messages();
             test_server_messages();
+
+            // Coverage is asserted inside the same thread, and after both halves have run, so it
+            // sees every invocation regardless of the order the test harness picks. The 374
+            // invocations below are hand-written values; without this, adding a variant to
+            // either enum and forgetting to test it is silent.
+            let uncovered = uncovered_variants(Which::Client, ClientToServerMsg::VARIANTS);
+            assert!(
+                uncovered.is_empty(),
+                "no test_client_roundtrip! invocation builds these ClientToServerMsg variants, \
+                 so their protobuf conversion is untested: {uncovered:?}"
+            );
+            let uncovered = uncovered_variants(Which::Server, ServerToClientMsg::VARIANTS);
+            assert!(
+                uncovered.is_empty(),
+                "no test_server_roundtrip! invocation builds these ServerToClientMsg variants, \
+                 so their protobuf conversion is untested: {uncovered:?}"
+            );
         })
         .expect("failed to spawn roundtrip test thread")
         .join()
@@ -4102,6 +4120,22 @@ fn test_client_messages() {
         client_id: Some(100),
         is_cli_client: true,
     });
+    test_client_roundtrip!(ClientToServerMsg::AttachWatcherClient {
+        terminal_size: Size { rows: 24, cols: 80 },
+        is_web_client: false,
+    });
+    test_client_roundtrip!(ClientToServerMsg::AttachWatcherClient {
+        terminal_size: Size { rows: 0, cols: 0 },
+        is_web_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::DesktopNotificationResponse { raw_bytes: vec![] });
+    // as with ForwardedReplyFromHost below, the payload is raw terminal bytes and must survive
+    // protobuf's string-vs-bytes distinction unchanged
+    test_client_roundtrip!(ClientToServerMsg::DesktopNotificationResponse {
+        raw_bytes: (0u8..=255u8).collect(),
+    });
+    test_client_roundtrip!(ClientToServerMsg::SoftKeyboardVisibilityChanged { visible: true });
+    test_client_roundtrip!(ClientToServerMsg::SoftKeyboardVisibilityChanged { visible: false });
     test_client_roundtrip!(ClientToServerMsg::ForwardedReplyFromHost {
         token: 0,
         reply_bytes: vec![],

@@ -1073,19 +1073,17 @@ impl Screen {
         completion_tx: Option<NotificationEnd>,
     ) -> Result<bool> {
         if self.global_panes.pane(pane_id).is_none() {
-            for tab in self.tabs.values_mut() {
-                if tab.has_pane_with_pid(&pane_id) {
-                    return tab.write_to_pane_id(
-                        key_with_modifier,
-                        raw_input_bytes,
-                        raw_input_bytes_are_kitty,
-                        pane_id,
-                        client_id,
-                        completion_tx,
-                    );
-                }
-            }
-            return Err(anyhow!("failed to find pane with id {pane_id:?}"));
+            return match self.tab_containing_pane_mut(pane_id) {
+                Some(tab) => tab.write_to_pane_id(
+                    key_with_modifier,
+                    raw_input_bytes,
+                    raw_input_bytes_are_kitty,
+                    pane_id,
+                    client_id,
+                    completion_tx,
+                ),
+                None => Err(anyhow!("failed to find pane with id {pane_id:?}")),
+            };
         }
 
         let adjusted_input = self.global_panes.pane_mut(pane_id).and_then(|pane| {
@@ -1211,10 +1209,6 @@ impl Screen {
     /// Returns a mutable reference to this [`Screen`]'s tabs.
     pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<usize, Tab> {
         &mut self.tabs
-    }
-
-    pub fn get_tabs(&self) -> &BTreeMap<usize, Tab> {
-        &self.tabs
     }
 
     /// Returns an immutable reference to this [`Screen`]'s active [`Tab`].
@@ -2586,11 +2580,7 @@ impl Screen {
         }
         // `go_to_tab` below only releases global focus when the tab actually changes
         self.defocus_global_pane(client_id);
-        let tab_index = self
-            .tabs
-            .iter()
-            .find(|(_tab_index, tab)| tab.has_pane_with_pid(&pane_id))
-            .map(|(_tab_index, tab)| tab.position);
+        let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
                 self.go_to_tab(tab_index + 1, client_id)?;
@@ -2651,10 +2641,8 @@ impl Screen {
         }
 
         let Some((tab_id, tab_position)) = self
-            .tabs
-            .iter()
-            .find(|(_, tab)| tab.has_pane_with_pid(&pane_id))
-            .map(|(tab_id, tab)| (*tab_id, tab.position))
+            .tab_containing_pane(pane_id)
+            .map(|tab| (tab.id, tab.position))
         else {
             log::error!("Could not find pane with id: {:?}", pane_id);
             return Ok(());
@@ -2708,39 +2696,24 @@ impl Screen {
                 .non_fatal();
             return;
         }
-        let mut found = false;
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&PaneId::Terminal(terminal_pane_id)) {
-                tab.rerun_terminal_pane_with_id(terminal_pane_id, completion_tx);
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            log::error!(
+        match self.tab_containing_pane_mut(PaneId::Terminal(terminal_pane_id)) {
+            Some(tab) => tab.rerun_terminal_pane_with_id(terminal_pane_id, completion_tx),
+            None => log::error!(
                 "Failed to find terminal pane with id: {} to run",
                 terminal_pane_id
-            );
+            ),
         }
     }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         if self.global_panes.pane(pane_id).is_some() {
             let surface = self.surface_size();
             self.global_panes
-                .resize_pane(pane_id, resize, surface.into())
-                .map_err(|error| anyhow!(error))?;
+                .resize_pane(pane_id, resize, surface.into())?;
             return self.reflow_global_panes();
         }
-        let mut found = false;
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.resize_pane_with_id(resize, pane_id).non_fatal();
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            log::error!("Failed to find pane with id: {:?} to resize", pane_id);
+        match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => tab.resize_pane_with_id(resize, pane_id).non_fatal(),
+            None => log::error!("Failed to find pane with id: {:?} to resize", pane_id),
         }
         Ok(())
     }
@@ -2788,11 +2761,7 @@ impl Screen {
                 });
             },
             ClientTabIndexOrPaneId::PaneId(pane_id) => {
-                let tab_index = self
-                    .tabs
-                    .iter()
-                    .find(|(_tab_index, tab)| tab.has_pane_with_pid(&pane_id))
-                    .map(|(_tab_index, tab)| tab.position);
+                let tab_index = self.tab_position_containing_pane(pane_id);
                 match tab_index {
                     Some(tab_index) => {
                         if let Some(tab) =
@@ -2820,11 +2789,8 @@ impl Screen {
         suppress_replaced_pane: bool,
         _completion_tx: Option<NotificationEnd>, // ends here
     ) {
-        let Some(tab_index_of_pane_id_to_replace) = self
-            .tabs
-            .iter()
-            .find(|(_tab_index, tab)| tab.has_pane_with_pid(&pane_id_to_replace))
-            .map(|(_tab_index, tab)| tab.position)
+        let Some(tab_index_of_pane_id_to_replace) =
+            self.tab_position_containing_pane(pane_id_to_replace)
         else {
             log::error!(
                 "Could not find tab with pane_id: {:?} to replace",
@@ -2832,11 +2798,8 @@ impl Screen {
             );
             return;
         };
-        let Some(tab_index_of_existing_pane) = self
-            .tabs
-            .iter()
-            .find(|(_tab_index, tab)| tab.has_pane_with_pid(&pane_id_of_existing_pane))
-            .map(|(_tab_index, tab)| tab.position)
+        let Some(tab_index_of_existing_pane) =
+            self.tab_position_containing_pane(pane_id_of_existing_pane)
         else {
             log::error!(
                 "Could not find tab with pane_id: {:?} to be replaced by",
@@ -2921,9 +2884,7 @@ impl Screen {
         self.copy_options.command = copy_command.clone();
         self.copy_options.copy_on_select = copy_on_select;
         self.pane_frame_style = pane_frame_style;
-        self.global_panes
-            .set_pane_frame_style(pane_frame_style)
-            .map_err(|error| anyhow!(error))?;
+        self.global_panes.set_pane_frame_style(pane_frame_style)?;
         self.advanced_mouse_actions = advanced_mouse_actions;
         self.mouse_scroll_resize = mouse_scroll_resize;
         self.mouse_hover_effects = mouse_hover_effects;
@@ -3138,19 +3099,12 @@ impl Screen {
         );
     }
     pub fn set_floating_pane_pinned(&mut self, pane_id: PaneId, should_be_pinned: bool) {
-        let mut found = false;
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.set_floating_pane_pinned(pane_id, should_be_pinned);
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            log::error!(
+        match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => tab.set_floating_pane_pinned(pane_id, should_be_pinned),
+            None => log::error!(
                 "Failed to find pane with id: {:?} to set as pinned",
                 pane_id
-            );
+            ),
         }
     }
     pub fn stack_panes(&mut self, mut pane_ids_to_stack: Vec<PaneId>) -> Option<PaneId> {
@@ -3162,18 +3116,7 @@ impl Screen {
         let stack_size = pane_ids_to_stack.len();
         let root_pane_id = pane_ids_to_stack.remove(0);
         let last_pane_id = pane_ids_to_stack.last();
-        let Some(root_tab_id) = self
-            .tabs
-            .iter()
-            .find_map(|(tab_id, tab)| {
-                if tab.has_pane_with_pid(&root_pane_id) {
-                    Some(tab_id)
-                } else {
-                    None
-                }
-            })
-            .copied()
-        else {
+        let Some(root_tab_id) = self.tab_id_containing_pane(root_pane_id) else {
             log::error!("Failed to find tab for root_pane_id: {:?}", root_pane_id);
             return None;
         };
@@ -3233,12 +3176,9 @@ impl Screen {
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
     ) {
         for (pane_id, coordinates) in pane_ids_and_coordinates {
-            for (_tab_id, tab) in self.tabs.iter_mut() {
-                if tab.has_pane_with_pid(&pane_id) {
-                    tab.change_overlay_coordinates(&pane_id, coordinates)
-                        .non_fatal();
-                    break;
-                }
+            if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+                tab.change_overlay_coordinates(&pane_id, coordinates)
+                    .non_fatal();
             }
         }
     }
@@ -3251,12 +3191,9 @@ impl Screen {
             .map(|(pane_id, _)| *pane_id)
             .collect();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
-            for (_tab_id, tab) in self.tabs.iter_mut() {
-                if tab.has_pane_with_pid(&pane_id) {
-                    tab.change_floating_pane_coordinates(&pane_id, coordinates)
-                        .non_fatal();
-                    break;
-                }
+            if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+                tab.change_floating_pane_coordinates(&pane_id, coordinates)
+                    .non_fatal();
             }
         }
         for pane_id in pane_ids {
@@ -3264,19 +3201,13 @@ impl Screen {
         }
     }
     pub fn toggle_pane_borderless(&mut self, pane_id: PaneId) {
-        for (_tab_id, tab) in self.tabs.iter_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.toggle_pane_borderless(&pane_id).non_fatal();
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.toggle_pane_borderless(&pane_id).non_fatal();
         }
     }
     pub fn set_pane_borderless(&mut self, pane_id: PaneId, borderless: bool) {
-        for (_tab_id, tab) in self.tabs.iter_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.set_pane_borderless(&pane_id, borderless).non_fatal();
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.set_pane_borderless(&pane_id, borderless).non_fatal();
         }
     }
     pub fn toggle_pane_in_group(&mut self, client_id: ClientId) -> Result<()> {
@@ -3793,17 +3724,7 @@ impl Screen {
             let mut clients_with_empty_group = vec![];
             let mut current_pane_group = { self.current_pane_group.borrow().clone_inner() };
             for (client_id, panes_in_group) in current_pane_group.iter_mut() {
-                let all_tabs = self.get_tabs();
-                panes_in_group.retain(|p_id| {
-                    let mut found = false;
-                    for tab in all_tabs.values() {
-                        if tab.has_pane_with_pid(&p_id) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    found
-                });
+                panes_in_group.retain(|p_id| self.tab_containing_pane(*p_id).is_some());
                 if panes_in_group.is_empty() {
                     clients_with_empty_group.push(*client_id)
                 }

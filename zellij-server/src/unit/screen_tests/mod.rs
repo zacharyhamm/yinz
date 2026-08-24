@@ -1867,7 +1867,7 @@ fn gp_try_insert_global_pane(
     size: PercentOrFixed,
     borderless: bool,
     hidden: bool,
-) -> Result<(), String> {
+) -> Result<()> {
     use zellij_utils::data::GlobalPanePlacement;
 
     let mut global_pane = PaneFactory::terminal(

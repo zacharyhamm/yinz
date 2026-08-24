@@ -95,14 +95,12 @@ impl Screen {
     }
 
     pub(super) fn focus_global_pane(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
-        self.global_panes
-            .focus_pane(pane_id, client_id)
-            .map_err(|error| anyhow!(error))?;
+        self.global_panes.focus_pane(pane_id, client_id)?;
         if let Ok(tab) = self.get_active_tab_mut(client_id) {
             tab.set_force_render();
         }
         self.global_panes.set_force_render();
-        let _ = self.sync_scroll_mode_on_focus(client_id);
+        self.sync_scroll_mode_on_focus(client_id).non_fatal();
         Ok(())
     }
 
@@ -115,7 +113,7 @@ impl Screen {
             tab.set_force_render();
         }
         self.global_panes.set_force_render();
-        let _ = self.sync_scroll_mode_on_focus(client_id);
+        self.sync_scroll_mode_on_focus(client_id).non_fatal();
     }
 
     pub(super) fn activate_overlay(&mut self, pane_id: PaneId) {
@@ -407,9 +405,7 @@ impl Screen {
             .placement(pane_id)
             .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
             .edge;
-        self.global_panes
-            .hide_edge(edge)
-            .map_err(|error| anyhow!(error))?;
+        self.global_panes.hide_edge(edge)?;
         self.reflow_global_panes()
     }
 
@@ -421,9 +417,7 @@ impl Screen {
             .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
             .edge;
         let surface = self.surface_size();
-        self.global_panes
-            .show_edge(edge, pane_id, surface.into())
-            .map_err(|error| anyhow!(error))?;
+        self.global_panes.show_edge(edge, pane_id, surface.into())?;
         self.reflow_global_panes()
     }
 
@@ -434,8 +428,7 @@ impl Screen {
     ) -> Result<()> {
         let surface = self.surface_size();
         self.global_panes
-            .set_placement(pane_id, placement, surface.into())
-            .map_err(|error| anyhow!(error))?;
+            .set_placement(pane_id, placement, surface.into())?;
         self.reflow_global_panes()
     }
 }

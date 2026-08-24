@@ -57,11 +57,7 @@ impl Screen {
                     },
                     Some(direction) => {
                         for client_id in clients_focused_on_pane {
-                            let Some(tab) = self
-                                .tabs
-                                .values_mut()
-                                .find(|tab| tab.has_pane_with_pid(&pane_id))
-                            else {
+                            let Some(tab) = self.tab_containing_pane_mut(pane_id) else {
                                 // the guest pane is gone: nowhere to land, hand back to the host
                                 self.bubble_focus_to_host(client_id, direction);
                                 continue;
@@ -148,18 +144,15 @@ impl Screen {
         let connected_client_ids: Vec<ClientId> =
             self.connected_clients.borrow().keys().copied().collect();
         let guest_modal_shortcuts = self.guest_modal_shortcuts();
-        let owning_tab = self
-            .tabs
-            .values_mut()
-            .find(|tab| tab.has_pane_with_pid(&pane_id));
-        match owning_tab {
+        let should_ask = self.nested_session_handling == NestedSessionHandling::Ask;
+        match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => {
                 tab.set_pane_is_nested_guest(pane_id, true);
                 tab.set_guest_session_name_on_pane(pane_id, Some(guest_session_name.clone()));
                 tab.set_guest_modal_shortcuts_on_pane(pane_id, guest_modal_shortcuts);
                 if is_fresh {
                     tab.clear_all_guest_choice_indicators_on_pane(pane_id);
-                    if self.nested_session_handling == NestedSessionHandling::Ask {
+                    if should_ask {
                         tab.set_guest_modal_on_pane(pane_id, &connected_client_ids);
                     }
                 }
@@ -214,11 +207,8 @@ impl Screen {
             .into_iter()
             .chain(self.dimmed_clients.iter().copied())
             .collect();
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.clear_all_guest_modals_on_pane(pane_id);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.clear_all_guest_modals_on_pane(pane_id);
         }
         for client_id in affected_clients {
             self.set_client_dimmed(client_id, false, None);
@@ -249,11 +239,8 @@ impl Screen {
         pane_id: PaneId,
         outcome: GuestModalOutcome,
     ) {
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.clear_guest_modal_on_pane(pane_id, client_id);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.clear_guest_modal_on_pane(pane_id, client_id);
         }
         match outcome {
             GuestModalOutcome::Descend => {
@@ -295,11 +282,8 @@ impl Screen {
         pane_id: PaneId,
         choice: NestedGuestChoice,
     ) {
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.clear_guest_modal_on_pane(pane_id, client_id);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.clear_guest_modal_on_pane(pane_id, client_id);
         }
         self.nested_guest_choices
             .insert((client_id, pane_id), choice);
@@ -348,19 +332,17 @@ impl Screen {
             Some(pane_id) => pane_id,
             None => return,
         };
-        let is_live_guest = self.tabs.values().any(|tab| {
-            tab.has_pane_with_pid(&focused_pane_id) && tab.is_pane_nested_guest(focused_pane_id)
-        }) && self.nested_guest_tracker.is_tracked(focused_pane_id);
+        let is_live_guest = self
+            .tab_containing_pane(focused_pane_id)
+            .is_some_and(|tab| tab.is_pane_nested_guest(focused_pane_id))
+            && self.nested_guest_tracker.is_tracked(focused_pane_id);
         if !is_live_guest {
             return;
         }
         self.nested_guest_choices
             .insert((client_id, focused_pane_id), NestedGuestChoice::Descend);
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&focused_pane_id) {
-                tab.clear_guest_modal_on_pane(focused_pane_id, client_id);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(focused_pane_id) {
+            tab.clear_guest_modal_on_pane(focused_pane_id, client_id);
         }
         self.sync_guest_choice_indicator(client_id, focused_pane_id);
         self.report_key_passthrough_state(client_id, focused_pane_id, focused_pane_id);
@@ -387,13 +369,10 @@ impl Screen {
             .collect();
         self.nested_guest_choices
             .retain(|(_, choice_pane_id), _| *choice_pane_id != pane_id);
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.set_pane_is_nested_guest(pane_id, false);
-                tab.clear_all_guest_modals_on_pane(pane_id);
-                tab.clear_all_guest_choice_indicators_on_pane(pane_id);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.set_pane_is_nested_guest(pane_id, false);
+            tab.clear_all_guest_modals_on_pane(pane_id);
+            tab.clear_all_guest_choice_indicators_on_pane(pane_id);
         }
 
         for client_id in self.clients_with_pane_focused(pane_id) {
@@ -430,11 +409,8 @@ impl Screen {
             }
             match self.nested_session_handling {
                 NestedSessionHandling::Ask => {
-                    for tab in self.tabs.values_mut() {
-                        if tab.has_pane_with_pid(&pane_id) {
-                            tab.set_guest_modal_on_pane(pane_id, &[client_id]);
-                            break;
-                        }
+                    if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+                        tab.set_guest_modal_on_pane(pane_id, &[client_id]);
                     }
                 },
                 NestedSessionHandling::Descend => {
@@ -457,19 +433,17 @@ impl Screen {
     }
 
     fn should_route_keys_to_pane(&self, client_id: ClientId, pane_id: PaneId) -> bool {
-        for tab in self.tabs.values() {
-            if tab.has_pane_with_pid(&pane_id) {
-                let is_guest = tab.is_pane_nested_guest(pane_id);
-                let is_tracked = self.nested_guest_tracker.is_tracked(pane_id);
-                let has_descended = self
-                    .nested_guest_choices
-                    .get(&(client_id, pane_id))
-                    .map(|choice| choice.enters_passthrough())
-                    .unwrap_or(false);
-                return is_guest && is_tracked && has_descended;
-            }
-        }
-        false
+        let Some(tab) = self.tab_containing_pane(pane_id) else {
+            return false;
+        };
+        let is_guest = tab.is_pane_nested_guest(pane_id);
+        let is_tracked = self.nested_guest_tracker.is_tracked(pane_id);
+        let has_descended = self
+            .nested_guest_choices
+            .get(&(client_id, pane_id))
+            .map(|choice| choice.enters_passthrough())
+            .unwrap_or(false);
+        is_guest && is_tracked && has_descended
     }
 
     fn downgrade_zoom_choice_to_descend(&mut self, pane_id: PaneId) {
@@ -499,11 +473,8 @@ impl Screen {
 
     fn sync_guest_choice_indicator(&mut self, client_id: ClientId, pane_id: PaneId) {
         let indicator = self.guest_choice_indicator_for(client_id, pane_id);
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.set_guest_choice_indicator_on_pane(pane_id, client_id, indicator);
-                break;
-            }
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.set_guest_choice_indicator_on_pane(pane_id, client_id, indicator);
         }
     }
 
@@ -771,11 +742,7 @@ impl Screen {
     pub(super) fn apply_nested_guest_fullscreen(&mut self, pane_id: PaneId, fullscreen: bool) {
         let mut actually_fullscreen = false;
         let mut displaced_pane_id = None;
-        if let Some(tab) = self
-            .tabs
-            .values_mut()
-            .find(|tab| tab.has_pane_with_pid(&pane_id))
-        {
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
             let currently_fullscreen =
                 tab.fullscreen_pane_id() == Some(pane_id) && tab.fullscreen_covers_ui();
             if fullscreen && !currently_fullscreen {

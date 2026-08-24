@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "./unit/instruction_context_tests.rs"]
+mod instruction_context_tests;
+
 #[path = "os_input_output_unix.rs"]
 mod os_input_output_unix;
 
@@ -35,6 +39,7 @@ use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;
 use pty_writer::{pty_writer_main, PtyWriteInstruction};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::str::FromStr;
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
@@ -91,7 +96,7 @@ use zellij_utils::{
 pub type ClientId = u16;
 
 /// Instructions related to server-side application
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ServerInstruction {
     FirstClientConnected(
         CliAssets,
@@ -155,54 +160,17 @@ pub enum ServerInstruction {
 
 impl From<&ServerInstruction> for ServerContext {
     fn from(server_instruction: &ServerInstruction) -> Self {
-        match *server_instruction {
+        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
+        // a variant is added without either a matching `ServerContext` or an arm here.
+        match server_instruction {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
-            ServerInstruction::Render(..) => ServerContext::Render,
-            ServerInstruction::UnblockInputThread => ServerContext::UnblockInputThread,
-            ServerInstruction::ClientExit(..) => ServerContext::ClientExit,
-            ServerInstruction::RemoveClient(..) => ServerContext::RemoveClient,
-            ServerInstruction::Error(_) => ServerContext::Error,
-            ServerInstruction::KillSession => ServerContext::KillSession,
-            ServerInstruction::DetachSession(..) => ServerContext::DetachSession,
-            ServerInstruction::AttachClient(..) => ServerContext::AttachClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
-            ServerInstruction::ConnStatus(..) => ServerContext::ConnStatus,
-            ServerInstruction::Log(..) => ServerContext::Log,
-            ServerInstruction::LogError(..) => ServerContext::LogError,
-            ServerInstruction::SwitchSession(..) => ServerContext::SwitchSession,
-            ServerInstruction::UnblockCliPipeInput(..) => ServerContext::UnblockCliPipeInput,
-            ServerInstruction::CliPipeOutput(..) => ServerContext::CliPipeOutput,
-            ServerInstruction::AssociatePipeWithClient { .. } => {
-                ServerContext::AssociatePipeWithClient
-            },
-            ServerInstruction::DisconnectAllClientsExcept(..) => {
-                ServerContext::DisconnectAllClientsExcept
-            },
-            ServerInstruction::ChangeMode(..) => ServerContext::ChangeMode,
-            ServerInstruction::ChangeModeForAllClients(..) => {
-                ServerContext::ChangeModeForAllClients
-            },
-            ServerInstruction::Reconfigure { .. } => ServerContext::Reconfigure,
-            ServerInstruction::FailedToWriteConfigToDisk(..) => {
-                ServerContext::FailedToWriteConfigToDisk
-            },
-            ServerInstruction::RebindKeys { .. } => ServerContext::RebindKeys,
-            ServerInstruction::StartWebServer(..) => ServerContext::StartWebServer,
-            ServerInstruction::ShareCurrentSession(..) => ServerContext::ShareCurrentSession,
-            ServerInstruction::StopSharingCurrentSession(..) => {
-                ServerContext::StopSharingCurrentSession
-            },
-            ServerInstruction::WebServerStarted(..) => ServerContext::WebServerStarted,
-            ServerInstruction::FailedToStartWebServer(..) => ServerContext::FailedToStartWebServer,
-            ServerInstruction::ConfigWrittenToDisk(..) => ServerContext::ConfigWrittenToDisk,
-            ServerInstruction::SendWebClientsForbidden(..) => {
-                ServerContext::SendWebClientsForbidden
-            },
-            ServerInstruction::ClearMouseHelpText(..) => ServerContext::ClearMouseHelpText,
-            ServerInstruction::ForwardQueryToHost(..) => ServerContext::ForwardQueryToHost,
-            ServerInstruction::KeyPassthroughChanged(..) => ServerContext::KeyPassthroughChanged,
-            ServerInstruction::EmitNestedSessionFrameToClient(..) => {
-                ServerContext::EmitNestedSessionFrameToClient
+            other => {
+                let name: &'static str = other.into();
+                ServerContext::from_str(name).unwrap_or_else(|_| {
+                    debug_assert!(false, "no ServerContext variant named {name}");
+                    ServerContext::Error
+                })
             },
         }
     }
