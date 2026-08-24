@@ -7544,4 +7544,22 @@ Config {
         base_url: None,
         font_size: None,
     },
+    hooks: Hooks {
+        hooks: {
+            AgentExit: RunPlugin(
+                RunPlugin {
+                    _allow_exec_host_cmd: false,
+                    location: Zellij(
+                        PluginTag(
+                            "agent-exit",
+                        ),
+                    ),
+                    configuration: PluginUserConfiguration(
+                        {},
+                    ),
+                    initial_cwd: None,
+                },
+            ),
+        },
+    },
 }

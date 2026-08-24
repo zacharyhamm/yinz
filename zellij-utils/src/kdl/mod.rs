@@ -5915,6 +5915,55 @@ impl PluginAliases {
     }
 }
 
+/// The `cwd` and user-configuration children shared by every place a plugin is written as a
+/// KDL node (`load_plugins`, `hooks`). `None` when the plugin has nothing to write, so the
+/// caller can leave the node childless.
+fn plugin_settings_to_kdl(run_plugin_or_alias: &RunPluginOrAlias) -> Option<KdlDocument> {
+    let mut children = KdlDocument::new();
+
+    let cwd = match run_plugin_or_alias {
+        RunPluginOrAlias::RunPlugin(run_plugin) => run_plugin.initial_cwd.clone(),
+        RunPluginOrAlias::Alias(plugin_alias) => plugin_alias.initial_cwd.clone(),
+    };
+    if let Some(cwd) = cwd.as_ref() {
+        let mut cwd_node = KdlNode::new("cwd");
+        cwd_node.push(cwd.display().to_string());
+        children.nodes_mut().push(cwd_node);
+    }
+    let configuration = match run_plugin_or_alias {
+        RunPluginOrAlias::RunPlugin(run_plugin) => Some(run_plugin.configuration.inner().clone()),
+        RunPluginOrAlias::Alias(plugin_alias) => plugin_alias
+            .configuration
+            .as_ref()
+            .map(|c| c.inner().clone()),
+    };
+    if let Some(configuration) = configuration {
+        for (config_key, config_value) in configuration {
+            // `cwd` is not a reserved plugin property, so parsing puts it in the configuration
+            // as well as in `initial_cwd`. Writing both would duplicate the node, and the copy
+            // would multiply on every round trip.
+            if config_key == "cwd" && cwd.is_some() {
+                continue;
+            }
+            let mut node = KdlNode::new(config_key.to_owned());
+            if config_value == "true" {
+                node.push(KdlValue::Bool(true));
+            } else if config_value == "false" {
+                node.push(KdlValue::Bool(false));
+            } else {
+                node.push(config_value.to_string());
+            }
+            children.nodes_mut().push(node);
+        }
+    }
+
+    if children.nodes().is_empty() {
+        None
+    } else {
+        Some(children)
+    }
+}
+
 pub fn load_plugins_to_kdl(
     background_plugins: &BTreeSet<RunPluginOrAlias>,
     cleared: bool,
@@ -5927,46 +5976,8 @@ pub fn load_plugins_to_kdl(
     let mut load_plugins_children = KdlDocument::new();
     for run_plugin_or_alias in background_plugins.iter() {
         let mut background_plugin_node = KdlNode::new(run_plugin_or_alias.location_string());
-        let mut background_plugin_children = KdlDocument::new();
-
-        let cwd = match run_plugin_or_alias {
-            RunPluginOrAlias::RunPlugin(run_plugin) => run_plugin.initial_cwd.clone(),
-            RunPluginOrAlias::Alias(plugin_alias) => plugin_alias.initial_cwd.clone(),
-        };
-        let mut has_children = false;
-        if let Some(cwd) = cwd.as_ref() {
-            has_children = true;
-            let mut cwd_node = KdlNode::new("cwd");
-            cwd_node.push(cwd.display().to_string());
-            background_plugin_children.nodes_mut().push(cwd_node);
-        }
-        let configuration = match run_plugin_or_alias {
-            RunPluginOrAlias::RunPlugin(run_plugin) => {
-                Some(run_plugin.configuration.inner().clone())
-            },
-            RunPluginOrAlias::Alias(plugin_alias) => plugin_alias
-                .configuration
-                .as_ref()
-                .map(|c| c.inner().clone()),
-        };
-        if let Some(configuration) = configuration {
-            if !configuration.is_empty() {
-                has_children = true;
-                for (config_key, config_value) in configuration {
-                    let mut node = KdlNode::new(config_key.to_owned());
-                    if config_value == "true" {
-                        node.push(KdlValue::Bool(true));
-                    } else if config_value == "false" {
-                        node.push(KdlValue::Bool(false));
-                    } else {
-                        node.push(config_value.to_string());
-                    }
-                    background_plugin_children.nodes_mut().push(node);
-                }
-            }
-        }
-        if has_children {
-            background_plugin_node.set_children(background_plugin_children);
+        if let Some(children) = plugin_settings_to_kdl(run_plugin_or_alias) {
+            background_plugin_node.set_children(children);
         }
         load_plugins_children
             .nodes_mut()
@@ -6046,7 +6057,12 @@ pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {
         // unbinding: an absent line would be read back as "use the default".
         let mut node = KdlNode::new(point.as_str());
         match hooks.get(*point) {
-            Some(plugin) => node.push(KdlValue::String(plugin.location_string())),
+            Some(plugin) => {
+                node.push(KdlValue::String(plugin.location_string()));
+                if let Some(children) = plugin_settings_to_kdl(plugin) {
+                    node.set_children(children);
+                }
+            },
             None => node.push(KdlValue::String(String::new())),
         }
         children.nodes_mut().push(node);
