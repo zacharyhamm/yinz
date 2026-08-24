@@ -240,7 +240,7 @@ pub fn allocate_global_panes(
     panes: &[(ZellijUtilsPaneId, GlobalPanePlacement)],
     clamp_to_screen: bool,
     chrome_rows: (usize, usize),
-) -> Result<AllocatedGlobalPanes, String> {
+) -> Result<AllocatedGlobalPanes> {
     // Panes sharing an edge form one strip: the strip is carved off the center once, at the
     // edge's first occurrence in `panes` (so cross-edge carving order - and who owns a corner -
     // is unchanged from the one-pane-per-edge days), and the edge's panes then split the strip's
@@ -278,10 +278,10 @@ pub fn allocate_global_panes(
             thickness
         };
         if thickness == 0 {
-            return Err("global pane size must be positive".to_owned());
+            return Err(anyhow!("global pane size must be positive"));
         }
         if thickness >= remaining_axis {
-            return Err("global panes leave no usable tab area".to_owned());
+            return Err(anyhow!("global panes leave no usable tab area"));
         }
 
         // the rows a left/right pane leaves to the tab's chrome, unless that would leave it
@@ -358,7 +358,7 @@ pub fn allocate_global_panes(
     }
 
     if !center.has_positive_size() {
-        return Err("global panes leave no usable tab area".to_owned());
+        return Err(anyhow!("global panes leave no usable tab area"));
     }
 
     Ok(AllocatedGlobalPanes {
@@ -382,13 +382,13 @@ fn subdivide_strip(
     long_extent: usize,
     lengths: &[Option<PercentOrFixed>],
     clamp: bool,
-) -> Result<Vec<(usize, usize)>, String> {
+) -> Result<Vec<(usize, usize)>> {
     let count = lengths.len();
     if count == 0 {
         return Ok(vec![]);
     }
     if count > long_extent {
-        return Err("global panes do not fit their strip".to_owned());
+        return Err(anyhow!("global panes do not fit their strip"));
     }
 
     let equal_division = |extent: usize| -> Vec<usize> {
@@ -432,7 +432,7 @@ fn subdivide_strip(
             }
             extents
         },
-        _ if !clamp => return Err("global panes do not fit their strip".to_owned()),
+        _ if !clamp => return Err(anyhow!("global panes do not fit their strip")),
         _ => equal_division(long_extent),
     };
 
@@ -512,7 +512,7 @@ impl GlobalPaneManager {
         pane: Box<dyn Pane>,
         placement: GlobalPanePlacement,
         hidden: bool,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         self.insert_with_order(pane, placement, hidden, None)
     }
 
@@ -522,10 +522,10 @@ impl GlobalPaneManager {
         placement: GlobalPanePlacement,
         hidden: bool,
         declaration_order: Option<usize>,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let pane_id = pane.pid();
         if self.pane_indices.contains_key(&pane_id) {
-            return Err(format!("global pane {pane_id:?} already exists"));
+            return Err(anyhow!("global pane {pane_id:?} already exists"));
         }
         // Layout panes (Some order) are kept sorted by declaration_order before
         // runtime panes (None). New layout panes are inserted in order among layouts;
@@ -624,14 +624,14 @@ impl GlobalPaneManager {
         anchor: PaneId,
         before: bool,
         length: Option<PercentOrFixed>,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let pane_id = pane.pid();
         if self.pane_indices.contains_key(&pane_id) {
-            return Err(format!("global pane {pane_id:?} already exists"));
+            return Err(anyhow!("global pane {pane_id:?} already exists"));
         }
         let anchor_index = self.pane_index(anchor)?;
         if self.panes[anchor_index].hidden {
-            return Err(format!("cannot split hidden global pane {anchor:?}"));
+            return Err(anyhow!("cannot split hidden global pane {anchor:?}"));
         }
         let anchor_placement = self.panes[anchor_index].placement;
         let halves = |whole: usize| -> (usize, usize) {
@@ -788,7 +788,7 @@ impl GlobalPaneManager {
     /// Hide a single pane, leaving the rest of its strip visible. Production paths hide whole
     /// strips (`hide_edge`); this stays for finer-grained callers and the unit tests.
     #[allow(dead_code)]
-    pub fn hide(&mut self, pane_id: PaneId) -> Result<(), String> {
+    pub fn hide(&mut self, pane_id: PaneId) -> Result<()> {
         let pane_index = self.pane_index(pane_id)?;
         if self.panes[pane_index].hidden {
             return Ok(());
@@ -827,7 +827,7 @@ impl GlobalPaneManager {
     /// Show a single pane. Production paths reveal whole strips (`show_edge`); this stays for
     /// finer-grained callers and the unit tests.
     #[allow(dead_code)]
-    pub fn show(&mut self, pane_id: PaneId, area: Viewport) -> Result<(), String> {
+    pub fn show(&mut self, pane_id: PaneId, area: Viewport) -> Result<()> {
         let pane_index = self.pane_index(pane_id)?;
         if !self.panes[pane_index].hidden {
             return self.resize(area).map(|_| ());
@@ -849,7 +849,7 @@ impl GlobalPaneManager {
 
     /// Hide every visible pane docked to `edge`, returning their ids. A hocus-style sidebar strip
     /// hides and shows as one unit.
-    pub fn hide_edge(&mut self, edge: GlobalPaneEdge) -> Result<Vec<PaneId>, String> {
+    pub fn hide_edge(&mut self, edge: GlobalPaneEdge) -> Result<Vec<PaneId>> {
         let to_hide: Vec<PaneId> = self
             .panes
             .iter()
@@ -901,7 +901,7 @@ impl GlobalPaneManager {
         edge: GlobalPaneEdge,
         requested_pane_id: PaneId,
         area: Viewport,
-    ) -> Result<Vec<PaneId>, String> {
+    ) -> Result<Vec<PaneId>> {
         let to_show: Vec<PaneId> = self
             .panes
             .iter()
@@ -943,7 +943,7 @@ impl GlobalPaneManager {
         pane_id: PaneId,
         placement: GlobalPanePlacement,
         area: Viewport,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let pane_index = self.pane_index(pane_id)?;
         let target_is_hidden = self.panes[pane_index].hidden;
         let candidate: Vec<_> = self
@@ -990,7 +990,7 @@ impl GlobalPaneManager {
     }
 
     #[cfg(test)]
-    pub fn center(&self, area: Viewport) -> Result<Viewport, String> {
+    pub fn center(&self, area: Viewport) -> Result<Viewport> {
         self.tab_layout(area).map(|layout| layout.center)
     }
 
@@ -1004,7 +1004,7 @@ impl GlobalPaneManager {
     /// This is only consistent because `Screen` pins the axis a global pane spans to the session
     /// size (see `Screen::global_pane_constrained_axes`): were a tab taller than the session while
     /// a side pane is visible, the strip would leave a band of that tab's column unowned.
-    pub fn tab_layout(&self, tab_area: Viewport) -> Result<AllocatedGlobalPanes, String> {
+    pub fn tab_layout(&self, tab_area: Viewport) -> Result<AllocatedGlobalPanes> {
         let placements = self.visible_placements();
         let Some(surface) = self.area else {
             // before the first reflow there is no session allocation to hold sizes to
@@ -1074,7 +1074,7 @@ impl GlobalPaneManager {
         }
     }
 
-    pub fn resize(&mut self, area: Viewport) -> Result<Viewport, String> {
+    pub fn resize(&mut self, area: Viewport) -> Result<Viewport> {
         let layout =
             allocate_global_panes(area, &self.visible_placements(), true, self.chrome_rows)?;
         let center = layout.center;
@@ -1083,7 +1083,7 @@ impl GlobalPaneManager {
         Ok(center)
     }
 
-    pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) -> Result<(), String> {
+    pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) -> Result<()> {
         let previous_pane_frame_style = self.pane_frame_style;
         self.pane_frame_style = pane_frame_style;
         if let Some(area) = self.area {
@@ -1254,10 +1254,10 @@ impl GlobalPaneManager {
             .count()
     }
 
-    pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<(), String> {
+    pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
         let pane_index = self.pane_index(pane_id)?;
         if self.panes[pane_index].hidden {
-            return Err(format!("cannot focus hidden global pane {pane_id:?}"));
+            return Err(anyhow!("cannot focus hidden global pane {pane_id:?}"));
         }
         self.focused_panes.insert(client_id, pane_id);
         Ok(())
@@ -1357,7 +1357,7 @@ impl GlobalPaneManager {
     }
 
     #[cfg(test)]
-    pub fn is_hidden(&self, pane_id: PaneId) -> Result<bool, String> {
+    pub fn is_hidden(&self, pane_id: PaneId) -> Result<bool> {
         self.pane_index(pane_id)
             .map(|pane_index| self.panes[pane_index].hidden)
     }
@@ -1474,13 +1474,13 @@ impl GlobalPaneManager {
         pane_id: PaneId,
         position: &zellij_utils::position::Position,
         area: Viewport,
-    ) -> Result<bool, String> {
+    ) -> Result<bool> {
         let placement = self
             .placement(pane_id)
-            .ok_or_else(|| format!("global pane {pane_id:?} not found"))?;
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?;
         let geom = self
             .pane(pane_id)
-            .ok_or_else(|| format!("global pane {pane_id:?} not found"))?
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
             .position_and_size();
         let line = position.line.0;
         let column = position.column.0 as isize;
@@ -1635,10 +1635,10 @@ impl GlobalPaneManager {
         pane_id: PaneId,
         strategy: ResizeStrategy,
         area: Viewport,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let mut placement = self
             .placement(pane_id)
-            .ok_or_else(|| format!("global pane {pane_id:?} not found"))?;
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?;
         let is_horizontal = matches!(placement.edge, GlobalPaneEdge::Left | GlobalPaneEdge::Right);
         match strategy.direction {
             // along the strip's long axis the resize moves the split with a same-edge neighbor
@@ -1723,13 +1723,13 @@ impl GlobalPaneManager {
         towards_strip_end: bool,
         resize: Resize,
         area: Viewport,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let Some(neighbor_id) = self.physical_neighbor_in_strip(pane_id, towards_strip_end) else {
             return Ok(());
         };
         let edge = self
             .placement(pane_id)
-            .ok_or_else(|| format!("global pane {pane_id:?} not found"))?
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))?
             .edge;
         let Some((mut extents, total)) = self.strip_extents(edge) else {
             return Ok(());
@@ -1767,7 +1767,7 @@ impl GlobalPaneManager {
         edge: GlobalPaneEdge,
         size: PercentOrFixed,
         area: Viewport,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let candidate: Vec<_> = self
             .panes
             .iter()
@@ -1801,17 +1801,17 @@ impl GlobalPaneManager {
         earlier: PaneId,
         position: &zellij_utils::position::Position,
         area: Viewport,
-    ) -> Result<bool, String> {
+    ) -> Result<bool> {
         let Some(neighbor_id) = self.physical_neighbor_in_strip(earlier, true) else {
             return Ok(false);
         };
         let edge = self
             .placement(earlier)
-            .ok_or_else(|| format!("global pane {earlier:?} not found"))?
+            .ok_or_else(|| anyhow!("global pane {earlier:?} not found"))?
             .edge;
         let geom = self
             .pane(earlier)
-            .ok_or_else(|| format!("global pane {earlier:?} not found"))?
+            .ok_or_else(|| anyhow!("global pane {earlier:?} not found"))?
             .position_and_size();
         let pointer = match edge {
             GlobalPaneEdge::Left | GlobalPaneEdge::Right => position.line.0,
@@ -2081,11 +2081,11 @@ impl GlobalPaneManager {
         Some(self.panes[pane_index].pane.as_mut())
     }
 
-    fn pane_index(&self, pane_id: PaneId) -> Result<usize, String> {
+    fn pane_index(&self, pane_id: PaneId) -> Result<usize> {
         self.pane_indices
             .get(&pane_id)
             .copied()
-            .ok_or_else(|| format!("global pane {pane_id:?} not found"))
+            .ok_or_else(|| anyhow!("global pane {pane_id:?} not found"))
     }
 
     fn visible_placements(&self) -> Vec<(ZellijUtilsPaneId, GlobalPanePlacement)> {
@@ -2126,7 +2126,7 @@ impl GlobalPaneManager {
             })
     }
 
-    fn apply_layout(&mut self, layout: AllocatedGlobalPanes, area: Viewport) -> Result<(), String> {
+    fn apply_layout(&mut self, layout: AllocatedGlobalPanes, area: Viewport) -> Result<()> {
         let area_changed = self.area != Some(area);
         // Top and Bottom panes with a same-edge pane after them along the strip's long axis reserve
         // their trailing column for the separator between the two, which the `Boundaries` pass in
@@ -2210,7 +2210,7 @@ impl GlobalPaneManager {
             })
             .collect();
         if desired_layout.len() != layout.panes.len() {
-            return Err("allocated layout contains an unknown global pane".to_owned());
+            return Err(anyhow!("allocated layout contains an unknown global pane"));
         }
         let desired_layout: Vec<_> = desired_layout
             .into_iter()
@@ -2261,12 +2261,7 @@ impl GlobalPaneManager {
         Ok(())
     }
 
-    fn send_resize(
-        &self,
-        pane_id: PaneId,
-        geom: PaneGeom,
-        content_offset: Offset,
-    ) -> Result<(), String> {
+    fn send_resize(&self, pane_id: PaneId, geom: PaneGeom, content_offset: Offset) -> Result<()> {
         let content_columns = geom
             .cols
             .as_usize()
@@ -2283,24 +2278,21 @@ impl GlobalPaneManager {
             None => (None, None),
         };
         match pane_id {
-            PaneId::Terminal(terminal_id) => self
-                .senders
-                .send_to_pty_writer(PtyWriteInstruction::ResizePty(
-                    terminal_id,
-                    content_columns as u16,
-                    content_rows as u16,
-                    width_in_pixels,
-                    height_in_pixels,
-                ))
-                .map_err(|error| error.to_string()),
-            PaneId::Plugin(plugin_id) => self
-                .senders
-                .send_to_plugin(PluginInstruction::Resize(
-                    plugin_id,
-                    content_columns,
-                    content_rows,
-                ))
-                .map_err(|error| error.to_string()),
+            PaneId::Terminal(terminal_id) => {
+                self.senders
+                    .send_to_pty_writer(PtyWriteInstruction::ResizePty(
+                        terminal_id,
+                        content_columns as u16,
+                        content_rows as u16,
+                        width_in_pixels,
+                        height_in_pixels,
+                    ))
+            },
+            PaneId::Plugin(plugin_id) => self.senders.send_to_plugin(PluginInstruction::Resize(
+                plugin_id,
+                content_columns,
+                content_rows,
+            )),
         }
     }
 }
@@ -2326,8 +2318,7 @@ mod tests {
     use zellij_utils::{
         channels,
         data::{
-            GlobalPaneEdge, GlobalPanePlacement, ModeInfo, PaletteColor,
-            PaneId as ZellijUtilsPaneId,
+            GlobalPaneEdge, GlobalPanePlacement, ModeInfo, PaletteColor, PaneId as ZellijUtilsPaneId,
         },
         input::layout::PercentOrFixed,
         pane_size::{Dimension, Offset, PaneGeom, SizeInPixels, Viewport},
@@ -2544,8 +2535,8 @@ mod tests {
 
         let strict = allocate_global_panes(area, &panes, false, (0, 0));
         assert_eq!(
-            strict.unwrap_err(),
-            "global panes do not fit their strip".to_owned()
+            strict.unwrap_err().to_string(),
+            "global panes do not fit their strip"
         );
 
         let clamped = allocate_global_panes(area, &panes, true, (0, 0)).unwrap();
@@ -2579,8 +2570,8 @@ mod tests {
         for clamp in [false, true] {
             let result = allocate_global_panes(area, &panes, clamp, (0, 0));
             assert_eq!(
-                result.unwrap_err(),
-                "global panes do not fit their strip".to_owned()
+                result.unwrap_err().to_string(),
+                "global panes do not fit their strip"
             );
         }
     }
@@ -2701,7 +2692,10 @@ mod tests {
             false,
             (0, 0),
         );
-        assert_eq!(result.unwrap_err(), "global panes leave no usable tab area");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "global panes leave no usable tab area"
+        );
     }
 
     #[test]
@@ -2776,7 +2770,10 @@ mod tests {
             true,
             (0, 0),
         );
-        assert_eq!(result.unwrap_err(), "global panes leave no usable tab area");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "global panes leave no usable tab area"
+        );
     }
 
     #[test]
@@ -3398,10 +3395,7 @@ mod tests {
 
     /// Two panes in a Left strip, `Titles` frames, `pane_id` focused for client 1. Returns the
     /// separator row's y and the strip's width, plus the rendered output replayed into a grid.
-    fn render_left_strip_with_focus(
-        focus: Option<PaneId>,
-        force_render: bool,
-    ) -> (usize, usize, Grid) {
+    fn render_left_strip_with_focus(focus: Option<PaneId>, force_render: bool) -> (usize, usize, Grid) {
         render_left_strip(focus, force_render, (0, 0)).0
     }
 

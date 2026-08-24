@@ -356,12 +356,13 @@ pub(crate) fn screen_thread_main(
                     match live_anchor {
                         Some(GlobalSplitAnchor { anchor, before }) => screen
                             .global_panes
-                            .insert_split(pane, anchor, before, placement.length)
-                            .map_err(|error| anyhow!(error))?,
-                        None => screen
-                            .global_panes
-                            .insert_with_order(pane, placement, initially_hidden, declaration_order)
-                            .map_err(|error| anyhow!(error))?,
+                            .insert_split(pane, anchor, before, placement.length)?,
+                        None => screen.global_panes.insert_with_order(
+                            pane,
+                            placement,
+                            initially_hidden,
+                            declaration_order,
+                        )?,
                     }
                     inserted = true;
                     if should_focus && !initially_hidden {
@@ -1993,8 +1994,7 @@ pub(crate) fn screen_thread_main(
                 };
                 screen
                     .global_panes
-                    .set_pane_frame_style(screen.pane_frame_style)
-                    .map_err(|error| anyhow!(error))?;
+                    .set_pane_frame_style(screen.pane_frame_style)?;
                 for tab in screen.tabs.values_mut() {
                     tab.set_pane_frames(screen.pane_frame_style);
                     tab.update_input_modes()?;
@@ -2007,8 +2007,7 @@ pub(crate) fn screen_thread_main(
                 screen.pane_frame_style = pane_frame_style;
                 screen
                     .global_panes
-                    .set_pane_frame_style(screen.pane_frame_style)
-                    .map_err(|error| anyhow!(error))?;
+                    .set_pane_frame_style(screen.pane_frame_style)?;
                 for tab in screen.tabs.values_mut() {
                     tab.set_pane_frames(screen.pane_frame_style);
                     tab.update_input_modes()?;
