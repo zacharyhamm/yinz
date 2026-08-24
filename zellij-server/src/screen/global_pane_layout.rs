@@ -10,14 +10,12 @@ use zellij_utils::pane_size::{Dimension, Size, Viewport};
 impl Screen {
     /// Where the global panes sit for a tab of `size`, and the center that tab gets.
     pub(super) fn global_layout_for(&self, size: Size) -> Result<AllocatedGlobalPanes> {
-        self.global_panes
-            .tab_layout(Viewport {
-                x: 0,
-                y: 0,
-                cols: size.cols,
-                rows: size.rows,
-            })
-            .map_err(|error| anyhow!(error))
+        self.global_panes.tab_layout(Viewport {
+            x: 0,
+            y: 0,
+            cols: size.cols,
+            rows: size.rows,
+        })
     }
 
     /// The top/bottom ui strips (tab bar, status bar) a left/right global pane must leave to the
@@ -61,14 +59,12 @@ impl Screen {
 
     pub(super) fn resize_global_panes_to(&mut self, size: Size) -> Result<Viewport> {
         self.global_panes.set_chrome_rows(self.max_chrome_rows());
-        self.global_panes
-            .resize(Viewport {
-                x: 0,
-                y: 0,
-                cols: size.cols,
-                rows: size.rows,
-            })
-            .map_err(|error| anyhow!(error))
+        self.global_panes.resize(Viewport {
+            x: 0,
+            y: 0,
+            cols: size.cols,
+            rows: size.rows,
+        })
     }
 
     pub(super) fn reflow_global_panes(&mut self) -> Result<()> {

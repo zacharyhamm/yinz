@@ -2708,8 +2708,7 @@ impl Screen {
         if self.global_panes.pane(pane_id).is_some() {
             let surface = self.surface_size();
             self.global_panes
-                .resize_pane(pane_id, resize, surface.into())
-                .map_err(|error| anyhow!(error))?;
+                .resize_pane(pane_id, resize, surface.into())?;
             return self.reflow_global_panes();
         }
         match self.tab_containing_pane_mut(pane_id) {
@@ -2885,9 +2884,7 @@ impl Screen {
         self.copy_options.command = copy_command.clone();
         self.copy_options.copy_on_select = copy_on_select;
         self.pane_frame_style = pane_frame_style;
-        self.global_panes
-            .set_pane_frame_style(pane_frame_style)
-            .map_err(|error| anyhow!(error))?;
+        self.global_panes.set_pane_frame_style(pane_frame_style)?;
         self.advanced_mouse_actions = advanced_mouse_actions;
         self.mouse_scroll_resize = mouse_scroll_resize;
         self.mouse_hover_effects = mouse_hover_effects;
