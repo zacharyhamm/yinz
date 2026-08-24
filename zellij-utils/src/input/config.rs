@@ -1503,6 +1503,33 @@ mod config_test {
         let unbound = Config::from_kdl("hooks {\n agent_exit \"\"\n}", None).unwrap();
         let round_tripped = Config::from_kdl(&unbound.to_string(false), None).unwrap();
         assert!(round_tripped.hooks.get(HookPoint::AgentExit).is_none());
+
+        // A hook is a whole plugin declaration, so its cwd and configuration have to survive
+        // too - otherwise the plugin gets a different `load(config)` after a restart.
+        let configured = Config::from_kdl(
+            r#"
+            hooks {
+                agent_exit "file:/tmp/mine.lua" {
+                    cwd "/tmp/hook-cwd"
+                    greeting "hello"
+                    loud true
+                }
+            }
+            "#,
+            None,
+        )
+        .unwrap();
+        let round_tripped = Config::from_kdl(&configured.to_string(false), None).unwrap();
+        assert_eq!(round_tripped.hooks, configured.hooks);
+        // And the written form has to be stable, not merely re-readable: `cwd` is parsed into
+        // the configuration as well as into the cwd, so a naive writer duplicates it and the
+        // copies multiply with every write.
+        assert_eq!(
+            Config::from_kdl(&round_tripped.to_string(false), None)
+                .unwrap()
+                .to_string(false),
+            round_tripped.to_string(false)
+        );
     }
 
     #[test]

@@ -352,6 +352,9 @@ load_plugins {
     hocus-agentd
     hocus-store
 }
+hooks {
+    agent_exit "zellij:agent-exit"
+}
 web_client {
     font "monospace"
 }
