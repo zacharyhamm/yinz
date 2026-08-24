@@ -101,7 +101,6 @@ fn is_ui_pane(pane: &dyn Pane) -> bool {
     !pane.selectable() || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)))
 }
 
-#[allow(dead_code)]
 pub struct TiledPanes {
     pub panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
@@ -116,7 +115,6 @@ pub struct TiledPanes {
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
-    stacked_pane_list: Rc<RefCell<bool>>,
     reserved_top_rows: Rc<RefCell<HashMap<PaneId, usize>>>,
     default_mode_info: ModeInfo,
     style: Style,
@@ -147,7 +145,6 @@ impl TiledPanes {
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         stacked_resize: Rc<RefCell<bool>>,
-        stacked_pane_list: Rc<RefCell<bool>>,
         reserved_top_rows: Rc<RefCell<HashMap<PaneId, usize>>>,
         fullscreen_covers_ui: Rc<RefCell<bool>>,
         session_is_mirrored: bool,
@@ -169,7 +166,6 @@ impl TiledPanes {
             mode_info,
             character_cell_size,
             stacked_resize,
-            stacked_pane_list,
             reserved_top_rows,
             default_mode_info,
             style,
