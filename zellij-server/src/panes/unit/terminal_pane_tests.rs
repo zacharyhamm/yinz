@@ -5,11 +5,11 @@ use crate::panes::LinkHandler;
 use crate::tab::Pane;
 use insta::assert_snapshot;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use zellij_utils::{
-    data::{OriginatingPlugin, Palette, Style, HOCUS_AGENT_PANE_CONTEXT},
+    data::{Palette, Style},
     input::command::RunCommand,
     pane_size::{Offset, PaneGeom, SizeInPixels},
     position::Position,
@@ -956,55 +956,6 @@ fn press_key(
 ) -> Option<crate::tab::AdjustedInput> {
     let key = zellij_utils::data::KeyWithModifier::new(bare_key);
     pane.adjust_input_to_terminal(&Some(key), vec![], false, Some(client_id))
-}
-
-fn held_hocus_agent_pane() -> TerminalPane {
-    let mut pane = create_guest_modal_pane();
-    pane.hold(
-        Some(0),
-        false,
-        RunCommand {
-            command: "codex".into(),
-            cwd: Some(PathBuf::from("/work/.worktrees/topic")),
-            originating_plugin: Some(OriginatingPlugin::new(
-                2,
-                1,
-                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
-            )),
-            ..Default::default()
-        },
-    );
-    pane
-}
-
-#[test]
-fn a_held_hocus_agent_can_only_restart_or_close() {
-    use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
-
-    let mut pane = held_hocus_agent_pane();
-    assert!(matches!(
-        press_key(&mut pane, BareKey::Enter, 1),
-        Some(AdjustedInput::ReRunCommandInThisPane(_))
-    ));
-
-    let mut pane = held_hocus_agent_pane();
-    assert!(matches!(
-        press_key(&mut pane, BareKey::Esc, 1),
-        Some(AdjustedInput::CloseThisPane)
-    ));
-
-    let mut pane = held_hocus_agent_pane();
-    assert!(matches!(
-        pane.adjust_input_to_terminal(&None, vec![b' '], false, Some(1)),
-        Some(AdjustedInput::ReRunCommandInThisPane(_))
-    ));
-
-    let mut pane = held_hocus_agent_pane();
-    assert!(matches!(
-        pane.adjust_input_to_terminal(&None, vec![3], false, Some(1)),
-        Some(AdjustedInput::CloseThisPane)
-    ));
 }
 
 #[test]

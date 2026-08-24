@@ -405,6 +405,7 @@ fn create_plugin_thread(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                Default::default(), // hooks
                 None,
                 initiating_client_id,
             )
@@ -489,6 +490,7 @@ fn create_plugin_thread_with_server_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                Default::default(), // hooks
                 None,
                 initiating_client_id,
             )
@@ -581,6 +583,7 @@ fn create_plugin_thread_with_pty_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                Default::default(), // hooks
                 None,
                 initiating_client_id,
             )
@@ -666,6 +669,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
+                Default::default(), // hooks
                 None,
                 initiating_client_id,
             )

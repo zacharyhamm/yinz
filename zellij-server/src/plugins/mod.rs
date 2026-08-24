@@ -37,6 +37,7 @@ use crate::{
     ClientId, ServerInstruction,
 };
 use zellij_utils::data::PaneRenderReport;
+use zellij_utils::input::hooks::{HookPoint, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
 
 pub use wasm_bridge::PluginRenderAsset;
@@ -92,6 +93,19 @@ pub enum PluginInstruction {
         Option<OverlayPlacement>,
     ),
     LoadBackgroundPlugin(RunPluginOrAlias, ClientId),
+    /// A hook point was reached. The plugin bound to it - if any - is opened in place of
+    /// `pane_id`, which the screen has already put in a state it can be replaced from.
+    ///
+    /// Sent unconditionally by whoever reaches the hook point, so that the config lives in one
+    /// place: an unbound point is a no-op here rather than a check at every call site.
+    RunHook {
+        point: HookPoint,
+        /// The pane the hook is about, and the pane it replaces.
+        pane_id: PaneId,
+        /// Handed to the plugin as its configuration, which is what `load(config)` receives.
+        payload: BTreeMap<String, String>,
+        client_id: ClientId,
+    },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
     Unload(PluginId),                                         // plugin_id
     Reload(
@@ -278,6 +292,7 @@ pub(crate) fn plugin_thread_main(
     default_mode: InputMode,
     default_keybinds: Keybinds,
     background_plugins: BTreeSet<RunPluginOrAlias>,
+    hooks: Hooks,
     builtin_plugins_dir: Option<PathBuf>,
     // the client id that started the session,
     // we need it here because the thread's own list of connected clients might not yet be updated
@@ -432,6 +447,22 @@ pub(crate) fn plugin_thread_main(
                         log::error!("Failed to load plugin: {e}");
                     },
                 }
+            },
+            PluginInstruction::RunHook {
+                point,
+                pane_id,
+                payload,
+                client_id,
+            } => {
+                run_hook(
+                    point,
+                    pane_id,
+                    payload,
+                    client_id,
+                    &hooks,
+                    &mut wasm_bridge,
+                    &plugin_aliases,
+                );
             },
             PluginInstruction::LoadBackgroundPlugin(run_plugin_or_alias, client_id) => {
                 load_background_plugin(
@@ -1440,6 +1471,61 @@ fn pipe_to_specific_plugins(
             },
         },
     }
+}
+
+/// Open the plugin bound to `point` in place of `pane_id`.
+///
+/// The hook's payload becomes the plugin's configuration, and plugin identity is
+/// (location, configuration) - so a payload naming a different pane yields a separate
+/// instance, which is what makes two agents exiting at once get a hook pane each rather than
+/// fighting over one.
+///
+/// `should_focus` is false: an agent exiting in a tab the user is not looking at must not pull
+/// them out of the pane they are working in. That was true of the banner this replaces, and is
+/// the reason the hook is a pane rather than a session-wide modal.
+fn run_hook(
+    point: HookPoint,
+    pane_id: PaneId,
+    payload: BTreeMap<String, String>,
+    client_id: ClientId,
+    hooks: &Hooks,
+    wasm_bridge: &mut WasmBridge,
+    plugin_aliases: &PluginAliases,
+) {
+    let Some(run_plugin_or_alias) = hooks.get(point) else {
+        // An unbound hook point. Every hook site fires unconditionally so that "is this
+        // configured" is answered here and not at each of them.
+        return;
+    };
+    let mut run_plugin_or_alias = run_plugin_or_alias.clone();
+    run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
+    let initial_cwd = run_plugin_or_alias.get_initial_cwd();
+    let Some(run_plugin) = run_plugin_or_alias.get_run_plugin() else {
+        log::error!("hook '{point}' names a plugin that could not be resolved");
+        return;
+    };
+    // Merged rather than replaced: a hook declared with its own configuration block keeps it,
+    // and the payload wins where the two name the same key.
+    let run_plugin_or_alias =
+        RunPluginOrAlias::RunPlugin(run_plugin.merge_configuration(&Some(payload)));
+    let cwd = initial_cwd;
+    let skip_cache = false;
+    let should_float = false;
+    let should_be_open_in_place = true;
+    let should_focus = false;
+    wasm_bridge.get_or_load_plugins(
+        run_plugin_or_alias,
+        Size::default(),
+        cwd,
+        skip_cache,
+        should_float,
+        should_be_open_in_place,
+        None, // pane_title
+        Some(pane_id),
+        Some(client_id),
+        None, // floating_pane_coordinates
+        should_focus,
+    );
 }
 
 fn load_background_plugin(

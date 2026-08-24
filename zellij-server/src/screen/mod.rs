@@ -71,10 +71,11 @@ use zellij_utils::data::{
     Direction, EventType, FloatingPaneCoordinates, GlobalPaneEdge, HostTerminalThemeMode,
     KeyWithModifier, LayoutInfo, LayoutWithError, NewPanePlacement, NotificationInfo, PaneInfo,
     RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpedPane, WarpedTab,
-    WebSharing,
+    WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{OpenFilePayload, RunCommand};
+use zellij_utils::input::hooks::HookPoint;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::options::{
     Clipboard, NestedSessionHandling, NotificationPosition, PaneFrameStyle,
@@ -2686,6 +2687,72 @@ impl Screen {
         self.log_and_report_session_state()?;
         Ok(())
     }
+    /// Hand an exited agent pane to the `agent_exit` hook.
+    ///
+    /// This is what used to be a branch in the terminal emulator: `TerminalPane::hold` painted a
+    /// fixed question over the pane and `adjust_input_to_terminal` implemented its two answers.
+    /// Now the pane just holds, and the plugin bound to the hook point is opened in its place.
+    ///
+    /// Fired unconditionally when the pane is an agent pane - whether a hook is bound is the
+    /// plugin thread's question, so that the answer lives in one place.
+    ///
+    /// Global panes are skipped. `Screen::replace_pane` finds its target through
+    /// `tab_position_containing_pane`, so a pane that is not in a tab cannot be replaced; such a
+    /// pane simply holds, which is the unhooked behaviour.
+    fn fire_agent_exit_hook(
+        &self,
+        pane_id: PaneId,
+        exit_status: Option<i32>,
+        run_command: &RunCommand,
+        pane_is_global: bool,
+    ) {
+        let Some(originating_plugin) = run_command.originating_plugin.as_ref() else {
+            return;
+        };
+        if !originating_plugin
+            .context
+            .contains_key(HOCUS_AGENT_PANE_CONTEXT)
+        {
+            return;
+        }
+        if pane_is_global {
+            return;
+        }
+        let PaneId::Terminal(terminal_pane_id) = pane_id else {
+            return;
+        };
+        // Strings, because a plugin's configuration is a `BTreeMap<String, String>`. The hook
+        // does not need the command itself: it restarts the pane with `RerunCommandPane`, and
+        // the pane replays the `RunCommand` it already holds.
+        //
+        // Every key is prefixed. `PluginUserConfiguration::new` silently drops a reserved word -
+        // an unprefixed `cwd` arrives as nothing at all - and a payload key blanking itself
+        // because the host grew a configuration option of the same name would be a bad way to
+        // find that out.
+        let mut payload = BTreeMap::new();
+        payload.insert("agent_pane_id".to_owned(), terminal_pane_id.to_string());
+        if let Some(exit_status) = exit_status {
+            payload.insert("agent_exit_code".to_owned(), exit_status.to_string());
+        }
+        payload.insert(
+            "agent_cwd".to_owned(),
+            run_command
+                .cwd
+                .as_ref()
+                .map(|cwd| cwd.display().to_string())
+                .unwrap_or_default(),
+        );
+        payload.insert("agent_command".to_owned(), run_command.to_string());
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::RunHook {
+                point: HookPoint::AgentExit,
+                pane_id,
+                payload,
+                client_id: originating_plugin.client_id,
+            })
+            .non_fatal();
+    }
     pub fn rerun_command_pane_with_id(
         &mut self,
         terminal_pane_id: u32,
@@ -3913,9 +3980,11 @@ fn replay_pending_plugin_events(
             ScreenInstruction::HoldPane(pane_id, exit_status, run_command) => {
                 let is_first_run = false;
                 let mut found = false;
+                let mut pane_is_global = false;
                 if let Some(pane) = screen.global_panes.pane_mut(pane_id) {
                     pane.hold(exit_status, is_first_run, run_command.clone());
                     found = true;
+                    pane_is_global = true;
                 } else {
                     for tab in screen.tabs.values_mut() {
                         if tab.get_all_pane_ids().contains(&pane_id) {
@@ -3924,6 +3993,9 @@ fn replay_pending_plugin_events(
                             break;
                         }
                     }
+                }
+                if found {
+                    screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_global);
                 }
                 if !found {
                     log::error!(

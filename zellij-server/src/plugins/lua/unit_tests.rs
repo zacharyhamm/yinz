@@ -435,6 +435,60 @@ fn the_shipped_example_plugin_loads_and_renders() {
 }
 
 #[test]
+fn the_agent_commit_example_loads_and_stages_on_c() {
+    // `example-plugins/agent-commit.lua` is what the hooks documentation points at, so it should
+    // not be allowed to rot. Pressing `c` marshals a `RunCommand`, which is the shape most
+    // likely to be got wrong.
+    let source = example_plugin("agent-commit.lua");
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut plugin = load_lua_plugin(&source, "agent-commit.lua", env).unwrap();
+    plugin
+        .load(&BTreeMap::from([
+            ("agent_pane_id".to_owned(), "7".to_owned()),
+            ("agent_cwd".to_owned(), "/work".to_owned()),
+        ]))
+        .unwrap();
+
+    let rendered = String::from_utf8(plugin.render(12, 70).unwrap()).unwrap();
+    assert!(rendered.contains("stage & commit"), "got: {rendered}");
+    assert!(rendered.contains("Directory: /work"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('c'))))
+        .expect("staging should marshal");
+    let rendered = String::from_utf8(plugin.render(12, 70).unwrap()).unwrap();
+    assert!(rendered.contains("staging"), "got: {rendered}");
+}
+
+#[test]
+fn the_shipped_agent_exit_hook_loads_and_renders() {
+    // The builtin hook is compiled in rather than read from disk, so nothing else would notice
+    // a syntax error in it until an agent exited.
+    let mut plugin = load_lua_plugin(
+        zellij_utils::consts::builtin_lua_plugin("agent-exit").expect("the hook is a builtin"),
+        "agent-exit.lua",
+        test_env(),
+    )
+    .unwrap();
+    plugin
+        .load(&BTreeMap::from([
+            ("agent_pane_id".to_owned(), "7".to_owned()),
+            ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
+        ]))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("Agent exited. Create another agent in the same directory?"),
+        "got: {rendered}"
+    );
+    assert!(
+        rendered.contains("Directory: /work/.worktrees/topic"),
+        "got: {rendered}"
+    );
+}
+
+#[test]
 fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
     // `example-plugins/playground.lua` is the worked example for the command surface, so it is
     // worth more than a load-and-render check: every key it offers is pressed here. None of them
@@ -563,6 +617,39 @@ fn a_tuple_command_takes_positional_or_named_arguments() {
     assert_marshals(r#"zellij.rename_tab { 0, "logs" }"#);
     assert_marshals(r#"zellij.rename_tab { tab_index = 0, name = "logs" }"#);
     assert_marshals(r#"zellij.rename_tab(0, "logs")"#);
+}
+
+#[test]
+fn run_command_takes_named_arguments() {
+    // Five arguments, three of them tables - the case named arguments exist for.
+    assert_marshals(
+        r#"zellij.run_command {
+             command = { "git", "status" },
+             env_variables = {},
+             cwd = "/tmp",
+             context = { step = "status" },
+             max_bytes_returned = 1024,
+           }"#,
+    );
+    assert_marshals(r#"zellij.run_command { { "git", "status" }, {}, "/tmp", {}, 1024 }"#);
+}
+
+#[test]
+fn an_optional_tuple_element_still_has_to_be_given() {
+    // `max_bytes_returned` is an `Option`, which makes it nullable rather than absent: serde
+    // counts a tuple variant's elements, so a four-element list is the wrong shape however
+    // optional the fifth is. Worth pinning - "it is optional so I can leave it out" is the
+    // natural reading, and it does not hold.
+    let err = error_from_load(
+        r#"zellij.run_command {
+             command = { "git", "status" },
+             env_variables = {},
+             cwd = "/tmp",
+             context = {},
+           }"#,
+    )
+    .expect("a four-element RunCommand is refused");
+    assert!(err.contains("invalid length 4"), "got: {err}");
 }
 
 #[test]

@@ -8,6 +8,7 @@ use crate::data::{
 use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
 use crate::input::config::{Config, ConfigError, KdlError};
+use crate::input::hooks::{HookPoint, Hooks};
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
     Layout, PercentOrFixed, PluginUserConfiguration, RunPlugin, RunPluginOrAlias, TabLayoutInfo,
@@ -5781,6 +5782,10 @@ impl Config {
                 .background_plugins
                 .extend(load_plugins_from_kdl(kdl_load_plugins)?);
         }
+        if let Some(kdl_hooks) = kdl_config.get("hooks") {
+            let parsed_hooks = hooks_from_kdl(kdl_hooks, &mut config.hooks)?;
+            config.hooks.merge(parsed_hooks);
+        }
         if let Some(kdl_ui_config) = kdl_config.get("ui") {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
@@ -5815,6 +5820,8 @@ impl Config {
             add_comments,
         );
         document.nodes_mut().push(load_plugins);
+
+        document.nodes_mut().push(hooks_to_kdl(&self.hooks));
 
         if let Some(ui_config) = self.ui.to_kdl() {
             document.nodes_mut().push(ui_config);
@@ -5976,6 +5983,76 @@ pub fn load_plugins_to_kdl(
         ));
     }
     load_plugins
+}
+
+/// Parse a `hooks { }` block.
+///
+/// A hook point takes one plugin url. The empty string unbinds it, which is how a user turns
+/// off a hook that has a default - there is nothing else to write there that means "none", and
+/// deleting the line would only fall back to the default again.
+///
+/// Unbinding has to be applied to the config being built rather than returned, because the
+/// result is merged additively over it and an absent key means "unchanged", not "removed".
+#[allow(clippy::result_large_err)]
+fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks, ConfigError> {
+    let mut hooks = Hooks::from_data(BTreeMap::new());
+    if let Some(kdl_hooks) = kdl_children_nodes!(kdl_hooks) {
+        for hook_node in kdl_hooks {
+            let name_node = hook_node.name();
+            let hook_point = HookPoint::from_str(name_node.value()).map_err(|e| {
+                ConfigError::new_kdl_error(e, name_node.span().offset(), name_node.span().len())
+            })?;
+            let string_url = kdl_first_entry_as_string!(hook_node).ok_or_else(|| {
+                ConfigError::new_kdl_error(
+                    format!(
+                        "hook '{}' needs a plugin url, eg. `{} \"file:~/hook.lua\"`",
+                        hook_point, hook_point
+                    ),
+                    name_node.span().offset(),
+                    name_node.span().len(),
+                )
+            })?;
+            if string_url.trim().is_empty() {
+                config_hooks.clear(hook_point);
+                continue;
+            }
+            let configuration = KdlLayoutParser::parse_plugin_user_configuration(hook_node)?;
+            let cwd = kdl_get_string_property_or_child_value!(&hook_node, "cwd").map(PathBuf::from);
+            let run_plugin_or_alias = RunPluginOrAlias::from_url(
+                string_url,
+                &Some(configuration.inner().clone()),
+                None,
+                cwd.clone(),
+            )
+            .map_err(|e| {
+                ConfigError::new_kdl_error(
+                    format!("Failed to parse hook plugin: {}", e),
+                    name_node.span().offset(),
+                    name_node.span().len(),
+                )
+            })?
+            .with_initial_cwd(cwd);
+            hooks.set(hook_point, run_plugin_or_alias);
+        }
+    }
+    Ok(hooks)
+}
+
+pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {
+    let mut hooks_node = KdlNode::new("hooks");
+    let mut children = KdlDocument::new();
+    for point in HookPoint::ALL {
+        // Every known point is written, bound or not, so that a round trip preserves an
+        // unbinding: an absent line would be read back as "use the default".
+        let mut node = KdlNode::new(point.as_str());
+        match hooks.get(*point) {
+            Some(plugin) => node.push(KdlValue::String(plugin.location_string())),
+            None => node.push(KdlValue::String(String::new())),
+        }
+        children.nodes_mut().push(node);
+    }
+    hooks_node.set_children(children);
+    hooks_node
 }
 
 #[allow(clippy::result_large_err)]

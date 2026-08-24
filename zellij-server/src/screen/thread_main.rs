@@ -1878,9 +1878,11 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                 let is_first_run = false;
                 let mut found = false;
+                let mut pane_is_global = false;
                 if let Some(pane) = screen.global_panes.pane_mut(id) {
                     pane.hold(exit_status, is_first_run, run_command.clone());
                     found = true;
+                    pane_is_global = true;
                 } else {
                     for tab in screen.tabs.values_mut() {
                         if tab.get_all_pane_ids().contains(&id) {
@@ -1889,6 +1891,9 @@ pub(crate) fn screen_thread_main(
                             break;
                         }
                     }
+                }
+                if found {
+                    screen.fire_agent_exit_hook(id, exit_status, &run_command, pane_is_global);
                 }
                 if !found {
                     pending_events_waiting_for_pane

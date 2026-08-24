@@ -200,6 +200,10 @@ local tuple_fields = {
   notify = { "message", "pane_id" },
   cli_pipe_output = { "pipe_name", "output" },
   reconfigure = { "configuration", "write_to_disk" },
+  -- Five arguments of five different meanings, three of them tables: positional is unreadable
+  -- here. All five must be given - serde counts a tuple variant's elements, and
+  -- `max_bytes_returned` being an `Option` makes it nullable, not absent.
+  run_command = { "command", "env_variables", "cwd", "context", "max_bytes_returned" },
 }
 
 --- Turn `{ tab_index = 0, name = "logs" }` into `{ 0, "logs" }` for the commands above. A table
