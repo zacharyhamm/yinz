@@ -819,6 +819,22 @@ mod variant_name_tests {
     use super::*;
     use strum::VariantNames;
 
+    /// The only `ScreenContext` variants that no instruction of the same name can reach: the
+    /// `Resize` fan-out, plus the one rename whose target is not itself an instruction name.
+    const REACHED_ONLY_BY_SPECIAL_CASE: &[&str] = &[
+        "HandlePtyBytes",
+        "ResizeIncreaseAll",
+        "ResizeIncreaseLeft",
+        "ResizeIncreaseDown",
+        "ResizeIncreaseUp",
+        "ResizeIncreaseRight",
+        "ResizeDecreaseAll",
+        "ResizeDecreaseLeft",
+        "ResizeDecreaseDown",
+        "ResizeDecreaseUp",
+        "ResizeDecreaseRight",
+    ];
+
     /// The names spelled out by hand in `From<&ScreenInstruction> for ScreenContext`, either
     /// because the context is chosen by payload or because the two enums name it differently.
     const SPECIAL_CASED: &[&str] = &[
@@ -844,6 +860,23 @@ mod variant_name_tests {
             unmapped.is_empty(),
             "these ScreenInstruction variants have no ScreenContext of the same name; \
              add the variant to ScreenContext or special-case it in the From impl: {unmapped:?}"
+        );
+    }
+
+    /// The other direction: a `ScreenContext` no instruction can produce is dead weight, and
+    /// eighteen of them had quietly accumulated. Nothing but this test stops that recurring.
+    #[test]
+    fn every_context_is_reachable() {
+        let unreachable: Vec<&str> = ScreenContext::VARIANTS
+            .iter()
+            .copied()
+            .filter(|name| !REACHED_ONLY_BY_SPECIAL_CASE.contains(name))
+            .filter(|name| !ScreenInstruction::VARIANTS.contains(name))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "no ScreenInstruction can produce these ScreenContext variants, so they are dead: \
+             {unreachable:?}"
         );
     }
 
