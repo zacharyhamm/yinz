@@ -191,6 +191,66 @@ came back - the one to read when you want to see the surface in use:
 zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 ```
 
+## Hooks
+
+A **hook point** is a moment in the session's life that a plugin can own. Bind one in the config:
+
+```kdl
+hooks {
+    agent_exit "file:~/.config/zellij/hooks/agent-exit.lua"
+}
+```
+
+There is one hook point so far:
+
+| Point | When | The plugin is |
+|---|---|---|
+| `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
+
+The exited pane is *suppressed* behind the hook, not closed: its scrollback survives, and closing
+the hook pane is what brings it back. So a hook that wants to leave the pane alone just closes
+itself.
+
+The payload arrives as the plugin's configuration, so `load(config)` receives it. Every key is
+prefixed, because an unprefixed `cwd` would collide with a reserved configuration key and arrive
+empty:
+
+| Key | |
+|---|---|
+| `agent_pane_id` | the pane the hook stands in for, as a string |
+| `agent_cwd` | where the agent was working |
+| `agent_exit_code` | absent if the command was killed by a signal |
+| `agent_command` | the command that exited, for display |
+
+A hook point takes **one** plugin. Two plugins cannot both replace the pane, and a precedence
+rule between them would be worse to explain than the restriction - a hook that wants to do
+several things does them itself. Bind the empty string to turn a hook off:
+
+```kdl
+hooks {
+    agent_exit ""
+}
+```
+
+which leaves the pane simply holding, as any other command pane does.
+
+The shipped `agent_exit` hook is itself a Lua plugin - `zellij-utils/assets/plugins/agent-exit.lua`
+in the source tree. Copy it, point the config at your copy, and add
+`zellij.request_permission { "change_application_state" }` to its `load`: the shipped one is a
+builtin and so is granted privileged commands unconditionally, and yours will not be.
+
+Two notes on writing one:
+
+- **Restarting does not need the command.** `zellij.rerun_command_pane(pane_id)` makes the pane
+  replay what it already holds, which reaches it even while it is suppressed.
+- **Closing has an order.** Close the agent pane *first*, then yourself - closing yourself first
+  restores it instead.
+
+Because a hook is an ordinary plugin, anything a plugin can do is now reachable at agent exit.
+`example-plugins/agent-commit.lua` is a worked example that offers to stage and commit whatever
+the agent left behind, using `zellij.run_command` (Lua has no `io` or `os`, so git goes through
+the host).
+
 ## Errors
 
 Host commands raise Lua errors, and an error in an entrypoint is reported against your plugin

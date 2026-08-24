@@ -10,7 +10,7 @@ use url::Url;
 use super::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
 #[cfg(not(target_family = "wasm"))]
 use crate::consts::BUILTIN_PLUGIN_DEV_DIRS;
-use crate::consts::BUILTIN_PLUGIN_NAMES;
+use crate::consts::{builtin_lua_plugin, BUILTIN_PLUGIN_NAMES};
 pub use crate::data::PluginTag;
 use crate::errors::prelude::*;
 
@@ -90,7 +90,11 @@ impl PluginConfig {
             }),
             RunPluginLocation::Zellij(tag) => {
                 let tag = tag.to_string();
-                if BUILTIN_PLUGIN_NAMES.contains(&tag.as_str()) {
+                // A builtin is either a wasm plugin with bytes to find or a Lua plugin with
+                // source compiled in; both are named the same way, so both are accepted here.
+                if BUILTIN_PLUGIN_NAMES.contains(&tag.as_str())
+                    || builtin_lua_plugin(&tag).is_some()
+                {
                     Some(PluginConfig {
                         path: PathBuf::from(&tag),
                         _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
@@ -245,9 +249,22 @@ impl PluginConfig {
     /// declaration working untouched and means no new URL scheme is needed - `file:~/thing.lua`
     /// is enough.
     pub fn runtime(&self) -> PluginRuntime {
+        // A builtin has no extension to read - its `path` is the bare tag - so being in the
+        // builtin Lua table is what identifies it.
+        if self.builtin_lua_source().is_some() {
+            return PluginRuntime::Lua;
+        }
         match self.path.extension().and_then(|e| e.to_str()) {
             Some("lua") => PluginRuntime::Lua,
             _ => PluginRuntime::Wasm,
+        }
+    }
+
+    /// The compiled-in source, if this is a builtin Lua plugin.
+    fn builtin_lua_source(&self) -> Option<&'static str> {
+        match &self.location {
+            RunPluginLocation::Zellij(tag) => builtin_lua_plugin(&tag.to_string()),
+            _ => None,
         }
     }
 
@@ -255,6 +272,9 @@ impl PluginConfig {
     /// which are searched for across several directories with an extension appended, a Lua plugin
     /// is named by a path that already points at a file.
     pub fn resolve_lua_source(&self) -> Result<String> {
+        if let Some(source) = self.builtin_lua_source() {
+            return Ok(source.to_owned());
+        }
         fs::read_to_string(&self.path)
             .map_err(|e| anyhow!("{}", e))
             .with_context(|| format!("failed to read the Lua plugin at '{}'", self.path.display()))
@@ -297,6 +317,35 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_builtin_lua_plugin_resolves_to_the_lua_runtime() {
+        // A builtin's `path` is the bare tag with no extension, so the extension rule that
+        // identifies every other Lua plugin cannot see this one.
+        let plugin = builtin_plugin("agent-exit");
+        assert_eq!(plugin.runtime(), super::PluginRuntime::Lua);
+        assert!(
+            plugin.is_builtin(),
+            "so that it bypasses permission prompts"
+        );
+    }
+
+    #[test]
+    fn a_builtin_lua_plugin_serves_its_compiled_in_source() {
+        let source = builtin_plugin("agent-exit").resolve_lua_source().unwrap();
+        assert!(
+            source.contains("Agent exited."),
+            "the source comes from the embedded asset, not from disk"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_builtin_is_still_wasm() {
+        assert_eq!(
+            builtin_plugin("status-bar").runtime(),
+            super::PluginRuntime::Wasm
+        );
     }
 
     #[test]

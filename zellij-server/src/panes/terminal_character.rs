@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 use vte::ParamsIter;
 use zellij_utils::data::StyleDeclaration;
-use zellij_utils::data::{PaletteColor, Style, HOCUS_AGENT_PANE_CONTEXT};
+use zellij_utils::data::{PaletteColor, Style};
 use zellij_utils::input::command::RunCommand;
 
 use crate::panes::alacritty_functions::parse_sgr_color;
@@ -979,47 +979,6 @@ pub fn render_first_run_banner(
 ) -> String {
     let middle_row = rows / 2;
     let middle_column = columns / 2;
-    if let Some(run_command) = run_command.filter(|command| {
-        command
-            .originating_plugin
-            .as_ref()
-            .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT))
-    }) {
-        let bold = RESET_STYLES.bold(Some(AnsiCode::On));
-        let controls_color = RESET_STYLES
-            .foreground(Some(AnsiCode::from(
-                style.colors.text_unselected.emphasis_0,
-            )))
-            .bold(Some(AnsiCode::On));
-        let cwd = run_command
-            .cwd
-            .as_deref()
-            .map(|cwd| cwd.to_string_lossy())
-            .unwrap_or_default();
-        let question = "Agent exited. Create another agent in the same directory?";
-        let location = format!("Directory: {cwd}");
-        let controls = "<ENTER> create another agent  <ESC> close pane";
-        return format!(
-            "\u{1b}[?25l{}\u{1b}[{};{}H{}{}\u{1b}[{};{}H{}\u{1b}[{};{}H<{}ENTER{}{}> create another agent  <{}ESC{}{}> close pane{}",
-            RESET_STYLES,
-            middle_row.saturating_sub(1),
-            middle_column.saturating_sub(question.width() / 2),
-            bold,
-            question,
-            middle_row + 1,
-            middle_column.saturating_sub(location.width() / 2),
-            location,
-            middle_row + 3,
-            middle_column.saturating_sub(controls.width() / 2),
-            controls_color,
-            RESET_STYLES,
-            bold,
-            controls_color,
-            RESET_STYLES,
-            bold,
-            RESET_STYLES,
-        );
-    }
     match run_command {
         Some(run_command) => {
             let bold_text = RESET_STYLES.bold(Some(AnsiCode::On));
@@ -1141,35 +1100,5 @@ pub fn render_first_run_banner(
                 RESET_STYLES, waiting_to_run_line, controls_line, RESET_STYLES
             )
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-    use zellij_utils::data::OriginatingPlugin;
-
-    #[test]
-    fn hocus_agents_get_an_exit_confirmation_in_their_pane() {
-        let command = RunCommand {
-            command: "codex".into(),
-            cwd: Some(PathBuf::from("/work/.worktrees/topic")),
-            originating_plugin: Some(OriginatingPlugin::new(
-                2,
-                1,
-                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
-            )),
-            ..Default::default()
-        };
-
-        let banner = render_first_run_banner(100, 20, &Style::default(), Some(&command));
-
-        assert!(banner.contains("Agent exited. Create another agent in the same directory?"));
-        assert!(banner.contains("Directory: /work/.worktrees/topic"));
-        assert!(banner.contains("create another agent"));
-        assert!(banner.contains("close pane"));
-        assert!(!banner.contains("drop to shell"));
     }
 }

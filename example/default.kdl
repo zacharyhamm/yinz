@@ -358,6 +358,24 @@ load_plugins {
     // "https://example.com/my-plugin.wasm"
 }
 
+// Plugins to run at a hook point - a moment zellij hands control to a plugin.
+// One plugin per point; bind the empty string to turn a point off.
+//
+//   agent_exit  an agent pane's command exited. The plugin is opened in place of
+//               that pane, which is suppressed behind it (so its scrollback
+//               survives and closing the plugin brings it back). Its payload
+//               arrives as configuration: agent_pane_id, agent_cwd,
+//               agent_exit_code, agent_command.
+//
+// The default is a Lua plugin shipped with zellij. Copy
+// `zellij-utils/assets/plugins/agent-exit.lua`, point this at your copy, and see
+// docs/LUA_PLUGINS.md.
+hooks {
+    agent_exit "zellij:agent-exit"
+    // agent_exit "file:~/.config/zellij/hooks/agent-exit.lua"
+    // agent_exit ""   // turn it off: the pane just holds
+}
+
 // Choose what to do when zellij receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
 // eg. when terminal window with an active zellij session is closed
 // (Requires restart)

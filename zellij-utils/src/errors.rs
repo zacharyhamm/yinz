@@ -552,6 +552,7 @@ pub enum PtyContext {
 pub enum PluginContext {
     Load,
     LoadBackgroundPlugin,
+    RunHook,
     Update,
     Unload,
     Reload,

@@ -2519,6 +2519,7 @@ mod global_panes_highlight;
 mod global_panes_lifecycle;
 mod global_panes_manifest;
 mod global_panes_render;
+mod hooks;
 mod host_query;
 mod mouse;
 mod nested_sessions;

@@ -127,6 +127,27 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus-store",
 ];
 
+/// Builtin plugins written in Lua, as (name, source).
+///
+/// A wasm builtin is found by name on disk or in the embedded asset table; a Lua plugin has
+/// no build step and no bytes to look up, so its source is simply compiled in here. Being in
+/// this table is what makes `zellij:<name>` resolve to Lua - see `PluginConfig::runtime`.
+///
+/// Kept separate from `BUILTIN_PLUGIN_NAMES` rather than merged into it because everything
+/// that reads that list is looking for something to load wasm for.
+pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[(
+    "agent-exit",
+    include_str!("../assets/plugins/agent-exit.lua"),
+)];
+
+/// The source of a builtin Lua plugin, if `name` names one.
+pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {
+    BUILTIN_LUA_PLUGINS
+        .iter()
+        .find(|(plugin_name, _)| *plugin_name == name)
+        .map(|(_, source)| *source)
+}
+
 /// Directories searched for builtin plugin wasm as a last resort, so that dev builds and
 /// `cargo test` find the plugins in a checkout without any configuration.
 ///

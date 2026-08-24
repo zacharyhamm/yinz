@@ -452,3 +452,224 @@ pub fn a_newly_reachable_command_works_end_to_end() {
         received_pty_instructions.lock()
     );
 }
+
+/// The shipped `agent_exit` hook, loaded the way the hook dispatcher loads it: by builtin tag,
+/// with the hook payload as its configuration.
+fn agent_exit_hook(payload: BTreeMap<String, String>) -> RunPluginOrAlias {
+    RunPluginOrAlias::from_url("zellij:agent-exit", &Some(payload), None, None)
+        .expect("the builtin agent-exit hook resolves")
+}
+
+fn agent_exit_payload() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("agent_pane_id".to_owned(), "7".to_owned()),
+        ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
+        ("agent_exit_code".to_owned(), "0".to_owned()),
+        ("agent_command".to_owned(), "codex".to_owned()),
+    ])
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
+    // The text this asserts used to be produced by `render_first_run_banner` in the terminal
+    // emulator. It is the same text because the point of moving it was to make it editable, not
+    // to change what an agent exiting looks like.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let received_screen_instructions = Watched::new(vec![]);
+    // One frame: the hook paints its question once and then waits for a key. Waiting for a
+    // second would be waiting for something that never comes.
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        1
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("agent_exit_hook".to_owned()),
+        agent_exit_hook(agent_exit_payload()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    screen_thread.join().unwrap();
+    teardown();
+
+    let rendered = rendered_output(&received_screen_instructions.lock()).join("\n");
+    assert!(
+        rendered.contains("Agent exited. Create another agent in the same directory?"),
+        "got: {rendered}"
+    );
+    assert!(
+        rendered.contains("Directory: /work/.worktrees/topic"),
+        "the payload's cwd is shown, got: {rendered}"
+    );
+    assert!(rendered.contains("create another agent"), "got: {rendered}");
+    assert!(rendered.contains("close pane"), "got: {rendered}");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
+    // Enter restarts the pane the hook stands in for. It reaches the pane through
+    // `RerunCommandPane`, which finds it among the suppressed panes - the hook does not need to
+    // know the command, because the pane replays the one it already holds.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::RerunCommandPane,
+        screen_receiver,
+        1
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("agent_exit_hook".to_owned()),
+        agent_exit_hook(agent_exit_payload()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Enter)),
+    )]));
+    screen_thread.join().unwrap();
+    teardown();
+
+    let rerun = received_screen_instructions
+        .lock()
+        .iter()
+        .any(|instruction| matches!(instruction, ScreenInstruction::RerunCommandPane(7, _)));
+    assert!(
+        rerun,
+        "expected Enter to rerun pane 7, got: {:?}",
+        received_screen_instructions.lock()
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
+    // Esc closes the pane the hook stands in for, and only then itself: closing the suppressed
+    // pane first is what stops it being restored when this one goes.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::ClosePane,
+        pty_receiver,
+        1
+    );
+    let received_screen_instructions = Watched::new(vec![]);
+    let _screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::ClosePane,
+        screen_receiver,
+        1
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("agent_exit_hook".to_owned()),
+        agent_exit_hook(agent_exit_payload()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Esc)),
+    )]));
+    pty_thread.join().unwrap();
+    teardown();
+
+    let closed = received_pty_instructions.lock().iter().any(|instruction| {
+        matches!(
+            instruction,
+            PtyInstruction::ClosePane(PaneId::Terminal(7), _)
+        )
+    });
+    assert!(
+        closed,
+        "expected Esc to close pane 7, got: {:?}",
+        received_pty_instructions.lock()
+    );
+    let closed_in_screen = received_screen_instructions
+        .lock()
+        .iter()
+        .any(|instruction| {
+            matches!(
+                instruction,
+                ScreenInstruction::ClosePane(PaneId::Terminal(7), ..)
+            )
+        });
+    assert!(
+        closed_in_screen,
+        "expected Esc to close pane 7 in the screen too, got: {:?}",
+        received_screen_instructions.lock()
+    );
+}

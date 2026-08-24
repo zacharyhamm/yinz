@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use std::convert::TryFrom;
 
+use super::hooks::Hooks;
 use super::keybinds::Keybinds;
 use super::layout::RunPluginOrAlias;
 use super::options::Options;
@@ -43,6 +44,9 @@ pub struct Config {
     /// serializing and re-parsing doesn't silently restore them.
     pub background_plugins_cleared: bool,
     pub web_client: WebClientConfig,
+    /// The plugin bound to each hook point. Defaults to the shipped `agent_exit` screen; see
+    /// `input::hooks`.
+    pub hooks: Hooks,
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]
@@ -691,6 +695,7 @@ pub async fn watch_layout_dir_changes<F, Fut>(
 mod config_test {
     use super::*;
     use crate::data::{InputMode, Palette, PaletteColor, StyleDeclaration, Styling};
+    use crate::input::hooks::HookPoint;
     use crate::input::layout::RunPlugin;
     use crate::input::options::{Clipboard, OnForceClose};
     use crate::input::theme::{FrameConfig, Theme, Themes, UiConfig};
@@ -1445,6 +1450,59 @@ mod config_test {
             EnvironmentVariables::from_data(expected_env_config),
             "Env variables defined in config"
         );
+    }
+
+    #[test]
+    fn hooks_bind_a_point_to_a_plugin() {
+        let config =
+            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.lua\"\n}", None).unwrap();
+        assert_eq!(
+            config
+                .hooks
+                .get(HookPoint::AgentExit)
+                .map(|p| p.location_string()),
+            Some("file:/tmp/mine.lua".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_about_hooks_keeps_the_defaults() {
+        let config = Config::from_kdl("keybinds {\n}", None).unwrap();
+        assert_eq!(
+            config
+                .hooks
+                .get(HookPoint::AgentExit)
+                .map(|p| p.location_string()),
+            Some("zellij:agent-exit".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_empty_hook_url_unbinds_the_point() {
+        let config = Config::from_kdl("hooks {\n agent_exit \"\"\n}", None).unwrap();
+        assert!(
+            config.hooks.get(HookPoint::AgentExit).is_none(),
+            "an empty string is how a default hook is turned off"
+        );
+    }
+
+    #[test]
+    fn an_unknown_hook_point_is_a_config_error() {
+        assert!(Config::from_kdl("hooks {\n agent_started \"file:/tmp/x.lua\"\n}", None).is_err());
+    }
+
+    #[test]
+    fn hooks_survive_serialization() {
+        // Both directions matter: a bound point must come back bound, and an unbound one must
+        // stay unbound rather than falling back to the default.
+        let bound =
+            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.lua\"\n}", None).unwrap();
+        let round_tripped = Config::from_kdl(&bound.to_string(false), None).unwrap();
+        assert_eq!(round_tripped.hooks, bound.hooks);
+
+        let unbound = Config::from_kdl("hooks {\n agent_exit \"\"\n}", None).unwrap();
+        let round_tripped = Config::from_kdl(&unbound.to_string(false), None).unwrap();
+        assert!(round_tripped.hooks.get(HookPoint::AgentExit).is_none());
     }
 
     #[test]

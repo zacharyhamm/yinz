@@ -2,6 +2,7 @@ pub mod actions;
 pub mod cli_assets;
 pub mod command;
 pub mod config;
+pub mod hooks;
 pub mod keybinds;
 pub mod layout;
 pub mod mouse;

@@ -2121,6 +2121,7 @@ fn init_session(
                 .or_else(default_layout_dir);
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
+            let hooks = config.hooks.clone();
             let session_env_vars = session_env_vars.clone();
             move || {
                 plugin_thread_main(
@@ -2139,6 +2140,7 @@ fn init_session(
                     default_mode,
                     default_keybinds,
                     background_plugins,
+                    hooks,
                     builtin_plugins_dir,
                     client_id,
                 )
