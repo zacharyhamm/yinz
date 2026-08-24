@@ -209,9 +209,12 @@ impl Display for ContextType {
     }
 }
 
-// FIXME: Just deriving EnumDiscriminants from strum will remove the need for any of this!!!
 /// Stack call representations corresponding to the different types of [`ScreenInstruction`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// Almost every variant is named after the `ScreenInstruction` variant it stands for, and
+/// `From<&ScreenInstruction>` relies on that: it resolves the common case through `EnumString`
+/// and only spells out the handful of pairs whose names differ.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, strum_macros::EnumString)]
 pub enum ScreenContext {
     HandlePtyBytes,
     PluginBytes,

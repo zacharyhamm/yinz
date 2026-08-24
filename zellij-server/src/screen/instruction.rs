@@ -10,6 +10,7 @@ use crate::ui::loading_indication::LoadingIndication;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
@@ -34,7 +35,10 @@ use zellij_utils::pane_size::Size;
 use zellij_utils::position::Position;
 
 /// Instructions that can be sent to the [`Screen`].
-#[derive(Debug, Clone)]
+///
+/// `IntoStaticStr` yields the variant name, which is what `From<&ScreenInstruction> for
+/// ScreenContext` maps through; `VariantNames` lets the test below prove that mapping is total.
+#[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
     PtyBytes(u32, VteBytes),
     PluginBytes(Vec<PluginRenderAsset>),
@@ -757,27 +761,13 @@ pub enum ScreenInstruction {
 
 impl From<&ScreenInstruction> for ScreenContext {
     fn from(screen_instruction: &ScreenInstruction) -> Self {
-        match *screen_instruction {
-            ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
-            ScreenInstruction::PluginBytes(..) => ScreenContext::PluginBytes,
-            ScreenInstruction::Render => ScreenContext::Render,
-            ScreenInstruction::RenderToClients => ScreenContext::RenderToClients,
-            ScreenInstruction::NewPane(..) => ScreenContext::NewPane,
-            ScreenInstruction::NewGlobalPane { .. } => ScreenContext::NewPane,
-            ScreenInstruction::LaunchOrFocusGlobalPaneSplit { .. } => {
-                ScreenContext::LaunchOrFocusPlugin
-            },
-            ScreenInstruction::OpenInPlaceEditor(..) => ScreenContext::OpenInPlaceEditor,
-            ScreenInstruction::TogglePaneEmbedOrFloating(..) => {
-                ScreenContext::TogglePaneEmbedOrFloating
-            },
-            ScreenInstruction::ToggleFloatingPanes(..) => ScreenContext::ToggleFloatingPanes,
-            ScreenInstruction::ShowFloatingPanes { .. } => ScreenContext::ShowFloatingPanes,
-            ScreenInstruction::HideFloatingPanes { .. } => ScreenContext::HideFloatingPanes,
-            ScreenInstruction::AreFloatingPanesVisible { .. } => {
-                ScreenContext::AreFloatingPanesVisible
-            },
-            ScreenInstruction::WriteCharacter(..) => ScreenContext::WriteCharacter,
+        // The two enums are kept name-for-name deliberately, so all but a handful of the 250-odd
+        // variants resolve by name. `variant_name_is_total` below fails the build's test run if a
+        // new instruction is added without either a matching `ScreenContext` variant or an arm
+        // here, which is a stronger guarantee than the exhaustive match this replaced: it also
+        // catches the two names silently drifting apart.
+        match screen_instruction {
+            // The one instruction whose context is chosen by payload rather than by name.
             ScreenInstruction::Resize(.., strategy, _) => match strategy {
                 ResizeStrategy {
                     resize: Resize::Increase,
@@ -802,362 +792,83 @@ impl From<&ScreenInstruction> for ScreenContext {
                     None => ScreenContext::ResizeDecreaseAll,
                 },
             },
-            ScreenInstruction::SwitchFocus(..) => ScreenContext::SwitchFocus,
-            ScreenInstruction::FocusNextPane(..) => ScreenContext::FocusNextPane,
-            ScreenInstruction::FocusPreviousPane(..) => ScreenContext::FocusPreviousPane,
-            ScreenInstruction::FocusLastPane(..) => ScreenContext::FocusLastPane,
-            ScreenInstruction::MoveFocusLeft(..) => ScreenContext::MoveFocusLeft,
-            ScreenInstruction::MoveFocusLeftOrPreviousTab(..) => {
-                ScreenContext::MoveFocusLeftOrPreviousTab
+            // Instructions whose context is named differently from the instruction itself.
+            ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
+            ScreenInstruction::NewGlobalPane { .. } => ScreenContext::NewPane,
+            ScreenInstruction::LaunchOrFocusGlobalPaneSplit { .. } => {
+                ScreenContext::LaunchOrFocusPlugin
             },
-            ScreenInstruction::MoveFocusDown(..) => ScreenContext::MoveFocusDown,
-            ScreenInstruction::MoveFocusUp(..) => ScreenContext::MoveFocusUp,
-            ScreenInstruction::MoveFocusRight(..) => ScreenContext::MoveFocusRight,
-            ScreenInstruction::MoveFocusRightOrNextTab(..) => {
-                ScreenContext::MoveFocusRightOrNextTab
-            },
-            ScreenInstruction::MovePane(..) => ScreenContext::MovePane,
-            ScreenInstruction::MovePaneBackwards(..) => ScreenContext::MovePaneBackwards,
-            ScreenInstruction::MovePaneDown(..) => ScreenContext::MovePaneDown,
-            ScreenInstruction::MovePaneUp(..) => ScreenContext::MovePaneUp,
-            ScreenInstruction::MovePaneRight(..) => ScreenContext::MovePaneRight,
-            ScreenInstruction::MovePaneLeft(..) => ScreenContext::MovePaneLeft,
-            ScreenInstruction::Exit => ScreenContext::Exit,
-            ScreenInstruction::ClearScreen(..) => ScreenContext::ClearScreen,
-            ScreenInstruction::DumpScreen(..) => ScreenContext::DumpScreen,
-            ScreenInstruction::DumpLayout(..) => ScreenContext::DumpLayout,
-            ScreenInstruction::SaveSession(..) => ScreenContext::SaveSession,
-            ScreenInstruction::DumpLayoutToPlugin { .. } => ScreenContext::DumpLayoutToPlugin,
-            ScreenInstruction::GetFocusedPaneInfo { .. } => ScreenContext::GetFocusedPaneInfo,
-            ScreenInstruction::GetPaneInfo { .. } => ScreenContext::GetPaneInfo,
-            ScreenInstruction::GetTabInfo { .. } => ScreenContext::GetTabInfo,
-            ScreenInstruction::EditScrollback(..) => ScreenContext::EditScrollback,
-            ScreenInstruction::GetPaneScrollback { .. } => ScreenContext::GetPaneScrollback,
-            ScreenInstruction::ScrollUp(..) => ScreenContext::ScrollUp,
-            ScreenInstruction::ScrollDown(..) => ScreenContext::ScrollDown,
-            ScreenInstruction::ScrollToBottom(..) => ScreenContext::ScrollToBottom,
-            ScreenInstruction::ScrollToTop(..) => ScreenContext::ScrollToTop,
-            ScreenInstruction::PageScrollUp(..) => ScreenContext::PageScrollUp,
-            ScreenInstruction::PageScrollDown(..) => ScreenContext::PageScrollDown,
-            ScreenInstruction::HalfPageScrollUp(..) => ScreenContext::HalfPageScrollUp,
-            ScreenInstruction::HalfPageScrollDown(..) => ScreenContext::HalfPageScrollDown,
-            ScreenInstruction::ClearScroll(..) => ScreenContext::ClearScroll,
-            ScreenInstruction::CloseFocusedPane(..) => ScreenContext::CloseFocusedPane,
-            ScreenInstruction::ToggleActiveTerminalFullscreen(..) => {
-                ScreenContext::ToggleActiveTerminalFullscreen
-            },
-            ScreenInstruction::ToggleActiveTerminalNoUiFullscreen(..) => {
-                ScreenContext::ToggleActiveTerminalNoUiFullscreen
-            },
-            ScreenInstruction::TogglePaneFrames(..) => ScreenContext::TogglePaneFrames,
-            ScreenInstruction::SetPaneFrameStyle(..) => ScreenContext::SetPaneFrameStyle,
-            ScreenInstruction::SetSelectable(..) => ScreenContext::SetSelectable,
-            ScreenInstruction::ShowPluginCursor(..) => ScreenContext::ShowPluginCursor,
-            ScreenInstruction::ClosePane(..) => ScreenContext::ClosePane,
-            ScreenInstruction::HoldPane(..) => ScreenContext::HoldPane,
-            ScreenInstruction::UpdatePaneName(..) => ScreenContext::UpdatePaneName,
-            ScreenInstruction::UpdatePaneCwd(..) => ScreenContext::UpdatePaneCwd,
-            ScreenInstruction::UpdatePaneHost(..) => ScreenContext::UpdatePaneHost,
-            ScreenInstruction::UndoRenamePane(..) => ScreenContext::UndoRenamePane,
-            ScreenInstruction::NewTab(..) => ScreenContext::NewTab,
-            ScreenInstruction::ApplyLayout(..) => ScreenContext::ApplyLayout,
-            ScreenInstruction::SwitchTabNext(..) => ScreenContext::SwitchTabNext,
-            ScreenInstruction::SwitchTabPrev(..) => ScreenContext::SwitchTabPrev,
-            ScreenInstruction::CloseTab(..) => ScreenContext::CloseTab,
-            ScreenInstruction::GoToTab(..) => ScreenContext::GoToTab,
-            ScreenInstruction::GoToTabName(..) => ScreenContext::GoToTabName,
-            ScreenInstruction::UpdateTabName(..) => ScreenContext::UpdateTabName,
-            ScreenInstruction::UndoRenameTab(..) => ScreenContext::UndoRenameTab,
-            ScreenInstruction::MoveTabLeft(..) => ScreenContext::MoveTabLeft,
-            ScreenInstruction::MoveTabRight(..) => ScreenContext::MoveTabRight,
-            ScreenInstruction::GoToTabWithId(..) => ScreenContext::GoToTabWithId,
-            ScreenInstruction::CloseTabWithId(..) => ScreenContext::CloseTabWithId,
-            ScreenInstruction::RenameTabWithId(..) => ScreenContext::RenameTabWithId,
-            ScreenInstruction::SetTabProjects(..) => ScreenContext::SetTabProjects,
-            ScreenInstruction::BreakPanesToTabWithId { .. } => ScreenContext::BreakPanesToTabWithId,
-            ScreenInstruction::RecomputeTabSize(..) => ScreenContext::RecomputeTabSize,
-            ScreenInstruction::TerminalPixelDimensions(..) => {
-                ScreenContext::TerminalPixelDimensions
-            },
-            ScreenInstruction::TerminalBackgroundColor(..) => {
-                ScreenContext::TerminalBackgroundColor
-            },
-            ScreenInstruction::TerminalForegroundColor(..) => {
-                ScreenContext::TerminalForegroundColor
-            },
-            ScreenInstruction::TerminalColorRegisters(..) => ScreenContext::TerminalColorRegisters,
-            ScreenInstruction::SetKittyGraphicsSupport { .. } => {
-                ScreenContext::SetKittyGraphicsSupport
-            },
-            ScreenInstruction::SetSixelSupport { .. } => ScreenContext::SetSixelSupport,
-            ScreenInstruction::ForwardHostQuery { .. } => ScreenContext::ForwardHostQuery,
-            ScreenInstruction::NestedSessionMessageFromPane { .. } => {
-                ScreenContext::NestedSessionMessageFromPane
-            },
-            ScreenInstruction::NestedGuestPingTick { .. } => ScreenContext::NestedGuestPingTick,
-            ScreenInstruction::NestedSessionMessageFromHost { .. } => {
-                ScreenContext::NestedSessionMessageFromHost
-            },
-            ScreenInstruction::GuestModalChoice { .. } => ScreenContext::GuestModalChoice,
-            ScreenInstruction::ForwardedReplyFromHost { .. } => {
-                ScreenContext::ForwardedReplyFromHost
-            },
-            ScreenInstruction::ResumePaneAfterForward { .. } => {
-                ScreenContext::ResumePaneAfterForward
-            },
-            ScreenInstruction::HostTerminalThemeChanged(..) => {
-                ScreenContext::HostTerminalThemeChanged
-            },
-            ScreenInstruction::SetDarkTheme(..) => ScreenContext::SetDarkTheme,
-            ScreenInstruction::SetLightTheme(..) => ScreenContext::SetLightTheme,
-            ScreenInstruction::ToggleTheme(..) => ScreenContext::ToggleTheme,
-            ScreenInstruction::ChangeMode(..) => ScreenContext::ChangeMode,
-            ScreenInstruction::ChangeModeForAllClients(..) => {
-                ScreenContext::ChangeModeForAllClients
-            },
-            ScreenInstruction::ToggleActiveSyncTab(..) => ScreenContext::ToggleActiveSyncTab,
-            ScreenInstruction::ScrollUpAt(..) => ScreenContext::ScrollUpAt,
-            ScreenInstruction::ScrollDownAt(..) => ScreenContext::ScrollDownAt,
-            ScreenInstruction::MouseEvent(..) => ScreenContext::MouseEvent,
-            ScreenInstruction::Copy(..) => ScreenContext::Copy,
-            ScreenInstruction::ToggleTab(..) => ScreenContext::ToggleTab,
-            ScreenInstruction::AddClient(..) => ScreenContext::AddClient,
-            ScreenInstruction::RemoveClient(..) => ScreenContext::RemoveClient,
-            ScreenInstruction::UpdateSearch(..) => ScreenContext::UpdateSearch,
-            ScreenInstruction::SearchDown(..) => ScreenContext::SearchDown,
-            ScreenInstruction::SearchUp(..) => ScreenContext::SearchUp,
-            ScreenInstruction::SearchToggleCaseSensitivity(..) => {
-                ScreenContext::SearchToggleCaseSensitivity
-            },
-            ScreenInstruction::SearchToggleWholeWord(..) => ScreenContext::SearchToggleWholeWord,
-            ScreenInstruction::SearchToggleWrap(..) => ScreenContext::SearchToggleWrap,
-            ScreenInstruction::AddRedPaneFrameColorOverride(..) => {
-                ScreenContext::AddRedPaneFrameColorOverride
-            },
-            ScreenInstruction::ClearPaneFrameColorOverride(..) => {
-                ScreenContext::ClearPaneFrameColorOverride
-            },
-            ScreenInstruction::SetTabBellFlash(..) => ScreenContext::SetTabBellFlash,
-            ScreenInstruction::PreviousSwapLayout(..) => ScreenContext::PreviousSwapLayout,
-            ScreenInstruction::NextSwapLayout(..) => ScreenContext::NextSwapLayout,
-            ScreenInstruction::OverrideLayout(..) => ScreenContext::OverrideLayout,
-            ScreenInstruction::OverrideLayoutComplete(..) => ScreenContext::OverrideLayoutComplete,
-            ScreenInstruction::QueryTabNames(..) => ScreenContext::QueryTabNames,
-            ScreenInstruction::NewTiledPluginPane(..) => ScreenContext::NewTiledPluginPane,
-            ScreenInstruction::NewFloatingPluginPane(..) => ScreenContext::NewFloatingPluginPane,
-            ScreenInstruction::StartOrReloadPluginPane(..) => {
-                ScreenContext::StartOrReloadPluginPane
-            },
-            ScreenInstruction::AddPlugin(..) => ScreenContext::AddPlugin,
-            ScreenInstruction::UpdatePluginLoadingStage(..) => {
-                ScreenContext::UpdatePluginLoadingStage
-            },
-            ScreenInstruction::ProgressPluginLoadingOffset(..) => {
-                ScreenContext::ProgressPluginLoadingOffset
-            },
-            ScreenInstruction::StartPluginLoadingIndication(..) => {
-                ScreenContext::StartPluginLoadingIndication
-            },
-            ScreenInstruction::RequestStateUpdateForPlugins => {
-                ScreenContext::RequestStateUpdateForPlugins
-            },
-            ScreenInstruction::LaunchOrFocusPlugin(..) => ScreenContext::LaunchOrFocusPlugin,
-            ScreenInstruction::LaunchPlugin(..) => ScreenContext::LaunchPlugin,
-            ScreenInstruction::SuppressPane(..) => ScreenContext::SuppressPane,
-            ScreenInstruction::UnsuppressPane(..) => ScreenContext::UnsuppressPane,
-            ScreenInstruction::UnsuppressOrExpandPane(..) => ScreenContext::UnsuppressOrExpandPane,
-            ScreenInstruction::FocusPaneWithId(..) => ScreenContext::FocusPaneWithId,
-            ScreenInstruction::RenamePane(..) => ScreenContext::RenamePane,
-            ScreenInstruction::RenameActivePane(..) => ScreenContext::RenameActivePane,
-            ScreenInstruction::RenameTab(..) => ScreenContext::RenameTab,
-            ScreenInstruction::RequestPluginPermissions(..) => {
-                ScreenContext::RequestPluginPermissions
-            },
-            ScreenInstruction::BreakPane(..) => ScreenContext::BreakPane,
-            ScreenInstruction::BreakPaneRight(..) => ScreenContext::BreakPaneRight,
-            ScreenInstruction::BreakPaneLeft(..) => ScreenContext::BreakPaneLeft,
-            ScreenInstruction::WarpPane { .. } => ScreenContext::WarpPane,
-            ScreenInstruction::WarpTab { .. } => ScreenContext::WarpTab,
-            ScreenInstruction::TabReleasedForWarp { .. } => ScreenContext::TabReleasedForWarp,
-            ScreenInstruction::AdoptedTabReady { .. } => ScreenContext::AdoptedTabReady,
-            ScreenInstruction::PaneReleasedForWarp { .. } => ScreenContext::PaneReleasedForWarp,
-            ScreenInstruction::AdoptedPaneReady { .. } => ScreenContext::AdoptedPaneReady,
-            ScreenInstruction::UpdateSessionInfos(..) => ScreenContext::UpdateSessionInfos,
-            ScreenInstruction::ReplacePane(..) => ScreenContext::ReplacePane,
-            ScreenInstruction::NewInPlacePluginPane(..) => ScreenContext::NewInPlacePluginPane,
-            ScreenInstruction::SerializeLayoutForResurrection => {
-                ScreenContext::SerializeLayoutForResurrection
-            },
-            ScreenInstruction::RenameSession(..) => ScreenContext::RenameSession,
-            ScreenInstruction::Notify(..) => ScreenContext::Notify,
-            ScreenInstruction::DismissNotification(..) => ScreenContext::DismissNotification,
-            ScreenInstruction::TickNotificationAnimations => {
-                ScreenContext::TickNotificationAnimations
-            },
-            ScreenInstruction::ListClientsMetadata(..) => ScreenContext::ListClientsMetadata,
-            ScreenInstruction::ListPanes { .. } => ScreenContext::ListPanes,
-            ScreenInstruction::ListNotifications { .. } => ScreenContext::ListNotifications,
-            ScreenInstruction::ListTabs { .. } => ScreenContext::ListTabs,
-            ScreenInstruction::GetCurrentTabInfo { .. } => ScreenContext::GetCurrentTabInfo,
-            ScreenInstruction::Reconfigure { .. } => ScreenContext::Reconfigure,
-            ScreenInstruction::RerunCommandPane { .. } => ScreenContext::RerunCommandPane,
-            ScreenInstruction::ResizePaneWithId(..) => ScreenContext::ResizePaneWithId,
-            ScreenInstruction::EditScrollbackForPaneWithId(..) => {
-                ScreenContext::EditScrollbackForPaneWithId
-            },
-            ScreenInstruction::WriteToPaneId(..) => ScreenContext::WriteToPaneId,
-            ScreenInstruction::Paste(..) => ScreenContext::Paste,
-            ScreenInstruction::SetPaneColor(..) => ScreenContext::SetPaneColor,
-            ScreenInstruction::WriteKeyToPaneId(..) => ScreenContext::WriteKeyToPaneId,
-            ScreenInstruction::CopyTextToClipboard(..) => ScreenContext::CopyTextToClipboard,
-            ScreenInstruction::MovePaneWithPaneId(..) => ScreenContext::MovePaneWithPaneId,
-            ScreenInstruction::MovePaneWithPaneIdInDirection(..) => {
-                ScreenContext::MovePaneWithPaneIdInDirection
-            },
-            ScreenInstruction::ClearScreenForPaneId(..) => ScreenContext::ClearScreenForPaneId,
-            ScreenInstruction::ScrollUpInPaneId(..) => ScreenContext::ScrollUpInPaneId,
-            ScreenInstruction::ScrollDownInPaneId(..) => ScreenContext::ScrollDownInPaneId,
-            ScreenInstruction::ScrollToTopInPaneId(..) => ScreenContext::ScrollToTopInPaneId,
-            ScreenInstruction::ScrollToBottomInPaneId(..) => ScreenContext::ScrollToBottomInPaneId,
-            ScreenInstruction::PageScrollUpInPaneId(..) => ScreenContext::PageScrollUpInPaneId,
-            ScreenInstruction::PageScrollDownInPaneId(..) => ScreenContext::PageScrollDownInPaneId,
-            ScreenInstruction::TogglePaneIdFullscreen(..) => ScreenContext::TogglePaneIdFullscreen,
-            ScreenInstruction::SetMobileRenderPreferences { .. } => {
-                ScreenContext::SetMobileRenderPreferences
-            },
-            ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(..) => {
-                ScreenContext::TogglePaneEmbedOrEjectForPaneId
-            },
-            ScreenInstruction::CloseTabWithIndex(..) => ScreenContext::CloseTabWithIndex,
-            ScreenInstruction::BreakPanesToNewTab { .. } => ScreenContext::BreakPanesToNewTab,
-            ScreenInstruction::BreakPanesToTabWithIndex { .. } => {
-                ScreenContext::BreakPanesToTabWithIndex
-            },
-            ScreenInstruction::ListClientsToPlugin(..) => ScreenContext::ListClientsToPlugin,
-            ScreenInstruction::TogglePanePinned(..) => ScreenContext::TogglePanePinned,
-            ScreenInstruction::SetFloatingPanePinned(..) => ScreenContext::SetFloatingPanePinned,
-            ScreenInstruction::StackPanes(..) => ScreenContext::StackPanes,
-            ScreenInstruction::ChangeOverlayCoordinates(..) => {
-                ScreenContext::ChangeOverlayCoordinates
-            },
-            ScreenInstruction::ChangeFloatingPanesCoordinates(..) => {
-                ScreenContext::ChangeFloatingPanesCoordinates
-            },
-            ScreenInstruction::TogglePaneBorderless(..) => ScreenContext::TogglePaneBorderless,
-            ScreenInstruction::SetPaneBorderless(..) => ScreenContext::SetPaneBorderless,
-            ScreenInstruction::AddHighlightPaneFrameColorOverride(..) => {
-                ScreenContext::AddHighlightPaneFrameColorOverride
-            },
-            ScreenInstruction::GroupAndUngroupPanes(..) => ScreenContext::GroupAndUngroupPanes,
-            ScreenInstruction::HighlightAndUnhighlightPanes(..) => {
-                ScreenContext::HighlightAndUnhighlightPanes
-            },
-            ScreenInstruction::RevealPaneWithId(..) => ScreenContext::RevealPaneWithId,
-            ScreenInstruction::FloatMultiplePanes(..) => ScreenContext::FloatMultiplePanes,
-            ScreenInstruction::EmbedMultiplePanes(..) => ScreenContext::EmbedMultiplePanes,
-            ScreenInstruction::TogglePaneInGroup(..) => ScreenContext::TogglePaneInGroup,
-            ScreenInstruction::ToggleGroupMarking(..) => ScreenContext::ToggleGroupMarking,
-            ScreenInstruction::SessionSharingStatusChange(..) => {
-                ScreenContext::SessionSharingStatusChange
-            },
-            ScreenInstruction::SetMouseSelectionSupport(..) => {
-                ScreenContext::SetMouseSelectionSupport
-            },
-            ScreenInstruction::InterceptKeyPresses(..) => ScreenContext::InterceptKeyPresses,
-            ScreenInstruction::ClearKeyPressesIntercepts(..) => {
-                ScreenContext::ClearKeyPressesIntercepts
-            },
-            ScreenInstruction::ReplacePaneWithExistingPane(..) => {
-                ScreenContext::ReplacePaneWithExistingPane
-            },
-            ScreenInstruction::AddWatcherClient(..) => ScreenContext::AddWatcherClient,
-            ScreenInstruction::RemoveWatcherClient(..) => ScreenContext::RemoveWatcherClient,
-            ScreenInstruction::SetFollowedClient(..) => ScreenContext::SetFollowedClient,
-            ScreenInstruction::WatcherTerminalResize(..) => ScreenContext::WatcherTerminalResize,
-            ScreenInstruction::ClearMouseHelpText(..) => ScreenContext::ClearMouseHelpText,
-            ScreenInstruction::UpdateAvailableLayouts(..) => ScreenContext::UpdateAvailableLayouts,
-            ScreenInstruction::SetPluginRegexHighlights { .. } => {
-                ScreenContext::SetPluginRegexHighlights
-            },
-            ScreenInstruction::ClearPluginHighlights { .. } => ScreenContext::ClearPluginHighlights,
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
-            ScreenInstruction::DesktopNotificationResponse(..) => {
-                ScreenContext::DesktopNotificationResponse
+            ScreenInstruction::SetGlobalPanePlacement { .. } => ScreenContext::ResizeWithPaneId,
+            other => {
+                let name: &'static str = other.into();
+                ScreenContext::from_str(name).unwrap_or_else(|_| {
+                    // `variant_name_is_total` makes this unreachable in a tested build; in a
+                    // release build a missing name should not take the session down over what is
+                    // only an error-context label.
+                    debug_assert!(false, "no ScreenContext variant named {name}");
+                    ScreenContext::Exit
+                })
             },
-            ScreenInstruction::SubscribeToPaneRenders { .. } => {
-                ScreenContext::SubscribeToPaneRenders
-            },
-            ScreenInstruction::NotifyPaneClosedToSubscribers { .. } => {
-                ScreenContext::NotifyPaneClosedToSubscribers
-            },
-            ScreenInstruction::UpdateBackgroundPluginSubscriptions(..) => {
-                ScreenContext::UpdateBackgroundPluginSubscriptions
-            },
-            ScreenInstruction::ClearHintTextCache => ScreenContext::ClearHintTextCache,
-            ScreenInstruction::BroadcastModeUpdate(..) => ScreenContext::BroadcastModeUpdate,
-            // Pane-targeting CLI variants
-            ScreenInstruction::ScrollUpWithPaneId(..) => ScreenContext::ScrollUpWithPaneId,
-            ScreenInstruction::ScrollDownWithPaneId(..) => ScreenContext::ScrollDownWithPaneId,
-            ScreenInstruction::ScrollToTopWithPaneId(..) => ScreenContext::ScrollToTopWithPaneId,
-            ScreenInstruction::ScrollToBottomWithPaneId(..) => {
-                ScreenContext::ScrollToBottomWithPaneId
-            },
-            ScreenInstruction::PageScrollUpWithPaneId(..) => ScreenContext::PageScrollUpWithPaneId,
-            ScreenInstruction::PageScrollDownWithPaneId(..) => {
-                ScreenContext::PageScrollDownWithPaneId
-            },
-            ScreenInstruction::HalfPageScrollUpWithPaneId(..) => {
-                ScreenContext::HalfPageScrollUpWithPaneId
-            },
-            ScreenInstruction::HalfPageScrollDownWithPaneId(..) => {
-                ScreenContext::HalfPageScrollDownWithPaneId
-            },
-            ScreenInstruction::ResizeWithPaneId(..) => ScreenContext::ResizeWithPaneId,
-            ScreenInstruction::SetGlobalPanePlacement(..) => ScreenContext::ResizeWithPaneId,
-            ScreenInstruction::MovePaneWithPaneIdCli(..) => ScreenContext::MovePaneWithPaneIdCli,
-            ScreenInstruction::MovePaneBackwardsWithPaneId(..) => {
-                ScreenContext::MovePaneBackwardsWithPaneId
-            },
-            ScreenInstruction::ClearScreenWithPaneId(..) => ScreenContext::ClearScreenWithPaneId,
-            ScreenInstruction::EditScrollbackWithPaneId(..) => {
-                ScreenContext::EditScrollbackWithPaneId
-            },
-            ScreenInstruction::ToggleFullscreenWithPaneId(..) => {
-                ScreenContext::ToggleFullscreenWithPaneId
-            },
-            ScreenInstruction::ToggleNoUiFullscreenWithPaneId(..) => {
-                ScreenContext::ToggleNoUiFullscreenWithPaneId
-            },
-            ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(..) => {
-                ScreenContext::TogglePaneEmbedOrFloatingWithPaneId
-            },
-            ScreenInstruction::CloseFocusWithPaneId(..) => ScreenContext::CloseFocusWithPaneId,
-            ScreenInstruction::RenamePaneWithPaneId(..) => ScreenContext::RenamePaneWithPaneId,
-            ScreenInstruction::UndoRenamePaneWithPaneId(..) => {
-                ScreenContext::UndoRenamePaneWithPaneId
-            },
-            ScreenInstruction::TogglePanePinnedWithPaneId(..) => {
-                ScreenContext::TogglePanePinnedWithPaneId
-            },
-            // Tab-targeting CLI variants
-            ScreenInstruction::UndoRenameTabWithTabId(..) => ScreenContext::UndoRenameTabWithTabId,
-            ScreenInstruction::ToggleActiveSyncTabWithTabId(..) => {
-                ScreenContext::ToggleActiveSyncTabWithTabId
-            },
-            ScreenInstruction::ToggleFloatingPanesWithTabId(..) => {
-                ScreenContext::ToggleFloatingPanesWithTabId
-            },
-            ScreenInstruction::PreviousSwapLayoutWithTabId(..) => {
-                ScreenContext::PreviousSwapLayoutWithTabId
-            },
-            ScreenInstruction::NextSwapLayoutWithTabId(..) => {
-                ScreenContext::NextSwapLayoutWithTabId
-            },
-            ScreenInstruction::MoveTabWithTabId(..) => ScreenContext::MoveTabWithTabId,
-            ScreenInstruction::SetSoftKeyboard { .. } => ScreenContext::SetSoftKeyboard,
-            ScreenInstruction::FocusHostSession(..) => ScreenContext::FocusHostSession,
-            ScreenInstruction::FocusGuestSession(..) => ScreenContext::FocusGuestSession,
-            ScreenInstruction::ToggleHostFullscreen(..) => ScreenContext::ToggleHostFullscreen,
+        }
+    }
+}
+
+#[cfg(test)]
+mod variant_name_tests {
+    use super::*;
+    use strum::VariantNames;
+
+    /// The names spelled out by hand in `From<&ScreenInstruction> for ScreenContext`, either
+    /// because the context is chosen by payload or because the two enums name it differently.
+    const SPECIAL_CASED: &[&str] = &[
+        "Resize",
+        "PtyBytes",
+        "NewGlobalPane",
+        "LaunchOrFocusGlobalPaneSplit",
+        "ClearAllPluginHighlights",
+        "SetGlobalPanePlacement",
+    ];
+
+    /// Stands in for the exhaustive match this conversion used to be. Every instruction must
+    /// either be special-cased above or share its name with a `ScreenContext` variant.
+    #[test]
+    fn variant_name_is_total() {
+        let unmapped: Vec<&str> = ScreenInstruction::VARIANTS
+            .iter()
+            .copied()
+            .filter(|name| !SPECIAL_CASED.contains(name))
+            .filter(|name| ScreenContext::from_str(name).is_err())
+            .collect();
+        assert!(
+            unmapped.is_empty(),
+            "these ScreenInstruction variants have no ScreenContext of the same name; \
+             add the variant to ScreenContext or special-case it in the From impl: {unmapped:?}"
+        );
+    }
+
+    /// Guards the mechanism from both ends: every special case must be one `from_str` genuinely
+    /// cannot resolve, which also proves `from_str` reports a missing name rather than guessing.
+    #[test]
+    fn special_cases_are_not_resolvable_by_name() {
+        for name in SPECIAL_CASED {
+            assert!(
+                ScreenContext::from_str(name).is_err(),
+                "{name} now names a ScreenContext variant too, so its arm in the From impl is \
+                 redundant and should be deleted along with this entry"
+            );
+        }
+    }
+
+    /// A name in `SPECIAL_CASED` that no longer exists is a stale entry, and would quietly widen
+    /// the test above into passing for a variant nobody handles.
+    #[test]
+    fn special_cases_all_still_exist() {
+        for name in SPECIAL_CASED {
+            assert!(
+                ScreenInstruction::VARIANTS.contains(name),
+                "SPECIAL_CASED lists {name}, which is no longer a ScreenInstruction variant"
+            );
         }
     }
 }
