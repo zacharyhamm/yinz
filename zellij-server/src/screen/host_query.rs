@@ -131,7 +131,7 @@ impl Screen {
     }
 
     fn pane_exists(&self, pane_id: &PaneId) -> bool {
-        self.tabs.values().any(|tab| tab.has_pane_with_pid(pane_id))
+        self.tab_containing_pane(*pane_id).is_some()
     }
 
     fn answer_color_palette_mode_query_locally(&mut self, pane_id: PaneId) {
@@ -289,16 +289,10 @@ impl Screen {
                 return Ok(());
             },
         };
-        let mut found = false;
-        for tab in self.tabs.values_mut() {
-            if tab.has_pane_with_pid(&pane_id) {
-                tab.resume_pane_after_forward(terminal_id, reply_bytes.clone())
-                    .non_fatal();
-                found = true;
-                break;
-            }
-        }
-        if !found {
+        if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            tab.resume_pane_after_forward(terminal_id, reply_bytes)
+                .non_fatal();
+        } else {
             // No tab owns the pane — the pane was closed between the
             // forward dispatch and the reply arrival. The terminal id
             // is probably defunct; the write goes to the PTY writer

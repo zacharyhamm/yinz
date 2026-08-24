@@ -169,13 +169,6 @@ impl Screen {
             .any(|other_id| self.shares_tab_with(client_id, *other_id))
     }
 
-    fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
-        self.tabs
-            .values()
-            .find(|tab| tab.has_pane_with_pid(&pane_id))
-            .map(|tab| tab.id)
-    }
-
     fn ensure_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) {
         let Some(tab_id) = self.tab_id_containing_pane(pane_id) else {
             return;
