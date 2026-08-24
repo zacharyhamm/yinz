@@ -1103,7 +1103,9 @@ pub enum WebServerStatus {
     PartialOrd,
     Ord,
 )]
-#[strum_discriminants(derive(EnumString, Hash, Serialize, Deserialize, Display, PartialOrd, Ord))]
+#[strum_discriminants(derive(
+    EnumString, EnumIter, Hash, Serialize, Deserialize, Display, PartialOrd, Ord
+))]
 #[strum_discriminants(name(PermissionType))]
 #[non_exhaustive]
 pub enum Permission {
@@ -2947,6 +2949,7 @@ pub enum PermissionStatus {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FileToOpen {
     pub path: PathBuf,
     pub line_number: Option<usize>,
@@ -2970,7 +2973,8 @@ impl FileToOpen {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CommandToRun {
     pub path: PathBuf,
     pub args: Vec<String>,
@@ -2990,7 +2994,7 @@ pub struct CommandToRun {
 /// refused, and `base` then has nothing to say - an existing branch has its own
 /// history. See `prepare_git_checkout_in` in the server for the exact order the
 /// two kinds of reuse are tried in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitCheckout {
     Current,
     /// The branch, in the checkout the request came from. Reuse means switching
@@ -3026,7 +3030,8 @@ impl CommandToRun {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MessageToPlugin {
     pub plugin_url: Option<String>,
     pub destination_plugin_id: Option<u32>,
@@ -3040,7 +3045,8 @@ pub struct MessageToPlugin {
     pub floating_pane_coordinates: Option<FloatingPaneCoordinates>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewPluginArgs {
     pub should_float: Option<bool>,
     pub pane_id_to_replace: Option<PaneId>,
@@ -3217,7 +3223,8 @@ impl ConnectToSession {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PluginMessage {
     pub name: String,
     pub payload: String,
@@ -3241,7 +3248,7 @@ impl PluginMessage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HttpVerb {
     Get,
     Post,
@@ -3791,8 +3798,8 @@ impl NewPanePlacement {
 
 type Context = BTreeMap<String, String>;
 
-#[derive(Debug, Clone, EnumDiscriminants, Display)]
-#[strum_discriminants(derive(EnumString, Hash, Serialize, Deserialize))]
+#[derive(Debug, Clone, EnumDiscriminants, Display, Serialize, Deserialize)]
+#[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
