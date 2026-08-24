@@ -16,6 +16,7 @@
 
 mod command;
 mod loader;
+mod response;
 #[cfg(test)]
 mod unit_tests;
 
@@ -24,7 +25,7 @@ pub use loader::load_lua_plugin;
 use std::cell::RefCell;
 
 use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
-use zellij_utils::data::{Event, PipeMessage};
+use zellij_utils::data::{CommandType, Event, PipeMessage};
 use zellij_utils::errors::prelude::*;
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
@@ -150,6 +151,10 @@ fn dispatch(
     let command = plugin_command_from_lua(lua, &command_name, &spelling, args)
         .map_err(|e| mlua::Error::runtime(format!("{:#}", e)))?;
 
+    // Kept for the reply: `run_plugin_command` consumes the command, and decoding its answer
+    // needs to know which command asked.
+    let command_type = CommandType::from(&command);
+
     // `try_borrow_mut` rather than `borrow_mut`: a re-entrant call would otherwise panic, and a
     // panic here would take down the plugin thread rather than just this plugin.
     let mut env = env.try_borrow_mut().map_err(|_| {
@@ -164,12 +169,15 @@ fn dispatch(
 
     outcome.map_err(|e| mlua::Error::runtime(format!("{:#}", e)))?;
 
+    // The reply is protobuf bytes, JSON-encoded by `wasi_write_object`, because that is what the
+    // wasm guest reads off its stdin pipe. `response_to_lua` decodes the ones it knows into a
+    // table; anything else is handed back as the bytes it always was.
     match captured {
-        // The reply is protobuf bytes, JSON-encoded by `wasi_write_object`. Handing them back as
-        // an opaque byte array is enough for now; decoding each response type into a Lua table
-        // comes with the rest of the command surface.
         Some(reply) => match serde_json::from_str::<Vec<u8>>(&reply) {
-            Ok(bytes) => lua.create_string(&bytes).map(LuaValue::String),
+            Ok(bytes) => match response::response_to_lua(lua, command_type, &bytes) {
+                Some(decoded) => decoded.map_err(|e| mlua::Error::runtime(format!("{:#}", e))),
+                None => lua.create_string(&bytes).map(LuaValue::String),
+            },
             Err(_) => lua.create_string(&reply).map(LuaValue::String),
         },
         None => Ok(LuaValue::Nil),
