@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use zellij_utils::data::{BareKey, Event, KeyWithModifier, PermissionType};
+use strum::IntoEnumIterator;
+use zellij_utils::data::{BareKey, CommandType, Event, KeyWithModifier, PermissionType};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::layout::RunPluginLocation;
 use zellij_utils::input::plugins::PluginConfig;
@@ -57,6 +58,15 @@ fn test_env() -> PluginEnv {
 
 fn load(source: &str) -> Result<super::LuaPlugin> {
     load_lua_plugin(source, "test.lua", test_env())
+}
+
+/// A plugin whose permissions are all already granted, for tests about *marshalling* a command
+/// rather than about whether it is allowed. Without this, every privileged command is refused
+/// before it is ever built.
+fn load_permitted(source: &str) -> Result<super::LuaPlugin> {
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    load_lua_plugin(source, "test.lua", env)
 }
 
 #[test]
@@ -465,4 +475,128 @@ fn key_events_carry_a_readable_key_name() {
         String::from_utf8(plugin.render(1, 40).unwrap()).unwrap(),
         "t Esc Enter "
     );
+}
+
+// The widened command surface ------------------------------------------------------------------
+
+/// Run `source` inside a plugin's `load`, returning whatever error it raised.
+fn error_from_load(source: &str) -> Option<String> {
+    let body = format!("local zellij = require(\"zellij\")\nlocal M = {{}}\nfunction M.load()\n{}\nend\nreturn M", source);
+    let mut plugin = load_permitted(&body).unwrap();
+    plugin
+        .load(&BTreeMap::new())
+        .err()
+        .map(|e| format!("{:#}", e))
+}
+
+fn assert_marshals(source: &str) {
+    if let Some(err) = error_from_load(source) {
+        panic!("expected this to marshal, got: {}\nsource: {}", err, source);
+    }
+}
+
+#[test]
+fn a_unit_command_is_reachable_by_name() {
+    // Nothing in the prelude wraps `new_pane`; the metatable manufactures it, and the host reads
+    // the bare name as serde's unit variant.
+    assert_marshals("zellij.new_pane()");
+    assert_marshals("zellij.go_to_next_tab()");
+}
+
+#[test]
+fn a_struct_command_takes_named_arguments() {
+    assert_marshals(r#"zellij.new_tab { name = "logs", cwd = "/tmp" }"#);
+    // Every field of `NewTab` is optional, so no arguments at all is a legitimate call.
+    assert_marshals("zellij.new_tab()");
+}
+
+#[test]
+fn a_tuple_command_takes_positional_or_named_arguments() {
+    assert_marshals(r#"zellij.rename_tab { 0, "logs" }"#);
+    assert_marshals(r#"zellij.rename_tab { tab_index = 0, name = "logs" }"#);
+    assert_marshals(r#"zellij.rename_tab(0, "logs")"#);
+}
+
+#[test]
+fn a_nested_payload_is_built_from_a_plain_table() {
+    // `CommandToRun` is a struct inside a tuple variant - the shape that used to need a
+    // hand-written marshaller per command.
+    assert_marshals(r#"zellij.open_command_pane { { path = "sh", args = { "-c", "true" } }, {} }"#);
+}
+
+#[test]
+fn a_byte_payload_is_written_as_a_string() {
+    // `Write(Vec<u8>)` wants a list of byte values; plugins have a string.
+    assert_marshals(r#"zellij.write("echo hi\r")"#);
+    assert_marshals(r#"zellij.write_to_pane_id("echo hi\r", zellij.terminal_pane(1))"#);
+}
+
+#[test]
+fn a_pane_id_is_built_by_the_prelude() {
+    assert_marshals("zellij.hide_pane_with_id(zellij.terminal_pane(3))");
+    assert_marshals("zellij.hide_pane_with_id(zellij.plugin_pane(3))");
+}
+
+#[test]
+fn bad_arguments_are_an_error_naming_the_command_rather_than_a_panic() {
+    let err = error_from_load(r#"zellij.set_timeout("soon")"#).expect("this should not marshal");
+    assert!(err.contains("set_timeout"), "got: {}", err);
+}
+
+#[test]
+fn a_typo_is_reported_in_the_spelling_the_plugin_used() {
+    // The prelude pascal-cases before handing the name over, so this is the one thing that has
+    // to be carried separately - an error reading "unknown zellij command 'NotARealCommand'"
+    // would send an author looking for something they never wrote.
+    let err = error_from_load("zellij.not_a_real_command()").expect("this should not marshal");
+    assert!(err.contains("not_a_real_command"), "got: {}", err);
+}
+
+#[test]
+fn host_names_are_absent_from_the_manufactured_command_table() {
+    // The host installs and removes `zellij.__dispatch` by name, and both it and the prelude
+    // check it for nil. A metatable that manufactured a command function for every missing
+    // underscore name would make that check meaningless, so those names stay absent.
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.render() return type(zellij.__nothing) .. "," .. type(zellij.not_a_command) end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 40).unwrap()).unwrap(),
+        "nil,function"
+    );
+}
+
+#[test]
+fn every_command_zellij_knows_is_a_name_serde_accepts() {
+    // `PluginCommand` now has two serializations: the hand-written protobuf one wasm plugins use,
+    // and serde's, which is how Lua reaches it. `CommandType` is generated from the enum, so if
+    // serde's variant names ever drift from it, this fails - and a Lua plugin would otherwise
+    // just get "unknown variant" for a command zellij plainly has.
+    let lua = mlua::Lua::new();
+    for command in CommandType::iter() {
+        let name = command.to_string();
+        let error = match super::command::plugin_command_from_lua(
+            &lua,
+            &name,
+            &name,
+            mlua::Value::Nil,
+        ) {
+            Ok(_) => continue,
+            Err(e) => format!("{:#}", e),
+        };
+        // Failing for want of arguments is expected here - `Nil` is only right for unit
+        // variants. Failing because serde does not know the name is the drift this catches.
+        assert!(
+            !error.contains("unknown variant") && !error.contains("unknown zellij command"),
+            "serde does not know the command '{}': {}",
+            name,
+            error
+        );
+    }
 }
