@@ -5,6 +5,7 @@ use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
+use crate::route::NotificationEnd;
 use crate::tab::{SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashSet;
@@ -29,6 +30,37 @@ impl Screen {
     /// Gets a mutable tab by its stable ID (BTreeMap key).
     pub(super) fn get_tab_by_id_mut(&mut self, id: usize) -> Option<&mut Tab> {
         self.tabs.get_mut(&id)
+    }
+
+    /// Gets the tab holding `pane_id`, if any.
+    ///
+    /// "Find the tab containing this pane, then act on it" is the single most repeated shape in
+    /// the screen thread; before this existed it was spelled out as a `for` loop over
+    /// `has_pane_with_pid` at eighty-odd sites.
+    pub(super) fn tab_containing_pane(&self, pane_id: PaneId) -> Option<&Tab> {
+        self.tabs
+            .values()
+            .find(|tab| tab.has_pane_with_pid(&pane_id))
+    }
+
+    /// The mutable half of [`Screen::tab_containing_pane`].
+    pub(super) fn tab_containing_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Tab> {
+        self.tabs
+            .values_mut()
+            .find(|tab| tab.has_pane_with_pid(&pane_id))
+    }
+
+    /// Reports a pane id that matched no tab, both to the log and to a CLI client waiting on the
+    /// instruction. The `None` arm of nearly every `tab_containing_pane_mut` lookup.
+    pub(super) fn report_pane_not_found(
+        pane_id: PaneId,
+        completion_tx: &mut Option<NotificationEnd>,
+    ) {
+        log::error!("Pane with id {:?} not found", pane_id);
+        if let Some(completion_tx) = completion_tx.as_mut() {
+            completion_tx.set_exit_status(1);
+            completion_tx.set_error_message(format!("Pane with id {:?} not found", pane_id));
+        }
     }
 
     /// Gets a mutable tab by its display position (0-based).

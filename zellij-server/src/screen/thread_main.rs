@@ -717,21 +717,14 @@ pub(crate) fn screen_thread_main(
                         log::error!("Cannot OpenInPlaceEditor with a TabIndex");
                     },
                     ClientTabIndexOrPaneId::PaneId(pane_id_to_replace) => {
-                        let mut found = false;
-                        let all_tabs = screen.get_tabs_mut();
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id_to_replace) {
-                                tab.replace_pane_with_editor_pane(pid, pane_id_to_replace)
-                                    .non_fatal();
-                                found = true;
-                                break;
-                            }
-                        }
-                        if !found {
-                            log::error!(
+                        match screen.tab_containing_pane_mut(pane_id_to_replace) {
+                            Some(tab) => tab
+                                .replace_pane_with_editor_pane(pid, pane_id_to_replace)
+                                .non_fatal(),
+                            None => log::error!(
                                 "Could not find pane with id {:?} to replace",
                                 pane_id_to_replace
-                            );
+                            ),
                         }
                     },
                 }
@@ -1166,22 +1159,19 @@ pub(crate) fn screen_thread_main(
                         // Write dump to file (existing behavior)
                         match pane_id {
                             Some(pane_id) => {
-                                for tab in screen.get_tabs_mut().values_mut() {
-                                    if tab.has_pane_with_pid(&pane_id) {
-                                        if ansi {
-                                            tab.dump_with_ansi_terminal_screen(
-                                                Some(file_path.clone()),
-                                                pane_id,
-                                                full,
-                                            )?;
-                                        } else {
-                                            tab.dump_terminal_screen(
-                                                Some(file_path.clone()),
-                                                pane_id,
-                                                full,
-                                            )?;
-                                        }
-                                        break;
+                                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                                    if ansi {
+                                        tab.dump_with_ansi_terminal_screen(
+                                            Some(file_path.clone()),
+                                            pane_id,
+                                            full,
+                                        )?;
+                                    } else {
+                                        tab.dump_terminal_screen(
+                                            Some(file_path.clone()),
+                                            pane_id,
+                                            full,
+                                        )?;
                                     }
                                 }
                             },
@@ -1219,22 +1209,14 @@ pub(crate) fn screen_thread_main(
                         let dump = match pane_id {
                             Some(pane_id) => {
                                 let mut result = String::new();
-                                for tab in screen.get_tabs_mut().values_mut() {
-                                    if tab.has_pane_with_pid(&pane_id) {
-                                        if ansi {
-                                            if let Some(dump) = tab
-                                                .get_dump_with_ansi_terminal_screen(pane_id, full)
-                                            {
-                                                result = dump;
-                                            }
-                                        } else {
-                                            if let Some(dump) =
-                                                tab.get_dump_terminal_screen(pane_id, full)
-                                            {
-                                                result = dump;
-                                            }
-                                        }
-                                        break;
+                                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                                    let dump = if ansi {
+                                        tab.get_dump_with_ansi_terminal_screen(pane_id, full)
+                                    } else {
+                                        tab.get_dump_terminal_screen(pane_id, full)
+                                    };
+                                    if let Some(dump) = dump {
+                                        result = dump;
                                     }
                                 }
                                 result
@@ -1790,18 +1772,11 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::SetSelectable(pid, selectable) => {
-                let all_tabs = screen.get_tabs_mut();
-                let mut found_plugin = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pid) {
-                        tab.set_pane_selectable(pid, selectable);
-                        found_plugin = true;
-                        break;
-                    }
-                }
-                if !found_plugin {
-                    pending_events_waiting_for_tab
-                        .push(ScreenInstruction::SetSelectable(pid, selectable));
+                match screen.tab_containing_pane_mut(pid) {
+                    Some(tab) => tab.set_pane_selectable(pid, selectable),
+                    // the pane's tab may simply not exist yet - retry once one does
+                    None => pending_events_waiting_for_tab
+                        .push(ScreenInstruction::SetSelectable(pid, selectable)),
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -2657,41 +2632,29 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::AddRedPaneFrameColorOverride(pane_ids, error_text) => {
-                let all_tabs = screen.get_tabs_mut();
                 for pane_id in pane_ids {
-                    for tab in all_tabs.values_mut() {
-                        if tab.has_pane_with_pid(&pane_id) {
-                            tab.add_red_pane_frame_color_override(pane_id, error_text.clone());
-                            break;
-                        }
+                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                        tab.add_red_pane_frame_color_override(pane_id, error_text.clone());
                     }
                 }
                 screen.render(None)?;
             },
             ScreenInstruction::AddHighlightPaneFrameColorOverride(pane_ids, error_text) => {
-                let all_tabs = screen.get_tabs_mut();
                 for pane_id in pane_ids {
-                    for tab in all_tabs.values_mut() {
-                        if tab.has_pane_with_pid(&pane_id) {
-                            tab.add_highlight_pane_frame_color_override(
-                                pane_id,
-                                error_text.clone(),
-                                None,
-                            );
-                            break;
-                        }
+                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                        tab.add_highlight_pane_frame_color_override(
+                            pane_id,
+                            error_text.clone(),
+                            None,
+                        );
                     }
                 }
                 screen.render(None)?;
             },
             ScreenInstruction::ClearPaneFrameColorOverride(pane_ids) => {
-                let all_tabs = screen.get_tabs_mut();
                 for pane_id in pane_ids {
-                    for tab in all_tabs.values_mut() {
-                        if tab.has_pane_with_pid(&pane_id) {
-                            tab.clear_pane_frame_color_override(pane_id, None);
-                            break;
-                        }
+                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                        tab.clear_pane_frame_color_override(pane_id, None);
                     }
                 }
                 screen.render(None)?;
@@ -3653,13 +3616,9 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.unsuppress_pane(pane_id, should_float_if_hidden);
-                        drop(screen.render(None));
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.unsuppress_pane(pane_id, should_float_if_hidden);
+                    drop(screen.render(None));
                 }
                 screen.log_and_report_session_state()?;
             },
@@ -3670,13 +3629,9 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.unsuppress_or_expand_pane(pane_id, should_float_if_hidden);
-                        drop(screen.render(None));
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.unsuppress_or_expand_pane(pane_id, should_float_if_hidden);
+                    drop(screen.render(None));
                 }
                 screen.log_and_report_session_state()?;
             },
@@ -3688,10 +3643,7 @@ pub(crate) fn screen_thread_main(
                 mut completion_tx,
             ) => {
                 let pane_exists = screen.global_panes.pane(pane_id).is_some()
-                    || screen
-                        .tabs
-                        .iter()
-                        .any(|(_, tab)| tab.has_pane_with_pid(&pane_id));
+                    || screen.tab_containing_pane(pane_id).is_some();
                 if !pane_exists {
                     if let Some(c) = completion_tx.as_mut() {
                         c.set_exit_status(1);
@@ -3733,14 +3685,10 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        match tab.rename_pane(new_name, pane_id) {
-                            Ok(()) => drop(screen.render(None)),
-                            Err(e) => log::error!("Failed to rename pane: {:?}", e),
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    match tab.rename_pane(new_name, pane_id) {
+                        Ok(()) => drop(screen.render(None)),
+                        Err(e) => log::error!("Failed to rename pane: {:?}", e),
                     }
                 }
                 screen.log_and_report_session_state()?;
@@ -4408,13 +4356,9 @@ pub(crate) fn screen_thread_main(
                 screen.resize_pane_with_id(resize, pane_id)?;
             },
             ScreenInstruction::EditScrollbackForPaneWithId(pane_id, completion_tx) => {
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.edit_scrollback_for_pane_with_id(pane_id, completion_tx)
-                            .non_fatal();
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.edit_scrollback_for_pane_with_id(pane_id, completion_tx)
+                        .non_fatal();
                 }
                 screen.render(None)?;
             },
@@ -4452,12 +4396,8 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.set_pane_color(pane_id, fg, bg).non_fatal();
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.set_pane_color(pane_id, fg, bg).non_fatal();
                 }
                 screen.render(None)?;
             },
@@ -4482,19 +4422,12 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::CopyTextToClipboard(text, plugin_id) => {
                 let plugin_pane_id = PaneId::Plugin(plugin_id);
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&plugin_pane_id) {
-                        tab.copy_text_to_clipboard(&text)
-                            .with_context(|| {
-                                format!(
-                                    "failed to copy text to clipboard from plugin {}",
-                                    plugin_id
-                                )
-                            })
-                            .non_fatal();
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(plugin_pane_id) {
+                    tab.copy_text_to_clipboard(&text)
+                        .with_context(|| {
+                            format!("failed to copy text to clipboard from plugin {}", plugin_id)
+                        })
+                        .non_fatal();
                 }
                 screen.render(None)?;
             },
@@ -4503,12 +4436,8 @@ pub(crate) fn screen_thread_main(
                     log::error!("{error}");
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.move_pane(pane_id);
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.move_pane(pane_id);
                 }
                 screen.render(None)?;
             },
@@ -4517,16 +4446,12 @@ pub(crate) fn screen_thread_main(
                     log::error!("{error}");
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        match direction {
-                            Direction::Down => tab.move_pane_down(pane_id),
-                            Direction::Up => tab.move_pane_up(pane_id),
-                            Direction::Left => tab.move_pane_left(pane_id),
-                            Direction::Right => tab.move_pane_right(pane_id),
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    match direction {
+                        Direction::Down => tab.move_pane_down(pane_id),
+                        Direction::Up => tab.move_pane_up(pane_id),
+                        Direction::Left => tab.move_pane_left(pane_id),
+                        Direction::Right => tab.move_pane_right(pane_id),
                     }
                 }
                 screen.render(None)?;
@@ -4537,12 +4462,8 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.clear_screen_for_pane_id(pane_id);
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.clear_screen_for_pane_id(pane_id);
                 }
                 screen.render(None)?;
             },
@@ -4552,19 +4473,13 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_up(terminal_pane_id)?;
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!(
-                                "Currently only terminal panes are supported for scrolling up"
-                            );
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_up(terminal_pane_id)?;
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!("Currently only terminal panes are supported for scrolling up");
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4576,19 +4491,15 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_down(terminal_pane_id)?;
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!(
-                                "Currently only terminal panes are supported for scrolling down"
-                            );
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_down(terminal_pane_id)?;
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!(
+                            "Currently only terminal panes are supported for scrolling down"
+                        );
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4605,19 +4516,15 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_to_top(terminal_pane_id);
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!(
-                                "Currently only terminal panes are supported for scrolling to top"
-                            );
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_to_top(terminal_pane_id);
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!(
+                            "Currently only terminal panes are supported for scrolling to top"
+                        );
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4629,17 +4536,15 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_to_bottom(terminal_pane_id);
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!("Currently only terminal panes are supported for scrolling to bottom");
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_to_bottom(terminal_pane_id);
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!(
+                            "Currently only terminal panes are supported for scrolling to bottom"
+                        );
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4653,19 +4558,13 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_page_up(terminal_pane_id);
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!(
-                                "Currently only terminal panes are supported for scrolling"
-                            );
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_page_up(terminal_pane_id);
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!("Currently only terminal panes are supported for scrolling");
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4677,19 +4576,13 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            tab.scroll_terminal_page_down(terminal_pane_id);
-                        } else {
-                            // this is because to do this with plugins, we need the client_id -
-                            // which we do not have (yet?) in this context...
-                            log::error!(
-                                "Currently only terminal panes are supported for scrolling"
-                            );
-                        }
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if let PaneId::Terminal(terminal_pane_id) = pane_id {
+                        tab.scroll_terminal_page_down(terminal_pane_id);
+                    } else {
+                        // this is because to do this with plugins, we need the client_id -
+                        // which we do not have (yet?) in this context...
+                        log::error!("Currently only terminal panes are supported for scrolling");
                     }
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
@@ -4700,12 +4593,8 @@ pub(crate) fn screen_thread_main(
                     log::error!("{error}");
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_pane_fullscreen(pane_id);
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_pane_fullscreen(pane_id);
                 }
                 screen.render(None)?;
             },
@@ -4722,13 +4611,9 @@ pub(crate) fn screen_thread_main(
                     log::error!("{error}");
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
-                            .non_fatal();
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
+                        .non_fatal();
                 }
                 screen.render(None)?;
             },
@@ -4967,23 +4852,18 @@ pub(crate) fn screen_thread_main(
                 client_id,
             ) => {
                 {
-                    let all_tabs = screen.get_tabs_mut();
                     for pane_id in pane_ids_to_highlight {
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
-                                tab.add_highlight_pane_frame_color_override(
-                                    pane_id,
-                                    None,
-                                    Some(client_id),
-                                );
-                            }
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                            tab.add_highlight_pane_frame_color_override(
+                                pane_id,
+                                None,
+                                Some(client_id),
+                            );
                         }
                     }
                     for pane_id in pane_ids_to_unhighlight {
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
-                                tab.clear_pane_frame_color_override(pane_id, Some(client_id));
-                            }
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                            tab.clear_pane_frame_color_override(pane_id, Some(client_id));
                         }
                     }
                     screen.render(None)?;
@@ -5002,21 +4882,18 @@ pub(crate) fn screen_thread_main(
                     continue;
                 }
                 {
-                    let all_tabs = screen.get_tabs_mut();
                     let mut ejected_panes_in_group = vec![];
                     for pane_id in pane_ids_to_float {
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
-                                if !tab.pane_id_is_floating(&pane_id) {
-                                    ejected_panes_in_group.push(pane_id);
-                                    tab.toggle_pane_embed_or_floating_for_pane_id(
-                                        pane_id,
-                                        Some(client_id),
-                                    )
-                                    .non_fatal();
-                                }
-                                tab.show_floating_panes();
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                            if !tab.pane_id_is_floating(&pane_id) {
+                                ejected_panes_in_group.push(pane_id);
+                                tab.toggle_pane_embed_or_floating_for_pane_id(
+                                    pane_id,
+                                    Some(client_id),
+                                )
+                                .non_fatal();
                             }
+                            tab.show_floating_panes();
                         }
                     }
                     screen.render(None)?;
@@ -5040,21 +4917,18 @@ pub(crate) fn screen_thread_main(
                     continue;
                 }
                 {
-                    let all_tabs = screen.get_tabs_mut();
                     let mut embedded_panes_in_group = vec![];
                     for pane_id in pane_ids_to_float {
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
-                                if tab.pane_id_is_floating(&pane_id) {
-                                    embedded_panes_in_group.push(pane_id);
-                                    tab.toggle_pane_embed_or_floating_for_pane_id(
-                                        pane_id,
-                                        Some(client_id),
-                                    )
-                                    .non_fatal();
-                                }
-                                tab.hide_floating_panes();
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                            if tab.pane_id_is_floating(&pane_id) {
+                                embedded_panes_in_group.push(pane_id);
+                                tab.toggle_pane_embed_or_floating_for_pane_id(
+                                    pane_id,
+                                    Some(client_id),
+                                )
+                                .non_fatal();
                             }
+                            tab.hide_floating_panes();
                         }
                     }
                     screen.render(None)?;
@@ -5117,24 +4991,16 @@ pub(crate) fn screen_thread_main(
                 highlights,
             } => {
                 let style = screen.style.clone();
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.set_plugin_regex_highlights_for_pane(
-                            pane_id, plugin_id, highlights, &style,
-                        );
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.set_plugin_regex_highlights_for_pane(
+                        pane_id, plugin_id, highlights, &style,
+                    );
                 }
                 screen.render(None)?;
             },
             ScreenInstruction::ClearPluginHighlights { pane_id, plugin_id } => {
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.clear_plugin_highlights_for_pane(pane_id, plugin_id);
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.clear_plugin_highlights_for_pane(pane_id, plugin_id);
                 }
                 screen.render(None)?;
             },
@@ -5153,20 +5019,16 @@ pub(crate) fn screen_thread_main(
                     // Write response to the pane if the app expects it:
                     // capability query answers (q flag) or activation reports (r flag)
                     if app_wants_report || is_query {
-                        let all_tabs = screen.get_tabs_mut();
-                        for tab in all_tabs.values_mut() {
-                            if tab.has_pane_with_pid(&pane_id) {
-                                tab.write_to_pane_id(
-                                    &None,
-                                    rewritten_bytes,
-                                    false,
-                                    pane_id,
-                                    None,
-                                    None,
-                                )
-                                .non_fatal();
-                                break;
-                            }
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                            tab.write_to_pane_id(
+                                &None,
+                                rewritten_bytes,
+                                false,
+                                pane_id,
+                                None,
+                                None,
+                            )
+                            .non_fatal();
                         }
                     }
                     // Focus the pane on activation click (not on query responses)
@@ -5221,21 +5083,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.scroll_up_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.scroll_up_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5246,21 +5097,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.scroll_down_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.scroll_down_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5276,21 +5116,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.scroll_to_top_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.scroll_to_top_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5301,21 +5130,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.scroll_to_bottom_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.scroll_to_bottom_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5328,21 +5146,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.page_scroll_up_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.page_scroll_up_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5353,21 +5160,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.page_scroll_down_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.page_scroll_down_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5380,21 +5176,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.half_page_scroll_up_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.half_page_scroll_up_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5407,21 +5192,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.half_page_scroll_down_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.half_page_scroll_down_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.sync_scroll_mode_for_pane_id(pane_id)?;
                 screen.render(None)?;
@@ -5433,21 +5207,10 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.resize_by_pane_id(pane_id, strategy);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.resize_by_pane_id(pane_id, strategy);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -5470,21 +5233,10 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.move_pane_by_pane_id(pane_id, direction);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.move_pane_by_pane_id(pane_id, direction);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -5495,21 +5247,10 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.move_pane_backwards_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.move_pane_backwards_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -5520,41 +5261,23 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.clear_screen_by_pane_id(pane_id).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.clear_screen_by_pane_id(pane_id).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
             },
             ScreenInstruction::EditScrollbackWithPaneId(pane_id, ansi, completion_tx) => {
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        if ansi {
-                            tab.edit_scrollback_raw_for_pane_with_id(pane_id, completion_tx)
-                                .non_fatal();
-                        } else {
-                            tab.edit_scrollback_for_pane_with_id(pane_id, completion_tx)
-                                .non_fatal();
-                        }
-                        found = true;
-                        break;
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    if ansi {
+                        tab.edit_scrollback_raw_for_pane_with_id(pane_id, completion_tx)
+                            .non_fatal();
+                    } else {
+                        tab.edit_scrollback_for_pane_with_id(pane_id, completion_tx)
+                            .non_fatal();
                     }
-                }
-                if !found {
+                } else {
                     log::error!("Pane with id {:?} not found", pane_id);
                 }
                 screen.render(None)?;
@@ -5565,21 +5288,10 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_fullscreen_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_fullscreen_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -5590,21 +5302,10 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_no_ui_fullscreen_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_no_ui_fullscreen_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
@@ -5615,22 +5316,11 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
-                            .non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
+                        .non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;
@@ -5642,17 +5332,10 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.close_pane_by_pane_id(pane_id, completion_tx)
-                            .non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.close_pane_by_pane_id(pane_id, completion_tx)
+                        .non_fatal();
+                } else {
                     log::error!("Pane with id {:?} not found", pane_id);
                 }
                 screen.render(None)?;
@@ -5665,41 +5348,19 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.rename_pane_by_pane_id(pane_id, name).non_fatal();
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.rename_pane_by_pane_id(pane_id, name).non_fatal();
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UndoRenamePaneWithPaneId(pane_id, mut _completion_tx) => {
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.undo_rename_pane_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.undo_rename_pane_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
                 screen.render(None)?;
             },
@@ -5709,21 +5370,10 @@ pub(crate) fn screen_thread_main(
                 {
                     continue;
                 }
-                let all_tabs = screen.get_tabs_mut();
-                let mut found = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.toggle_pane_pinned_by_pane_id(pane_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    log::error!("Pane with id {:?} not found", pane_id);
-                    if let Some(ref mut c) = _completion_tx {
-                        c.set_exit_status(1);
-                        c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.toggle_pane_pinned_by_pane_id(pane_id);
+                } else {
+                    Screen::report_pane_not_found(pane_id, &mut _completion_tx);
                 }
             },
             // Tab-targeting CLI handlers
