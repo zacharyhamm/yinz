@@ -1104,7 +1104,14 @@ pub enum WebServerStatus {
     Ord,
 )]
 #[strum_discriminants(derive(
-    EnumString, EnumIter, Hash, Serialize, Deserialize, Display, PartialOrd, Ord
+    EnumString,
+    EnumIter,
+    Hash,
+    Serialize,
+    Deserialize,
+    Display,
+    PartialOrd,
+    Ord
 ))]
 #[strum_discriminants(name(PermissionType))]
 #[non_exhaustive]

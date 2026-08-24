@@ -231,7 +231,12 @@ Two things to know before changing this:
   permission system is the only thing standing between a plugin and the server's authority, and
   an unrestricted `io` would make it decorative.
 
-`PluginCommand` does not derive `Deserialize`, so Lua→command marshalling is hand-written in
-`lua/command.rs` for the commands wrapped so far. The intended way to reach the full ~200-command
-surface is to add that derive and replace the body of `plugin_command_from_lua` with a
-`from_value` call, not to keep adding match arms.
+`PluginCommand` derives `Deserialize`, and `lua/command.rs` is one `from_value` call, so the whole
+command surface is reachable from Lua and no command needs a match arm. Two consequences worth
+knowing: serde's variant names are now a second contract alongside the hand-written protobuf one
+in `plugin_api/plugin_command.rs` (a test walks `CommandType` to catch drift), and a new command
+needs nothing at all done to it to be callable from Lua.
+
+Replies are the exception, and are still per-command: the response types are prost-generated with
+no serde representation, so `lua/response.rs` decodes the ones it knows and hands back raw bytes
+for the rest. `zellij-tile/src/shim.rs` is the reference for what each response means.

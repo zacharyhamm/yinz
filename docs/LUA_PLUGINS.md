@@ -107,15 +107,60 @@ Handlers run before `update`, and either mechanism can request a render.
 
 ## Commands
 
+Every host command a wasm plugin can call is reachable as `zellij.<command>`, in snake_case:
+
 ```lua
-zellij.subscribe(events)          zellij.set_selectable(bool)
-zellij.request_permission(perms)  zellij.open_terminal(cwd)
-zellij.close_self()               zellij.request_render()
-zellij.set_timeout(seconds)
+zellij.new_tab { name = "logs" }
+zellij.open_terminal("/tmp")
+zellij.focus_next_pane()
+local ids = zellij.get_plugin_ids()
 ```
 
-`zellij.command(name, args)` calls a command by name, for anything the prelude has not given a
-named wrapper yet. It only reaches commands zellij knows how to marshal - see *Current limits*.
+There is no list to keep up with here, and no wrapper to wait for: a command zellij has is a
+command a plugin can call. `zellij.command(name, args)` does the same thing with the name as a
+string, for a name computed at runtime.
+
+Arguments follow the shape of the command, and there are four:
+
+| The command takes | You write |
+|---|---|
+| nothing | `zellij.close_self()` |
+| one value | `zellij.set_timeout(1.0)` |
+| several values | `zellij.rename_tab(0, "logs")` |
+| named fields | `zellij.new_tab { name = "logs", cwd = "/tmp" }` |
+
+A command taking several values also accepts them by name where that reads better -
+`zellij.rename_tab { tab_index = 0, name = "logs" }`. Fields you leave out are absent, not empty:
+a command with no required arguments can be called with none.
+
+A few things zellij spells as Rust types have a helper, so you do not have to know that:
+
+```lua
+zellij.terminal_pane(3)          -- a PaneId; zellij.plugin_pane(3) for the other kind
+zellij.write("echo hi\r")        -- bytes, from a string
+zellij.write_to_pane_id("echo hi\r", zellij.terminal_pane(3))
+```
+
+### Commands that answer
+
+A command that asks zellij something returns it:
+
+```lua
+local ids = zellij.get_plugin_ids()          -- a table
+local version = zellij.get_zellij_version()  -- a string
+local layout = zellij.dump_layout("default") -- a string of KDL
+local pane_id = zellij.open_command_pane { { path = "sh", args = { "-c", "date" } }, {} }
+```
+
+The pane-opening commands answer with the id of the pane they made, which is how one command
+feeds the next. A query zellij cannot answer raises, so wrap it in `pcall` if that is a case you
+want to handle rather than a bug.
+
+Not every reply is decoded yet - see *Current limits*. And a few commands do not answer at all
+but send an **event** instead: `zellij.list_clients()` returns nothing, and the answer arrives as
+a `list_clients` event, so subscribe to it.
+
+### Permissions
 
 Privileged commands need permission, which the user is prompted for once:
 
@@ -125,13 +170,25 @@ function M.load()
 end
 ```
 
-Until permission is granted the commands it covers are refused - the same rule wasm plugins live
-under.
+Calling one you have not been granted is an error naming the permission you need - the same rule
+wasm plugins live under, except that a wasm plugin cannot be told about it and you can:
 
-There is a worked example in `example-plugins/clock.lua`:
+```lua
+local ok, err = pcall(function() zellij.copy_to_clipboard("hi") end)
+-- err: 'copy_to_clipboard' needs the 'WriteToClipboard' permission, ...
+```
+
+There are two worked examples in `example-plugins/`. `clock.lua` is the small one:
 
 ```sh
 zellij plugin --floating -- file:$PWD/example-plugins/clock.lua
+```
+
+and `playground.lua` is a keymap where each key calls a different shape of command and shows what
+came back - the one to read when you want to see the surface in use:
+
+```sh
+zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 ```
 
 ## Errors
@@ -157,10 +214,11 @@ translation wasm plugins get, not by opening `io`.
 
 Everything below is a gap in the Lua binding, not in the plugin system:
 
-- **Commands** - only the ones listed above are wrapped. `zellij.command` reaches the same set
-  by name rather than unlocking the others; the full ~200-command surface is not yet marshalled,
-  so anything else raises "unknown zellij command".
-- **Return values** - commands that reply (`get_plugin_ids` and friends) hand back raw protobuf
-  bytes rather than a Lua table.
+- **Return values** - the commands whose purpose is to answer are decoded into Lua values, as are
+  the pane-opening ones. A reply this does not yet know how to read comes back as the raw
+  protobuf bytes it arrived as, in a string.
 - **Workers** - wasm plugins can spawn background workers; Lua plugins cannot.
 - **Reload on change** - editing a plugin needs an explicit reload.
+- **Typos are caught when called, not when written** - `zellij.<anything>` is a function, because
+  that is what makes every command reachable without a wrapper each. A name zellij does not know
+  raises "unknown zellij command" at the call, naming what you wrote.
