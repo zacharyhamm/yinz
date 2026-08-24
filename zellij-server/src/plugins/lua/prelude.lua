@@ -9,11 +9,17 @@ local zellij = {}
 
 --- The host installs `zellij.__dispatch` for the duration of each call into the plugin and
 --- removes it afterwards, so it is looked up per call rather than captured once here.
-local function dispatch(...)
+---
+--- Names are pascal-cased on the way through, so the host only ever sees a command spelled the
+--- way `PluginCommand` spells it. Doing it here rather than in Rust keeps the case rule in one
+--- place: the host hands the name straight to serde, which uses the variant's own spelling.
+--- The third argument is the spelling the plugin used, which the host only puts in error
+--- messages - so a typo is reported back as it was written rather than pascal-cased.
+local function dispatch(name, args)
   if not zellij.__dispatch then
     error("zellij commands can only be called from inside a plugin entrypoint", 2)
   end
-  return zellij.__dispatch(...)
+  return zellij.__dispatch(zellij.pascal_case(name), args, name)
 end
 
 --- Turn an event as serde serializes it into the shape plugins are written against.
@@ -107,7 +113,7 @@ function zellij.request_permission(permissions)
   for _, permission in ipairs(permissions) do
     table.insert(converted, zellij.pascal_case(permission))
   end
-  return dispatch("request_permission", converted)
+  return dispatch("request_plugin_permissions", converted)
 end
 
 --- Whether this plugin's pane can hold focus. Non-selectable plugins (status bars and the like)
@@ -117,8 +123,15 @@ function zellij.set_selectable(selectable)
 end
 
 --- Open a new terminal pane, optionally in `cwd`.
+---
+--- `OpenTerminal` carries a `FileToOpen` but reads the cwd out of its `path`, so the
+--- obvious-looking `{ cwd = ... }` would silently open the wrong directory. A bare string is
+--- accepted and put where the handler looks.
 function zellij.open_terminal(cwd)
-  return dispatch("open_terminal", cwd)
+  if type(cwd) == "table" then
+    cwd = cwd.cwd or cwd.path
+  end
+  return dispatch("open_terminal", { path = cwd })
 end
 
 --- Ask to be sent a `timer` event in `seconds`. Timers do not repeat; set another one from the
@@ -137,6 +150,79 @@ end
 --- a silent no-op.
 function zellij.command(name, args)
   return dispatch(name, args)
+end
+
+--- A pane's identity. `PaneId` is a Rust enum, so it travels as `{ Terminal = 3 }` rather than a
+--- bare number, and commands that take one want it in that shape.
+function zellij.terminal_pane(id)
+  return { Terminal = id }
+end
+
+function zellij.plugin_pane(id)
+  return { Plugin = id }
+end
+
+--- Commands taking raw bytes want a list of byte values, not a string. Lua has no distinction, so
+--- the conversion is done here and the plugin gets to pass the string it already has.
+local function bytes(text)
+  if type(text) ~= "string" then
+    return text
+  end
+  return { text:byte(1, -1) }
+end
+
+--- Write bytes to this plugin's focused pane, as if they had been typed.
+function zellij.write(text)
+  return dispatch("write", bytes(text))
+end
+
+--- Write bytes to a specific pane. `pane_id` comes from `zellij.terminal_pane`/`plugin_pane`.
+function zellij.write_to_pane_id(text, pane_id)
+  return dispatch("write_to_pane_id", { bytes(text), pane_id })
+end
+
+--- The argument order of the tuple-shaped commands worth naming.
+---
+--- Serde sees a tuple variant as a positional list, which reads badly at three arguments of
+--- three different meanings. Commands listed here also accept a table of named arguments, which
+--- is turned into the positional list the host expects.
+local tuple_fields = {
+  rename_tab = { "tab_index", "name" },
+  rename_tab_with_id = { "tab_id", "name" },
+  rename_terminal_pane = { "pane_id", "name" },
+  rename_plugin_pane = { "pane_id", "name" },
+  focus_terminal_pane = { "pane_id", "should_float_if_hidden", "should_be_in_place_if_hidden" },
+  focus_plugin_pane = { "pane_id", "should_float_if_hidden", "should_be_in_place_if_hidden" },
+  show_pane_with_id = { "pane_id", "should_float_if_hidden", "should_focus_pane" },
+  set_floating_pane_pinned = { "pane_id", "should_be_pinned" },
+  set_pane_borderless = { "pane_id", "borderless" },
+  reveal_pane_with_id = { "pane_id", "label" },
+  notify = { "message", "pane_id" },
+  cli_pipe_output = { "pipe_name", "output" },
+  reconfigure = { "configuration", "write_to_disk" },
+}
+
+--- Turn `{ tab_index = 0, name = "logs" }` into `{ 0, "logs" }` for the commands above. A table
+--- that already looks positional is left alone, so both spellings work.
+local function to_positional(name, args)
+  local fields = tuple_fields[zellij.snake_case(name)]
+  if not fields or type(args) ~= "table" or args[1] ~= nil then
+    return args
+  end
+  local positional = {}
+  local last = 0
+  for index, field in ipairs(fields) do
+    positional[index] = args[field]
+    if args[field] ~= nil then
+      last = index
+    end
+  end
+  -- A trailing `nil` would shorten the list serde sees, so only trailing *absent* arguments are
+  -- dropped: everything up to the last one the caller named is kept.
+  for index = last + 1, #fields do
+    positional[index] = nil
+  end
+  return positional
 end
 
 -- Rendering ----------------------------------------------------------------------------------
@@ -218,5 +304,32 @@ function zellij.__load(plugin, config)
     plugin.load(config)
   end
 end
+
+--- Every other host command, without a hand-written wrapper each.
+---
+--- The wrappers above are real fields and so take precedence; anything else is manufactured on
+--- lookup, which is what makes the whole `PluginCommand` surface reachable as `zellij.<command>`.
+--- A command called with several arguments passes them as the positional list a tuple-shaped
+--- command wants; one called with a single table passes it through.
+---
+--- Names beginning with an underscore are excluded: `__dispatch` and friends are the host's own,
+--- and a manufactured function in their place would be indistinguishable from the real one.
+setmetatable(zellij, {
+  __index = function(_, name)
+    if type(name) ~= "string" or name:sub(1, 1) == "_" then
+      return nil
+    end
+    return function(...)
+      local count = select("#", ...)
+      if count == 0 then
+        return dispatch(name, nil)
+      elseif count == 1 then
+        return dispatch(name, to_positional(name, (...)))
+      else
+        return dispatch(name, { ... })
+      end
+    end
+  end,
+})
 
 return zellij

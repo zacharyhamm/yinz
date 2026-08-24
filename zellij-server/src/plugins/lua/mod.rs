@@ -115,10 +115,11 @@ impl LuaPlugin {
             // Built before `__dispatch` is installed so that a failure here cannot leave it
             // installed with nothing to clear it.
             let args = args(plugin.clone())?;
-            let dispatch_fn =
-                scope.create_function(|lua, (command_name, args): (String, LuaValue)| {
-                    dispatch(lua, &env, command_name, args)
-                })?;
+            let dispatch_fn = scope.create_function(
+                |lua, (command_name, args, spelling): (String, LuaValue, Option<String>)| {
+                    dispatch(lua, &env, command_name, args, spelling)
+                },
+            )?;
             zellij.set("__dispatch", dispatch_fn)?;
             let out = entry.call::<R>(args);
             // Cleared whether or not the call succeeded: leaving it installed would let a plugin
@@ -141,8 +142,12 @@ fn dispatch(
     env: &RefCell<&mut PluginEnv>,
     command_name: String,
     args: LuaValue,
+    // How the plugin spelled the command. Carried only so that errors quote it back the way it
+    // was written, rather than in the pascal-cased spelling the prelude hands over.
+    spelling: Option<String>,
 ) -> mlua::Result<LuaValue> {
-    let command = plugin_command_from_lua(&command_name, args)
+    let spelling = spelling.unwrap_or_else(|| command_name.clone());
+    let command = plugin_command_from_lua(lua, &command_name, &spelling, args)
         .map_err(|e| mlua::Error::runtime(format!("{:#}", e)))?;
 
     // `try_borrow_mut` rather than `borrow_mut`: a re-entrant call would otherwise panic, and a
