@@ -75,6 +75,9 @@ pub enum ChildSignal {
     Hup,
     Int,
     Kill,
+    /// Continue a stopped child. Only ever sent for a local pane today — a
+    /// remote broker never reports a suspend, so nothing can ask for this.
+    Cont,
 }
 
 /// Why a `Resume` was refused, and so whether waiting could help.

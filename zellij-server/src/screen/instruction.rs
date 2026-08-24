@@ -190,6 +190,10 @@ pub enum ScreenInstruction {
     ), // i32 -> optional exit
     // status
     HoldPane(PaneId, Option<i32>, RunCommand),
+    /// The pane's root process stopped (`true`) or started running again
+    /// (`false`). Not a kind of hold: the pane keeps its screen contents and its
+    /// pty, it just cannot be woken from inside itself.
+    SetPaneSuspended(PaneId, bool),
     UpdatePaneName(Vec<u8>, ClientId, Option<NotificationEnd>),
     /// Where a terminal pane's process is, as pty last saw it. `None` forgets
     /// it, for a pane that has gone.

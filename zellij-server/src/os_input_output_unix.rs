@@ -7,6 +7,7 @@ use nix::{
     sys::{
         signal::{kill, Signal},
         termios,
+        wait::{waitpid, WaitPidFlag, WaitStatus},
     },
     unistd,
 };
@@ -41,7 +42,8 @@ use crate::pty_host::remote::{
 };
 use crate::pty_host::{
     client::{
-        self as pty_host_client, PtyHostHandle, ReleasedPane, ReleasedRemotePane, SpawnParams,
+        self as pty_host_client, ChildRunState, ChildStateCb, PtyHostHandle, ReleasedPane,
+        ReleasedRemotePane, SpawnParams,
     },
     protocol::{WireTermios, WireWinsize},
 };
@@ -201,10 +203,40 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
     }
 }
 
+/// Block until the child exits, reporting every stop and continue on the way.
+///
+/// `nix`'s `waitpid` reaps, so the caller's `Child` must not be waited on again;
+/// `handle_command_exit`'s `try_wait` will simply see `ECHILD` and fall through.
+fn wait_reporting_stops(
+    child_pid: u32,
+    terminal_id: u32,
+    child_state_cb: Option<&ChildStateCb>,
+) -> Option<i32> {
+    let pid = unistd::Pid::from_raw(child_pid as i32);
+    let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+    loop {
+        let state = match waitpid(pid, Some(flags)) {
+            Ok(WaitStatus::Exited(_, code)) => return Some(code),
+            Ok(WaitStatus::Signaled(_, _, _)) => return None,
+            Ok(WaitStatus::Stopped(_, _)) => ChildRunState::Stopped,
+            Ok(WaitStatus::Continued(_)) => ChildRunState::Continued,
+            Ok(_) => continue,
+            Err(nix::errno::Errno::EINTR) => continue,
+            // Nothing left to wait for. Returning is the only safe answer: a
+            // waiter that spun here would leave the pane open forever.
+            Err(_) => return None,
+        };
+        if let Some(cb) = child_state_cb {
+            cb(terminal_id, state);
+        }
+    }
+}
+
 fn handle_openpty(
     open_pty_res: OpenptyResult,
     cmd: RunCommand,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    child_state_cb: Option<ChildStateCb>,
     terminal_id: u32,
 ) -> Result<(RawFd, RawFd)> {
     let err_context = |cmd: &RunCommand| {
@@ -226,7 +258,7 @@ fn handle_openpty(
         .with_context(|| err_context(&cmd));
     }
 
-    let mut child = unsafe {
+    let child = unsafe {
         let cmd = cmd.clone();
         let command = &mut Command::new(cmd.command);
         if let Some(current_dir) = cmd.cwd {
@@ -255,8 +287,12 @@ fn handle_openpty(
 
     let child_id = child.id();
     thread::spawn(move || {
-        child.wait().with_context(|| err_context(&cmd)).fatal();
-        let exit_status = handle_command_exit(child)
+        // `Child::wait` is `waitpid` without `WUNTRACED`, so it cannot tell a
+        // stopped child from a busy one — and a `^Z`'d command pane looks
+        // exactly like a hang. Wait for the stops too, and only then hand the
+        // now-reaped child to `handle_command_exit` for its signal handling.
+        let exit_status = wait_reporting_stops(child.id(), terminal_id, child_state_cb.as_ref());
+        handle_command_exit(child)
             .with_context(|| err_context(&cmd))
             .fatal();
         let _ = unistd::close(pid_secondary);
@@ -273,6 +309,7 @@ fn handle_terminal(
     failover_cmd: Option<RunCommand>,
     orig_termios: Option<termios::Termios>,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    child_state_cb: Option<ChildStateCb>,
     terminal_id: u32,
 ) -> Result<(RawFd, RawFd)> {
     let err_context = || "failed to spawn child terminal".to_string();
@@ -280,12 +317,17 @@ fn handle_terminal(
     // Create a pipe to allow the child the communicate the shell's pid to its
     // parent.
     match openpty(None, &orig_termios) {
-        Ok(open_pty_res) => handle_openpty(open_pty_res, cmd, quit_cb, terminal_id),
+        Ok(open_pty_res) => handle_openpty(open_pty_res, cmd, quit_cb, child_state_cb, terminal_id),
         Err(e) => match failover_cmd {
-            Some(failover_cmd) => {
-                handle_terminal(failover_cmd, None, orig_termios, quit_cb, terminal_id)
-                    .with_context(err_context)
-            },
+            Some(failover_cmd) => handle_terminal(
+                failover_cmd,
+                None,
+                orig_termios,
+                quit_cb,
+                child_state_cb,
+                terminal_id,
+            )
+            .with_context(err_context),
             None => Err::<(i32, i32), _>(e)
                 .context("failed to start pty")
                 .with_context(err_context)
@@ -356,6 +398,9 @@ pub(crate) struct UnixPtyBackend {
     /// once rather than per spawn.
     wire_termios: Option<WireTermios>,
     terminal_id_to_host: Arc<Mutex<BTreeMap<u32, PtyHostHandle>>>,
+    /// Told when any pane's root process stops or resumes. Registered once by the
+    /// pty thread rather than passed per pane — see `ChildStateCb`.
+    child_state_cb: Arc<Mutex<Option<ChildStateCb>>>,
 }
 
 /// Try to write as many bytes from `buf` as possible to `fd` without blocking.
@@ -400,6 +445,7 @@ impl UnixPtyBackend {
             host_bin,
             wire_termios,
             terminal_id_to_host: Arc::new(Mutex::new(BTreeMap::new())),
+            child_state_cb: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -483,7 +529,21 @@ impl UnixPtyBackend {
             // composed for it, because only a remote pane cannot inherit ours.
             env: vec![],
             login_session: false,
+            // This server listens for the stops job control makes possible and
+            // can send `SIGCONT` back, so a pane that suspends is recoverable.
+            job_control: true,
         })
+    }
+
+    /// Register the one callback that hears about every pane's suspend/resume.
+    pub fn set_child_state_callback(&self, cb: ChildStateCb) {
+        if let Ok(mut guard) = self.child_state_cb.lock() {
+            *guard = Some(cb);
+        }
+    }
+
+    fn child_state_cb(&self) -> Option<ChildStateCb> {
+        self.child_state_cb.lock().ok()?.clone()
     }
 
     pub fn spawn_terminal(
@@ -501,7 +561,7 @@ impl UnixPtyBackend {
             if let Some(host_bin) = self.host_bin.as_ref() {
                 match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
                     Ok(pending) => {
-                        let spawned = pending.finish(quit_cb);
+                        let spawned = pending.finish(quit_cb, self.child_state_cb());
                         let master_fd = spawned.master.into_raw_fd();
                         self.terminal_id_to_transport
                             .lock()
@@ -545,6 +605,7 @@ impl UnixPtyBackend {
             failover_cmd,
             orig_termios.clone(),
             quit_cb,
+            self.child_state_cb(),
             terminal_id,
         )?;
         self.terminal_id_to_transport
@@ -689,6 +750,21 @@ impl UnixPtyBackend {
 
     pub fn send_sigint(&self, pid: u32) -> Result<()> {
         let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGINT));
+        Ok(())
+    }
+
+    /// Continue a stopped pane, the way a shell's `fg` does.
+    ///
+    /// Aimed at the *process group*, not the pid: `login_tty` made the child a
+    /// session leader with `pgid == pid`, and `^Z` stopped everything in its
+    /// foreground group, not just the leader. Continuing only the leader would
+    /// leave the rest of a pipeline asleep. The bare pid is a fallback for the
+    /// case where the child never got a group of its own.
+    pub fn send_sigcont(&self, pid: u32) -> Result<()> {
+        let group = unistd::Pid::from_raw(-(pid as i32));
+        if kill(group, Some(Signal::SIGCONT)).is_err() {
+            let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGCONT));
+        }
         Ok(())
     }
 
@@ -1003,7 +1079,7 @@ impl UnixPtyBackend {
             terminal_id,
             session_name: zellij_utils::envs::get_session_name().ok(),
         })?;
-        let attached = pending.finish(quit_cb);
+        let attached = pending.finish(quit_cb, self.child_state_cb());
         let master_fd = attached.master.into_raw_fd();
         self.terminal_id_to_transport
             .lock()

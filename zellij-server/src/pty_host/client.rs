@@ -51,6 +51,9 @@ pub struct SpawnParams<'a> {
     /// See `ServerToHostMsg::Spawn::login_session`. Only the remote broker sets
     /// it - a local pane is not a login and must not grow an `SSH_TTY`.
     pub login_session: bool,
+    /// See `ServerToHostMsg::Spawn::job_control`. Set by the local server, which
+    /// listens for the resulting stops; never by the broker, which does not.
+    pub job_control: bool,
 }
 
 /// A supervisor that is up and has handed over its pty, but whose lifecycle
@@ -87,7 +90,7 @@ enum HostProcess {
 }
 
 impl PendingHost {
-    pub fn finish(mut self, quit_cb: QuitCb) -> SpawnedHost {
+    pub fn finish(mut self, quit_cb: QuitCb, child_state_cb: Option<ChildStateCb>) -> SpawnedHost {
         let reported = Arc::new(AtomicBool::new(false));
         let released = Arc::new(AtomicBool::new(false));
         spawn_reader_thread(
@@ -100,6 +103,7 @@ impl PendingHost {
             self.terminal_id,
             self.cmd.clone(),
             quit_cb,
+            child_state_cb,
             reported.clone(),
             released.clone(),
         );
@@ -413,6 +417,26 @@ impl Drop for HostGuard {
 
 pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 
+/// Whether a pane's root process is stopped or running.
+///
+/// Only transitions are ever reported, never a current state: a supervisor with
+/// nobody attached has no one to tell, so a pane adopted while already stopped
+/// stays unmarked until it moves again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildRunState {
+    Stopped,
+    Continued,
+}
+
+/// Told when a pane's root process stops or starts running again.
+///
+/// Deliberately *not* a second parameter on `spawn_terminal` next to `quit_cb`:
+/// that signature is spelled out at some twenty-five sites, most of them test
+/// fakes, and none of them has anything to say about suspension. This is
+/// registered once, on the backend, and is the same closure for every pane —
+/// which it can be, because unlike `quit_cb` it carries no per-pane policy.
+pub type ChildStateCb = Arc<dyn Fn(u32, ChildRunState) + Send + Sync>;
+
 fn handshake_and_spawn(
     control: &UnixStream,
     params: &SpawnParams<'_>,
@@ -468,6 +492,7 @@ fn handshake_and_spawn(
             arg0: params.arg0.clone(),
             env: params.env.clone(),
             login_session: params.login_session,
+            job_control: params.job_control,
         },
     )
     .context("failed to send Spawn")?;
@@ -537,7 +562,7 @@ impl PendingAttach {
         &self.status
     }
 
-    pub fn finish(mut self, quit_cb: QuitCb) -> AttachedHost {
+    pub fn finish(mut self, quit_cb: QuitCb, child_state_cb: Option<ChildStateCb>) -> AttachedHost {
         let reported = Arc::new(AtomicBool::new(false));
         let released = Arc::new(AtomicBool::new(false));
         spawn_reader_thread(
@@ -550,6 +575,7 @@ impl PendingAttach {
             self.terminal_id,
             self.cmd.clone(),
             quit_cb,
+            child_state_cb,
             reported.clone(),
             released.clone(),
         );
@@ -766,6 +792,7 @@ fn spawn_reader_thread(
     terminal_id: u32,
     cmd: RunCommand,
     quit_cb: QuitCb,
+    child_state_cb: Option<ChildStateCb>,
     reported: Arc<AtomicBool>,
     released: Arc<AtomicBool>,
 ) {
@@ -780,6 +807,16 @@ fn spawn_reader_thread(
                         }
                         // Keep reading: the supervisor lingers until it is told to
                         // go, and its EOF is what tells us the pane is finished.
+                    },
+                    Ok(Some(HostToServerMsg::ChildStopped { .. })) => {
+                        if let Some(cb) = child_state_cb.as_ref() {
+                            cb(terminal_id, ChildRunState::Stopped);
+                        }
+                    },
+                    Ok(Some(HostToServerMsg::ChildContinued)) => {
+                        if let Some(cb) = child_state_cb.as_ref() {
+                            cb(terminal_id, ChildRunState::Continued);
+                        }
                     },
                     Ok(Some(other)) => {
                         log::debug!("pty-host {host_id} sent an unexpected {other:?}");

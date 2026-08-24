@@ -172,6 +172,10 @@ impl ServerOsApi for FakeServerOsApi {
             .exit_terminal(pid.saturating_sub(FAKE_PID_BASE), None);
         Ok(())
     }
+    /// Nothing here is ever really stopped, so there is nothing to continue.
+    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+        Ok(())
+    }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new(self.clone())
     }

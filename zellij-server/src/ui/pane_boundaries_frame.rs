@@ -11,8 +11,8 @@ use crate::panes::{
 use crate::tab::GuestChoiceIndicator;
 use crate::ui::boundaries::boundary_type;
 use crate::ui::hint_text::{
-    exit_code_segments, hover_segments, rerun_segments, resize_segments, HintExitStatus, HintLevel,
-    HintSegment, HintTier,
+    exit_code_segments, hover_segments, rerun_segments, resize_segments, suspended_marker_segments,
+    suspended_segments, HintExitStatus, HintLevel, HintSegment, HintTier,
 };
 use crate::ClientId;
 use zellij_utils::data::{client_id_to_colors, PaletteColor, Style};
@@ -122,6 +122,10 @@ pub struct PaneFrame {
     pub other_focused_clients: Vec<ClientId>,
     exit_status: Option<ExitStatus>,
     is_first_run: bool,
+    /// The pane's root process is stopped. Part of the struct rather than looked
+    /// up at render time because `PaneFrame` is compared against the last frame
+    /// to decide whether to repaint at all.
+    is_suspended: bool,
     pane_is_stacked_over: bool,
     pane_is_stacked_under: bool,
     pane_is_stacked: bool,
@@ -162,6 +166,7 @@ impl PaneFrame {
             other_cursors_exist_in_session: frame_params.other_cursors_exist_in_session,
             exit_status: None,
             is_first_run: false,
+            is_suspended: false,
             pane_is_stacked_over: frame_params.pane_is_stacked_over,
             pane_is_stacked_under: frame_params.pane_is_stacked_under,
             pane_is_stacked: frame_params.pane_is_stacked,
@@ -192,6 +197,9 @@ impl PaneFrame {
             Some(exit_status) => Some(ExitStatus::Code(exit_status)),
             None => Some(ExitStatus::Exited),
         };
+    }
+    pub fn indicate_suspended(&mut self) {
+        self.is_suspended = true;
     }
     pub fn indicate_first_run(&mut self) {
         self.is_first_run = true;
@@ -1239,6 +1247,48 @@ impl PaneFrame {
         };
         Ok(res)
     }
+    /// The bottom frame line of a pane whose root process is stopped.
+    ///
+    /// Degrades by tier rather than by dropping halves the way the held
+    /// undertitle does: the marker on its own says the pane is stuck without
+    /// saying what to do about it, so the key is the last thing to go — and only
+    /// for a client that could not act on it anyway.
+    fn render_suspended_undertitle(&self) -> Result<Vec<TerminalCharacter>> {
+        let max_undertitle_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
+        let mut left_boundary =
+            foreground_color(self.get_corner(boundary_type::BOTTOM_LEFT), self.color);
+        let mut right_boundary =
+            foreground_color(self.get_corner(boundary_type::BOTTOM_RIGHT), self.color);
+        let mut rendered = None;
+        if self.is_main_client {
+            for tier in [HintTier::Full, HintTier::Medium, HintTier::Minimal] {
+                let (characters, len) = self.render_hint_segments(&suspended_segments(tier));
+                if len <= max_undertitle_length {
+                    rendered = Some((characters, len));
+                    break;
+                }
+            }
+        }
+        if rendered.is_none() {
+            let (characters, len) = self.render_hint_segments(&suspended_marker_segments());
+            if len <= max_undertitle_length {
+                rendered = Some((characters, len));
+            }
+        }
+        let Some((mut characters, len)) = rendered else {
+            return Ok(self.empty_undertitle(max_undertitle_length));
+        };
+        let mut padding = String::new();
+        for _ in len..max_undertitle_length {
+            padding.push_str(boundary_type::HORIZONTAL);
+        }
+        let mut ret = vec![];
+        ret.append(&mut left_boundary);
+        ret.append(&mut characters);
+        ret.append(&mut foreground_color(&padding, self.color));
+        ret.append(&mut right_boundary);
+        Ok(ret)
+    }
     fn render_mouse_shortcuts_undertitle(&self) -> Result<Vec<TerminalCharacter>> {
         let max_undertitle_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let mut left_boundary =
@@ -1356,6 +1406,15 @@ impl PaneFrame {
                         let y = self.geom.y + row;
                         character_chunks.push(CharacterChunk::new(
                             self.render_mouse_shortcuts_undertitle()
+                                .with_context(err_context)?,
+                            x,
+                            y,
+                        ));
+                    } else if self.is_suspended {
+                        let x = self.geom.x;
+                        let y = self.geom.y + row;
+                        character_chunks.push(CharacterChunk::new(
+                            self.render_suspended_undertitle()
                                 .with_context(err_context)?,
                             x,
                             y,

@@ -315,6 +315,9 @@ impl ServerOsApi for FakeInputOutput {
     fn send_sigint(&self, _pid: u32) -> Result<()> {
         unimplemented!()
     }
+    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+        unimplemented!()
+    }
 }
 
 fn create_new_screen(

@@ -156,6 +156,52 @@ pub fn exit_code_segments(exit_status: HintExitStatus) -> Vec<HintSegment> {
     }
 }
 
+/// The `[ SUSPENDED ]` marker for a pane whose root process was stopped.
+///
+/// Its own segment list rather than a third `HintExitStatus`: the pane has not
+/// exited, and reading it as an exit status is exactly the mistake the hint
+/// exists to prevent.
+pub fn suspended_marker_segments() -> Vec<HintSegment> {
+    vec![
+        HintSegment::plain(" [ "),
+        HintSegment::emphasis_2("SUSPENDED"),
+        HintSegment::plain(" ] "),
+    ]
+}
+
+pub fn suspended_segments(tier: HintTier) -> Vec<HintSegment> {
+    let mut segments = suspended_marker_segments();
+    segments.extend(match tier {
+        HintTier::Full => vec![
+            HintSegment::plain("<"),
+            HintSegment::emphasis("ENTER"),
+            HintSegment::plain(">"),
+            HintSegment::plain(" resume, "),
+            HintSegment::plain("<"),
+            HintSegment::emphasis("Ctrl-c"),
+            HintSegment::plain(">"),
+            HintSegment::plain(" exit "),
+        ],
+        HintTier::Medium => vec![
+            HintSegment::plain("<"),
+            HintSegment::emphasis("ENTER"),
+            HintSegment::plain(">"),
+            HintSegment::plain(" resume "),
+            HintSegment::plain("<"),
+            HintSegment::emphasis("Ctrl-c"),
+            HintSegment::plain(">"),
+            HintSegment::plain(" exit"),
+        ],
+        HintTier::Minimal => vec![
+            HintSegment::plain("<"),
+            HintSegment::emphasis("ENTER"),
+            HintSegment::plain(">"),
+            HintSegment::plain(" resume"),
+        ],
+    });
+    segments
+}
+
 pub fn hover_segments(tier: HintTier) -> Vec<HintSegment> {
     match tier {
         HintTier::Full => vec![
@@ -346,6 +392,15 @@ pub fn held_hint_variants(
         }
         segments.extend(rerun_segments(is_first_run, tier));
         let styled_text = segments_to_styled_text(&segments);
+        variants.insert(styled_text.text.width(), styled_text);
+    }
+    variants
+}
+
+pub fn suspended_hint_variants() -> BTreeMap<usize, StyledText> {
+    let mut variants = BTreeMap::new();
+    for tier in ALL_TIERS {
+        let styled_text = segments_to_styled_text(&suspended_segments(tier));
         variants.insert(styled_text.text.width(), styled_text);
     }
     variants

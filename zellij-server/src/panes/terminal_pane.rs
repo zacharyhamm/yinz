@@ -155,6 +155,13 @@ pub struct TerminalPane {
     search_term: String,
     is_held: Option<(Option<i32>, IsFirstRun, RunCommand)>, // a "held" pane means that its command has either exited and the pane is waiting for a
     // possible user instruction to be re-run, or that the command has not yet been run
+    /// The pane's root process is stopped — `^Z` sent it `SIGTSTP`.
+    ///
+    /// Deliberately not a flavour of `is_held`: holding resets the grid and
+    /// injects a banner, which would throw away exactly the output the user
+    /// suspended in order to keep looking at. A suspended pane keeps everything;
+    /// only the frame and the input handling change.
+    suspended: bool,
     banner: Option<String>, // a banner to be rendered inside this TerminalPane, used for panes
     // held on startup and can possibly be used to display some errors
     pane_frame_color_override: Option<FrameColorOverride>,
@@ -431,6 +438,30 @@ impl Pane for TerminalPane {
             } else {
                 None
             }
+        } else if self.suspended {
+            // Nothing typed here can reach the child: it is stopped, so the pty
+            // would only buffer it. Swallow everything except the two keys that
+            // mean something out here.
+            let is_enter = key_with_modifier
+                .as_ref()
+                .map(|k| k.is_key_without_modifier(BareKey::Enter))
+                .unwrap_or(false)
+                || matches!(
+                    raw_input_bytes.as_slice(),
+                    ENTER_CARRIAGE_RETURN | ENTER_NEWLINE | SPACE
+                );
+            let is_ctrl_c = key_with_modifier
+                .as_ref()
+                .map(|k| k.is_key_with_ctrl_modifier(BareKey::Char('c')))
+                .unwrap_or(false)
+                || raw_input_bytes.as_slice() == CTRL_C;
+            if is_enter {
+                Some(AdjustedInput::ResumeSuspendedProcessInThisPane)
+            } else if is_ctrl_c {
+                Some(AdjustedInput::CloseThisPane)
+            } else {
+                None
+            }
         } else if self.is_held.is_some() {
             let is_hocus_agent = self.is_held.as_ref().is_some_and(|(_, _, command)| {
                 command
@@ -617,6 +648,9 @@ impl Pane for TerminalPane {
             frame_params,
         )
         .is_pinned(is_pinned);
+        if self.suspended {
+            frame.indicate_suspended();
+        }
         if let Some((exit_status, is_first_run, _run_command)) = &self.is_held {
             if *is_first_run {
                 frame.indicate_first_run();
@@ -1104,6 +1138,9 @@ impl Pane for TerminalPane {
             .as_ref()
             .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
         self.invoked_with = Some(Run::Command(run_command.clone()));
+        // A held pane has no running process to be stopped, and a stale flag
+        // would leave the resume hint up over a dead pane forever.
+        self.suspended = false;
         self.is_held = Some((exit_status, is_first_run, run_command));
         if let Some(notification_end) = self.notification_end.as_mut() {
             if let Some(exit_status) = exit_status {
@@ -1225,6 +1262,16 @@ impl Pane for TerminalPane {
     fn is_held(&self) -> bool {
         self.is_held.is_some()
     }
+    fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+    fn set_suspended(&mut self, suspended: bool) {
+        if self.suspended == suspended {
+            return;
+        }
+        self.suspended = suspended;
+        self.set_should_render(true);
+    }
     fn exited(&self) -> bool {
         match self.is_held {
             Some((_, is_first_run, _)) => !is_first_run,
@@ -1244,6 +1291,7 @@ impl Pane for TerminalPane {
         // is not in the right sort of state
         self.is_held.take().map(|(_, _, run_command)| {
             self.is_held = None;
+            self.suspended = false;
             self.grid.reset_terminal_state();
             self.set_should_render(true);
             self.remove_banner();
@@ -1463,6 +1511,7 @@ impl TerminalPane {
             fake_cursor_locations: HashSet::new(),
             search_term: String::new(),
             is_held: None,
+            suspended: false,
             banner: None,
             pane_frame_color_override: None,
             has_bell_notification: false,
@@ -1651,6 +1700,7 @@ impl TerminalPane {
     fn handle_held_run(&mut self) -> Option<AdjustedInput> {
         self.is_held.take().map(|(_, _, run_command)| {
             self.is_held = None;
+            self.suspended = false;
             self.grid.reset_terminal_state();
             self.set_should_render(true);
             self.remove_banner();
