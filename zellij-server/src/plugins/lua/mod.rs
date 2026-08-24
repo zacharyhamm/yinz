@@ -164,9 +164,7 @@ fn dispatch(
     // Asked here rather than left to `run_plugin_command`, whose denied branch only logs: a wasm
     // guest is mid-call and cannot be handed a refusal, but a Lua plugin's command is an ordinary
     // function call, and silently doing nothing is the worst answer it could get.
-    if let (PermissionStatus::Denied, Some(permission)) =
-        check_command_permission(&env, &command)
-    {
+    if let (PermissionStatus::Denied, Some(permission)) = check_command_permission(&env, &command) {
         return Err(mlua::Error::runtime(format!(
             "'{spelling}' needs the '{permission}' permission, which this plugin has not been \
              granted - ask for it in `load` with zellij.request_permission {{ \"{permission}\" }}"

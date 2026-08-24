@@ -36,11 +36,7 @@ use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVers
 
 /// Decode the reply `bytes` a `command` produced. `None` means "no table for this one" - the
 /// caller hands the bytes back untouched.
-pub fn response_to_lua(
-    lua: &Lua,
-    command: CommandType,
-    bytes: &[u8],
-) -> Option<Result<LuaValue>> {
+pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<Result<LuaValue>> {
     Some(match command {
         CommandType::GetPluginIds => decode(bytes).and_then(|response: ProtobufPluginIds| {
             let ids = PluginIds::try_from(response).map_err(|e| anyhow!("{}", e))?;
@@ -55,23 +51,23 @@ pub fn response_to_lua(
         CommandType::GetLayoutDir => {
             decode(bytes).and_then(|r: ProtobufGetLayoutDirResponse| value(lua, r.layout_dir))
         },
-        CommandType::GetSessionEnvironmentVariables => decode(bytes).and_then(
-            |r: ProtobufGetSessionEnvironmentVariablesResponse| {
+        CommandType::GetSessionEnvironmentVariables => {
+            decode(bytes).and_then(|r: ProtobufGetSessionEnvironmentVariablesResponse| {
                 let vars: std::collections::BTreeMap<String, String> = r
                     .env_vars
                     .into_iter()
                     .map(|env_var| (env_var.name, env_var.value))
                     .collect();
                 value(lua, vars)
-            },
-        ),
-        CommandType::GetPluginAliasConfiguration => decode(bytes).and_then(
-            |r: ProtobufGetPluginAliasConfigurationResponse| {
+            })
+        },
+        CommandType::GetPluginAliasConfiguration => {
+            decode(bytes).and_then(|r: ProtobufGetPluginAliasConfigurationResponse| {
                 let configuration: std::collections::BTreeMap<String, String> =
                     r.configuration.into_iter().collect();
                 value(lua, configuration)
-            },
-        ),
+            })
+        },
         CommandType::GetFocusedPaneInfo => {
             decode(bytes).and_then(|r: ProtobufGetFocusedPaneInfoResponse| match r.result {
                 Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
@@ -91,24 +87,24 @@ pub fn response_to_lua(
                 None => Err(anyhow!("zellij answered with nothing")),
             })
         },
-        CommandType::GetPaneInfo => decode(bytes).and_then(|r: ProtobufGetPaneInfoResponse| {
-            match r.pane_info {
+        CommandType::GetPaneInfo => {
+            decode(bytes).and_then(|r: ProtobufGetPaneInfoResponse| match r.pane_info {
                 Some(info) => value(
                     lua,
                     zellij_utils::data::PaneInfo::try_from(info).map_err(|e| anyhow!("{}", e))?,
                 ),
                 None => Ok(LuaValue::Nil),
-            }
-        }),
-        CommandType::GetTabInfo => decode(bytes).and_then(|r: ProtobufGetTabInfoResponse| {
-            match r.tab_info {
+            })
+        },
+        CommandType::GetTabInfo => {
+            decode(bytes).and_then(|r: ProtobufGetTabInfoResponse| match r.tab_info {
                 Some(info) => value(
                     lua,
                     zellij_utils::data::TabInfo::try_from(info).map_err(|e| anyhow!("{}", e))?,
                 ),
                 None => Ok(LuaValue::Nil),
-            }
-        }),
+            })
+        },
         CommandType::GetPaneCwd => {
             decode(bytes).and_then(|r: ProtobufGetPaneCwdResponse| match r.result {
                 Some(get_pane_cwd_response::Result::Cwd(cwd)) => value(lua, cwd),
@@ -132,10 +128,11 @@ pub fn response_to_lua(
                 None => Ok(LuaValue::Nil),
             })
         },
-        CommandType::CurrentSessionLastSavedTime => decode(bytes)
-            .and_then(|r: ProtobufCurrentSessionLastSavedTimeResponse| {
+        CommandType::CurrentSessionLastSavedTime => {
+            decode(bytes).and_then(|r: ProtobufCurrentSessionLastSavedTimeResponse| {
                 value(lua, r.timestamp_millis)
-            }),
+            })
+        },
         CommandType::DumpLayout => {
             decode(bytes).and_then(|r: ProtobufDumpLayoutResponse| match r.result {
                 Some(dump_layout_response::Result::LayoutContent(layout)) => value(lua, layout),

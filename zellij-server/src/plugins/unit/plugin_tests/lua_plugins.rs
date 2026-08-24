@@ -6,6 +6,7 @@
 
 use super::*;
 use zellij_test_support::Watched;
+use zellij_utils::input::command::TerminalAction;
 
 /// Load the Lua fixture and return everything the screen was told to draw for it.
 fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -365,5 +366,89 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         rendered.iter().any(|r| r.contains("payload carried")),
         "the reserved-word key should have survived to `load`, got: {:?}",
         rendered
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_newly_reachable_command_works_end_to_end() {
+    // `open_command_pane` was one of the ~220 commands a Lua plugin could not call: its payload is
+    // a `CommandToRun`, a struct nested inside a tuple variant, and nothing hand-marshalled it.
+    // This runs the shipped playground plugin through the real plugin thread and presses the key
+    // that calls it, so the whole path is covered - the metatable that manufactures the wrapper,
+    // serde building the nested payload, the permission check, and the handler itself.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_playground.kdl");
+    let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 20 };
+
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::SpawnTerminal,
+        pty_receiver,
+        1
+    );
+    let received_screen_instructions = Watched::new(vec![]);
+    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
+        received_screen_instructions,
+        ScreenInstruction::Exit,
+        screen_receiver,
+        1,
+        &PermissionType::RunCommands,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    let playground = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../example-plugins/playground.lua")
+        .display()
+        .to_string();
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_playground".to_owned()),
+        lua_run_plugin_at(&playground, BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 'c' is what the playground maps to `zellij.open_command_pane`.
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Char('c'))),
+    )]));
+    pty_thread.join().unwrap();
+    teardown();
+
+    let ran_the_command = received_pty_instructions.lock().iter().any(|instruction| {
+        matches!(
+            instruction,
+            PtyInstruction::SpawnTerminal(Some(TerminalAction::RunCommand(command)), ..)
+                if command.command.ends_with("sh")
+        )
+    });
+    assert!(
+        ran_the_command,
+        "expected `zellij.open_command_pane` to reach the pty thread with its command, got: {:?}",
+        received_pty_instructions.lock()
     );
 }

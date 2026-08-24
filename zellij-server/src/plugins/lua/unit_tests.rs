@@ -410,20 +410,65 @@ fn commands_cannot_be_called_outside_an_entrypoint() {
     assert!(plugin.render(1, 1).is_err());
 }
 
+fn example_plugin(name: &str) -> String {
+    std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../example-plugins")
+            .join(name),
+    )
+    .expect("the example plugin should be in the repo")
+}
+
 #[test]
 fn the_shipped_example_plugin_loads_and_renders() {
     // `example-plugins/clock.lua` is what the docs point new plugin authors at, so it should not
     // be allowed to rot.
-    let source = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/clock.lua"),
-    )
-    .expect("the example plugin should be in the repo");
+    let source = example_plugin("clock.lua");
     let mut plugin = load_lua_plugin(&source, "clock.lua", test_env()).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     let rendered = String::from_utf8(plugin.render(5, 40).unwrap()).unwrap();
     assert!(
         rendered.contains("the time is") && rendered.contains("00:00"),
         "got: {}",
+        rendered
+    );
+}
+
+#[test]
+fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
+    // `example-plugins/playground.lua` is the worked example for the command surface, so it is
+    // worth more than a load-and-render check: every key it offers is pressed here. None of them
+    // can do anything in a fixture with no threads behind it, but all of them go through
+    // marshalling, and a shape this file gets wrong fails here rather than in front of a user.
+    let source = example_plugin("playground.lua");
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(
+        PermissionType::iter()
+            .filter(|permission| permission != &PermissionType::WriteToClipboard)
+            .collect(),
+    )));
+    let mut plugin = load_lua_plugin(&source, "playground.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let rendered = String::from_utf8(plugin.render(20, 60).unwrap()).unwrap();
+    assert!(
+        rendered.contains("zellij lua playground"),
+        "got: {}",
+        rendered
+    );
+
+    for key in ["i", "v", "p", "d", "t", "r", "n", "c", "w", "+", "-", "x"] {
+        let key = BareKey::Char(key.chars().next().unwrap());
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(key)))
+            .unwrap_or_else(|e| panic!("pressing '{:?}' should not fail the plugin: {:#}", key, e));
+    }
+
+    // `x` is the last key pressed, and is the one the plugin deliberately has no permission for.
+    let rendered = String::from_utf8(plugin.render(20, 70).unwrap()).unwrap();
+    assert!(
+        rendered.contains("WriteToClipboard"),
+        "the unpermitted key should report the permission it wants, got: {}",
         rendered
     );
 }
@@ -481,7 +526,10 @@ fn key_events_carry_a_readable_key_name() {
 
 /// Run `source` inside a plugin's `load`, returning whatever error it raised.
 fn error_from_load(source: &str) -> Option<String> {
-    let body = format!("local zellij = require(\"zellij\")\nlocal M = {{}}\nfunction M.load()\n{}\nend\nreturn M", source);
+    let body = format!(
+        "local zellij = require(\"zellij\")\nlocal M = {{}}\nfunction M.load()\n{}\nend\nreturn M",
+        source
+    );
     let mut plugin = load_permitted(&body).unwrap();
     plugin
         .load(&BTreeMap::new())
@@ -581,15 +629,11 @@ fn every_command_zellij_knows_is_a_name_serde_accepts() {
     let lua = mlua::Lua::new();
     for command in CommandType::iter() {
         let name = command.to_string();
-        let error = match super::command::plugin_command_from_lua(
-            &lua,
-            &name,
-            &name,
-            mlua::Value::Nil,
-        ) {
-            Ok(_) => continue,
-            Err(e) => format!("{:#}", e),
-        };
+        let error =
+            match super::command::plugin_command_from_lua(&lua, &name, &name, mlua::Value::Nil) {
+                Ok(_) => continue,
+                Err(e) => format!("{:#}", e),
+            };
         // Failing for want of arguments is expected here - `Nil` is only right for unit
         // variants. Failing because serde does not know the name is the drift this catches.
         assert!(
