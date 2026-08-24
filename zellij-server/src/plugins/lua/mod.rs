@@ -25,11 +25,11 @@ pub use loader::load_lua_plugin;
 use std::cell::RefCell;
 
 use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
-use zellij_utils::data::{CommandType, Event, PipeMessage};
+use zellij_utils::data::{CommandType, Event, PermissionStatus, PipeMessage};
 use zellij_utils::errors::prelude::*;
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
-use crate::plugins::zellij_exports::run_plugin_command;
+use crate::plugins::zellij_exports::{check_command_permission, run_plugin_command};
 use command::plugin_command_from_lua;
 
 /// The Lua source shipped with zellij and run before every plugin. See the module docs.
@@ -160,6 +160,18 @@ fn dispatch(
     let mut env = env.try_borrow_mut().map_err(|_| {
         mlua::Error::runtime("zellij commands cannot be called re-entrantly".to_owned())
     })?;
+
+    // Asked here rather than left to `run_plugin_command`, whose denied branch only logs: a wasm
+    // guest is mid-call and cannot be handed a refusal, but a Lua plugin's command is an ordinary
+    // function call, and silently doing nothing is the worst answer it could get.
+    if let (PermissionStatus::Denied, Some(permission)) =
+        check_command_permission(&env, &command)
+    {
+        return Err(mlua::Error::runtime(format!(
+            "'{spelling}' needs the '{permission}' permission, which this plugin has not been \
+             granted - ask for it in `load` with zellij.request_permission {{ \"{permission}\" }}"
+        )));
+    }
     // Replies are written through the same `wasi_write_object` the wasm host uses; capturing
     // them here is what lets the handlers stay runtime-agnostic.
     env.response_sink = ResponseSink::Capture(None);

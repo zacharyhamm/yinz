@@ -6430,7 +6430,13 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 }
 
 // TODO: move to permissions?
-fn check_command_permission(
+/// Whether `plugin_env` may run `command`, and which permission it is short of if not.
+///
+/// `pub(crate)` for the Lua runtime, which asks before dispatching. A wasm plugin cannot be told
+/// no - the denied branch of [`run_plugin_command`] logs and returns, because the guest is
+/// mid-call and has no way to receive a refusal - but a Lua plugin's command is an ordinary
+/// function call that can raise.
+pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
 ) -> (PermissionStatus, Option<PermissionType>) {
