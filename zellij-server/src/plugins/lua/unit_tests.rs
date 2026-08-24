@@ -652,3 +652,43 @@ fn a_scalar_answer_arrives_as_a_scalar() {
         "the version should arrive readable, not as protobuf bytes"
     );
 }
+
+#[test]
+fn a_command_the_plugin_may_not_run_is_an_error_rather_than_silence() {
+    // `run_plugin_command`'s denied branch logs and returns: a wasm guest is mid-call and cannot
+    // be handed a refusal. A Lua plugin's command is an ordinary function call, so it can be told
+    // no - and being told nothing at all, while the command quietly did not happen, was worse.
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() M.err = select(2, pcall(function() zellij.open_terminal("/tmp") end)) end
+        function M.render() return tostring(M.err) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 200).unwrap()).unwrap();
+    assert!(
+        rendered.contains("OpenTerminalsOrPlugins") && rendered.contains("request_permission"),
+        "the error should name the permission and how to ask for it, got: {}",
+        rendered
+    );
+}
+
+#[test]
+fn a_command_needing_no_permission_is_not_refused() {
+    // The check has to be the same one `run_plugin_command` makes, or a Lua plugin would be
+    // refused things a wasm plugin is allowed.
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() zellij.subscribe { "key" } end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+}
