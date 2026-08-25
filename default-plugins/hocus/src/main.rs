@@ -6,6 +6,7 @@ mod events;
 mod history;
 mod linear;
 mod log;
+mod lua_docs;
 mod message;
 mod present;
 mod tool_loop;
@@ -184,6 +185,10 @@ pub struct State {
     /// readable. Zellij froze it when the session started and never revises it,
     /// so re-reading it later would cost a host call to learn nothing.
     pub env: BTreeMap<String, String>,
+    /// Where the user's own Zellij plugins live, captured once the permission grant makes it
+    /// readable. Empty means the host could not resolve one, in which case there is nowhere to
+    /// write a plugin and the plugin tools say so rather than guessing at a path.
+    pub user_plugin_dir: String,
     pub messages: Vec<Message>,
     pub input: TextInput,
     pub status: Status,
@@ -410,6 +415,7 @@ impl Default for State {
             }),
             kdl: BTreeMap::new(),
             env: BTreeMap::new(),
+            user_plugin_dir: String::new(),
             messages: Vec::new(),
             input: TextInput::empty(),
             status: Status::Idle,

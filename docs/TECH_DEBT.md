@@ -457,3 +457,12 @@ it measures the tests rather than a transcription of them. Prefer that shape for
 - **`tab/mod.rs`'s eight directional copy-paste methods** — untouched; the same "give the shape a
   name" treatment applies, but the parameter is a `Direction` rather than a lookup, so it is a
   different-shaped edit.
+- **A Lua plugin cannot be syntax-checked before it is loaded.** `StartOrReloadPlugin` is
+  fire-and-forget, so `plugin_reload` — and `zellij action start-or-reload-plugin` — can report
+  only that a reload was *requested*; a plugin whose Lua fails to parse says so in its own pane,
+  where whoever asked for the reload may not be looking. This matters most for hocus, which can
+  now write a plugin and cannot see that what it wrote is broken. The shaped fix is a
+  `PluginCommand::ParseLuaPlugin` mirroring the existing `ParseLayout`
+  (`zellij-server/src/plugins/zellij_exports.rs`, dispatch arm ~`:227`): the Lua loader already
+  compiles the chunk, so returning the compile error synchronously is a small addition, and it
+  would let a `plugin_check` tool close the write → check → fix loop without a pane in it.

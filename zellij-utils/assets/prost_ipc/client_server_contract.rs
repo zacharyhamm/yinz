@@ -2155,6 +2155,8 @@ pub struct Options {
     pub theme_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="58")]
     pub builtin_plugins_dir: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="64")]
+    pub user_plugin_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="9")]
     pub mouse_mode: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="10")]

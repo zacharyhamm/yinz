@@ -46,6 +46,7 @@ fn test_env() -> PluginEnv {
         input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
         input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
         layout_dir: None,
+        user_plugin_dir: None,
         default_mode: Default::default(),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
         keybinds: Default::default(),
@@ -758,6 +759,33 @@ fn a_command_that_answers_hands_back_a_table() {
     assert_eq!(
         String::from_utf8(plugin.render(1, 60).unwrap()).unwrap(),
         "table 1 ."
+    );
+}
+
+/// `get_user_plugin_dir` is answered by the host itself, like `get_plugin_ids`, so it is one of
+/// the few queries reachable with no channels wired up - and a Lua plugin gets it for free,
+/// because `PluginCommand` derives serde and `response.rs` knows how to decode the reply.
+#[test]
+fn the_user_plugin_dir_reaches_lua_as_a_string() {
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.user_plugin_dir = Some(PathBuf::from("/somewhere/plugins"));
+    let mut plugin = load_lua_plugin(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() M.dir = zellij.get_user_plugin_dir() end
+        function M.render() return type(M.dir) .. " " .. tostring(M.dir) end
+        return M
+        "#,
+        "test.lua",
+        env,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 60).unwrap()).unwrap(),
+        "string /somewhere/plugins"
     );
 }
 

@@ -582,6 +582,7 @@ fn test_client_messages() {
                 layout_dir: Some(PathBuf::from("layout_dir")),
                 builtin_plugins_dir: Some(PathBuf::from("builtin_plugins_dir")),
                 theme_dir: Some(PathBuf::from("theme_dir")),
+                user_plugin_dir: Some(PathBuf::from("user_plugin_dir")),
                 mouse_mode: Some(true),
                 // Intentionally not carried over the wire; see the field's docs.
                 detachable_panes: None,

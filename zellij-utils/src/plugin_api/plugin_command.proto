@@ -178,6 +178,7 @@ enum CommandName {
   ParseLayout = 180;
   RenameLayout = 181;
   GetLayoutDir = 182;
+  GetUserPluginDir = 255;
   GetFocusedPaneInfo = 183;
   TogglePaneBorderless = 184;
   SetPaneBorderless = 185;
@@ -368,6 +369,7 @@ message PluginCommand {
     ParseLayoutPayload parse_layout_payload = 130;
     RenameLayoutPayload rename_layout_payload = 131;
     GetLayoutDirPayload get_layout_dir_payload = 132;
+    GetUserPluginDirPayload get_user_plugin_dir_payload = 196;
     DumpSessionLayoutPayload dump_session_layout_payload = 133;
     GetFocusedPaneInfoPayload get_focused_pane_info_payload = 134;
     TogglePaneBorderlessPayload toggle_pane_borderless_payload = 135;
@@ -1340,6 +1342,12 @@ message GetLayoutDirPayload {}
 
 message GetLayoutDirResponse {
   string layout_dir = 1;
+}
+
+message GetUserPluginDirPayload {}
+
+message GetUserPluginDirResponse {
+  string user_plugin_dir = 1;
 }
 
 message GetFocusedPaneInfoPayload {}

@@ -12,6 +12,7 @@ fn config_options_to_string() {
         layout_dir "/tmp/layouts"
         builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
+        user_plugin_dir "/tmp/plugins"
         mouse_mode false
         pane_frames false
         mirror_session true
@@ -60,6 +61,7 @@ fn config_options_to_string_with_comments() {
         layout_dir "/tmp/layouts"
         builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
+        user_plugin_dir "/tmp/plugins"
         mouse_mode false
         pane_frames false
         mirror_session true
