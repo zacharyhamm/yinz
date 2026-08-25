@@ -270,6 +270,10 @@ pub enum PluginInstruction {
     PluginFailed {
         plugin_id: PluginId,
         error: String,
+        /// True when the load itself failed, so the loader has already run and given up; false
+        /// when a plugin that was loaded trapped. The two need different cleanup - see
+        /// `WasmBridge::queue_plugin_failed`.
+        failed_to_load: bool,
     },
     HighlightClicked {
         plugin_id: u32,
@@ -1356,9 +1360,13 @@ pub(crate) fn plugin_thread_main(
                     .queue_finish_job(plugin_id, success, payload)
                     .non_fatal();
             },
-            PluginInstruction::PluginFailed { plugin_id, error } => {
+            PluginInstruction::PluginFailed {
+                plugin_id,
+                error,
+                failed_to_load,
+            } => {
                 wasm_bridge
-                    .queue_plugin_failed(plugin_id, error)
+                    .queue_plugin_failed(plugin_id, error, failed_to_load)
                     .non_fatal();
             },
             PluginInstruction::DetectPluginConfigChanges(new_plugins) => {
