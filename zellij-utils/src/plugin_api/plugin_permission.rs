@@ -36,6 +36,8 @@ impl TryFrom<ProtobufPermissionType> for PermissionType {
             },
             ProtobufPermissionType::PluginData => Ok(PermissionType::PluginData),
             ProtobufPermissionType::SharedPluginData => Ok(PermissionType::SharedPluginData),
+            ProtobufPermissionType::ReadFiles => Ok(PermissionType::ReadFiles),
+            ProtobufPermissionType::WriteFiles => Ok(PermissionType::WriteFiles),
         }
     }
 }
@@ -73,6 +75,8 @@ impl TryFrom<PermissionType> for ProtobufPermissionType {
             },
             PermissionType::PluginData => Ok(ProtobufPermissionType::PluginData),
             PermissionType::SharedPluginData => Ok(ProtobufPermissionType::SharedPluginData),
+            PermissionType::ReadFiles => Ok(ProtobufPermissionType::ReadFiles),
+            PermissionType::WriteFiles => Ok(ProtobufPermissionType::WriteFiles),
         }
     }
 }

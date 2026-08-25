@@ -1205,6 +1205,8 @@ pub enum Permission {
     ReadSessionEnvironmentVariables,
     PluginData,
     SharedPluginData,
+    ReadFiles,
+    WriteFiles,
 }
 
 impl PermissionType {
@@ -1243,6 +1245,8 @@ impl PermissionType {
             PermissionType::SharedPluginData => {
                 "Store and query data shared with other plugins".to_owned()
             },
+            PermissionType::ReadFiles => "Read files in its own folders".to_owned(),
+            PermissionType::WriteFiles => "Write files in its own folders".to_owned(),
         }
     }
 }
@@ -3875,6 +3879,56 @@ impl NewPanePlacement {
 
 type Context = BTreeMap<String, String>;
 
+/// Bytes that may be written as a string.
+///
+/// `PluginCommand`'s serde representation exists for exactly one caller - the Lua runtime, which
+/// builds commands with `from_value` (the wasm side uses protobuf and never touches this). Lua
+/// has no byte-array type: text and bytes are both the one string type. So a plugin writing
+/// `zellij.fs.write(path, "hello")` hands over a string, and the default `Vec<u8>` deserializer,
+/// which wants a sequence of numbers, would refuse it.
+///
+/// Accepting both keeps the natural spelling working without giving up binary writes: a plugin
+/// that really does have bytes can still pass an array of numbers.
+mod bytes_or_string {
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+    use serde::Serializer;
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        struct BytesOrString;
+
+        impl<'de> Visitor<'de> for BytesOrString {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string or an array of byte values")
+            }
+
+            fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(value.as_bytes().to_vec())
+            }
+
+            fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(value.to_vec())
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(BytesOrString)
+    }
+}
+
 #[derive(Debug, Clone, EnumDiscriminants, Display, Serialize, Deserialize)]
 #[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(CommandType))]
@@ -4004,6 +4058,54 @@ pub enum PluginCommand {
     KillSessions(Vec<String>), // one or more session names
     ScanHostFolder(PathBuf),   // TODO: rename to ScanHostFolder
     WatchFilesystem,
+    /// Read a file, answering with its bytes.
+    ///
+    /// This and its `Fs*` siblings are the deliberate counterpart to the wasm runtime's WASI
+    /// preopens: a wasm plugin reaches `/host`, `/data`, `/cache` and `/tmp` through `std::fs`,
+    /// and a plugin with no filesystem of its own (Lua) reaches the same four roots through
+    /// these. Paths are resolved and confined by `resolve_plugin_fs_path` on the server, which,
+    /// unlike `translate_plugin_path`, refuses a path that escapes its root. Reaching outside the
+    /// four roots needs `FullHdAccess` on top of the read/write permission.
+    ///
+    /// Answers synchronously, so that a plugin can read a config file in one expression rather
+    /// than through a subscription. `max_bytes` caps the read; the host applies its own ceiling
+    /// regardless, so this can only ask for less.
+    FsRead {
+        path: PathBuf,
+        max_bytes: Option<usize>,
+    },
+    /// List a directory. Answers with one entry per child, its path spelled in the same virtual
+    /// root the request used, so a plugin can feed the answer straight back in.
+    FsList {
+        path: PathBuf,
+    },
+    /// Metadata for one path, or nothing if it does not exist.
+    FsMetadata {
+        path: PathBuf,
+    },
+    /// Write a file, replacing it or appending to it.
+    FsWrite {
+        path: PathBuf,
+        #[serde(with = "bytes_or_string")]
+        contents: Vec<u8>,
+        append: bool,
+        create_dirs: bool,
+    },
+    /// Remove a file, or a directory when `recursive`.
+    FsRemove {
+        path: PathBuf,
+        recursive: bool,
+    },
+    /// Create a directory. `all` creates missing parents and succeeds if it already exists.
+    FsCreateDir {
+        path: PathBuf,
+        all: bool,
+    },
+    /// Rename a path. Both endpoints are resolved and confined independently.
+    FsRename {
+        from: PathBuf,
+        to: PathBuf,
+    },
     DumpSessionLayout {
         tab_index: Option<usize>,
     },

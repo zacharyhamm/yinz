@@ -19,13 +19,15 @@ use mlua::{Lua, Value as LuaValue};
 use prost::Message;
 use serde::Serialize;
 
-use zellij_utils::data::{CommandType, PaneId, PluginIds, QueueStatusResponse};
+use zellij_utils::data::{CommandType, FileMetadata, PaneId, PluginIds, QueueStatusResponse};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::plugin_api::plugin_command::{
-    dump_layout_response, enqueue_queue_job_response, get_focused_pane_info_response,
-    get_pane_cwd_response, get_pane_pid_response, get_pane_running_command_response,
-    new_tab_response, ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDumpLayoutResponse,
-    ProtobufEnqueueQueueJobResponse, ProtobufGenerateRandomNameResponse,
+    dump_layout_response, enqueue_queue_job_response, fs_list_response, fs_metadata_response,
+    fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
+    get_pane_pid_response, get_pane_running_command_response, new_tab_response,
+    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDumpLayoutResponse,
+    ProtobufEnqueueQueueJobResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
     ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
     ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
@@ -174,8 +176,67 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
         | CommandType::OpenCommandPaneBackground => {
             decode(bytes).and_then(|r: ProtobufOpenCommandPaneResponse| pane_id(lua, r.pane_id))
         },
+        CommandType::FsRead => decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
+            Some(fs_read_response::Result::Contents(contents)) => lua
+                .create_string(&contents)
+                .map(LuaValue::String)
+                .map_err(|e| anyhow!("{}", e)),
+            Some(fs_read_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+            None => Err(anyhow!("zellij answered with nothing")),
+        }),
+        CommandType::FsList => decode(bytes).and_then(|r: ProtobufFsListResponse| match r.result {
+            Some(fs_list_response::Result::Entries(list)) => {
+                let entries: Vec<FsEntry> = list
+                    .entries
+                    .into_iter()
+                    .map(|entry| FsEntry {
+                        path: entry.path,
+                        // `metadata_is_set` is false when the entry could not be stat'ed, which
+                        // is a real answer ("this exists, I could not read it") and not an error.
+                        metadata: entry
+                            .metadata
+                            .as_ref()
+                            .and_then(Option::<FileMetadata>::from),
+                    })
+                    .collect();
+                value(lua, entries)
+            },
+            Some(fs_list_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+            None => Err(anyhow!("zellij answered with nothing")),
+        }),
+        CommandType::FsMetadata => {
+            decode(bytes).and_then(|r: ProtobufFsMetadataResponse| match r.result {
+                Some(fs_metadata_response::Result::Metadata(metadata)) => {
+                    match Option::<FileMetadata>::from(&metadata) {
+                        Some(metadata) => value(lua, metadata),
+                        None => Ok(LuaValue::Nil),
+                    }
+                },
+                Some(fs_metadata_response::Result::NotFound(_)) => Ok(LuaValue::Nil),
+                Some(fs_metadata_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+                None => Err(anyhow!("zellij answered with nothing")),
+            })
+        },
+        CommandType::FsWrite
+        | CommandType::FsRemove
+        | CommandType::FsCreateDir
+        | CommandType::FsRename => {
+            decode(bytes).and_then(|r: ProtobufFsMutateResponse| match r.result {
+                Some(fs_mutate_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
+                Some(fs_mutate_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+                None => Err(anyhow!("zellij answered with nothing")),
+            })
+        },
         _ => return None,
     })
+}
+
+/// One entry of an `FsList` answer. Named fields rather than a pair, so that a plugin writes
+/// `entry.path` instead of `entry[1]`.
+#[derive(Serialize)]
+struct FsEntry {
+    path: String,
+    metadata: Option<FileMetadata>,
 }
 
 /// The two halves of `GetFocusedPaneInfo`, which protobuf keeps apart and a plugin wants together.
