@@ -37,6 +37,7 @@ fn test_env() -> PluginEnv {
         plugin_own_data_dir: PathBuf::from("."),
         zellij_data_dir: PathBuf::from("."),
         plugin_data_store: Arc::new(PluginDataStore::new(&PathBuf::from("."))),
+        queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
         tab_index: Some(0),
         path_to_default_shell: PathBuf::from("."),

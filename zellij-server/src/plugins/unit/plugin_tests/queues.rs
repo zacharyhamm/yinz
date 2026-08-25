@@ -1,0 +1,609 @@
+//! Work queues, end to end: an enqueuer plugin, the real plugin thread, headless job plugins,
+//! and the events that come back.
+//!
+//! Every test here drives a Lua enqueuer written to a tempdir, because that is the cheapest way
+//! to get a plugin that can be told what to do and can say what it saw: it logs one line per
+//! event and renders the log, so a test waits for the *content* it means rather than for a render
+//! count. The fake screen is a plain loop rather than the shared macros because it has to grant
+//! permissions to whichever plugin asks - the jobs and a second subscriber have ids of their own.
+
+use super::*;
+use crate::panes::PaneId;
+use crate::ClientId;
+use zellij_test_support::Watched;
+use zellij_utils::data::{BareKey, KeyWithModifier, MessageToPlugin, PermissionStatus};
+
+const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What the enqueuer does on each key; see `enqueuer_source`.
+const ENQUEUE: char = 'e';
+const ENQUEUE_BAD_URL: char = 'b';
+const RAISE_CONCURRENCY: char = 'c';
+const CANCEL_JOB_1: char = '1';
+const CANCEL_JOB_2: char = '2';
+const STATUS: char = 's';
+
+fn enqueuer_source(job_url: &str) -> String {
+    format!(
+        r#"
+        local zellij = require("zellij")
+        local M = {{}}
+        local lines = {{}}
+        local n = 0
+        local function log(s) lines[#lines + 1] = s end
+        local function enqueue(url)
+          n = n + 1
+          local ok, result = pcall(zellij.enqueue_queue_job, {{
+            queue = "merge", plugin_url = url,
+            config = {{ n = tostring(n) }}, context = {{ n = tostring(n) }},
+          }})
+          if ok then log("enqueued " .. result) else log("enqueue error: " .. tostring(result)) end
+        end
+        function M.load()
+          zellij.subscribe {{ "key", "queue_job_started", "queue_job_finished", "queue_changed" }}
+          zellij.request_permission {{
+            "message_and_launch_other_plugins", "change_application_state", "read_application_state",
+          }}
+          log("ready")
+        end
+        zellij.on("queue_job_started", function(e)
+          log("started " .. e.job_id .. " pid=" .. e.plugin_id .. " n=" .. tostring(e.context.n))
+          return true
+        end)
+        zellij.on("queue_job_finished", function(e)
+          log("finished " .. e.job_id .. " " .. e.outcome .. " payload=" .. tostring(e.payload)
+              .. " n=" .. tostring(e.context.n))
+          return true
+        end)
+        zellij.on("queue_changed", function(e)
+          log("changed " .. e.queue .. " p=" .. #e.pending .. " r=" .. #e.running .. " c=" .. e.concurrency)
+          return true
+        end)
+        function M.update(event)
+          if event.name ~= "key" then return false end
+          local k = event.key
+          if k == "{ENQUEUE}" then enqueue("{job_url}")
+          elseif k == "{ENQUEUE_BAD_URL}" then enqueue("file:/nonexistent/job.lua")
+          elseif k == "{RAISE_CONCURRENCY}" then zellij.configure_queue {{ queue = "merge", concurrency = 2 }}
+          elseif k == "{CANCEL_JOB_1}" then zellij.cancel_queue_job {{ job_id = 1 }}
+          elseif k == "{CANCEL_JOB_2}" then zellij.cancel_queue_job {{ job_id = 2 }}
+          elseif k == "{STATUS}" then
+            local q = zellij.queue_status {{ queue = "merge" }}[1]
+            log("status p=" .. #q.pending .. " r=" .. #q.running .. " c=" .. q.concurrency
+                .. " first_pending=" .. tostring(q.pending[1] and q.pending[1].job_id)
+                .. " running_url=" .. tostring(q.running[1] and q.running[1].plugin_url))
+          end
+          return true
+        end
+        function M.render() return table.concat(lines, "\n") end
+        return M
+        "#
+    )
+}
+
+/// A job that reports as soon as it is loaded.
+const FINISHING_JOB: &str = r#"
+    local zellij = require("zellij")
+    local M = {}
+    function M.load(config)
+      zellij.finish_queue_job {
+        success = true,
+        payload = "hello from " .. config.zellij_queue .. "/" .. config.zellij_queue_job_id
+          .. " n=" .. tostring(config.n) .. " by=" .. config.zellij_queue_enqueuer_plugin_id,
+      }
+    end
+    return M
+"#;
+
+/// A job that runs until told to stop, one way or another.
+const WAITING_JOB: &str = r#"
+    local zellij = require("zellij")
+    local M = {}
+    function M.pipe(message)
+      if message.name == "finish" then
+        zellij.finish_queue_job { success = false, payload = "gave up" }
+      elseif message.name == "close" then
+        zellij.close_self()
+      end
+      return false
+    end
+    return M
+"#;
+
+const CRASHING_JOB: &str = r#"
+    local M = {}
+    function M.load() error("boom") end
+    return M
+"#;
+
+/// A bystander that only listens for queue changes.
+const SUBSCRIBER: &str = r#"
+    local zellij = require("zellij")
+    local M = {}
+    local lines = {}
+    function M.load()
+      zellij.subscribe { "queue_changed" }
+      zellij.request_permission { "read_application_state" }
+    end
+    zellij.on("queue_changed", function(e)
+      lines[#lines + 1] = "bystander saw " .. e.queue .. " p=" .. #e.pending .. " r=" .. #e.running
+      return true
+    end)
+    function M.render() return table.concat(lines, "\n") end
+    return M
+"#;
+
+struct Harness {
+    to_plugin: SenderWithContext<PluginInstruction>,
+    log: Watched<Vec<ScreenInstruction>>,
+    screen_thread: Option<std::thread::JoinHandle<()>>,
+    teardown: Option<Box<dyn FnOnce()>>,
+    client_id: ClientId,
+    dir: tempfile::TempDir,
+}
+
+impl Harness {
+    /// A plugin thread with a fake screen that answers every permission request with `answer`.
+    fn new(answer: PermissionStatus) -> Self {
+        let dir = tempdir().unwrap();
+        let plugin_host_folder = PathBuf::from(dir.path());
+        let cache_path = plugin_host_folder.join("permissions_test.kdl");
+        let (to_plugin, screen_receiver, teardown) =
+            create_plugin_thread(Some(plugin_host_folder), None);
+        let client_id = 1;
+        let log = Watched::new(vec![]);
+        let screen_thread = std::thread::Builder::new()
+            .name("fake_screen_thread".to_string())
+            .spawn({
+                let log = log.clone();
+                let to_plugin = to_plugin.clone();
+                move || loop {
+                    let Ok((instruction, _)) = screen_receiver.recv_timeout(WAIT * 3) else {
+                        break;
+                    };
+                    match instruction {
+                        ScreenInstruction::Exit => break,
+                        ScreenInstruction::RequestPluginPermissions(plugin_id, permission) => {
+                            let _ = to_plugin.send(PluginInstruction::PermissionRequestResult(
+                                plugin_id,
+                                Some(client_id),
+                                permission.permissions,
+                                answer,
+                                Some(cache_path.clone()),
+                            ));
+                        },
+                        other => log.lock().push(other),
+                    }
+                }
+            })
+            .unwrap();
+        let _ = to_plugin.send(PluginInstruction::AddClient(client_id));
+        Harness {
+            to_plugin,
+            log,
+            screen_thread: Some(screen_thread),
+            teardown: Some(teardown),
+            client_id,
+            dir,
+        }
+    }
+
+    fn write_plugin(&self, name: &str, source: &str) -> String {
+        let path = self.dir.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        format!("file:{}", path.display())
+    }
+
+    /// Load a plugin into a pane, as the enqueuer is.
+    fn load(&self, url: &str) {
+        let run_plugin = RunPluginOrAlias::from_url(url, &None, None, None).unwrap();
+        let _ = self.to_plugin.send(PluginInstruction::Load(
+            Some(false),
+            false,
+            false,
+            Some("queue_test_plugin".to_owned()),
+            run_plugin,
+            Some(1),
+            None,
+            self.client_id,
+            Size { cols: 80, rows: 20 },
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    fn key(&self, c: char) {
+        let _ = self.to_plugin.send(PluginInstruction::Update(vec![(
+            None,
+            Some(self.client_id),
+            Event::Key(KeyWithModifier::new(BareKey::Char(c))),
+        )]));
+    }
+
+    /// Pipe a message straight to one job plugin, the way another plugin would.
+    fn pipe_to(&self, plugin_id: u32, name: &str) {
+        let _ = self.to_plugin.send(PluginInstruction::MessageFromPlugin {
+            source_plugin_id: 0,
+            message: MessageToPlugin {
+                destination_plugin_id: Some(plugin_id),
+                ..MessageToPlugin::new(name)
+            },
+        });
+    }
+
+    /// Every frame any plugin rendered so far.
+    fn frames(&self) -> Vec<String> {
+        rendered_frames(&self.log.lock())
+    }
+
+    /// Block until some rendered frame contains `needle`, and return that frame.
+    fn wait_for(&self, needle: &str) -> String {
+        self.log.wait_until(
+            &format!("a render containing {needle:?}"),
+            WAIT,
+            |instructions| {
+                rendered_frames(instructions)
+                    .into_iter()
+                    .find(|frame| frame.contains(needle))
+            },
+        )
+    }
+
+    /// The job's plugin id, from the enqueuer's `started` line.
+    fn wait_for_started(&self, job_id: u64) -> u32 {
+        let frame = self.wait_for(&format!("started {job_id} pid="));
+        let line = frame
+            .lines()
+            .find(|line| line.starts_with(&format!("started {job_id} pid=")))
+            .unwrap();
+        line["started N pid=".len()..]
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn close_pane_instructions(&self) -> Vec<PaneId> {
+        self.log
+            .lock()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ScreenInstruction::ClosePane(pane_id, ..) => Some(*pane_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn suppressed_add_plugin_instructions(&self) -> Vec<u32> {
+        self.log
+            .lock()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, _, _, true, ..) => {
+                    Some(*plugin_id)
+                },
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        if let Some(teardown) = self.teardown.take() {
+            teardown();
+        }
+        if let Some(screen_thread) = self.screen_thread.take() {
+            let _ = screen_thread.join();
+        }
+    }
+}
+
+fn rendered_frames(instructions: &[ScreenInstruction]) -> Vec<String> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets),
+            _ => None,
+        })
+        .flatten()
+        .map(|asset| String::from_utf8_lossy(&asset.bytes).replace("\n\r", "\n"))
+        .filter(|rendered| !rendered.is_empty())
+        .collect()
+}
+
+fn assert_never_rendered(harness: &Harness, needle: &str) {
+    let frames = harness.frames();
+    assert!(
+        !frames.iter().any(|frame| frame.contains(needle)),
+        "expected no frame to contain {needle:?}, got: {frames:#?}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_job_runs_headless_and_reports_back() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+
+    harness.wait_for("enqueued 1");
+    let job_plugin_id = harness.wait_for_started(1);
+    let frame = harness.wait_for("finished 1 Succeeded");
+    assert!(
+        frame.contains("finished 1 Succeeded payload=hello from merge/1 n=1 by=0 n=1"),
+        "the job's payload and the enqueuer's context both come back: {frame}"
+    );
+    harness.wait_for("changed merge p=0 r=0 c=1");
+
+    assert_eq!(
+        harness.suppressed_add_plugin_instructions(),
+        vec![job_plugin_id],
+        "the job got a suppressed pane and nothing else"
+    );
+    harness.log.wait_until("the job's pane to be closed", WAIT, |instructions| {
+        instructions
+            .iter()
+            .any(|i| matches!(i, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == job_plugin_id))
+            .then_some(())
+    });
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn concurrency_one_serialises_jobs() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.wait_for("changed merge p=1 r=1 c=1");
+    assert_never_rendered(&harness, "started 2");
+
+    harness.pipe_to(first, "finish");
+    let frame = harness.wait_for("finished 1 Failed");
+    assert!(
+        frame.contains("finished 1 Failed payload=gave up n=1"),
+        "{frame}"
+    );
+    let second = harness.wait_for_started(2);
+    assert_ne!(first, second);
+    harness.pipe_to(second, "finish");
+    harness.wait_for("finished 2 Failed");
+    harness.wait_for("changed merge p=0 r=0 c=1");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn raising_concurrency_releases_pending_jobs() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.wait_for("changed merge p=1 r=1 c=1");
+    harness.key(RAISE_CONCURRENCY);
+    let second = harness.wait_for_started(2);
+    harness.wait_for("changed merge p=0 r=2 c=2");
+    assert_never_rendered(&harness, "finished 1");
+
+    harness.pipe_to(first, "finish");
+    harness.pipe_to(second, "finish");
+    harness.wait_for("finished 2 Failed");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn cancelling_a_pending_job_reports_cancelled_and_never_starts_it() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.wait_for("enqueued 2");
+    harness.key(CANCEL_JOB_2);
+    let frame = harness.wait_for("finished 2 Cancelled");
+    assert!(
+        frame.contains("finished 2 Cancelled payload=nil n=2"),
+        "{frame}"
+    );
+    harness.wait_for("changed merge p=0 r=1 c=1");
+
+    harness.pipe_to(first, "finish");
+    harness.wait_for("finished 1 Failed");
+    harness.wait_for("changed merge p=0 r=0 c=1");
+    assert_never_rendered(&harness, "started 2");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn cancelling_a_running_job_unloads_it_and_starts_the_next() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.key(CANCEL_JOB_1);
+    harness.wait_for("finished 1 Cancelled");
+    let second = harness.wait_for_started(2);
+    assert!(harness
+        .close_pane_instructions()
+        .contains(&PaneId::Plugin(first)));
+
+    harness.pipe_to(second, "finish");
+    harness.wait_for("finished 2 Failed");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_job_that_closes_itself_is_aborted_and_frees_its_slot() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.pipe_to(first, "close");
+    let frame = harness.wait_for("finished 1 Aborted");
+    assert!(
+        frame.contains("finished 1 Aborted payload=nil n=1"),
+        "{frame}"
+    );
+    let second = harness.wait_for_started(2);
+    harness.pipe_to(second, "finish");
+    harness.wait_for("finished 2 Failed");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_job_that_raises_is_reported_failed_and_frees_its_slot() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", CRASHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    harness.wait_for_started(1);
+    let frame = harness.wait_for("finished 1 Failed");
+    assert!(
+        frame.contains("boom"),
+        "the error is the payload of a job that raised: {frame}"
+    );
+    harness.wait_for_started(2);
+    harness.wait_for("finished 2 Failed");
+    harness.wait_for("changed merge p=0 r=0 c=1");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_job_that_fails_to_load_is_reported_failed_and_the_next_one_runs() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE_BAD_URL);
+    harness.key(ENQUEUE);
+
+    harness.wait_for("finished 1 Failed");
+    harness.wait_for_started(2);
+    harness.wait_for("finished 2 Succeeded");
+    harness.wait_for("changed merge p=0 r=0 c=1");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn queue_changed_is_broadcast_to_other_subscribers() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    let subscriber = harness.write_plugin("subscriber.lua", SUBSCRIBER);
+    harness.load(&enqueuer);
+    harness.load(&subscriber);
+    harness.wait_for("ready");
+    harness.key(ENQUEUE);
+
+    harness.wait_for("bystander saw merge p=0 r=1");
+    harness.wait_for("bystander saw merge p=0 r=0");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn queue_status_answers_with_pending_and_running_jobs() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+    harness.key(ENQUEUE);
+
+    let first = harness.wait_for_started(1);
+    harness.wait_for("enqueued 2");
+    harness.key(STATUS);
+    let frame = harness.wait_for("status ");
+    assert!(
+        frame.contains(&format!(
+            "status p=1 r=1 c=1 first_pending=2 running_url={job}"
+        )),
+        "{frame}"
+    );
+
+    harness.pipe_to(first, "finish");
+    harness.wait_for("finished 1 Failed");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn enqueue_is_denied_without_permission() {
+    let harness = Harness::new(PermissionStatus::Denied);
+    let job = harness.write_plugin("job.lua", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.key(ENQUEUE);
+
+    let frame = harness.wait_for("enqueue error");
+    assert!(
+        frame.contains("MessageAndLaunchOtherPlugins"),
+        "the error names the missing permission: {frame}"
+    );
+    assert!(harness.suppressed_add_plugin_instructions().is_empty());
+    assert_never_rendered(&harness, "started 1");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let fixture = format!("file:{}", *PLUGIN_FIXTURE);
+    harness.load(&fixture);
+    // The fixture renders every event it receives, so a render mentioning a queue event is the
+    // assertion. Ask it to queue *itself*.
+    let _ = harness.to_plugin.send(PluginInstruction::CliPipe {
+        pipe_id: "input_pipe_id".to_owned(),
+        name: "enqueue_queue_job".to_owned(),
+        payload: Some(fixture.clone()),
+        plugin: None,
+        args: None,
+        configuration: None,
+        floating: None,
+        pane_id_to_replace: None,
+        pane_title: None,
+        cwd: None,
+        skip_cache: false,
+        cli_client_id: harness.client_id,
+    });
+
+    harness.wait_for("enqueued job 1");
+    let frame = harness.wait_for("QueueJobStarted");
+    assert!(frame.contains("\"origin\": \"fixture\""), "{frame}");
+    let job_plugin_id = *harness
+        .suppressed_add_plugin_instructions()
+        .last()
+        .expect("the job was launched headless");
+    harness.pipe_to(job_plugin_id, "finish_queue_job");
+    let frame = harness.wait_for("QueueJobFinished");
+    assert!(frame.contains("Succeeded"), "{frame}");
+}

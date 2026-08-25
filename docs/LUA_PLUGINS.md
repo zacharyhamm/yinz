@@ -207,6 +207,73 @@ came back - the one to read when you want to see the surface in use:
 zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 ```
 
+## Work queues
+
+A plugin can put *other plugin code* on a named **work queue**, to run later as its own headless
+plugin instance when the queue has a free slot. Each queue runs at most `concurrency` jobs at once
+(one, until someone says otherwise), so a queue is how you build a merge queue, a deploy pipeline,
+or anything else that must not run everything at the same time.
+
+The enqueuer:
+
+```lua
+zellij.subscribe { "queue_job_started", "queue_job_finished", "queue_changed" }
+zellij.configure_queue { queue = "merge", concurrency = 2 }
+
+local job_id = zellij.enqueue_queue_job {
+  queue = "merge",
+  plugin_url = "file:merge_one.lua",
+  config = { branch = "feature/x" },   -- the job's configuration
+  context = { pr = "42" },             -- yours, echoed back; the job never sees it
+}
+
+zellij.on("queue_job_started", function(e)
+  -- e.queue, e.job_id, e.plugin_id, e.context.pr
+end)
+zellij.on("queue_job_finished", function(e)
+  -- e.outcome is "Succeeded", "Failed", "Cancelled" or "Aborted"; e.payload is what the job
+  -- reported (or the error, for a job that failed to load or crashed)
+end)
+
+local queues = zellij.queue_status { queue = "merge" }   -- {} for every queue
+zellij.cancel_queue_job { job_id = job_id }
+```
+
+The job is an ordinary plugin with no `render`. It learns what it is from its configuration and
+ends itself by reporting:
+
+```lua
+local zellij = require("zellij")
+local M = {}
+
+function M.load(config)
+  -- config.zellij_queue, config.zellij_queue_job_id, config.zellij_queue_enqueuer_plugin_id,
+  -- plus whatever the enqueuer put in `config` (here, config.branch) and `caller_cwd`
+  zellij.run_command { { "git", "merge", config.branch }, { branch = config.branch } }
+end
+
+zellij.on("run_command_result", function(e)
+  local exit_code = e.value[1]
+  zellij.finish_queue_job { success = exit_code == 0, payload = "merged " .. e.value[4].branch }
+end)
+
+return M
+```
+
+`finish_queue_job` records the outcome and unloads the job; the enqueuer's slot frees and the next
+pending job starts. A job that closes itself, or whose pane is closed, ends as `Aborted`; one that
+fails to load or raises ends as `Failed`, with the error as its payload. `queue_changed` goes to
+every subscriber whenever a queue's contents or limit change, and carries the same `pending` and
+`running` lists `queue_status` does.
+
+Permissions: `enqueue_queue_job` needs `MessageAndLaunchOtherPlugins`, `configure_queue` and
+`cancel_queue_job` need `ChangeApplicationState`, and `queue_status` (and the `queue_changed`
+event) need `ReadApplicationState`. `finish_queue_job` needs nothing: a job runs headless, and a
+permission prompt it raised would have no pane to be answered in.
+
+Two things a queue does not do: remember jobs across sessions, and tell an enqueuer that has
+since unloaded anything - its events are dropped, and the job runs to completion regardless.
+
 ## Hooks
 
 A **hook point** is a moment in the session's life that a plugin can own. Bind one in the config:

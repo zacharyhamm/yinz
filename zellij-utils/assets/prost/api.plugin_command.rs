@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -370,7 +370,80 @@ pub mod plugin_command {
         ChangeOverlayCoordinatesPayload(super::ChangeOverlayCoordinatesPayload),
         #[prost(message, tag="195")]
         OpenCommandPaneOverlayPayload(super::OpenCommandPaneOverlayPayload),
+        #[prost(message, tag="197")]
+        EnqueueQueueJobPayload(super::EnqueueQueueJobPayload),
+        #[prost(message, tag="198")]
+        ConfigureQueuePayload(super::ConfigureQueuePayload),
+        #[prost(message, tag="199")]
+        CancelQueueJobPayload(super::CancelQueueJobPayload),
+        #[prost(message, tag="200")]
+        QueueStatusPayload(super::QueueStatusPayload),
+        #[prost(message, tag="201")]
+        FinishQueueJobPayload(super::FinishQueueJobPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EnqueueQueueJobPayload {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub plugin_url: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="3")]
+    pub config: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(message, repeated, tag="4")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConfigureQueuePayload {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(uint32, tag="2")]
+    pub concurrency: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CancelQueueJobPayload {
+    #[prost(uint64, tag="1")]
+    pub job_id: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueStatusPayload {
+    #[prost(string, optional, tag="1")]
+    pub queue: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FinishQueueJobPayload {
+    #[prost(bool, tag="1")]
+    pub success: bool,
+    #[prost(string, optional, tag="2")]
+    pub payload: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EnqueueQueueJobResponse {
+    #[prost(oneof="enqueue_queue_job_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<enqueue_queue_job_response::Result>,
+}
+/// Nested message and enum types in `EnqueueQueueJobResponse`.
+pub mod enqueue_queue_job_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(uint64, tag="1")]
+        JobId(u64),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueStatusResponse {
+    #[prost(message, repeated, tag="1")]
+    pub queues: ::prost::alloc::vec::Vec<super::event::QueueSnapshot>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2867,6 +2940,11 @@ pub enum CommandName {
     GetPaneGitProbe = 252,
     ChangeOverlayCoordinates = 253,
     OpenCommandPaneOverlay = 254,
+    EnqueueQueueJob = 256,
+    ConfigureQueue = 257,
+    CancelQueueJob = 258,
+    QueueStatus = 259,
+    FinishQueueJob = 260,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3104,6 +3182,11 @@ impl CommandName {
             CommandName::GetPaneGitProbe => "GetPaneGitProbe",
             CommandName::ChangeOverlayCoordinates => "ChangeOverlayCoordinates",
             CommandName::OpenCommandPaneOverlay => "OpenCommandPaneOverlay",
+            CommandName::EnqueueQueueJob => "EnqueueQueueJob",
+            CommandName::ConfigureQueue => "ConfigureQueue",
+            CommandName::CancelQueueJob => "CancelQueueJob",
+            CommandName::QueueStatus => "QueueStatus",
+            CommandName::FinishQueueJob => "FinishQueueJob",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3338,6 +3421,11 @@ impl CommandName {
             "GetPaneGitProbe" => Some(Self::GetPaneGitProbe),
             "ChangeOverlayCoordinates" => Some(Self::ChangeOverlayCoordinates),
             "OpenCommandPaneOverlay" => Some(Self::OpenCommandPaneOverlay),
+            "EnqueueQueueJob" => Some(Self::EnqueueQueueJob),
+            "ConfigureQueue" => Some(Self::ConfigureQueue),
+            "CancelQueueJob" => Some(Self::CancelQueueJob),
+            "QueueStatus" => Some(Self::QueueStatus),
+            "FinishQueueJob" => Some(Self::FinishQueueJob),
             _ => None,
         }
     }

@@ -245,6 +245,11 @@ enum CommandName {
   GetPaneGitProbe = 252;
   ChangeOverlayCoordinates = 253;
   OpenCommandPaneOverlay = 254;
+  EnqueueQueueJob = 256;
+  ConfigureQueue = 257;
+  CancelQueueJob = 258;
+  QueueStatus = 259;
+  FinishQueueJob = 260;
 }
 
 message PluginCommand {
@@ -430,7 +435,48 @@ message PluginCommand {
     GetPaneGitProbePayload get_pane_git_probe_payload = 193;
     ChangeOverlayCoordinatesPayload change_overlay_coordinates_payload = 194;
     OpenCommandPaneOverlayPayload open_command_pane_overlay_payload = 195;
+    EnqueueQueueJobPayload enqueue_queue_job_payload = 197;
+    ConfigureQueuePayload configure_queue_payload = 198;
+    CancelQueueJobPayload cancel_queue_job_payload = 199;
+    QueueStatusPayload queue_status_payload = 200;
+    FinishQueueJobPayload finish_queue_job_payload = 201;
   }
+}
+
+message EnqueueQueueJobPayload {
+  string queue = 1;
+  string plugin_url = 2;
+  repeated ContextItem config = 3;
+  repeated ContextItem context = 4;
+}
+
+message ConfigureQueuePayload {
+  string queue = 1;
+  uint32 concurrency = 2;
+}
+
+message CancelQueueJobPayload {
+  uint64 job_id = 1;
+}
+
+message QueueStatusPayload {
+  optional string queue = 1;
+}
+
+message FinishQueueJobPayload {
+  bool success = 1;
+  optional string payload = 2;
+}
+
+message EnqueueQueueJobResponse {
+  oneof result {
+    uint64 job_id = 1;
+    string error = 2;
+  }
+}
+
+message QueueStatusResponse {
+  repeated event.QueueSnapshot queues = 1;
 }
 
 message OpenCommandPaneInGitCheckoutPayload {

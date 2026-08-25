@@ -32,6 +32,7 @@ use tokio::sync::oneshot;
 use url::Url;
 use wasmi::{Caller, Linker};
 use zellij_utils::consts::ipc_connect;
+use zellij_utils::data::EnqueueQueueJobResponse;
 use zellij_utils::data::{
     validate_namespace, DataApplyResponse, DataCountResponse, DataDefineResponse, DataError,
     DataFetchResponse, DataUnwatchResponse, DataWatchResponse, EntityDef, FetchRequest, Mutation,
@@ -530,6 +531,20 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
+            PluginCommand::EnqueueQueueJob {
+                queue,
+                plugin_url,
+                config,
+                context,
+            } => enqueue_queue_job(env, queue, plugin_url, config, context),
+            PluginCommand::ConfigureQueue { queue, concurrency } => {
+                configure_queue(env, queue, concurrency)
+            },
+            PluginCommand::CancelQueueJob { job_id } => cancel_queue_job(env, job_id),
+            PluginCommand::QueueStatus { queue } => queue_status(env, queue),
+            PluginCommand::FinishQueueJob { success, payload } => {
+                finish_queue_job(env, success, payload)
+            },
             PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
                 reconfigure(env, new_config, write_config_to_disk)?
             },
@@ -3226,6 +3241,107 @@ fn close_self(env: &PluginEnv) {
     env.senders
         .send_to_plugin(PluginInstruction::Unload(env.plugin_id))
         .with_context(|| "failed to close self".to_string())
+        .non_fatal();
+}
+
+/// Queue commands that answer do so from the shared `Queues` rather than by asking the plugin
+/// thread, because a plugin that blocks on the plugin thread while another plugin is loading
+/// deadlocks: the loader holds the plugin map and takes every running plugin's lock, this
+/// plugin's included. Only what needs the plugin thread - starting and stopping jobs - goes
+/// there, and never with a reply to wait for.
+fn enqueue_queue_job(
+    env: &mut PluginEnv,
+    queue: String,
+    plugin_url: String,
+    mut config: BTreeMap<String, String>,
+    context: BTreeMap<String, String>,
+) {
+    use zellij_utils::plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse;
+
+    let plugin_url = if plugin_url == "zellij:OWN_URL" {
+        env.plugin.location.display()
+    } else {
+        plugin_url
+    };
+    // The same courtesy `message_to_plugin` extends: a job usually wants to work where its
+    // enqueuer works.
+    config
+        .entry("caller_cwd".to_owned())
+        .or_insert_with(|| env.plugin_cwd.display().to_string());
+    let response = if queue.is_empty() {
+        EnqueueQueueJobResponse::Err("a queue needs a name".to_owned())
+    } else {
+        let resolved = {
+            let plugin_aliases = env.plugin_aliases.lock().unwrap();
+            RunPluginOrAlias::from_url(
+                &plugin_url,
+                &Some(config),
+                Some(&plugin_aliases),
+                Some(env.plugin_cwd.clone()),
+            )
+            .and_then(|mut run_plugin_or_alias| {
+                run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
+                if run_plugin_or_alias.get_run_plugin().is_some() {
+                    Ok(run_plugin_or_alias)
+                } else {
+                    Err(format!("{plugin_url} is not a plugin or a known alias"))
+                }
+            })
+        };
+        match resolved {
+            Ok(run_plugin_or_alias) => {
+                let job_id = env.queues.lock().unwrap().enqueue(
+                    &queue,
+                    (env.plugin_id, env.client_id),
+                    run_plugin_or_alias,
+                    context,
+                    Some(env.plugin_cwd.clone()),
+                );
+                env.senders
+                    .send_to_plugin(PluginInstruction::QueuePump { queue })
+                    .with_context(|| "failed to pump queue".to_string())
+                    .non_fatal();
+                EnqueueQueueJobResponse::Ok(job_id)
+            },
+            Err(e) => EnqueueQueueJobResponse::Err(e),
+        }
+    };
+    let response: ProtobufEnqueueQueueJobResponse = response.into();
+    let _ = wasi_write_object(env, &response.encode_to_vec());
+}
+
+fn configure_queue(env: &PluginEnv, queue: String, concurrency: usize) {
+    env.senders
+        .send_to_plugin(PluginInstruction::QueueConfigure { queue, concurrency })
+        .with_context(|| "failed to configure queue".to_string())
+        .non_fatal();
+}
+
+fn cancel_queue_job(env: &PluginEnv, job_id: u64) {
+    env.senders
+        .send_to_plugin(PluginInstruction::QueueCancelJob { job_id })
+        .with_context(|| "failed to cancel queue job".to_string())
+        .non_fatal();
+}
+
+fn queue_status(env: &mut PluginEnv, queue: Option<String>) {
+    use zellij_utils::plugin_api::plugin_command::ProtobufQueueStatusResponse;
+
+    let queues = env.queues.lock().unwrap().snapshot(queue.as_deref());
+    let response: ProtobufQueueStatusResponse = queues.into();
+    let _ = wasi_write_object(env, &response.encode_to_vec());
+}
+
+/// The job reports and the host unloads it — the host, not the job, because the outcome has
+/// to be recorded before the unload frees the slot, and only the plugin thread can order those.
+fn finish_queue_job(env: &PluginEnv, success: bool, payload: Option<String>) {
+    env.senders
+        .send_to_plugin(PluginInstruction::QueueFinishJob {
+            plugin_id: env.plugin_id,
+            success,
+            payload,
+        })
+        .with_context(|| "failed to finish queue job".to_string())
         .non_fatal();
 }
 
@@ -6714,6 +6830,17 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         PluginCommand::GetPluginAliasConfiguration(..) => PermissionType::ReadApplicationState,
         PluginCommand::OpenCommandPaneInNewTab(..) => PermissionType::RunCommands,
         PluginCommand::OpenEditorPaneInNewTab(..) => PermissionType::OpenFiles,
+        // Enqueueing is launching another plugin, just later.
+        PluginCommand::EnqueueQueueJob { .. } => PermissionType::MessageAndLaunchOtherPlugins,
+        // Raising a queue's parallelism or killing someone else's job reaches past the caller's
+        // own work, which is more than "may launch plugins" should grant.
+        PluginCommand::ConfigureQueue { .. } | PluginCommand::CancelQueueJob { .. } => {
+            PermissionType::ChangeApplicationState
+        },
+        PluginCommand::QueueStatus { .. } => PermissionType::ReadApplicationState,
+        // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
+        // permission prompt it raised would have no pane for anyone to answer it in.
+        PluginCommand::CloseSelf | PluginCommand::FinishQueueJob { .. } => return None,
         _ => return None,
     })
 }
