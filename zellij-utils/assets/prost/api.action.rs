@@ -68,6 +68,10 @@ pub struct RunPlugin {
     pub configuration: ::core::option::Option<PluginUserConfiguration>,
     #[prost(string, optional, tag="4")]
     pub initial_cwd: ::core::option::Option<::prost::alloc::string::String>,
+    /// The path as written, when the plugin was named by a relative `file:` URL. `location` is
+    /// absolute by then, so this is what lets the user's plugin folder be searched for it.
+    #[prost(string, optional, tag="5")]
+    pub relative_path: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -333,6 +333,16 @@ fn create_plugin_thread(
     zellij_cwd: Option<PathBuf>,
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
 ) -> PluginThreadHarness {
+    create_plugin_thread_with_user_plugin_dir(zellij_cwd, session_env_vars, None)
+}
+
+/// The same thread, with the folder Zellij searches for the user's own plugins under the test's
+/// control - which is what lets a test prove a plugin named rather than pathed is found there.
+fn create_plugin_thread_with_user_plugin_dir(
+    zellij_cwd: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    user_plugin_dir: Option<PathBuf>,
+) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let initiating_client_id = 1;
@@ -373,6 +383,8 @@ fn create_plugin_thread(
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let layout_dir = PathBuf::from(tempdir().unwrap().path());
+    let user_plugin_dir =
+        user_plugin_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
     let mut plugin_aliases = PluginAliases::default();
@@ -395,6 +407,7 @@ fn create_plugin_thread(
                 data_dir,
                 Box::default(),
                 Some(layout_dir),
+                Some(user_plugin_dir),
                 vec![],
                 vec![],
                 default_shell,
@@ -480,6 +493,7 @@ fn create_plugin_thread_with_server_receiver(
                 data_dir,
                 Box::default(),
                 None,
+                None,
                 vec![],
                 vec![],
                 default_shell,
@@ -560,6 +574,7 @@ fn create_plugin_thread_with_pty_receiver(
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let layout_dir = layout_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
+    let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
     let initiating_client_id = 1;
@@ -573,6 +588,7 @@ fn create_plugin_thread_with_pty_receiver(
                 data_dir,
                 Box::default(),
                 Some(layout_dir),
+                Some(user_plugin_dir),
                 vec![],
                 vec![],
                 default_shell,
@@ -658,6 +674,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 engine,
                 data_dir,
                 Box::default(),
+                None,
                 None,
                 vec![],
                 vec![],

@@ -101,6 +101,11 @@ impl State {
         if tools::PROJECT_READ_TOOLS.contains(&call.name.as_str()) {
             return self.start_project_read(call);
         }
+        // Same shape, rooted at the user's plugin folder rather than at a project: the path
+        // comes from the host, and a wasm plugin cannot open a file in a config dir either.
+        if tools::PLUGIN_TOOLS.contains(&call.name.as_str()) {
+            return self.start_plugin_tool(call);
+        }
         // The todo store lives in another plugin now, so these defer on its
         // reply the way a command defers on the host's.
         if matches!(call.name.as_str(), "todo_add" | "todo_done" | "todo_edit") {
@@ -468,6 +473,72 @@ impl State {
             std::path::PathBuf::from("."),
             // Round-trips through the host, which is how the result is matched
             // back to the call that made it.
+            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+            MAX_TOOL_OUTPUT,
+        );
+        self.status = Status::AwaitingCommand;
+        self.pin_to_bottom();
+        self.arm_timer(FRAME_SECONDS);
+        false
+    }
+
+    /// Run one of the plugin-authoring tools.
+    ///
+    /// One of the five answers here and now — `plugin_docs`, from compiled-in text. The other
+    /// four shell out and answer later on `RunCommandResult`, exactly as the file tools do.
+    /// `plugin_reload` is among them even though `start_or_reload_plugin` is fire-and-forget:
+    /// what it waits for is `PLUGIN_SYMLINK_GUARD`, which only the host can run.
+    ///
+    /// Everything refusable without running anything is refused here: no plugin folder, a bad
+    /// name, a source over the size cap.
+    pub(crate) fn start_plugin_tool(&mut self, call: &ToolCall) -> bool {
+        let args = match tools::Args::parse(&call.arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+
+        // Needs no folder and touches no disk, so it answers even when nothing is configured.
+        if call.name == "plugin_docs" {
+            self.finish_head(lua_docs::docs(args.section.as_deref()));
+            return true;
+        }
+
+        let dir = self.user_plugin_dir.clone();
+        // `plugin_list` names no plugin - it is the folder itself that is the target.
+        let target = match call.name.as_str() {
+            "plugin_list" => match dir.trim().is_empty() {
+                true => Err(tools::NO_PLUGIN_FOLDER.to_owned()),
+                false => Ok(dir.clone()),
+            },
+            _ => tools::resolve_plugin_file(&dir, args.name.as_deref()),
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+
+        let (argv, env) = match tools::plugin_argv(&call.name, &args, &dir, &target) {
+            Ok(argv) => argv,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        run_command_with_output_limit(
+            &borrowed,
+            env,
+            // `.` for the reason spelled out in `start_project_read`: the host rewrites a cwd
+            // under `/tmp`, `/host`, `/data` or `/cache` into the plugin's own folder of that
+            // name, and every path in the argv is absolute anyway.
+            std::path::PathBuf::from("."),
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
             MAX_TOOL_OUTPUT,
         );

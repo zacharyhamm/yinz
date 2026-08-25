@@ -61,7 +61,7 @@ use zellij_utils::data::{
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
     SaveLayoutResponse, TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::home::default_layout_dir;
+use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_utils::input::layout::PercentOrFixed;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
@@ -112,10 +112,11 @@ use zellij_utils::{
             ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
             ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-            ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufListNotificationsResponse,
-            ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse,
-            ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+            ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
+            ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
+            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
+            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
             ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
@@ -226,6 +227,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
             PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
+            PluginCommand::GetUserPluginDir => get_user_plugin_dir(env),
             PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
             PluginCommand::SaveSession => save_session(env),
             PluginCommand::CurrentSessionLastSavedTime => current_session_last_saved_time(env),
@@ -1112,6 +1114,34 @@ fn get_layout_dir(env: &mut PluginEnv) {
 
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send layout dir to plugin {}", env.name()))
+        .non_fatal();
+}
+
+/// Answer with the folder holding the user's own plugins.
+///
+/// An empty string means the folder could not be resolved at all, which is the same convention
+/// `get_layout_dir` uses - a plugin that cannot be told where to write says so rather than
+/// guessing at a path.
+fn get_user_plugin_dir(env: &mut PluginEnv) {
+    // Absolutized here as well as in `home.rs`, because this is the one place the folder crosses
+    // into a plugin: a plugin has no cwd to join a relative path onto, so whatever route the
+    // value took to `PluginEnv` it must arrive absolute or not at all.
+    let user_plugin_dir = env
+        .user_plugin_dir
+        .clone()
+        .or_else(default_user_plugin_dir)
+        .map(|dir| absolute_lexical(&dir));
+
+    let user_plugin_dir_string = user_plugin_dir
+        .and_then(|path| path.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| String::from(""));
+
+    let response = ProtobufGetUserPluginDirResponse {
+        user_plugin_dir: user_plugin_dir_string,
+    };
+
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send user plugin dir to plugin {}", env.name()))
         .non_fatal();
 }
 
@@ -6635,6 +6665,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::GetPaneGitProbe { .. }
         | PluginCommand::GenerateRandomName
         | PluginCommand::GetLayoutDir
+        | PluginCommand::GetUserPluginDir
         | PluginCommand::GetFocusedPaneInfo
         | PluginCommand::DumpLayout(..)
         | PluginCommand::ParseLayout(..)

@@ -1919,6 +1919,11 @@ pub struct RunPlugin {
     pub configuration: ::core::option::Option<PluginUserConfiguration>,
     #[prost(string, optional, tag="4")]
     pub initial_cwd: ::core::option::Option<::prost::alloc::string::String>,
+    /// The path as written, when the plugin was named by a relative `file:` URL. The location is
+    /// already absolute by the time it gets here, so this is the only thing that can tell the
+    /// server to look in the user's plugin folder for `zellij plugin -- file:keys.lua`.
+    #[prost(string, optional, tag="5")]
+    pub relative_path: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2155,6 +2160,8 @@ pub struct Options {
     pub theme_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="58")]
     pub builtin_plugins_dir: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="64")]
+    pub user_plugin_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="9")]
     pub mouse_mode: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="10")]

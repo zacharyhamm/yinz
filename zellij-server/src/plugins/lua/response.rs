@@ -29,8 +29,9 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
     ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetTabInfoResponse, ProtobufNewTabResponse, ProtobufOpenCommandPaneResponse,
-    ProtobufOpenFileResponse, ProtobufOpenTerminalResponse, ProtobufPaneId,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse, ProtobufNewTabResponse,
+    ProtobufOpenCommandPaneResponse, ProtobufOpenFileResponse, ProtobufOpenTerminalResponse,
+    ProtobufPaneId,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -48,6 +49,8 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
         CommandType::GenerateRandomName => {
             decode(bytes).and_then(|r: ProtobufGenerateRandomNameResponse| value(lua, r.name))
         },
+        CommandType::GetUserPluginDir => decode(bytes)
+            .and_then(|r: ProtobufGetUserPluginDirResponse| value(lua, r.user_plugin_dir)),
         CommandType::GetLayoutDir => {
             decode(bytes).and_then(|r: ProtobufGetLayoutDirResponse| value(lua, r.layout_dir))
         },

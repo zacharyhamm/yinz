@@ -4098,6 +4098,10 @@ pub enum PluginCommand {
     DumpLayout(String),
     ParseLayout(String), // String contains raw KDL layout
     GetLayoutDir,
+    /// The folder holding the user's own plugins. A plugin that writes one needs the absolute
+    /// path, and a wasm plugin cannot discover it: its WASI preopens are `/host`, `/data`,
+    /// `/cache` and `/tmp`, and a config dir is none of them.
+    GetUserPluginDir,
     GetFocusedPaneInfo,
     SaveSession,
     CurrentSessionLastSavedTime,

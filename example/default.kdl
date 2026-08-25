@@ -554,6 +554,11 @@ hooks {
 //
 // theme_dir "/path/to/my/theme_dir"
 
+// The folder in which Zellij will look for plugins you wrote yourself
+// (Requires restart)
+//
+// user_plugin_dir "/path/to/my/plugins"
+
 // Enable or disable the rendering of styled and colored underlines (undercurl).
 // May need to be disabled for certain unsupported terminals
 // (Requires restart)

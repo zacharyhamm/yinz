@@ -10,6 +10,8 @@
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+use std::collections::BTreeMap;
+
 use hocus_proto::launch;
 use hocus_proto::location::Location;
 use hocus_proto::paths;
@@ -20,6 +22,8 @@ use zellij_tile::prelude::{
     FloatingPaneCoordinates, GitCheckout, GlobalPaneEdge, GlobalPanePlacement, PaneId,
     PercentOrFixed, SessionInfo, WarpPlacement,
 };
+
+use crate::lua_docs;
 
 /// One complete call requested by the model, reassembled from stream fragments.
 ///
@@ -91,13 +95,32 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "warp_tab"
             | "warp_tab_here"
             | "adopt_orphaned_pane"
+            // Putting code the model wrote into the user's config dir. `plugin_reload` is not
+            // here: it re-runs a file approved one step earlier, and plugin-manager already
+            // reloads a plugin on a keypress - so confirming both would cost two prompts per
+            // write-reload-fix iteration to say the same thing twice.
+            | "plugin_write"
     )
 }
 
 /// The one-line transcript label for a call. Arguments are shown as the model
 /// wrote them, so a confirmation prompt says exactly what is about to happen.
+///
+/// `plugin_write` is the exception: its arguments carry a whole Lua file, and showing them as
+/// written would paste the plugin into the conversation on the line that says it is being
+/// written. The source is still shown, in `confirmation_detail`, where there is room for it.
 pub fn summarize(call: &ToolCall) -> String {
     let arguments = call.arguments.trim();
+    if call.name == "plugin_write" {
+        let args = Args::parse(&call.arguments).unwrap_or_default();
+        let name = args.name.as_deref().unwrap_or("?");
+        let lines = args
+            .source
+            .as_deref()
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        return format!("plugin_write {name} ({lines} lines)");
+    }
     if arguments.is_empty() || arguments == "{}" {
         call.name.clone()
     } else {
@@ -198,10 +221,22 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "schedule" if args.auto_confirm => {
             "lets every run of this job use tools without stopping to ask again".to_owned()
         },
+        // The authoring act: an LLM putting code into the user's config dir. It is inert until
+        // something loads it, which is why the write is the prompt and the reload is not.
+        "plugin_write" => {
+            let name = args.name.as_deref().unwrap_or("a plugin");
+            match args.overwrite {
+                true => format!("replaces {name}.lua in your Zellij plugin folder"),
+                false => format!("writes {name}.lua into your Zellij plugin folder"),
+            }
+        },
         _ => return None,
     };
     Some(sentence)
 }
+
+/// How many lines of a plugin's source a confirmation shows before cutting it short.
+const SOURCE_PREVIEW_LINES: usize = 20;
 
 /// The call's arguments as one `key: value` line each, so the thing being agreed
 /// to can be read rather than parsed.
@@ -223,9 +258,26 @@ pub fn argument_lines(call: &ToolCall) -> Vec<String> {
     };
     fields
         .iter()
-        .map(|(key, value)| match value {
-            Value::String(text) => format!("{key}: {text}"),
-            value => format!("{key}: {value}"),
+        .flat_map(|(key, value)| match value {
+            // A plugin's source is the one argument worth several lines: it is what the user is
+            // actually agreeing to, and one enormous `source: local zellij = ...` line would
+            // make the prompt worth nothing. Cut short, because a prompt taller than the pane
+            // cannot be read either.
+            Value::String(text) if key == "source" => {
+                let mut lines = vec![format!("{key}:")];
+                lines.extend(
+                    text.lines()
+                        .take(SOURCE_PREVIEW_LINES)
+                        .map(|line| format!("  {line}")),
+                );
+                let total = text.lines().count();
+                if total > SOURCE_PREVIEW_LINES {
+                    lines.push(format!("  … {} more lines", total - SOURCE_PREVIEW_LINES));
+                }
+                lines
+            },
+            Value::String(text) => vec![format!("{key}: {text}")],
+            value => vec![format!("{key}: {value}")],
         })
         .collect()
 }
@@ -1200,6 +1252,64 @@ pub fn specs() -> Value {
                 },
             }),
         ),
+        // Property descriptions are folded into the tool descriptions throughout: guidance
+        // costs one copy per tool there, against one copy per property here. `name` is a bare
+        // file name with an optional `.lua` for all three tools that take one.
+        tool(
+            "plugin_docs",
+            "How to write a Zellij Lua plugin. Call before writing one. `section` defaults to \
+             index, which lists the rest.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "section": { "type": "string", "enum": lua_docs::SECTIONS },
+                },
+            }),
+        ),
+        tool(
+            "plugin_list",
+            "List the user's Lua plugins.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "plugin_read",
+            "Read one of the user's Lua plugins. `name` is a file name, .lua optional.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "start_line": { "type": "integer" },
+                    "line_count": { "type": "integer" },
+                },
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "plugin_write",
+            "Write a Lua plugin. Call plugin_docs first. `source` is the complete file, not a \
+             patch; `overwrite` is required to replace one that exists.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "source": { "type": "string" },
+                    "overwrite": { "type": "boolean" },
+                },
+                "required": ["name", "source"],
+            }),
+        ),
+        tool(
+            "plugin_reload",
+            "Load or reload one of the user's Lua plugins, opening it in a pane if it is not \
+             running. A plugin that fails to parse says so in that pane, not here.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                },
+                "required": ["name"],
+            }),
+        ),
     ])
 }
 
@@ -1507,6 +1617,11 @@ pub struct Args {
     /// `Option` rather than a bare `bool` because it defaults *true* — the
     /// plain flags in this struct all default false.
     pub comments: Option<bool>,
+    // The plugin-authoring tools. `name` above is theirs as well, as are
+    // `start_line` and `line_count`, which are `read_file`'s.
+    pub source: Option<String>,
+    pub overwrite: bool,
+    pub section: Option<String>,
 }
 
 impl Args {
@@ -1852,6 +1967,259 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
     "git_show",
     "github_read",
 ];
+
+/// The tools that read and write the user's own Zellij plugin folder.
+///
+/// Intercepted in `run_head` for the same two reasons the file tools are: they need a path only
+/// the host knows — `get_user_plugin_dir`, since a wasm plugin's WASI preopens are `/host`,
+/// `/data`, `/cache` and `/tmp` and a config dir is none of them — and the three that touch the
+/// filesystem answer later, on the host's `RunCommandResult`.
+pub const PLUGIN_TOOLS: [&str; 5] = [
+    "plugin_docs",
+    "plugin_list",
+    "plugin_read",
+    "plugin_write",
+    "plugin_reload",
+];
+
+/// The plugin tools that shell out, as opposed to `plugin_docs`, answered from in here.
+///
+/// `plugin_reload` is one of them even though the reload itself is a plugin command rather than a
+/// process: what it shells out for is the symlink check below, and the reload happens on the
+/// result.
+pub const PLUGIN_FILE_TOOLS: [&str; 4] = [
+    "plugin_list",
+    "plugin_read",
+    "plugin_write",
+    "plugin_reload",
+];
+
+/// The largest plugin source a write may carry.
+///
+/// The source travels as one environment-variable value, and Linux caps a single argv/env string
+/// at `MAX_ARG_STRLEN` (128 KiB). This leaves generous room under that, and is already far more
+/// Lua than a plugin needs — the largest shipped example is under 8 KB.
+pub const MAX_PLUGIN_SOURCE_BYTES: usize = 64_000;
+
+/// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
+const MAX_PLUGIN_NAME_LEN: usize = 64;
+
+/// Said by every plugin tool when the host could not resolve a folder, so the answer to "where
+/// would this go" is the same one whichever tool was asked.
+pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_plugin_dir` in the \
+                                    Zellij config, or start a session where the config dir can \
+                                    be found";
+
+/// Refuse a target that is a symlink, in the one place that can actually tell: the host.
+///
+/// `resolve_plugin_file` proves the path is a single component under the plugin folder, but that
+/// proof is *lexical* — a link sitting in the folder under a perfectly ordinary name satisfies it
+/// while pointing anywhere at all. Following one would let a read leave the folder and let an
+/// `overwrite=true` truncate a file the confirmation never named.
+///
+/// Only the last component needs checking: the folder itself is the user's own configuration, and
+/// the name contributes exactly one component to the path.
+///
+/// `-L` is true for a link whatever it points at, including a dangling one, so this refuses
+/// before `set -C` has to reason about what a link "existing" means.
+///
+/// The check and the use of the path are two syscalls, so a link planted between them would still
+/// be followed. Nothing hocus offers writes into that folder except the guarded script below, and
+/// closing the window properly needs an `O_NOFOLLOW` open that no shell exposes.
+const PLUGIN_SYMLINK_GUARD: &str =
+    r#"if [ -L "$1" ]; then printf '%s\n' "$1 is a symlink; refusing" >&2; exit 1; fi"#;
+
+/// Write `$HOCUS_PLUGIN_SOURCE` to `$1`, creating the folder `$2` first.
+///
+/// `sh -c` is the only way to redirect: Zellij execs argv directly, and `RunCommand` gives the
+/// child no stdin to pipe into (`background_jobs.rs` sets `Stdio::null()`).
+///
+/// The source travels in the *environment* rather than in an argument. That keeps it out of `ps`,
+/// keeps the argv short, and — the point — makes it a shell variable that is never re-parsed, so
+/// nothing the model wrote can become a shell token. The path is `"$1"` for the same reason.
+///
+/// `printf %s` rather than `echo`, which mangles backslashes and eats a leading `-n`.
+///
+/// `set -C` is `noclobber`: the write *fails* rather than truncating an existing file, which is
+/// how `overwrite=false` is enforced without an existence check this plugin cannot perform. It is
+/// dropped for `overwrite=true`, which is the only difference between the two forms.
+///
+/// One statement per line, rather than the `&&` chain this used to be: a compound `if` in the
+/// middle of a chain still lets what follows the next `;` run, so a failed `mkdir` would go on to
+/// write. Every step that can fail says `|| exit 1` for itself.
+fn plugin_write_script(overwrite: bool) -> String {
+    let noclobber = match overwrite {
+        true => "",
+        false => "set -C\n",
+    };
+    format!(
+        "mkdir -p \"$2\" || exit 1\n{PLUGIN_SYMLINK_GUARD}\n{noclobber}printf %s \
+         \"$HOCUS_PLUGIN_SOURCE\" > \"$1\""
+    )
+}
+
+/// The environment variable carrying a plugin's source to the write script.
+const PLUGIN_SOURCE_VAR: &str = "HOCUS_PLUGIN_SOURCE";
+
+/// Resolve a plugin the model named against the user's plugin folder.
+///
+/// Deliberately far stricter than `resolve_in_root`: a plugin folder is flat, so there is no
+/// legitimate *path* here at all, only a file name. Refusing everything but one safe component
+/// means the containment check at the end can never actually fire — it is kept as the second
+/// wall, so that relaxing the character rule later cannot silently become a traversal.
+///
+/// The name is accepted with or without its `.lua`, and always resolves to the `.lua` file:
+/// `plugin_reload` resolves through here too, so the URL it loads and the file that was written
+/// cannot disagree.
+///
+/// Everything here is lexical, which is the whole of what a wasm plugin can check: a symlink in
+/// the folder passes every rule below while pointing anywhere at all. `PLUGIN_SYMLINK_GUARD` is
+/// the other half of the containment, and runs on the host in front of every tool that opens the
+/// resolved path.
+pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, String> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return Err(NO_PLUGIN_FOLDER.to_owned());
+    }
+    let name = name.map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        return Err("name is required and must not be empty".to_owned());
+    }
+    let name = name.strip_suffix(".lua").unwrap_or(name);
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("{name:?} is not a plugin name"));
+    }
+    if name.len() > MAX_PLUGIN_NAME_LEN {
+        return Err(format!(
+            "a plugin name may be at most {MAX_PLUGIN_NAME_LEN} characters"
+        ));
+    }
+    // One rule that refuses `/`, `\`, NUL, spaces and every traversal at once.
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(
+            "a plugin name is a single file name: letters, digits, '.', '_' and '-' only"
+                .to_owned(),
+        );
+    }
+    // Never option-shaped, even though every path below follows a `--` or sits in `"$1"`.
+    if name.starts_with('-') {
+        return Err("a plugin name may not start with '-'".to_owned());
+    }
+
+    let dir = paths::normalize(dir)
+        .map_err(|_| "the configured plugin folder is not an absolute path".to_owned())?;
+    let path = paths::normalize(&format!("{dir}/{name}.lua"))
+        .map_err(|_| format!("{name:?} is not a plugin name"))?;
+    if !std::path::Path::new(&path).starts_with(&dir) {
+        return Err(format!("{name:?} is not a plugin name"));
+    }
+    Ok(path)
+}
+
+/// The argv and environment a plugin tool becomes.
+///
+/// `target` is the path `resolve_plugin_file` already checked, and `dir` the folder it is in.
+/// Nothing else here comes from the model without landing in an argument of its own.
+pub fn plugin_argv(
+    name: &str,
+    args: &Args,
+    dir: &str,
+    target: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
+    match name {
+        // `find` rather than `ls` or `rg`: POSIX, present everywhere, does not need the folder to
+        // be a repository, and — unlike `rg --files` — does not silently skip a plugin whose name
+        // some `.gitignore` happens to match.
+        "plugin_list" => Ok((
+            vec![
+                "find".to_owned(),
+                dir.to_owned(),
+                "-maxdepth".to_owned(),
+                "1".to_owned(),
+                "-type".to_owned(),
+                "f".to_owned(),
+                "-name".to_owned(),
+                "*.lua".to_owned(),
+            ],
+            BTreeMap::new(),
+        )),
+        // The `read_file` shape, for the same reason it uses `sed`: an unbounded read of
+        // something enormous would be cut mid-line after the host had already read all of it.
+        //
+        // Wrapped in `sh` only so the symlink guard can run first; `exec` then leaves `sed` as
+        // the process, so what the model sees is what `read_file` would have shown it.
+        "plugin_read" => {
+            let start = args.start_line.unwrap_or(1).max(1);
+            let end = match args.line_count {
+                Some(count) => start.saturating_add(count.max(1)).saturating_sub(1),
+                None => start.saturating_add(FILE_TOOL_LINES).saturating_sub(1),
+            };
+            Ok((
+                vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    format!("{PLUGIN_SYMLINK_GUARD}\nexec sed -n \"$2\" -- \"$1\""),
+                    // `$0`, so the file is `$1` and the line range `$2`.
+                    "sh".to_owned(),
+                    target.to_owned(),
+                    format!("{start},{end}p"),
+                ],
+                BTreeMap::new(),
+            ))
+        },
+        // A reload runs nothing: this command exists to answer "may that file be loaded at all",
+        // and `plugin_tool_result` starts the plugin when it says yes. `-f` after the guard, so
+        // a name that was never written is refused here rather than opening a pane to say so.
+        "plugin_reload" => Ok((
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!(
+                    "{PLUGIN_SYMLINK_GUARD}\nif [ ! -f \"$1\" ]; then printf '%s\\n' \"$1: no \
+                     such plugin; write it first\" >&2; exit 1; fi"
+                ),
+                "sh".to_owned(),
+                target.to_owned(),
+            ],
+            BTreeMap::new(),
+        )),
+        "plugin_write" => {
+            let source = args
+                .source
+                .as_deref()
+                .ok_or("source is required: send the complete plugin file, not a patch")?;
+            if source.trim().is_empty() {
+                return Err("source is required and must not be empty".to_owned());
+            }
+            if source.len() > MAX_PLUGIN_SOURCE_BYTES {
+                return Err(format!(
+                    "source is {} bytes; the limit is {MAX_PLUGIN_SOURCE_BYTES}. Shorten the \
+                     plugin or split it up.",
+                    source.len()
+                ));
+            }
+            // Exactly one trailing newline, so `printf %s` leaves a well-formed file whatever
+            // the model sent.
+            let source = format!("{}\n", source.trim_end_matches('\n'));
+            Ok((
+                vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    plugin_write_script(args.overwrite),
+                    // `$0`, so the file is `$1` and the folder `$2`.
+                    "sh".to_owned(),
+                    target.to_owned(),
+                    dir.to_owned(),
+                ],
+                BTreeMap::from([(PLUGIN_SOURCE_VAR.to_owned(), source)]),
+            ))
+        },
+        other => Err(format!("no such tool: {other}")),
+    }
+}
 
 /// How many lines of a listing or a search reach the model before the rest is
 /// dropped. `read_file` is exempt: its length is what the caller asked for.
@@ -2877,6 +3245,22 @@ mod host {
         }
     }
 
+    /// Load or reload the plugin at `path`, and say what was asked for.
+    ///
+    /// `start_or_reload_plugin` returns nothing, so this cannot report that the plugin loaded -
+    /// only that the request went out. A plugin whose Lua fails to parse says so in its own
+    /// pane, which is worth telling the model so it does not claim a success it cannot see.
+    ///
+    /// It *starts* the plugin when it is not already running, opening a pane, which is the
+    /// behaviour authoring wants: write it, then look at it.
+    pub fn reload_plugin(path: &str) -> String {
+        start_or_reload_plugin(&format!("file:{path}"));
+        format!(
+            "reload requested for {path}. If it is not already running it opens in a pane. If \
+             its Lua fails to parse, the error appears in that pane, not here."
+        )
+    }
+
     /// Cut the branch or worktree, then open the agent's pane in it.
     ///
     /// The whole of it is `launch::open`, which is also what the New agent modal's
@@ -3274,7 +3658,7 @@ mod host {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use host::{dispatch, spawn_in_checkout};
+pub use host::{dispatch, reload_plugin, spawn_in_checkout};
 
 /// Native builds exist only to run the unit tests; nothing there dispatches.
 #[cfg(not(target_arch = "wasm32"))]
@@ -3284,6 +3668,11 @@ pub fn dispatch(_call: &ToolCall) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
+    "tools are unavailable outside zellij".to_owned()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reload_plugin(_path: &str) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 

@@ -206,6 +206,10 @@ pub struct Options {
     /// subdirectory of config dir
     #[clap(long, value_parser)]
     pub theme_dir: Option<PathBuf>,
+    /// Set the folder holding your own plugins, defaults to the
+    /// "plugins" subdirectory of the config dir
+    #[clap(long, value_parser)]
+    pub user_plugin_dir: Option<PathBuf>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Set the handling of mouse events (true or false)
@@ -529,6 +533,9 @@ impl Options {
             .builtin_plugins_dir
             .or_else(|| self.builtin_plugins_dir.clone());
         let theme_dir = other.theme_dir.or_else(|| self.theme_dir.clone());
+        let user_plugin_dir = other
+            .user_plugin_dir
+            .or_else(|| self.user_plugin_dir.clone());
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
@@ -617,6 +624,7 @@ impl Options {
             layout_dir,
             builtin_plugins_dir,
             theme_dir,
+            user_plugin_dir,
             mouse_mode,
             detachable_panes,
             pane_frames,
@@ -711,6 +719,9 @@ impl Options {
             .builtin_plugins_dir
             .or_else(|| self.builtin_plugins_dir.clone());
         let theme_dir = other.theme_dir.or_else(|| self.theme_dir.clone());
+        let user_plugin_dir = other
+            .user_plugin_dir
+            .or_else(|| self.user_plugin_dir.clone());
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
@@ -791,6 +802,7 @@ impl Options {
             layout_dir,
             builtin_plugins_dir,
             theme_dir,
+            user_plugin_dir,
             mouse_mode,
             detachable_panes,
             pane_frames,

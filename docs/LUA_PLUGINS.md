@@ -36,17 +36,33 @@ end
 return M
 ```
 
-Load it from a layout by path:
+Drop it in your plugin folder - `~/.config/zellij/plugins/` - and load it by name:
 
 ```kdl
 pane {
-    plugin location="file:~/.config/zellij/plugins/keys.lua" {
+    plugin location="file:keys.lua" {
         greeting "hi"
     }
 }
 ```
 
-or directly: `zellij plugin -- file:$PWD/keys.lua`.
+or directly: `zellij plugin -- file:keys.lua`.
+
+A path that is not there is looked for in that folder, so the file name on its own is enough.
+Keep the `.lua`: the extension is how the runtime is chosen, so `file:keys` is read as wasm and
+never gets as far as the folder. A path that *is* there always wins, so `file:./keys.lua` and
+`file:/opt/plugins/keys.lua` mean exactly what they say and nothing in the folder can shadow
+them. Set `user_plugin_dir` in the config to keep plugins somewhere else:
+
+```kdl
+user_plugin_dir "/path/to/my/plugins"
+```
+
+The folder is made when something first writes a plugin into it, so it is not there until you
+put something in it. `zellij setup --check` prints the path it resolved either way.
+
+A bare `keys` with no `file:` is *not* looked for there: an unprefixed name is a plugin alias,
+and letting a file shadow one would make a single spelling mean two things.
 
 The runtime is chosen by the file extension, so there is no new URL scheme: a `.lua` path is a Lua
 plugin and anything else is wasm.
@@ -278,7 +294,9 @@ Everything below is a gap in the Lua binding, not in the plugin system:
   the pane-opening ones. A reply this does not yet know how to read comes back as the raw
   protobuf bytes it arrived as, in a string.
 - **Workers** - wasm plugins can spawn background workers; Lua plugins cannot.
-- **Reload on change** - editing a plugin needs an explicit reload.
+- **Reload on change** - editing a plugin needs an explicit reload:
+  `zellij action start-or-reload-plugin file:keys.lua`, the plugin manager's reload key, or
+  `plugin_reload` if you are asking hocus. Nothing watches the folder.
 - **Typos are caught when called, not when written** - `zellij.<anything>` is a function, because
   that is what makes every command reachable without a wrapper each. A name zellij does not know
   raises "unknown zellij command" at the call, naming what you wrote.
