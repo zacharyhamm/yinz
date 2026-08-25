@@ -251,6 +251,13 @@ enum CommandName {
   CancelQueueJob = 259;
   QueueStatus = 260;
   FinishQueueJob = 261;
+  FsRead = 262;
+  FsList = 263;
+  FsMetadata = 264;
+  FsWrite = 265;
+  FsRemove = 266;
+  FsCreateDir = 267;
+  FsRename = 268;
 }
 
 message PluginCommand {
@@ -442,6 +449,91 @@ message PluginCommand {
     CancelQueueJobPayload cancel_queue_job_payload = 200;
     QueueStatusPayload queue_status_payload = 201;
     FinishQueueJobPayload finish_queue_job_payload = 202;
+    FsReadPayload fs_read_payload = 203;
+    FsListPayload fs_list_payload = 204;
+    FsMetadataPayload fs_metadata_payload = 205;
+    FsWritePayload fs_write_payload = 206;
+    FsRemovePayload fs_remove_payload = 207;
+    FsCreateDirPayload fs_create_dir_payload = 208;
+    FsRenamePayload fs_rename_payload = 209;
+  }
+}
+
+// Filesystem access, confined by the server to the plugin's four roots
+// (/host, /data, /cache, /tmp) unless the plugin also holds FullHdAccess.
+
+message FsReadPayload {
+  string path = 1;
+  optional uint64 max_bytes = 2;
+}
+
+message FsListPayload {
+  string path = 1;
+}
+
+message FsMetadataPayload {
+  string path = 1;
+}
+
+message FsWritePayload {
+  string path = 1;
+  bytes contents = 2;
+  bool append = 3;
+  bool create_dirs = 4;
+}
+
+message FsRemovePayload {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message FsCreateDirPayload {
+  string path = 1;
+  bool all = 2;
+}
+
+message FsRenamePayload {
+  string from = 1;
+  string to = 2;
+}
+
+// Every Fs command answers, so that a failure can be raised rather than logged.
+
+message FsReadResponse {
+  oneof result {
+    bytes contents = 1;
+    string error = 2;
+  }
+}
+
+message FsEntry {
+  string path = 1;
+  optional event.FileMetadata metadata = 2;
+}
+
+message FsListResponse {
+  oneof result {
+    FsEntryList entries = 1;
+    string error = 2;
+  }
+}
+
+message FsEntryList {
+  repeated FsEntry entries = 1;
+}
+
+message FsMetadataResponse {
+  oneof result {
+    event.FileMetadata metadata = 1;
+    string error = 2;
+    bool not_found = 3;
+  }
+}
+
+message FsMutateResponse {
+  oneof result {
+    bool success = 1;
+    string error = 2;
   }
 }
 

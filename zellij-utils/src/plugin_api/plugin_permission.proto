@@ -22,4 +22,6 @@ enum PermissionType {
   ReadSessionEnvironmentVariables = 16;
   PluginData = 17;
   SharedPluginData = 18;
+  ReadFiles = 19;
+  WriteFiles = 20;
 }

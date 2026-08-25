@@ -332,27 +332,78 @@ Two notes on writing one:
 
 Because a hook is an ordinary plugin, anything a plugin can do is now reachable at agent exit.
 `example-plugins/agent-commit.lua` is a worked example that offers to stage and commit whatever
-the agent left behind, using `zellij.run_command` (Lua has no `io` or `os`, so git goes through
-the host).
+the agent left behind, using `zellij.run_command` (a plugin can read and write files, but running git is
+a command, and commands go through the host).
 
 ## Errors
 
 Host commands raise Lua errors, and an error in an entrypoint is reported against your plugin
 rather than taken quietly. Use `pcall` if you want to handle one yourself.
 
+## Files
+
+A plugin can read and write inside the four folders zellij gives it, which are the same four a
+wasm plugin has preopened:
+
+| path | what |
+|---|---|
+| `/host` | the plugin's own folder - normally where the session was started. A relative path is read against this one. |
+| `/data` | scratch for this instance, thrown away with the session |
+| `/cache` | this plugin's own folder, kept across sessions |
+| `/tmp` | zellij's temp folder, **shared with every other plugin and session** |
+
+```lua
+function M.load()
+  zellij.request_permission { "read_files", "write_files" }
+end
+
+function M.render()
+  local ok, config = pcall(function()
+    return zellij.json.decode(zellij.fs.read("/host/.mytool.json"))
+  end)
+  return ok and config.greeting or "no config yet"
+end
+```
+
+`zellij.fs` has `read`, `write`, `list`, `metadata`, `remove`, `mkdir` and `rename`. They raise on
+failure rather than returning nil, so use `pcall` where a missing file is an ordinary outcome -
+or ask `zellij.fs.metadata`, which answers nil for something that is not there. `list` spells its
+answers in the root you asked about, so they can be handed straight back to `read`.
+
+Reading needs `read_files` and writing needs `write_files`, separately: a plugin that only reads
+your config should not be able to rewrite it. Reaching outside all four folders needs
+`full_hd_access` as well, and is refused without it.
+
+Two things to know. A path is confined *after* symlinks are followed, so a link inside `/host`
+pointing elsewhere is refused rather than followed out. And `/tmp` is a real prefix here, so an
+absolute path that happens to begin `/tmp` is read as the shared root rather than taken literally
+- the same collision the wasm preopens have.
+
 ## What Lua plugins may not do
 
 A wasm plugin is sandboxed by its runtime: it can only reach the directories zellij preopens for
-it. Lua has no equivalent boundary, so zellij gives a plugin a **restricted standard library** -
-`string`, `table`, `math`, `utf8` and the base library, and no `io`, `os`, `debug`, `dofile`,
-`loadfile`, `load`, or `package.loadlib`.
+it. Lua has no equivalent boundary, so zellij builds the interpreter with a **restricted standard
+library** and hands back the capabilities worth having as host commands, where the permission
+system can see them.
 
-Without that, a plugin could read and write anything the zellij process can, and asking the user
-to approve `open_terminals_or_plugins` would mean nothing. `require` serves only `"zellij"`.
+Gone, and staying gone:
 
-This means a Lua plugin cannot currently read or write files at all. That is a deliberate starting
-position: file access is meant to arrive as host commands that go through the same path
-translation wasm plugins get, not by opening `io`.
+- **`io` and `package`** - never opened, which is also what keeps `package.loadlib` out of reach.
+  Files go through `zellij.fs`, which is confined and permissioned; `io` would be neither.
+- **`load`, `dofile`, `loadfile`, `loadstring`** - running code from a string or a path is how
+  everything above gets reintroduced by the back door. `require` serves only `"zellij"`.
+- **`os.execute`, `os.exit`, `os.getenv`, `os.remove`, `os.rename`, `os.tmpname`, `os.setlocale`**
+  - the process, its environment, and unconfined file access. `setlocale` is in the list because
+  it is process-global: a plugin would be changing how the whole application formats numbers.
+  Running a command is `zellij.run_command`, and the session's environment is
+  `zellij.get_session_environment_variables` - both permissioned.
+- **`debug`** - mlua will not open it in a safe interpreter at all, because it can reach upvalues
+  and userdata metatables. That is memory-unsafety rather than merely too much authority.
+
+What you do get beyond the obvious: `os.time`, `os.date`, `os.difftime` and `os.clock` need no
+permission, because a wasm plugin reads the clock through WASI without one either and a clock is
+not authority. `coroutine` is there. So is `zellij.json.encode`/`decode`, with the one caveat that
+Lua cannot tell an empty array from an empty table, so `encode {}` is `[]`.
 
 ## Current limits
 

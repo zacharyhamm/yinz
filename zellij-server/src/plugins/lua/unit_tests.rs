@@ -64,6 +64,72 @@ fn load(source: &str) -> Result<super::LuaPlugin> {
     load_lua_plugin(source, "test.lua", test_env())
 }
 
+/// A plugin whose `/host`, `/data` and `/cache` are real, separate folders, for the filesystem
+/// tests. `test_env` points all three at `.`, which would make "did this land in the right root"
+/// unanswerable.
+fn load_with_dirs(
+    source: &str,
+    dirs: &FsDirs,
+    permissions: Option<HashSet<PermissionType>>,
+) -> Result<super::LuaPlugin> {
+    let mut env = test_env();
+    env.plugin_cwd = dirs.host.path().to_path_buf();
+    env.plugin_own_data_dir = dirs.data.path().to_path_buf();
+    env.plugin_own_cache_dir = dirs.cache.path().to_path_buf();
+    env.permissions = Arc::new(Mutex::new(permissions));
+    load_lua_plugin(source, "test.lua", env)
+}
+
+/// Removes a path when the test ends, for the one file that cannot live in a tempdir.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The three per-plugin roots, kept alive for the length of a test.
+struct FsDirs {
+    host: tempfile::TempDir,
+    data: tempfile::TempDir,
+    cache: tempfile::TempDir,
+}
+
+impl FsDirs {
+    fn new() -> Self {
+        FsDirs {
+            host: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+            cache: tempfile::tempdir().unwrap(),
+        }
+    }
+}
+
+/// Run `body` as a plugin's `render` and hand back what it returned.
+fn render_with_dirs(
+    body: &str,
+    dirs: &FsDirs,
+    permissions: Option<HashSet<PermissionType>>,
+) -> Result<String> {
+    let source = format!(
+        "local M = {{}}\nfunction M.render()\n{}\nend\nreturn M",
+        body
+    );
+    let mut plugin = load_with_dirs(&source, dirs, permissions)?;
+    Ok(String::from_utf8(plugin.render(1, 200)?).unwrap())
+}
+
+/// The permissions the filesystem commands need, and nothing else - so that a test asserting a
+/// refusal is asserting about the permission and not about some unrelated grant.
+fn file_permissions() -> Option<HashSet<PermissionType>> {
+    Some(
+        [PermissionType::ReadFiles, PermissionType::WriteFiles]
+            .into_iter()
+            .collect(),
+    )
+}
+
 /// A plugin whose permissions are all already granted, for tests about *marshalling* a command
 /// rather than about whether it is allowed. Without this, every privileged command is refused
 /// before it is ever built.
@@ -348,20 +414,25 @@ fn a_runtime_error_in_an_entrypoint_is_reported_not_swallowed() {
 
 #[test]
 fn the_dangerous_stdlib_is_absent_rather_than_merely_erroring() {
+    // `os` survives as a table because the clock lives there, but only the clock does - see
+    // `the_os_library_keeps_the_clock_and_nothing_else`. Everything here is gone outright,
+    // rather than present and raising, so that a plugin cannot probe for it either.
     let mut plugin = load(
         r#"
         local M = {}
         function M.render()
           return table.concat({
-            type(io), type(os), type(dofile), type(loadfile), type(load), type(debug),
+            type(io), type(dofile), type(loadfile), type(load), type(debug), type(package),
+            type(os.execute), type(os.getenv), type(os.setlocale), type(os.exit),
+            type(os.remove), type(os.rename), type(os.tmpname),
           }, ",")
         end
         return M
         "#,
     )
     .unwrap();
-    let rendered = String::from_utf8(plugin.render(1, 40).unwrap()).unwrap();
-    assert_eq!(rendered, "nil,nil,nil,nil,nil,nil");
+    let rendered = String::from_utf8(plugin.render(1, 80).unwrap()).unwrap();
+    assert_eq!(rendered, ["nil"; 13].join(","));
 }
 
 #[test]
@@ -431,11 +502,19 @@ fn the_shipped_example_plugin_loads_and_renders() {
     let mut plugin = load_lua_plugin(&source, "clock.lua", test_env()).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     let rendered = String::from_utf8(plugin.render(5, 40).unwrap()).unwrap();
+    // The clock shows the real time now, so match its shape rather than a fixed reading.
+    let clock = rendered
+        .split_whitespace()
+        .find(|word| word.matches(':').count() == 2)
+        .unwrap_or_else(|| panic!("no HH:MM:SS in: {}", rendered));
     assert!(
-        rendered.contains("the time is") && rendered.contains("00:00"),
+        clock
+            .split(':')
+            .all(|part| part.len() == 2 && part.chars().all(|c| c.is_ascii_digit())),
         "got: {}",
         rendered
     );
+    assert!(rendered.contains("the time is"), "got: {}", rendered);
 }
 
 #[test]
@@ -853,4 +932,456 @@ fn a_command_needing_no_permission_is_not_refused() {
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
+}
+
+// Time, JSON and coroutines -----------------------------------------------------------------
+
+#[test]
+fn the_clock_is_readable_without_asking_permission() {
+    // A wasm plugin reads the clock through WASI with no permission at all, so a Lua plugin
+    // asking the user to approve a clock would be noise. Note `load`, not `load_permitted`.
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render()
+          local t = os.time()
+          local parts = os.date("*t", t)
+          return string.format("%d,%d,%s", t, parts.year, os.date("!%Y", 0))
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 60).unwrap()).unwrap();
+    let fields: Vec<&str> = rendered.split(',').collect();
+
+    let now: i64 = fields[0].parse().expect("os.time returned a number");
+    // Somewhere after 2020 and before 2100: enough to catch a clock that is not a clock, without
+    // pinning the test to the date it was written.
+    assert!(
+        (1_577_836_800..4_102_444_800).contains(&now),
+        "os.time should be a plausible unix timestamp, got {}",
+        now
+    );
+    let year: i64 = fields[1].parse().expect("os.date gave a year");
+    assert!((2020..2100).contains(&year), "got year {}", year);
+    // The epoch in UTC is the one date every machine must agree on.
+    assert_eq!(fields[2], "1970");
+}
+
+#[test]
+fn the_os_library_keeps_the_clock_and_nothing_else() {
+    // A whitelist, so this is really asserting that the *replacement* table was installed rather
+    // than that a handful of known names were blanked.
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render()
+          local kept = {}
+          for name in pairs(os) do table.insert(kept, name) end
+          table.sort(kept)
+          return table.concat(kept, ",")
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 100).unwrap()).unwrap();
+    assert_eq!(rendered, "clock,date,difftime,time");
+}
+
+#[test]
+fn coroutines_are_available() {
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render()
+          local co = coroutine.create(function(a) coroutine.yield(a + 1) return "done" end)
+          local _, first = coroutine.resume(co, 1)
+          local _, second = coroutine.resume(co)
+          return string.format("%d,%s", first, second)
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 20).unwrap()).unwrap(),
+        "2,done"
+    );
+}
+
+#[test]
+fn json_round_trips_and_decodes_null_to_nil() {
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render()
+          local decoded = zellij.json.decode('{"a":1,"b":"two","c":null,"d":[1,2]}')
+          return table.concat({
+            tostring(decoded.a),
+            decoded.b,
+            tostring(decoded.c),
+            tostring(#decoded.d),
+            zellij.json.encode({ x = true }),
+          }, ",")
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 100).unwrap()).unwrap(),
+        // `c` is a real nil, not mlua's null userdata, so `if decoded.c then` answers the way
+        // a Lua author expects.
+        "1,two,nil,2,{\"x\":true}"
+    );
+}
+
+#[test]
+fn malformed_json_raises_rather_than_returning_nil() {
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render() return zellij.json.decode("{not json") end
+        return M
+        "#,
+    )
+    .unwrap();
+    let err = format!("{:#}", plugin.render(1, 1).unwrap_err());
+    assert!(err.contains("could not decode JSON"), "got: {}", err);
+}
+
+// Filesystem --------------------------------------------------------------------------------
+
+#[test]
+fn a_file_written_under_host_can_be_read_back() {
+    let dirs = FsDirs::new();
+    let rendered = render_with_dirs(
+        r#"
+        zellij.fs.write("/host/notes.txt", "hello")
+        return zellij.fs.read("/host/notes.txt")
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "hello");
+    // ...and it really is on disk where the plugin's /host points, not somewhere else.
+    assert_eq!(
+        std::fs::read_to_string(dirs.host.path().join("notes.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn each_root_is_a_different_folder() {
+    let dirs = FsDirs::new();
+    render_with_dirs(
+        r#"
+        zellij.fs.write("/host/where.txt", "host")
+        zellij.fs.write("/data/where.txt", "data")
+        zellij.fs.write("/cache/where.txt", "cache")
+        return ""
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    for (dir, expected) in [
+        (dirs.host.path(), "host"),
+        (dirs.data.path(), "data"),
+        (dirs.cache.path(), "cache"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(dir.join("where.txt")).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn a_relative_path_is_read_against_host() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("relative.txt"), "found").unwrap();
+    let rendered = render_with_dirs(
+        r#"return zellij.fs.read("relative.txt")"#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "found");
+}
+
+#[test]
+fn listing_answers_in_the_root_the_caller_used() {
+    // The point of re-spelling the paths: what comes out of `list` has to be something `read`
+    // will accept, and a real host path is not.
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("b.txt"), "b").unwrap();
+    std::fs::create_dir(dirs.host.path().join("a_dir")).unwrap();
+    let rendered = render_with_dirs(
+        r#"
+        local out = {}
+        for _, entry in ipairs(zellij.fs.list("/host")) do
+          table.insert(out, entry.path .. ":" .. tostring(entry.metadata.is_dir))
+        end
+        return table.concat(out, ",")
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "/host/a_dir:true,/host/b.txt:false");
+}
+
+#[test]
+fn metadata_is_nil_for_something_that_is_not_there() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("real.txt"), "12345").unwrap();
+    let rendered = render_with_dirs(
+        r#"
+        local there = zellij.fs.metadata("/host/real.txt")
+        local missing = zellij.fs.metadata("/host/missing.txt")
+        return string.format("%d,%s,%s", there.len, tostring(there.is_file), tostring(missing))
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "5,true,nil");
+}
+
+#[test]
+fn writes_append_and_create_folders_when_asked() {
+    let dirs = FsDirs::new();
+    let rendered = render_with_dirs(
+        r#"
+        zellij.fs.write("/host/deep/nested/log.txt", "one", { create_dirs = true })
+        zellij.fs.write("/host/deep/nested/log.txt", "-two", { append = true })
+        return zellij.fs.read("/host/deep/nested/log.txt")
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "one-two");
+}
+
+#[test]
+fn folders_and_files_can_be_made_renamed_and_removed() {
+    let dirs = FsDirs::new();
+    let rendered = render_with_dirs(
+        r#"
+        zellij.fs.mkdir("/host/work", true)
+        zellij.fs.write("/host/work/a.txt", "x")
+        zellij.fs.rename("/host/work/a.txt", "/host/work/b.txt")
+        local after_rename = zellij.fs.read("/host/work/b.txt")
+        zellij.fs.remove("/host/work", true)
+        return after_rename .. "," .. tostring(zellij.fs.metadata("/host/work"))
+        "#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    assert_eq!(rendered, "x,nil");
+}
+
+#[test]
+fn a_read_of_a_missing_file_raises_rather_than_returning_nil() {
+    let dirs = FsDirs::new();
+    let err = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.fs.read("/host/nope.txt")"#,
+            &dirs,
+            file_permissions(),
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("nope.txt"), "got: {}", err);
+}
+
+#[test]
+fn a_read_larger_than_the_cap_is_refused() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("big.txt"), vec![b'x'; 4096]).unwrap();
+    let err = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.fs.read("/host/big.txt", 16)"#,
+            &dirs,
+            file_permissions(),
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("limit"), "got: {}", err);
+}
+
+// Filesystem confinement --------------------------------------------------------------------
+
+#[test]
+fn a_path_cannot_climb_out_of_its_root() {
+    // The load-bearing one. `translate_plugin_path`, which the pane-opening commands use, would
+    // happily resolve this - which is exactly why these commands do not use it.
+    let dirs = FsDirs::new();
+    for source in [
+        r#"return zellij.fs.read("/host/../../../../etc/passwd")"#,
+        r#"return zellij.fs.read("/data/../../../../etc/passwd")"#,
+        r#"return zellij.fs.write("/host/../escaped.txt", "x")"#,
+    ] {
+        let err = format!(
+            "{:#}",
+            render_with_dirs(source, &dirs, file_permissions()).unwrap_err()
+        );
+        assert!(
+            err.contains("outside the plugin's own folders"),
+            "expected {} to be refused, got: {}",
+            source,
+            err
+        );
+    }
+}
+
+#[test]
+fn a_symlink_out_of_a_root_is_followed_and_then_refused() {
+    // Containment has to be checked after the link is resolved, not before: the path as written
+    // is entirely innocent.
+    let dirs = FsDirs::new();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dirs.host.path().join("escape")).unwrap();
+
+    let err = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.fs.read("/host/escape/secret.txt")"#,
+            &dirs,
+            file_permissions(),
+        )
+        .unwrap_err()
+    );
+    assert!(
+        err.contains("outside the plugin's own folders"),
+        "got: {}",
+        err
+    );
+}
+
+#[test]
+fn an_absolute_path_outside_every_root_needs_full_hd_access() {
+    let dirs = FsDirs::new();
+    // Deliberately not a tempdir: `/tmp` *is* one of the four roots, so a path under it is
+    // rewritten rather than escaping. This crate's own source tree is somewhere none of the
+    // roots point at, which is what makes it the right target here.
+    let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("outside-the-roots.txt");
+    std::fs::write(&outside, "elsewhere").unwrap();
+    let _cleanup = RemoveOnDrop(outside.clone());
+    let source = format!(r#"return zellij.fs.read("{}")"#, outside.display());
+
+    let err = format!(
+        "{:#}",
+        render_with_dirs(&source, &dirs, file_permissions()).unwrap_err()
+    );
+    assert!(err.contains("FullHdAccess"), "got: {}", err);
+
+    // ...and with it granted, the same read goes through. An absolute path is passed straight
+    // to disk rather than rewritten, which is the other half of what makes this safe: nothing
+    // silently redirects a path the plugin meant literally.
+    let mut permitted = file_permissions().unwrap();
+    permitted.insert(PermissionType::FullHdAccess);
+    assert_eq!(
+        render_with_dirs(&source, &dirs, Some(permitted)).unwrap(),
+        "elsewhere"
+    );
+}
+
+#[test]
+fn renaming_out_of_the_plugins_folders_is_refused() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("a.txt"), "x").unwrap();
+    let source = format!(
+        r#"return zellij.fs.rename("/host/a.txt", "{}")"#,
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("stolen.txt")
+            .display()
+    );
+    let err = format!(
+        "{:#}",
+        render_with_dirs(&source, &dirs, file_permissions()).unwrap_err()
+    );
+    assert!(err.contains("FullHdAccess"), "got: {}", err);
+}
+
+// Filesystem permissions --------------------------------------------------------------------
+
+#[test]
+fn reading_and_writing_each_need_their_own_permission() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("a.txt"), "x").unwrap();
+
+    let read_only: Option<HashSet<PermissionType>> =
+        Some([PermissionType::ReadFiles].into_iter().collect());
+    let write_only: Option<HashSet<PermissionType>> =
+        Some([PermissionType::WriteFiles].into_iter().collect());
+
+    // A plugin that may read cannot write...
+    let err = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.fs.write("/host/b.txt", "x")"#,
+            &dirs,
+            read_only.clone(),
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("WriteFiles"), "got: {}", err);
+
+    // ...and one that may write cannot read.
+    let err = format!(
+        "{:#}",
+        render_with_dirs(r#"return zellij.fs.read("/host/a.txt")"#, &dirs, write_only,)
+            .unwrap_err()
+    );
+    assert!(err.contains("ReadFiles"), "got: {}", err);
+
+    // The reading half works on its own.
+    assert_eq!(
+        render_with_dirs(r#"return zellij.fs.read("/host/a.txt")"#, &dirs, read_only).unwrap(),
+        "x"
+    );
+}
+
+#[test]
+fn a_plugin_that_asked_for_nothing_cannot_touch_the_filesystem() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("a.txt"), "x").unwrap();
+    let err = format!(
+        "{:#}",
+        render_with_dirs(r#"return zellij.fs.read("/host/a.txt")"#, &dirs, None).unwrap_err()
+    );
+    assert!(
+        err.contains("ReadFiles") && err.contains("request_permission"),
+        "the refusal should say what to ask for, got: {}",
+        err
+    );
+}
+
+#[test]
+fn the_tmp_root_is_zellijs_own_temp_folder() {
+    // Worth pinning because it is the one root that is *shared*: every plugin in every session
+    // sees the same folder. It also means a real host path beginning `/tmp` is read as the
+    // virtual root rather than taken literally - the same collision the wasm preopens have.
+    let dirs = FsDirs::new();
+    render_with_dirs(
+        r#"return zellij.fs.write("/tmp/lua-sandbox-test.txt", "shared")"#,
+        &dirs,
+        file_permissions(),
+    )
+    .unwrap();
+    let written = zellij_utils::consts::ZELLIJ_TMP_DIR.join("lua-sandbox-test.txt");
+    let _cleanup = RemoveOnDrop(written.clone());
+    assert_eq!(std::fs::read_to_string(&written).unwrap(), "shared");
+    // and not in /host, which is where a relative path would have gone
+    assert!(!dirs.host.path().join("lua-sandbox-test.txt").exists());
 }
