@@ -86,6 +86,7 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
         &state.messages,
         true,
         None,
+        false,
     ))
     .unwrap();
     assert!(

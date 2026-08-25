@@ -137,6 +137,7 @@ fn request_body_adds_the_active_project_to_the_system_message() {
         &[Message::user("hi")],
         true,
         Some(("hocus", "/work/hocus")),
+        false,
     ))
     .unwrap();
     assert_eq!(
@@ -453,4 +454,91 @@ fn empty_thinking_is_the_same_as_none() {
         "a stream that opened a reasoning field and put nothing in it has \
          nothing to hand back: {message}"
     );
+}
+
+// -- planning mode ------------------------------------------------------
+
+/// The mode's enforcement is the array itself: a tool that is not sent is one
+/// the model was never told about.
+#[test]
+fn planning_mode_advertises_only_the_read_only_tools() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    let body: serde_json::Value =
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+    let names: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|spec| spec["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), tools::READ_ONLY.len());
+    for name in &names {
+        assert!(tools::READ_ONLY.contains(name), "{name} is not read-only");
+    }
+    assert!(!names.contains(&"close_pane"));
+}
+
+/// After the configured prompt, so a custom `system_prompt` telling the model to
+/// get on with it cannot displace the sentence explaining why half its tools
+/// are missing.
+#[test]
+fn the_plan_prompt_follows_the_configured_one() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    cfg.system_prompt = Some("Be terse.".to_owned());
+    let body: serde_json::Value =
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Planning mode."), "{system}");
+    assert!(
+        system.find("Be terse.").unwrap() < system.find("Planning mode.").unwrap(),
+        "{system}",
+    );
+}
+
+/// The budget is the harder limit of the two: spending it withholds every tool,
+/// read-only ones included, and both sentences are still owed to the model.
+#[test]
+fn a_spent_budget_still_wins_in_planning_mode() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    let body: serde_json::Value =
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], false))
+            .unwrap();
+    assert!(body.get("tools").is_none());
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Planning mode."), "{system}");
+    assert!(system.contains("tool budget"), "{system}");
+}
+
+/// Planning mode has to say what it is even where there were never any tools to
+/// withhold, or the reply reads as an unexplained refusal to act.
+#[test]
+fn the_plan_prompt_survives_tools_being_switched_off() {
+    let mut cfg = test_config();
+    cfg.tools = false;
+    cfg.system_prompt = None;
+    let body: serde_json::Value =
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+    assert!(body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Planning mode."));
+}
+
+/// The regression that matters most: everything outside planning mode is sent
+/// exactly as it was before the mode existed.
+#[test]
+fn acting_sends_the_body_it_always_did() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    let transcript = [Message::user("hi")];
+    let body: serde_json::Value =
+        serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
+    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert!(!body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Planning mode."));
 }

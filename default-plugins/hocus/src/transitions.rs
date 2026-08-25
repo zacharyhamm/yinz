@@ -83,6 +83,7 @@ impl State {
             saved: std::mem::take(&mut self.saved),
             view: std::mem::take(&mut self.view),
             job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
+            plan: std::mem::take(&mut self.plan),
         }
     }
 
@@ -105,6 +106,7 @@ impl State {
         self.saved = chat.saved;
         self.view = chat.view;
         self.job_auto_confirm = chat.job_auto_confirm;
+        self.plan = chat.plan;
     }
 
     /// Run `f` against a parked chat by swapping it into the foreground for the
@@ -184,10 +186,42 @@ impl State {
     /// to infer it, and says what that call will do rather than handing over the
     /// model's own JSON to read.
     pub fn confirmation_prompt(&self) -> Option<Vec<String>> {
+        // A plan waiting on a `y`/`n` renders through the same tail as a tool
+        // does — the wrapping, the blank line above it, and the anchor
+        // suppression that keeps it from being scrolled off the bottom
+        // unanswered are all things it needs for the same reasons.
+        if self.awaiting_plan() {
+            return Some(vec![
+                "carry out this plan?  <y> yes  <n> keep planning".to_owned()
+            ]);
+        }
         match self.status {
             Status::ConfirmingTool => self.pending.front().map(tools::confirmation_detail),
             _ => None,
         }
+    }
+
+    /// Whether a plan is waiting on a `y`/`n`.
+    ///
+    /// Deliberately *not* folded into `is_in_flight`: nothing is arriving and no
+    /// tool is running, so a question typed at the plan must go out as the next
+    /// planning turn rather than pile up in `asks`.
+    pub(crate) fn awaiting_plan(&self) -> bool {
+        matches!(self.plan, Plan::AwaitingApproval)
+    }
+
+    /// Whether the read-only tool set is what goes out with the next request.
+    ///
+    /// False while a plan waits on its `y`/`n` — nothing goes out at all then —
+    /// which is why the UI asks `plan_mode_on` instead.
+    pub(crate) fn is_planning(&self) -> bool {
+        matches!(self.plan, Plan::Planning)
+    }
+
+    /// Whether planning mode is on at all, in either of its two states. What the
+    /// title and the prompt ask, since neither cares how far along it is.
+    pub(crate) fn plan_mode_on(&self) -> bool {
+        !matches!(self.plan, Plan::Off)
     }
 
     /// Whether a `y`/`n` is outstanding, for the callers that only need to know
@@ -751,6 +785,7 @@ impl State {
         self.owes_reply = false;
         self.manual_head = false;
         self.job_auto_confirm = false;
+        self.plan = Plan::Off;
         self.pin_to_bottom();
         // A watcher armed for the conversation being thrown away has nothing
         // left to compare against, and would otherwise keep billing.

@@ -140,10 +140,17 @@ impl State {
         }
         // The confirmation prompt owns y/n outright, for the same reason: they
         // would otherwise be typed into the input box.
-        if self.is_confirming() && key.has_no_modifiers() {
+        if (self.is_confirming() || self.awaiting_plan()) && key.has_no_modifiers() {
+            let confirming = self.is_confirming();
             match key.bare_key {
-                BareKey::Char('y') | BareKey::Char('Y') => return self.confirm_tool(),
-                BareKey::Char('n') | BareKey::Char('N') => return self.decline_tool(),
+                BareKey::Char('y') | BareKey::Char('Y') if confirming => {
+                    return self.confirm_tool()
+                },
+                BareKey::Char('n') | BareKey::Char('N') if confirming => {
+                    return self.decline_tool()
+                },
+                BareKey::Char('y') | BareKey::Char('Y') => return self.approve_plan(),
+                BareKey::Char('n') | BareKey::Char('N') => return self.decline_plan(),
                 _ => {},
             }
         }
@@ -166,7 +173,13 @@ impl State {
 
         match self.input.handle_key(key) {
             InputAction::Submit => self.submit(),
-            // Tools first, because they are the nearer thing: a stream and a
+            // A plan first: nothing is running while one waits, so it is the
+            // only outstanding question. Esc reads as `n` here, the
+            // conservative answer it is everywhere else in this pane — and
+            // going to `abort_tools` instead would push "tools aborted" over an
+            // empty queue.
+            InputAction::Cancel if self.awaiting_plan() => self.decline_plan(),
+            // Then tools, because they are the nearer thing: a stream and a
             // tool run can now both be outstanding, and the tool is the one the
             // prompt is asking about.
             InputAction::Cancel if self.tools_busy() => self.abort_tools(),
@@ -192,7 +205,7 @@ impl State {
     pub(crate) fn on_paste(&mut self, text: String) -> bool {
         // The states that already take every key before the input box sees it
         // refuse a paste for the same reason.
-        if self.picker.is_some() || self.is_confirming() {
+        if self.picker.is_some() || self.is_confirming() || self.awaiting_plan() {
             return false;
         }
         self.input.insert_text(&text);
@@ -281,6 +294,13 @@ impl State {
         // plugin rather than the conversation, so neither an API key nor a
         // settled reply is any of its business. `run_manual` turns away the one
         // kind that does conflict — another tool already running.
+        // Typing at a plan is how you correct one, so whatever comes next is the
+        // answer to the question and the question stops being asked. Ahead of
+        // the slash check too: `/plan` reads the mode, and it must not still see
+        // an approval outstanding.
+        if self.awaiting_plan() {
+            self.plan = Plan::Planning;
+        }
         if self.input.get_text().trim_start().starts_with('/') {
             let line = self.drain_input();
             return self.run_manual(&line);
@@ -385,7 +405,21 @@ impl State {
             .as_deref()
             .and_then(|name| self.projects.get(name))
             .map(|project| (project.name.as_str(), project.root.as_str()));
-        let body = api::request_body_with_project(cfg, &self.messages, allow_tools, project);
+        // A request going out is the answer to any plan waiting on one — from
+        // `approve_plan`, from something typed, from a queued ask or from a job
+        // coming due. Clearing it in the one place they all pass through keeps
+        // "a request is in flight" and "waiting on an approval" from ever being
+        // true at once.
+        if self.awaiting_plan() {
+            self.plan = Plan::Planning;
+        }
+        let body = api::request_body_with_project(
+            cfg,
+            &self.messages,
+            allow_tools,
+            project,
+            self.is_planning(),
+        );
         let body_len = body.len();
         self.log(
             "api_request",
@@ -650,6 +684,18 @@ impl State {
                                 "status": "done",
                             }),
                         );
+                        // A planning turn that ended in prose is a plan. One
+                        // that ended in tool calls went down the branch above
+                        // and is still researching; an error or an empty
+                        // response leaves the mode alone to be retried.
+                        if self.is_planning() {
+                            self.plan = Plan::AwaitingApproval;
+                            self.pin_to_bottom();
+                            // The sidebar is very often not what is being looked
+                            // at — the same reason `pump_tools` toasts its own
+                            // y/n rather than trusting the pane to be on screen.
+                            notify("hocus has a plan — y to carry it out");
+                        }
                     }
                 },
             }

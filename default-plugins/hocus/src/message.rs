@@ -199,6 +199,24 @@ pub enum Status {
     AwaitingLinear,
 }
 
+/// Whether this conversation is planning rather than acting, and how far along.
+///
+/// Its own field rather than two more `Status` variants, because `Status` is the
+/// lifecycle of the *tool queue* and `tools_busy()` is `status != Idle`. A
+/// planning state spelled there would make `is_in_flight()` true, which queues
+/// every typed message and every `hocus-ask` question behind the plan — and
+/// typing at a plan is exactly how you correct one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum Plan {
+    #[default]
+    Off,
+    /// Only the read-only tools are advertised, and the model is asked for a
+    /// plan rather than for the work.
+    Planning,
+    /// A plan has been given and is waiting on `y`/`n`.
+    AwaitingApproval,
+}
+
 /// A prompt the plugin re-asks itself on an interval. Firing one is exactly
 /// what `submit()` does — push a user message and start a request — so a
 /// scheduled run streams, calls tools and gets archived like any other turn.
