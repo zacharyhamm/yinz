@@ -3128,6 +3128,23 @@ where
     unsafe { host_run_plugin_command() };
 }
 
+/// Compose a decoration in front of a pane's title, or drop it with `None`.
+///
+/// Not a rename. The pane's name, its own OSC title and the `title` every plugin
+/// reads off the pane manifest are all untouched, so the prefix survives every
+/// rename and cannot erase one — which is what makes it the place for a fact about
+/// the pane rather than a name for it. It shows wherever a human looks at the pane:
+/// its frame, and its row in a stack list. Terminal panes only.
+pub fn set_pane_title_prefix(pane_id: PaneId, prefix: Option<&str>) {
+    let plugin_command = PluginCommand::SetPaneTitlePrefix {
+        pane_id,
+        prefix: prefix.map(ToOwned::to_owned),
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Create a new tab that includes the specified pane ids
 pub fn break_panes_to_new_tab(
     pane_ids: &[PaneId],

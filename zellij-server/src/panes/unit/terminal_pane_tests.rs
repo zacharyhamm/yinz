@@ -799,6 +799,60 @@ pub fn display_title_prefixes_a_custom_rename_pane_name_with_the_hostname() {
     assert_eq!(terminal_pane.display_title(), "myhost: custom-name");
 }
 
+/// The whole point of the prefix: it is not the pane's name, so it outlives every
+/// writer of the name — the user's rename, the pane's own OSC title, and the idle
+/// summary hocus-agentd writes there.
+#[test]
+pub fn a_title_prefix_survives_every_kind_of_title() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "zellij/topic");
+    terminal_pane.grid.title = Some("running the tests".to_owned());
+    assert_eq!(
+        terminal_pane.display_title(),
+        "zellij/topic: running the tests"
+    );
+    terminal_pane.rename(b"custom-name".to_vec());
+    assert_eq!(terminal_pane.display_title(), "zellij/topic: custom-name");
+}
+
+/// And the prefix does not become a name either: `current_title` is what the pane
+/// manifest carries, and agent detection reads that title. A prefix that leaked
+/// into it would let the daemon re-detect its own decoration.
+#[test]
+pub fn a_title_prefix_stays_out_of_the_raw_title() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    let before = terminal_pane.current_title();
+    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    assert_eq!(terminal_pane.current_title(), before);
+    assert_eq!(terminal_pane.custom_title(), None);
+    assert!(!terminal_pane.has_explicit_title());
+}
+
+#[test]
+pub fn a_title_prefix_can_be_dropped() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.grid.title = Some("running the tests".to_owned());
+    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    terminal_pane.set_title_prefix(None);
+    assert_eq!(terminal_pane.display_title(), "running the tests");
+}
+
+/// Both decorations at once, in the order they answer "where is this pane": the
+/// machine, then the checkout on it.
+#[test]
+pub fn a_title_prefix_follows_the_hostname() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "myhost zellij/topic");
+    terminal_pane.grid.title = Some("running the tests".to_owned());
+    assert_eq!(
+        terminal_pane.display_title(),
+        "myhost zellij/topic: running the tests"
+    );
+}
+
 #[test]
 pub fn has_bell_reflects_grid_ring_bell() {
     let mut terminal_pane = make_terminal_pane_for_bell();

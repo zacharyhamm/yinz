@@ -159,7 +159,8 @@ pub use super::generated_api::api::{
         SessionListSnapshot as ProtobufSessionListSnapshot, SetFloatingPanePinnedPayload,
         SetGlobalPanePlacementPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
-        SetPaneRegexHighlightsPayload, SetSelfMouseSelectionSupportPayload,
+        SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
+        SetSelfMouseSelectionSupportPayload,
         SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTabProjectsPayload,
         SetTimeoutPayload, ShowCursorPayload,
         ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
@@ -2595,6 +2596,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for HighlightAndUnhighlightPanes"),
                 }
             },
+            Some(CommandName::SetPaneTitlePrefix) => match protobuf_plugin_command.payload {
+                Some(Payload::SetPaneTitlePrefixPayload(payload)) => {
+                    Ok(PluginCommand::SetPaneTitlePrefix {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("SetPaneTitlePrefix must have a pane id")?
+                            .try_into()?,
+                        prefix: payload.prefix,
+                    })
+                },
+                _ => Err("Mismatched payload for SetPaneTitlePrefix"),
+            },
             Some(CommandName::RevealPaneWithId) => match protobuf_plugin_command.payload {
                 Some(Payload::RevealPaneWithIdPayload(reveal_pane_with_id_payload)) => {
                     let pane_id = reveal_pane_with_id_payload
@@ -4727,6 +4740,15 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetPaneTitlePrefix as i32,
+                payload: Some(Payload::SetPaneTitlePrefixPayload(
+                    SetPaneTitlePrefixPayload {
+                        pane_id: pane_id.try_into().ok(),
+                        prefix,
+                    },
+                )),
+            }),
             PluginCommand::RevealPaneWithId(pane_id, label) => Ok(ProtobufPluginCommand {
                 name: CommandName::RevealPaneWithId as i32,
                 payload: Some(Payload::RevealPaneWithIdPayload(RevealPaneWithIdPayload {
@@ -6421,6 +6443,35 @@ mod tests {
                     assert_eq!(decoded_label, label);
                 },
                 other => panic!("expected RevealPaneWithId, got {:?}", other),
+            }
+        }
+    }
+
+    /// `None` is a value here, not an absence: it is how the prefix is *dropped*,
+    /// so an encoding that lost the difference between "no prefix" and "clear the
+    /// prefix" would leave a stale checkout on a pane that is no longer an agent.
+    #[test]
+    fn set_pane_title_prefix_protobuf_round_trip() {
+        for (pane_id, prefix) in [
+            (PaneId::Terminal(7), Some("zellij/topic".to_owned())),
+            (PaneId::Terminal(7), Some(String::new())),
+            (PaneId::Plugin(3), None),
+        ] {
+            let original = PluginCommand::SetPaneTitlePrefix {
+                pane_id,
+                prefix: prefix.clone(),
+            };
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::SetPaneTitlePrefix {
+                    pane_id: decoded_pane_id,
+                    prefix: decoded_prefix,
+                } => {
+                    assert_eq!(decoded_pane_id, pane_id);
+                    assert_eq!(decoded_prefix, prefix);
+                },
+                other => panic!("expected SetPaneTitlePrefix, got {:?}", other),
             }
         }
     }

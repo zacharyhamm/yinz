@@ -98,6 +98,70 @@ impl Repository {
     pub fn is_checkout(&self) -> bool {
         self.worktree_status.is_some() || self.common_dir.is_some()
     }
+
+    /// `repo/branch` — where this checkout is, in the fewest words that still
+    /// tell two worktrees of one repository apart.
+    ///
+    /// `None` for a folder Git did not claim: there is nothing to say, and a
+    /// bare folder name where the reader expects a checkout would read as one.
+    ///
+    /// The repository half is the *primary* checkout, not this folder, which is
+    /// the whole reason it is worth printing: a worktree kept at
+    /// `zellij/.worktrees/topic` is named `topic` by its own folder, and that
+    /// says nothing about which repository it belongs to. See
+    /// [`repository_name`] for how the primary is read out of `common_dir`.
+    ///
+    /// A detached HEAD is on no branch, so the repository stands alone. Naming
+    /// the folder there instead would say "branch" about something that is not
+    /// one — the same stance `poll::repository` takes when it refuses to read
+    /// Git's `HEAD` as a branch name.
+    pub fn checkout_label(&self) -> Option<String> {
+        if !self.is_checkout() {
+            return None;
+        }
+        // A checkout at `/` names no folder, and a lone slash on a pane frame is
+        // noise rather than an address.
+        let repository = self
+            .common_dir
+            .as_deref()
+            .and_then(repository_name)
+            .or_else(|| Some(folder_name(&self.root)).filter(|name| !name.is_empty()))?;
+        match &self.branch {
+            Some(branch) => Some(format!("{repository}/{branch}")),
+            None => Some(repository.to_owned()),
+        }
+    }
+}
+
+/// The repository a `common_dir` belongs to, by its folder.
+///
+/// Two shapes, because Git has two. A worktree's common dir is the primary
+/// checkout's `.git`, so the repository is the folder above it. A bare
+/// repository *is* its common dir, conventionally `name.git`, so the repository
+/// is that folder with the suffix taken off. `None` when neither reading leaves
+/// a name — then the caller falls back to the checkout's own folder.
+fn repository_name(common_dir: &str) -> Option<&str> {
+    let dir = common_dir.trim_end_matches('/');
+    let name = match folder_name(dir) {
+        ".git" => parent_of(dir).map(folder_name).unwrap_or_default(),
+        bare => bare.strip_suffix(".git").unwrap_or(bare),
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// The last segment of a path, with any trailing separators ignored.
+fn folder_name(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+}
+
+/// The path above `path`, or `None` when there is nothing above it.
+fn parent_of(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    let (parent, _) = trimmed.rsplit_once('/')?;
+    (!parent.is_empty()).then_some(parent)
 }
 
 pub type Registry = BTreeMap<String, Project>;
@@ -609,6 +673,93 @@ mod tests {
             discovered: true,
             ..validate(name, root).unwrap()
         }
+    }
+
+    /// A checkout for `checkout_label`, in the shape `poll::repository` reports.
+    fn repository(root: &str, common_dir: &str, branch: Option<&str>) -> Repository {
+        Repository {
+            root: root.to_owned(),
+            worktree_status: Some(match root == common_dir.trim_end_matches("/.git") {
+                true => WorktreeStatus::Primary,
+                false => WorktreeStatus::Linked,
+            }),
+            common_dir: Some(common_dir.to_owned()),
+            branch: branch.map(ToOwned::to_owned),
+            ..Repository::default()
+        }
+    }
+
+    #[test]
+    fn a_primary_checkout_is_named_by_its_own_folder_and_branch() {
+        let repository = repository("/work/hocus", "/work/hocus/.git", Some("main"));
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/main"));
+    }
+
+    /// The case the label exists for. The worktree's own folder is `topic`, which
+    /// says nothing about which repository it belongs to — and this repository
+    /// keeps its worktrees *inside* the checkout, so the folder above is not the
+    /// repository either.
+    #[test]
+    fn a_linked_worktree_is_named_by_the_repository_it_came_from() {
+        let repository = repository(
+            "/work/hocus/.worktrees/topic",
+            "/work/hocus/.git",
+            Some("topic"),
+        );
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/topic"));
+    }
+
+    /// A slash is legal in a branch name and the label keeps it whole: `feature/x`
+    /// is one branch, not a repository called `feature`.
+    #[test]
+    fn a_slashed_branch_survives_intact() {
+        let repository = repository("/work/hocus", "/work/hocus/.git", Some("feature/nested"));
+        assert_eq!(
+            repository.checkout_label().as_deref(),
+            Some("hocus/feature/nested")
+        );
+    }
+
+    /// A detached HEAD is on no branch. The repository alone is the honest answer;
+    /// printing the folder in the branch's place would claim something false.
+    #[test]
+    fn a_detached_head_is_named_by_its_repository_alone() {
+        let repository = repository("/work/hocus/.worktrees/topic", "/work/hocus/.git", None);
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus"));
+    }
+
+    #[test]
+    fn a_folder_git_did_not_claim_has_no_label() {
+        assert_eq!(Repository::folder("/home/me/notes").checkout_label(), None);
+    }
+
+    /// A bare repository *is* its own common dir, conventionally `name.git`. The
+    /// `.git` is a packaging convention rather than part of the name, so it comes
+    /// off — the reader is being told which repository, not which folder.
+    #[test]
+    fn a_bare_common_dir_names_the_repository_without_its_suffix() {
+        let repository = Repository {
+            root: "/work/topic".to_owned(),
+            worktree_status: Some(WorktreeStatus::Linked),
+            common_dir: Some("/srv/git/hocus.git".to_owned()),
+            branch: Some("topic".to_owned()),
+            ..Repository::default()
+        };
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/topic"));
+    }
+
+    /// A `common_dir` with no name left in it after either reading. The checkout's
+    /// own folder is then the only thing there is to say.
+    #[test]
+    fn an_unreadable_common_dir_falls_back_to_the_checkout_folder() {
+        let repository = Repository {
+            root: "/work/topic".to_owned(),
+            worktree_status: Some(WorktreeStatus::Linked),
+            common_dir: Some("/.git".to_owned()),
+            branch: Some("topic".to_owned()),
+            ..Repository::default()
+        };
+        assert_eq!(repository.checkout_label().as_deref(), Some("topic/topic"));
     }
 
     #[test]

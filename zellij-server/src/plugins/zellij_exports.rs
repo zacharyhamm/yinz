@@ -437,6 +437,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::RenamePluginPane(plugin_pane_id, new_name) => {
                 rename_plugin_pane(env, plugin_pane_id, &new_name)
             },
+            PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => {
+                set_pane_title_prefix(env, pane_id.into(), prefix)
+            },
             PluginCommand::RenameTab(tab_index, new_name) => rename_tab(env, tab_index, &new_name),
             PluginCommand::ReportPanic(crash_payload) => report_panic(env, &crash_payload),
             PluginCommand::RequestPluginPermissions(permissions) => {
@@ -6152,6 +6155,12 @@ fn reveal_pane_with_id(env: &PluginEnv, pane_id: PaneId, label: Option<String>) 
         ));
 }
 
+fn set_pane_title_prefix(env: &PluginEnv, pane_id: PaneId, prefix: Option<String>) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix));
+}
+
 fn close_multiple_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
     for pane_id in pane_ids {
         match pane_id {
@@ -6595,6 +6604,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::FocusPluginPane(..)
         | PluginCommand::RenameTerminalPane(..)
         | PluginCommand::RenamePluginPane(..)
+        | PluginCommand::SetPaneTitlePrefix { .. }
         | PluginCommand::SwitchSession(..)
         | PluginCommand::DeleteDeadSession(..)
         | PluginCommand::DeleteAllDeadSessions
