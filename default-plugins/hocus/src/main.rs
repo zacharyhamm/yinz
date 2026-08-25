@@ -131,12 +131,14 @@ impl Chat {
     /// rather than let the archive have it back.
     pub(crate) fn is_live(&self) -> bool {
         // A plan waiting on a `y`/`n` is owed an answer as surely as a stream is
-        // owed its last chunk. Without this arm, switching away from one would
-        // archive the chat and drop it, and reopening it from `/history` would
-        // show the plan with the question silently gone.
+        // owed its last chunk, and a chat merely `Planning` (no reply back yet)
+        // is still mid-mode: plan state isn't persisted, so losing either from
+        // `parked` and reloading from disk would silently reset it to `Off`,
+        // handing the next prompt full mutating tools instead of staying
+        // read-only.
         self.stream.is_some()
             || !matches!(self.status, Status::Idle)
-            || matches!(self.plan, Plan::AwaitingApproval)
+            || !matches!(self.plan, Plan::Off)
     }
 }
 

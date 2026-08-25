@@ -142,6 +142,10 @@ impl State {
         // would otherwise be typed into the input box.
         if (self.is_confirming() || self.awaiting_plan()) && key.has_no_modifiers() {
             let confirming = self.is_confirming();
+            // The plan arms only fire on an empty box: with text already typed,
+            // y/n is the start of a correction and must reach the editor instead
+            // of being read as an answer to the approval prompt.
+            let input_is_empty = self.input.get_text().trim().is_empty();
             match key.bare_key {
                 BareKey::Char('y') | BareKey::Char('Y') if confirming => {
                     return self.confirm_tool()
@@ -149,8 +153,12 @@ impl State {
                 BareKey::Char('n') | BareKey::Char('N') if confirming => {
                     return self.decline_tool()
                 },
-                BareKey::Char('y') | BareKey::Char('Y') => return self.approve_plan(),
-                BareKey::Char('n') | BareKey::Char('N') => return self.decline_plan(),
+                BareKey::Char('y') | BareKey::Char('Y') if input_is_empty => {
+                    return self.approve_plan()
+                },
+                BareKey::Char('n') | BareKey::Char('N') if input_is_empty => {
+                    return self.decline_plan()
+                },
                 _ => {},
             }
         }
@@ -299,6 +307,12 @@ impl State {
         // the slash check too: `/plan` reads the mode, and it must not still see
         // an approval outstanding.
         if self.awaiting_plan() {
+            // An empty Enter is not a correction — leave the prompt up rather
+            // than silently dropping the approval with nothing recorded.
+            if self.input.get_text().trim().is_empty() {
+                self.drain_input();
+                return true;
+            }
             self.plan = Plan::Planning;
         }
         if self.input.get_text().trim_start().starts_with('/') {
