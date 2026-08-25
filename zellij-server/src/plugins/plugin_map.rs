@@ -21,6 +21,8 @@ use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
 use zellij_utils::plugin_api::event::ProtobufEvent;
 use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 use zellij_utils::plugin_data_store::PluginDataStore;
+
+use crate::plugins::queues::Queues;
 use zellij_utils::{
     data::EventType,
     data::InputMode,
@@ -67,6 +69,10 @@ fn configuration_matches_for_reload(
         let mut configuration = configuration.inner().clone();
         configuration.remove("caller_cwd");
         configuration.remove("caller_terminal_pane_id");
+        // A queued job's identity keys, added per launch by `WasmBridge::launch_job`.
+        configuration.remove("zellij_queue");
+        configuration.remove("zellij_queue_job_id");
+        configuration.remove("zellij_queue_enqueuer_plugin_id");
         configuration
     };
     let requested = without_caller_context(requested);
@@ -396,6 +402,11 @@ pub struct PluginEnv {
     pub zellij_data_dir: PathBuf,
     /// The data store shared by every plugin, partitioned by namespace.
     pub plugin_data_store: Arc<PluginDataStore>,
+    /// The work queues, shared with the plugin thread. A plugin enqueues and reads status
+    /// straight from here rather than asking the plugin thread, because a plugin that waits for
+    /// the plugin thread while holding its own lock deadlocks the moment another plugin loads
+    /// (the loader lists every running plugin, which takes every plugin's lock).
+    pub queues: Arc<Mutex<Queues>>,
     pub plugin_own_cache_dir: PathBuf,
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,

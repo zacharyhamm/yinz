@@ -594,6 +594,11 @@ pub enum PluginContext {
     GetLastSessionSaveTime,
     DetectPluginConfigChanges,
     HighlightClicked,
+    QueuePump,
+    QueueConfigure,
+    QueueCancelJob,
+    QueueFinishJob,
+    PluginFailed,
 }
 
 /// Stack call representations corresponding to the different types of [`ClientInstruction`]s.

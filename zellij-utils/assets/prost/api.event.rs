@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -104,7 +104,81 @@ pub mod event {
         WebRequestStreamChunkPayload(super::WebRequestStreamChunkPayload),
         #[prost(message, tag="45")]
         PluginDataChangedPayload(super::PluginDataChangedPayload),
+        #[prost(message, tag="46")]
+        QueueJobStartedPayload(super::QueueJobStartedPayload),
+        #[prost(message, tag="47")]
+        QueueJobFinishedPayload(super::QueueJobFinishedPayload),
+        #[prost(message, tag="48")]
+        QueueChangedPayload(super::QueueChangedPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueJobInfo {
+    #[prost(uint64, tag="1")]
+    pub job_id: u64,
+    #[prost(string, tag="2")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub plugin_url: ::prost::alloc::string::String,
+    #[prost(uint32, optional, tag="4")]
+    pub plugin_id: ::core::option::Option<u32>,
+    #[prost(uint32, tag="5")]
+    pub enqueuer_plugin_id: u32,
+    #[prost(message, repeated, tag="6")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(enumeration="QueueJobState", tag="7")]
+    pub state: i32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueSnapshot {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(uint32, tag="2")]
+    pub concurrency: u32,
+    #[prost(message, repeated, tag="3")]
+    pub pending: ::prost::alloc::vec::Vec<QueueJobInfo>,
+    #[prost(message, repeated, tag="4")]
+    pub running: ::prost::alloc::vec::Vec<QueueJobInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueJobStartedPayload {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub job_id: u64,
+    #[prost(uint32, tag="3")]
+    pub plugin_id: u32,
+    #[prost(message, repeated, tag="4")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueJobFinishedPayload {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub job_id: u64,
+    #[prost(enumeration="QueueJobOutcome", tag="3")]
+    pub outcome: i32,
+    #[prost(string, optional, tag="4")]
+    pub payload: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag="5")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueueChangedPayload {
+    #[prost(string, tag="1")]
+    pub queue: ::prost::alloc::string::String,
+    #[prost(uint32, tag="2")]
+    pub concurrency: u32,
+    #[prost(message, repeated, tag="3")]
+    pub pending: ::prost::alloc::vec::Vec<QueueJobInfo>,
+    #[prost(message, repeated, tag="4")]
+    pub running: ::prost::alloc::vec::Vec<QueueJobInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -944,6 +1018,12 @@ pub enum EventType {
     WebRequestStreamChunk = 50,
     /// / The results of a watch registered with `data_watch` changed
     PluginDataChanged = 51,
+    /// / A job this plugin enqueued on a work queue started running
+    QueueJobStarted = 52,
+    /// / A job this plugin enqueued on a work queue finished
+    QueueJobFinished = 53,
+    /// / A work queue's contents or concurrency changed
+    QueueChanged = 54,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1002,6 +1082,9 @@ impl EventType {
             EventType::ActivePaneScroll => "ActivePaneScroll",
             EventType::WebRequestStreamChunk => "WebRequestStreamChunk",
             EventType::PluginDataChanged => "PluginDataChanged",
+            EventType::QueueJobStarted => "QueueJobStarted",
+            EventType::QueueJobFinished => "QueueJobFinished",
+            EventType::QueueChanged => "QueueChanged",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1057,6 +1140,67 @@ impl EventType {
             "ActivePaneScroll" => Some(Self::ActivePaneScroll),
             "WebRequestStreamChunk" => Some(Self::WebRequestStreamChunk),
             "PluginDataChanged" => Some(Self::PluginDataChanged),
+            "QueueJobStarted" => Some(Self::QueueJobStarted),
+            "QueueJobFinished" => Some(Self::QueueJobFinished),
+            "QueueChanged" => Some(Self::QueueChanged),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QueueJobOutcome {
+    Succeeded = 0,
+    Failed = 1,
+    Cancelled = 2,
+    Aborted = 3,
+}
+impl QueueJobOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            QueueJobOutcome::Succeeded => "Succeeded",
+            QueueJobOutcome::Failed => "Failed",
+            QueueJobOutcome::Cancelled => "Cancelled",
+            QueueJobOutcome::Aborted => "Aborted",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Succeeded" => Some(Self::Succeeded),
+            "Failed" => Some(Self::Failed),
+            "Cancelled" => Some(Self::Cancelled),
+            "Aborted" => Some(Self::Aborted),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QueueJobState {
+    Pending = 0,
+    Running = 1,
+}
+impl QueueJobState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            QueueJobState::Pending => "Pending",
+            QueueJobState::Running => "Running",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Pending" => Some(Self::Pending),
+            "Running" => Some(Self::Running),
             _ => None,
         }
     }

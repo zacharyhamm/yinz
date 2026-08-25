@@ -99,6 +99,8 @@ impl ZellijPlugin for State {
             EventType::BeforeClose,
             EventType::PluginConfigurationChanged,
             EventType::HighlightClicked,
+            EventType::QueueJobStarted,
+            EventType::QueueJobFinished,
         ]);
         if should_subscribe_initial_keybinds {
             subscribe(&[EventType::InitialKeybinds, EventType::ModeUpdate]);
@@ -1046,6 +1048,25 @@ impl ZellijPlugin for State {
             );
         } else if name == "message_to_plugin" {
             self.message_to_plugin_payload = payload.clone();
+        } else if name == "enqueue_queue_job" {
+            // payload: the plugin url to queue on "fixture_queue"
+            let mut context = BTreeMap::new();
+            context.insert("origin".to_owned(), "fixture".to_owned());
+            match enqueue_queue_job(
+                "fixture_queue",
+                payload.clone().unwrap_or_default(),
+                BTreeMap::new(),
+                context,
+            ) {
+                Ok(job_id) => {
+                    self.explicit_string_to_render = Some(format!("enqueued job {job_id}"));
+                },
+                Err(e) => {
+                    self.explicit_string_to_render = Some(format!("enqueue failed: {e}"));
+                },
+            }
+        } else if name == "finish_queue_job" {
+            finish_queue_job(true, payload.clone());
         }
 
         true
