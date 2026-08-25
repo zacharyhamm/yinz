@@ -367,10 +367,10 @@ impl Setup {
             .layout_dir
             .clone()
             .or_else(|| get_layout_dir(config_dir.clone()));
-        let user_plugin_dir = config_options
-            .user_plugin_dir
-            .clone()
-            .or_else(|| get_user_plugin_dir(config_dir.clone()));
+        // The same helper the session uses, so this reports the folder plugins are actually
+        // loaded from - absolutized included.
+        let user_plugin_dir =
+            user_plugin_dir_or_default(config_options.user_plugin_dir.clone(), config_dir.clone());
         let system_data_dir = system_data_dir();
         let config_file = opts
             .config
