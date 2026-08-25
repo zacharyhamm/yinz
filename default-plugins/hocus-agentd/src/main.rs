@@ -157,6 +157,13 @@ struct State {
     /// for as long as the pane stayed hidden.
     hosts: BTreeMap<u32, String>,
     activity: agents::Activity,
+    /// The checkout each agent pane's frame is currently decorated with.
+    ///
+    /// A record of what the server has been *told*, not of what is true, so a
+    /// steady session makes no host calls at all: the wanted set is recomputed
+    /// on every publish and only a difference is sent. See
+    /// `refresh_title_prefixes_with`.
+    title_prefixes: BTreeMap<u32, String>,
     /// What Git said about each folder, keyed by folder *and machine*.
     repositories: BTreeMap<Location, projects::Repository>,
     /// Local probes in flight. Only ever local: a remote folder is answered by
@@ -1624,7 +1631,66 @@ impl State {
         true
     }
 
+    /// Put each agent pane's checkout on its frame, and take it off the panes
+    /// that are no longer agents.
+    ///
+    /// Deliberately not a rename. `set_pane_title_prefix` composes in front of
+    /// whatever title a pane has, so this never competes with the three writers
+    /// of a pane's *name* — the user, the pane's own OSC title, and
+    /// `finish_summary_with` below. That is also why it needs no
+    /// `title_is_ours_to_take` guard: the prefix stays out of the title
+    /// `classify` reads, so it cannot un-detect the pane it decorates.
+    ///
+    /// Driven from `publish` rather than the heartbeat, so the frame changes the
+    /// moment a pane is detected or a Git probe answers rather than up to a poll
+    /// later — both of those publish, and both are what this reads.
+    fn refresh_title_prefixes(&mut self) {
+        self.refresh_title_prefixes_with(|pane_id, prefix| {
+            set_pane_title_prefix(PaneId::Terminal(pane_id), prefix)
+        });
+    }
+
+    /// The body of [`refresh_title_prefixes`], with the host call injected so the
+    /// tests can watch it — the same shape `finish_summary_with` takes.
+    fn refresh_title_prefixes_with(&mut self, mut set: impl FnMut(u32, Option<&str>)) {
+        let wanted: BTreeMap<u32, String> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .filter_map(|pane| {
+                let location = self.pane_location(pane)?;
+                Some((
+                    pane.pane_id,
+                    self.repositories.get(&location)?.checkout_label()?,
+                ))
+            })
+            .collect();
+        let live: BTreeSet<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .map(|pane| pane.pane_id)
+            .collect();
+        for pane_id in self.title_prefixes.keys().copied().collect::<Vec<_>>() {
+            // A pane that has left the snapshot is closed or suppressed, and
+            // terminal ids are recycled — clearing one would be aimed at
+            // whatever holds the id now. Forgetting it is enough: if the pane
+            // comes back it is re-decorated from scratch.
+            if !wanted.contains_key(&pane_id) && live.contains(&pane_id) {
+                set(pane_id, None);
+            }
+        }
+        for (pane_id, label) in &wanted {
+            if self.title_prefixes.get(pane_id) != Some(label) {
+                set(*pane_id, Some(label));
+            }
+        }
+        self.title_prefixes = wanted;
+    }
+
     fn publish(&mut self) {
+        self.refresh_title_prefixes();
         self.seq += 1;
         let reply = PollReply {
             panes: self.panes.clone(),
@@ -1678,6 +1744,132 @@ mod tests {
             tab: None,
             detected: None,
         }
+    }
+
+    /// A checkout, as `finish_git_probe` would have recorded it.
+    fn checkout(root: &str, common_dir: &str, branch: &str) -> projects::Repository {
+        projects::Repository {
+            root: root.to_owned(),
+            worktree_status: Some(projects::WorktreeStatus::Linked),
+            common_dir: Some(common_dir.to_owned()),
+            branch: Some(branch.to_owned()),
+            ..projects::Repository::default()
+        }
+    }
+
+    /// What `refresh_title_prefixes` would have asked the host to do.
+    fn prefixes(state: &mut State) -> Vec<(u32, Option<String>)> {
+        let mut calls = Vec::new();
+        state.refresh_title_prefixes_with(|pane_id, prefix| {
+            calls.push((pane_id, prefix.map(ToOwned::to_owned)))
+        });
+        calls
+    }
+
+    /// An agent in a worktree, and a shell beside it in the same folder.
+    fn worktree_agent() -> State {
+        State {
+            panes: Some(vec![
+                pane(7, "claude", "/work/hocus/.worktrees/topic"),
+                pane(8, "zsh", "/work/hocus/.worktrees/topic"),
+            ]),
+            cwds: BTreeMap::from([
+                (7, "/work/hocus/.worktrees/topic".to_owned()),
+                (8, "/work/hocus/.worktrees/topic".to_owned()),
+            ]),
+            repositories: BTreeMap::from([(
+                Location::local("/work/hocus/.worktrees/topic"),
+                checkout("/work/hocus/.worktrees/topic", "/work/hocus/.git", "topic"),
+            )]),
+            ..State::default()
+        }
+    }
+
+    /// The point of the feature: the agent's frame says which checkout it is in,
+    /// and the shell in the same folder is left alone.
+    #[test]
+    fn an_agent_in_a_checkout_is_decorated_with_it() {
+        let mut state = worktree_agent();
+        assert_eq!(
+            prefixes(&mut state),
+            vec![(7, Some("hocus/topic".to_owned()))]
+        );
+    }
+
+    /// The host is not asked twice for an answer it already has. This runs on every
+    /// publish, and a publish happens several times a poll.
+    #[test]
+    fn an_unchanged_checkout_is_not_sent_again() {
+        let mut state = worktree_agent();
+        prefixes(&mut state);
+        assert!(prefixes(&mut state).is_empty());
+    }
+
+    /// A folder Git did not claim has nothing to say about it, so the pane keeps
+    /// whatever title it has and nothing is sent.
+    #[test]
+    fn an_agent_outside_a_checkout_is_not_decorated() {
+        let mut state = worktree_agent();
+        state.repositories.insert(
+            Location::local("/work/hocus/.worktrees/topic"),
+            projects::Repository::folder("/work/hocus/.worktrees/topic"),
+        );
+        assert!(prefixes(&mut state).is_empty());
+    }
+
+    /// A pane that stops looking like an agent has its decoration taken off: the
+    /// checkout was said *about the agent*, and there is no longer one there.
+    #[test]
+    fn a_pane_that_stops_being_an_agent_is_cleared() {
+        let mut state = worktree_agent();
+        prefixes(&mut state);
+        state.panes = Some(vec![
+            pane(7, "zsh", "/work/hocus/.worktrees/topic"),
+            pane(8, "zsh", "/work/hocus/.worktrees/topic"),
+        ]);
+        assert_eq!(prefixes(&mut state), vec![(7, None)]);
+        assert!(state.title_prefixes.is_empty());
+    }
+
+    /// A pane that has left the snapshot is closed or suppressed. Terminal ids are
+    /// recycled, so a clear aimed at one would land on whatever holds the id now —
+    /// the entry is simply forgotten instead.
+    #[test]
+    fn a_closed_pane_is_forgotten_rather_than_cleared() {
+        let mut state = worktree_agent();
+        prefixes(&mut state);
+        state.panes = Some(vec![pane(8, "zsh", "/work/hocus/.worktrees/topic")]);
+        assert!(prefixes(&mut state).is_empty());
+        assert!(state.title_prefixes.is_empty());
+    }
+
+    /// A checkout inside the worktree changes the branch and nothing but a fresh
+    /// probe says so. When one lands, the frame follows it.
+    #[test]
+    fn a_branch_change_is_sent_on() {
+        let mut state = worktree_agent();
+        prefixes(&mut state);
+        state.repositories.insert(
+            Location::local("/work/hocus/.worktrees/topic"),
+            checkout("/work/hocus/.worktrees/topic", "/work/hocus/.git", "other"),
+        );
+        assert_eq!(
+            prefixes(&mut state),
+            vec![(7, Some("hocus/other".to_owned()))]
+        );
+    }
+
+    /// A pane the user registered by hand is an agent however it looks, so it is
+    /// decorated like one.
+    #[test]
+    fn a_hand_registered_pane_is_decorated() {
+        let mut state = worktree_agent();
+        state.manual_kinds.insert(8, "claude".to_owned());
+        let calls = prefixes(&mut state);
+        assert!(
+            calls.contains(&(8, Some("hocus/topic".to_owned()))),
+            "{calls:?}"
+        );
     }
 
     /// The summariser, for tests about everything else. `start_summary` reaches the host
