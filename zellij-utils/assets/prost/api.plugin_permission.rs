@@ -21,6 +21,8 @@ pub enum PermissionType {
     ReadSessionEnvironmentVariables = 16,
     PluginData = 17,
     SharedPluginData = 18,
+    ReadFiles = 19,
+    WriteFiles = 20,
 }
 impl PermissionType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -48,6 +50,8 @@ impl PermissionType {
             PermissionType::ReadSessionEnvironmentVariables => "ReadSessionEnvironmentVariables",
             PermissionType::PluginData => "PluginData",
             PermissionType::SharedPluginData => "SharedPluginData",
+            PermissionType::ReadFiles => "ReadFiles",
+            PermissionType::WriteFiles => "WriteFiles",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -72,6 +76,8 @@ impl PermissionType {
             "ReadSessionEnvironmentVariables" => Some(Self::ReadSessionEnvironmentVariables),
             "PluginData" => Some(Self::PluginData),
             "SharedPluginData" => Some(Self::SharedPluginData),
+            "ReadFiles" => Some(Self::ReadFiles),
+            "WriteFiles" => Some(Self::WriteFiles),
             _ => None,
         }
     }

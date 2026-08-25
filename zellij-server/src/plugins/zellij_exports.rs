@@ -20,8 +20,9 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::{
     collections::{BTreeMap, HashSet},
+    fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     str::FromStr,
     sync::OnceLock,
@@ -41,7 +42,7 @@ use zellij_utils::data::{
 use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
-    DeleteLayoutResponse, EditLayoutResponse, Event, FloatingPaneCoordinates,
+    DeleteLayoutResponse, EditLayoutResponse, Event, FileMetadata, FloatingPaneCoordinates,
     FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
     GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GitCheckout,
     HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo, LayoutMetadata,
@@ -98,16 +99,19 @@ use zellij_utils::{
             ProtobufLayoutParsingError, ProtobufPaneScrollbackResponse, ProtobufSyntaxError,
         },
         plugin_command::{
-            dump_layout_response, dump_session_layout_response, hide_floating_panes_response,
-            parse_layout_response, save_session_response, show_floating_panes_response,
-            ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-            ProtobufBreakPanesToTabWithIndexResponse, ProtobufDataApplyResponse,
-            ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
-            ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+            dump_layout_response, dump_session_layout_response, fs_list_response,
+            fs_metadata_response, fs_mutate_response, fs_read_response,
+            hide_floating_panes_response, parse_layout_response, save_session_response,
+            show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
+            ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
+            ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+            ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
             ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
             ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
             ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse,
-            ProtobufFocusOrCreateTabResponse, ProtobufGenerateRandomNameResponse,
+            ProtobufFocusOrCreateTabResponse, ProtobufFsEntry, ProtobufFsEntryList,
+            ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
+            ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
             ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
             ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
@@ -529,6 +533,18 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
+            PluginCommand::FsRead { path, max_bytes } => fs_read(env, path, max_bytes),
+            PluginCommand::FsList { path } => fs_list(env, path),
+            PluginCommand::FsMetadata { path } => fs_metadata(env, path),
+            PluginCommand::FsWrite {
+                path,
+                contents,
+                append,
+                create_dirs,
+            } => fs_write(env, path, contents, append, create_dirs),
+            PluginCommand::FsRemove { path, recursive } => fs_remove(env, path, recursive),
+            PluginCommand::FsCreateDir { path, all } => fs_create_dir(env, path, all),
+            PluginCommand::FsRename { from, to } => fs_rename(env, from, to),
             PluginCommand::WatchFilesystem => watch_filesystem(env),
             PluginCommand::GetSessionList => get_session_list(env),
             PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
@@ -5061,6 +5077,321 @@ fn set_pane_color(env: &PluginEnv, pane_id: PaneId, fg: Option<String>, bg: Opti
         .send_to_screen(ScreenInstruction::SetPaneColor(pane_id, fg, bg, None));
 }
 
+/// The maximum number of bytes an `FsRead` will return, whatever the plugin asks for.
+///
+/// These commands answer inline on the plugin thread, so a read is a pause for every plugin
+/// pinned to that thread. 8 MiB is comfortably more than the config files and scripts this is
+/// meant for, and small enough that the pause is not felt.
+const MAX_FS_READ_BYTES: usize = 8 * 1024 * 1024;
+
+/// Where a plugin-visible path actually lives, and whether it left the plugin's own folders.
+struct ResolvedPath {
+    real: PathBuf,
+    /// True when the path named no virtual root and so points somewhere in the wider filesystem.
+    /// Reaching one of these needs `FullHdAccess` on top of the read/write permission.
+    escaped_roots: bool,
+}
+
+/// Resolve a plugin-visible path to a real one, refusing to leave the root it named.
+///
+/// This is deliberately *not* [`translate_plugin_path`], which the pane-opening commands use.
+/// That one maps the four prefixes and stops: `/host/../../etc/passwd` resolves straight out of
+/// `/host`, and any genuine absolute path beginning `/tmp` is silently rewritten into zellij's
+/// own temp dir. Both are tolerable when the result is handed to an editor the user is watching,
+/// and neither is tolerable when the result is read or written on the plugin's say-so.
+///
+/// So this follows [`scan_host_folder`] instead: canonicalize the root, canonicalize the target,
+/// and refuse anything that does not land inside. Canonicalizing is what catches a symlink
+/// pointing out of the root - the check has to happen after the link is followed, not before.
+///
+/// A path naming no virtual root is left exactly as it was written and marked `escaped_roots`,
+/// so that the caller can ask for `FullHdAccess` rather than quietly rewriting it.
+fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> {
+    let roots: [(&str, PathBuf); 4] = [
+        ("/host", env.plugin_cwd.clone()),
+        ("/data", env.plugin_own_data_dir.clone()),
+        ("/cache", env.plugin_own_cache_dir.clone()),
+        ("/tmp", ZELLIJ_TMP_DIR.to_path_buf()),
+    ];
+
+    let (root, relative) = match roots
+        .iter()
+        .find_map(|(prefix, root)| path.strip_prefix(prefix).ok().map(|rest| (root, rest)))
+    {
+        Some((root, rest)) => (root.clone(), rest.to_path_buf()),
+        // A relative path is the plugin's cwd, the same reading `translate_plugin_path` gives it.
+        None if path.is_relative() => (env.plugin_cwd.clone(), path.to_path_buf()),
+        // An absolute path naming no root: passed through untouched, for `FullHdAccess` to judge.
+        None => {
+            return Ok(ResolvedPath {
+                real: path.to_path_buf(),
+                escaped_roots: true,
+            })
+        },
+    };
+
+    let canonical_root = root.canonicalize().unwrap_or(root);
+    let joined = canonical_root.join(&relative);
+
+    // A write names a file that does not exist yet, so canonicalizing the whole path would fail.
+    // Canonicalize the deepest ancestor that does exist and re-attach the rest: the containment
+    // check then still sees through every symlink on the part of the path that is real.
+    let mut existing = joined.as_path();
+    // Collected outermost-last, then re-attached in order. Joining onto an empty `PathBuf` as we
+    // go would leave a trailing separator, which asks the OS for a directory.
+    let mut tail = vec![];
+    let resolved = loop {
+        match existing.canonicalize() {
+            Ok(canonical) => {
+                break tail
+                    .iter()
+                    .rev()
+                    .fold(canonical, |path: PathBuf, name| path.join(name))
+            },
+            Err(_) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    tail.push(name.to_os_string());
+                    existing = parent;
+                },
+                _ => {
+                    return Err(anyhow!(
+                        "'{}' could not be resolved to a real path",
+                        path.display()
+                    ))
+                },
+            },
+        }
+    };
+
+    if !resolved.starts_with(&canonical_root) {
+        return Err(anyhow!(
+            "'{}' points outside the plugin's own folders",
+            path.display()
+        ));
+    }
+
+    Ok(ResolvedPath {
+        real: resolved,
+        escaped_roots: false,
+    })
+}
+
+/// Resolve a path for one of the `Fs*` commands, applying the `FullHdAccess` rule.
+///
+/// Checked here rather than in `command_permission` because that only sees the command, and
+/// whether a path escapes the plugin's folders is not knowable without resolving it first. The
+/// data store does the same thing for `shared:` namespaces in `resolve_data_namespace`.
+fn resolve_fs_path_with_permission(env: &PluginEnv, path: &Path) -> Result<PathBuf> {
+    let resolved = resolve_plugin_fs_path(env, path)?;
+    if resolved.escaped_roots && !has_permission(env, PermissionType::FullHdAccess) {
+        return Err(anyhow!(
+            "'{}' is outside the plugin's own folders (/host, /data, /cache, /tmp), which needs \
+             the 'FullHdAccess' permission",
+            path.display()
+        ));
+    }
+    Ok(resolved.real)
+}
+
+/// Whether the plugin holds `permission`. Built-in plugins hold everything, as they do in
+/// [`check_command_permission`].
+fn has_permission(env: &PluginEnv, permission: PermissionType) -> bool {
+    if env.plugin.is_builtin() {
+        return true;
+    }
+    env.permissions
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|granted| granted.contains(&permission))
+        .unwrap_or(false)
+}
+
+/// Re-spell a real path in the virtual root the plugin used, so that a listing can be fed back in.
+fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {
+    let roots: [(&str, PathBuf); 4] = [
+        ("/host", env.plugin_cwd.clone()),
+        ("/data", env.plugin_own_data_dir.clone()),
+        ("/cache", env.plugin_own_cache_dir.clone()),
+        ("/tmp", ZELLIJ_TMP_DIR.to_path_buf()),
+    ];
+    for (prefix, root) in roots.iter() {
+        if !requested.starts_with(prefix) && !(requested.is_relative() && *prefix == "/host") {
+            continue;
+        }
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if let Ok(rest) = real.strip_prefix(&canonical_root) {
+            return PathBuf::from(prefix).join(rest);
+        }
+    }
+    real.to_path_buf()
+}
+
+fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
+    let cap = max_bytes
+        .unwrap_or(MAX_FS_READ_BYTES)
+        .min(MAX_FS_READ_BYTES);
+    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+        let metadata =
+            fs::metadata(&real).with_context(|| format!("failed to read '{}'", path.display()))?;
+        if metadata.len() as usize > cap {
+            return Err(anyhow!(
+                "'{}' is {} bytes, more than the {} byte limit for a plugin read",
+                path.display(),
+                metadata.len(),
+                cap
+            ));
+        }
+        fs::read(&real).with_context(|| format!("failed to read '{}'", path.display()))
+    });
+
+    let response = ProtobufFsReadResponse {
+        result: Some(match result {
+            Ok(contents) => fs_read_response::Result::Contents(contents),
+            Err(e) => fs_read_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send a file to plugin {}", env.name()))
+        .non_fatal();
+}
+
+fn fs_list(env: &mut PluginEnv, path: PathBuf) {
+    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+        let entries =
+            fs::read_dir(&real).with_context(|| format!("failed to list '{}'", path.display()))?;
+        let mut listed = vec![];
+        for entry in entries.flatten() {
+            let metadata: Option<FileMetadata> = entry.metadata().ok().map(|m| m.into());
+            listed.push(ProtobufFsEntry {
+                path: virtual_path(env, &entry.path(), &path)
+                    .display()
+                    .to_string(),
+                // `ProtobufFileMetadata` converts from the `Option`, carrying "unread" in its
+                // own `metadata_is_set` flag rather than in the absence of the message.
+                metadata: Some(metadata.into()),
+            });
+        }
+        listed.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(listed)
+    });
+
+    let response = ProtobufFsListResponse {
+        result: Some(match result {
+            Ok(entries) => fs_list_response::Result::Entries(ProtobufFsEntryList { entries }),
+            Err(e) => fs_list_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send a listing to plugin {}", env.name()))
+        .non_fatal();
+}
+
+fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
+    let result = resolve_fs_path_with_permission(env, &path).map(|real| {
+        fs::symlink_metadata(&real)
+            .ok()
+            .map(|m| FileMetadata::from(m))
+    });
+
+    let response = ProtobufFsMetadataResponse {
+        result: Some(match result {
+            Ok(Some(metadata)) => fs_metadata_response::Result::Metadata(Some(metadata).into()),
+            Ok(None) => fs_metadata_response::Result::NotFound(true),
+            Err(e) => fs_metadata_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send metadata to plugin {}", env.name()))
+        .non_fatal();
+}
+
+fn fs_write(
+    env: &mut PluginEnv,
+    path: PathBuf,
+    contents: Vec<u8>,
+    append: bool,
+    create_dirs: bool,
+) {
+    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+        if create_dirs {
+            if let Some(parent) = real.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create the folders above '{}'", path.display())
+                })?;
+            }
+        }
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(append)
+            .truncate(!append)
+            .open(&real)
+            .with_context(|| format!("failed to open '{}' for writing", path.display()))?;
+        file.write_all(&contents)
+            .with_context(|| format!("failed to write '{}'", path.display()))
+    });
+    write_fs_mutate_response(env, result);
+}
+
+fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
+    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+        let metadata = fs::symlink_metadata(&real)
+            .with_context(|| format!("failed to remove '{}'", path.display()))?;
+        if metadata.is_dir() {
+            if recursive {
+                fs::remove_dir_all(&real)
+            } else {
+                fs::remove_dir(&real)
+            }
+        } else {
+            fs::remove_file(&real)
+        }
+        .with_context(|| format!("failed to remove '{}'", path.display()))
+    });
+    write_fs_mutate_response(env, result);
+}
+
+fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
+    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+        if all {
+            fs::create_dir_all(&real)
+        } else {
+            fs::create_dir(&real)
+        }
+        .with_context(|| format!("failed to create '{}'", path.display()))
+    });
+    write_fs_mutate_response(env, result);
+}
+
+fn fs_rename(env: &mut PluginEnv, from: PathBuf, to: PathBuf) {
+    // Both endpoints are resolved independently: renaming *out* of the plugin's folders is as
+    // much of an escape as reading outside them.
+    let result = resolve_fs_path_with_permission(env, &from).and_then(|real_from| {
+        let real_to = resolve_fs_path_with_permission(env, &to)?;
+        fs::rename(&real_from, &real_to).with_context(|| {
+            format!(
+                "failed to rename '{}' to '{}'",
+                from.display(),
+                to.display()
+            )
+        })
+    });
+    write_fs_mutate_response(env, result);
+}
+
+fn write_fs_mutate_response(env: &mut PluginEnv, result: Result<()>) {
+    let response = ProtobufFsMutateResponse {
+        result: Some(match result {
+            Ok(()) => fs_mutate_response::Result::Success(true),
+            Err(e) => fs_mutate_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to answer a filesystem command for {}", env.name()))
+        .non_fatal();
+}
+
 fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
     if !folder_to_scan.starts_with("/host") {
         log::error!(
@@ -6815,6 +7146,13 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
             PermissionType::Reconfigure
         },
         PluginCommand::ChangeHostFolder(..) => PermissionType::FullHdAccess,
+        PluginCommand::FsRead { .. }
+        | PluginCommand::FsList { .. }
+        | PluginCommand::FsMetadata { .. } => PermissionType::ReadFiles,
+        PluginCommand::FsWrite { .. }
+        | PluginCommand::FsRemove { .. }
+        | PluginCommand::FsCreateDir { .. }
+        | PluginCommand::FsRename { .. } => PermissionType::WriteFiles,
         PluginCommand::ShareCurrentSession
         | PluginCommand::StopSharingCurrentSession
         | PluginCommand::StopWebServer
