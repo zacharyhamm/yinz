@@ -2663,3 +2663,31 @@ fn caller_context_does_not_change_plugin_alias_identity() {
 
     assert!(requested.is_equivalent_to_run(&Some(Run::Plugin(RunPluginOrAlias::Alias(running)))));
 }
+
+/// Which URLs have a relative form to remember, and which have none.
+///
+/// The distinction is the whole of how the user-plugin-folder fallback stays honest: a name is
+/// looked for in the folder, a path the user spelled out in full is not.
+#[test]
+fn only_a_relative_file_url_reports_the_path_as_written() {
+    let cwd = std::path::PathBuf::from("/some/where");
+
+    let (location, relative) =
+        RunPluginLocation::parse_with_relative("file:keys.lua", Some(cwd.clone())).unwrap();
+    assert_eq!(relative, Some(std::path::PathBuf::from("keys.lua")));
+    assert_eq!(
+        location,
+        RunPluginLocation::File(cwd.join("keys.lua")),
+        "the location itself is still the absolute path everything downstream expects"
+    );
+
+    for absolute in ["file:/etc/keys.lua", "file:~/keys.lua"] {
+        let (_, relative) =
+            RunPluginLocation::parse_with_relative(absolute, Some(cwd.clone())).unwrap();
+        assert_eq!(relative, None, "{absolute} was given in full");
+    }
+
+    let (_, relative) =
+        RunPluginLocation::parse_with_relative("zellij:tab-bar", Some(cwd)).unwrap();
+    assert_eq!(relative, None, "a builtin is named by a tag, not a path");
+}

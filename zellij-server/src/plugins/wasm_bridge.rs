@@ -2339,6 +2339,7 @@ mod tests {
             location: RunPluginLocation::parse("zellij:tab-bar", None).unwrap(),
             initial_userspace_configuration: PluginUserConfiguration::new(configuration),
             initial_cwd: None,
+            relative_path: None,
         }
     }
 

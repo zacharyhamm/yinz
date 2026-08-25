@@ -105,14 +105,16 @@ fn a_plugin_tool_refuses_a_name_that_is_a_path() {
     }
 }
 
-/// The three that touch the filesystem hand off to the host and wait, rather than answering
-/// with something they made up.
+/// The four that touch the filesystem hand off to the host and wait, rather than answering
+/// with something they made up. `plugin_reload` is one of them because the file it is about to
+/// run has to be checked for being a symlink out of the folder, which only the host can do.
 #[test]
 fn the_filesystem_tools_defer_on_the_host() {
     for (name, arguments) in [
         ("plugin_list", "{}"),
         ("plugin_read", r#"{"name":"keys"}"#),
         ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
+        ("plugin_reload", r#"{"name":"keys"}"#),
     ] {
         let mut state = plugin_state();
         assert!(
@@ -124,22 +126,46 @@ fn the_filesystem_tools_defer_on_the_host() {
     }
 }
 
-/// A reload is fire-and-forget: `start_or_reload_plugin` has no reply, so the result says what
+/// The plugin is started once the host says the path may be loaded, and not before. The reload
+/// itself is fire-and-forget - `start_or_reload_plugin` has no reply - so the result says what
 /// was asked for rather than claiming the plugin loaded.
 #[test]
-fn a_reload_answers_at_once_without_claiming_success() {
+fn a_cleared_reload_starts_the_plugin_without_claiming_success() {
     let mut state = plugin_state();
-    assert!(run_file_tool(
+    command_result(
         &mut state,
         "plugin_reload",
-        r#"{"name":"keys"}"#
-    ));
-    assert!(!matches!(state.status, Status::AwaitingCommand));
+        r#"{"name":"keys"}"#,
+        0,
+        b"",
+        b"",
+    );
     let results = tool_results(&state);
     assert_eq!(results.len(), 1);
     // Off wasm there is no host to call, so the stub answers - what matters here is that the
-    // tool resolved the name and returned rather than deferring.
+    // clean exit is what turned into a reload.
     assert!(!results[0].content.is_empty());
+}
+
+/// The point of making a reload wait for the host: a symlink in the plugin folder would
+/// otherwise be *run*, which is further than reading one.
+#[test]
+fn a_reload_of_a_symlink_is_refused_with_what_the_guard_said() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_reload",
+        r#"{"name":"keys"}"#,
+        1,
+        b"",
+        b"/home/someone/.config/zellij/plugins/keys.lua is a symlink; refusing",
+    );
+    let results = tool_results(&state);
+    assert!(
+        results[0].content.contains("symlink"),
+        "got {:?}",
+        results[0].content
+    );
 }
 
 /// Answer a plugin tool as if the host had come back with this.

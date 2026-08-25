@@ -1161,6 +1161,10 @@ message RunPlugin {
   RunPluginLocationData location = 2;
   PluginUserConfiguration configuration = 3;
   optional string initial_cwd = 4;
+  // The path as written, when the plugin was named by a relative `file:` URL. The location is
+  // already absolute by the time it gets here, so this is the only thing that can tell the
+  // server to look in the user's plugin folder for `zellij plugin -- file:keys.lua`.
+  optional string relative_path = 5;
 }
 
 message PluginAlias {

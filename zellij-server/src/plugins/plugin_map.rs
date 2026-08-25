@@ -188,10 +188,21 @@ impl PluginMap {
             .iter()
             .filter(|(_, (running_plugin, _subscriptions, _workers))| {
                 let running_plugin = running_plugin.lock().unwrap();
-                let plugin_config = &running_plugin.env().plugin;
+                let env = running_plugin.env();
+                let plugin_config = &env.plugin;
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
-                running_plugin_location == plugin_location
+                let location_matches = running_plugin_location == plugin_location
+                    // A plugin declared `file:keys.lua` keeps `<cwd>/keys.lua` as its identity -
+                    // that is what a dumped layout has to say - but its source was read from the
+                    // user's plugin folder. A reload naming that file in full is the same plugin,
+                    // and must reload it rather than be told it does not exist and started again
+                    // in a second pane.
+                    || match (plugin_location, env.resolved_source_path.as_ref()) {
+                        (RunPluginLocation::File(requested), Some(resolved)) => requested == resolved,
+                        _ => false,
+                    };
+                location_matches
                     && configuration_matches_for_reload(
                         running_plugin_configuration,
                         plugin_configuration,
@@ -303,6 +314,10 @@ impl PluginMap {
                         location: run_plugin_location,
                         configuration: run_plugin_configuration,
                         initial_cwd,
+                        // Carried, so a plugin named by a relative `file:` URL can still be
+                        // found in the user's plugin folder when this is used to start it
+                        // again - resurrecting a session, say.
+                        relative_path: plugin_config.relative_path.clone(),
                     })
                 } else {
                     None
@@ -388,6 +403,12 @@ pub struct PluginEnv {
     /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Lua
     /// loader as the folder to search when a plugin is named rather than pathed.
     pub user_plugin_dir: Option<PathBuf>,
+    /// The file a Lua plugin's source was actually read from, which is not always
+    /// `plugin.location`: a plugin declared `file:keys.lua` keeps `<cwd>/keys.lua` as its
+    /// identity but is found in `user_plugin_dir`. A reload names the file in full, so this
+    /// is what `all_plugin_ids_for_plugin_location` matches it against. `None` for wasm
+    /// plugins, which are not reloadable by authoring and have their own lookup.
+    pub resolved_source_path: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     /// The `plugins { }` alias table, shared with `WasmBridge` so it stays current across

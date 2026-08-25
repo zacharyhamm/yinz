@@ -176,6 +176,37 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     );
     clear(&zellij, "already exists");
 
+    // A symlink in the folder passes every rule about the *name*, so the containment that the
+    // name check can only assert lexically is enforced by the host, on the real link.
+    //
+    // The write is the one that matters — `overwrite=true` would truncate whatever the link
+    // points at, and the confirmation the user saw named only "link" — but the read is refused
+    // for the same reason and by the same guard.
+    let outside = plugins.path().join("outside.lua");
+    fs::write(&outside, "-- outside the plugin folder\n").expect("a file outside the folder");
+    std::os::unix::fs::symlink(&outside, plugin_dir.join("link.lua")).expect("a symlink");
+
+    submit(&zellij, r#"/plugin_read {"name": "link"}"#);
+    zellij.wait_until("reading through a symlink is refused", |grid_snapshot| {
+        grid_snapshot.contains("is a symlink")
+    });
+    clear(&zellij, "is a symlink");
+
+    submit_awaiting(
+        &zellij,
+        r#"/plugin_write {"name": "link", "source": "return {}", "overwrite": true}"#,
+        "overwrite",
+    );
+    zellij.wait_until("writing through a symlink is refused", |grid_snapshot| {
+        grid_snapshot.contains("is a symlink")
+    });
+    let untouched = fs::read_to_string(&outside).expect("the outside file is still there");
+    assert_eq!(
+        untouched, "-- outside the plugin folder\n",
+        "an overwrite must not reach through a link out of the folder"
+    );
+    clear(&zellij, "is a symlink");
+
     // And finally the whole point: the file becomes a running plugin. `plugin_reload` starts one
     // that is not already running, so this opens it in a pane of its own.
     submit(&zellij, r#"/plugin_reload {"name": "probe"}"#);

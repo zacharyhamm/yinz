@@ -1,7 +1,6 @@
 ---
 source: zellij-utils/src/input/./unit/layout_test.rs
-assertion_line: 1938
-expression: "format!(\"{:#?}\", layout)"
+expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
     tabs: [],
@@ -81,6 +80,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),
@@ -198,6 +198,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),
@@ -260,6 +261,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),
@@ -450,6 +452,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),
@@ -512,6 +515,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),
@@ -793,6 +797,7 @@ Layout {
                                                 {},
                                             ),
                                             initial_cwd: None,
+                                            relative_path: None,
                                         },
                                     ),
                                 ),

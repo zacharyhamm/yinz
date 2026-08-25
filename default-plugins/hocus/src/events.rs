@@ -710,12 +710,13 @@ impl State {
             return None;
         }
         let binary = match head.name.as_str() {
-            "read_file" | "plugin_read" => "sed",
+            "read_file" => "sed",
             "find_files" | "search_files" => "rg",
             "git_log" | "git_show" => "git",
             "github_read" => "gh",
             "plugin_list" => "find",
-            "plugin_write" => "sh",
+            // The three that run behind the symlink guard, so `sh` is what failed to spawn.
+            "plugin_write" | "plugin_read" | "plugin_reload" => "sh",
             _ => return None,
         };
         let install = if binary == "rg" {
@@ -741,8 +742,9 @@ impl State {
     /// the matches with a count, rather than 40 000 bytes ending mid-line.
     /// The deferred half of the plugin-authoring tools.
     ///
-    /// The three shapes that need saying in the model's terms rather than the shell's: a write
-    /// that worked and what to do next, a write refused by `noclobber`, and an empty listing.
+    /// The shapes that need saying in the model's terms rather than the shell's: a write that
+    /// worked and what to do next, a write refused by `noclobber`, an empty listing - and a
+    /// reload, whose command only asks permission, leaving the loading itself to happen here.
     fn plugin_tool_result(
         head: &ToolCall,
         dir: &str,
@@ -776,6 +778,24 @@ impl State {
                      first with plugin_read"
                 );
             }
+        }
+
+        // The reload proper. Its command did nothing but ask the host whether this file may be
+        // loaded - it is not a link out of the folder, and it is there - so a clean exit is the
+        // point at which the plugin is actually started.
+        //
+        // The path is re-resolved rather than carried: `resolve_plugin_file` is pure and was
+        // already given the same folder and name, so it cannot answer differently here, and a
+        // reload must be built from an absolute path - `RunPluginLocation::parse` joins a
+        // relative `file:` path onto the cwd, which `start_or_reload_plugin` always supplies.
+        if head.name == "plugin_reload" && exit_code == Some(0) {
+            let target = tools::Args::parse(&head.arguments)
+                .ok()
+                .and_then(|args| tools::resolve_plugin_file(dir, args.name.as_deref()).ok());
+            return match target {
+                Some(target) => tools::reload_plugin(&target),
+                None => format!("{name} could not be resolved to a plugin file"),
+            };
         }
 
         // The folder is made by the first write, so until then it is legitimately absent -

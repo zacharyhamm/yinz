@@ -4629,6 +4629,7 @@ Config {
                                 {},
                             ),
                             initial_cwd: None,
+                            relative_path: None,
                         },
                     ),
                     should_float: true,
@@ -4850,6 +4851,7 @@ Config {
                                 {},
                             ),
                             initial_cwd: None,
+                            relative_path: None,
                         },
                     ),
                     should_float: true,
@@ -5020,6 +5022,7 @@ Config {
                                 {},
                             ),
                             initial_cwd: None,
+                            relative_path: None,
                         },
                     ),
                     should_float: true,
@@ -7266,6 +7269,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "compact-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7278,6 +7282,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "configuration": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7290,6 +7295,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "file-finder": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7302,6 +7308,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "filepicker": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7316,6 +7323,7 @@ Config {
                 initial_cwd: Some(
                     "/",
                 ),
+                relative_path: None,
             },
             "hocus": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7330,6 +7338,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-agentd": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7344,6 +7353,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-agents": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7358,6 +7368,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-ask": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7370,6 +7381,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-duplicate-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7384,6 +7396,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-new-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7396,6 +7409,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "hocus-store": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7410,6 +7424,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "plugin-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7422,6 +7437,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "session-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7434,6 +7450,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "status-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7446,6 +7463,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "strider": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7458,6 +7476,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "tab-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7470,6 +7489,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
             "welcome-screen": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -7484,6 +7504,7 @@ Config {
                     },
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
         },
     },
@@ -7511,6 +7532,7 @@ Config {
                     {},
                 ),
                 initial_cwd: None,
+                relative_path: None,
             },
         ),
         Alias(
@@ -7563,6 +7585,7 @@ Config {
                         {},
                     ),
                     initial_cwd: None,
+                    relative_path: None,
                 },
             ),
         },

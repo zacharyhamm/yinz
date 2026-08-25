@@ -26,6 +26,7 @@ use crate::{
 
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
 use super::plugins::{PluginAliases, PluginTag, PluginsConfigError};
@@ -205,14 +206,15 @@ impl RunPluginOrAlias {
         alias_dict: Option<&PluginAliases>,
         cwd: Option<PathBuf>,
     ) -> Result<Self, String> {
-        match RunPluginLocation::parse(url, cwd) {
-            Ok(location) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
+        match RunPluginLocation::parse_with_relative(url, cwd) {
+            Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
                 _allow_exec_host_cmd: false,
                 location,
                 configuration: configuration
                     .as_ref()
                     .map(|c| PluginUserConfiguration::new(c.clone()))
                     .unwrap_or_default(),
+                relative_path,
                 ..Default::default()
             })),
             Err(PluginsConfigError::InvalidUrlScheme(_))
@@ -449,14 +451,18 @@ impl Run {
     }
 }
 
-#[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Debug, Serialize, Deserialize, Clone, Hash, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RunPlugin {
     #[serde(default)]
     pub _allow_exec_host_cmd: bool,
     pub location: RunPluginLocation,
     pub configuration: PluginUserConfiguration,
     pub initial_cwd: Option<PathBuf>,
+    /// The path as the user wrote it, when the URL this was built from was a relative `file:`
+    /// one - see `RunPluginLocation::parse_with_relative`. Not part of the plugin's identity:
+    /// `$cwd/keys.lua` is the same plugin however it was named.
+    #[serde(default)]
+    pub relative_path: Option<PathBuf>,
 }
 
 impl RunPlugin {
@@ -581,11 +587,22 @@ impl PartialEq for RunPlugin {
 }
 impl Eq for RunPlugin {}
 
+impl Hash for RunPlugin {
+    // NOTE: Keep this in sync with what the `PartialEq` and `Ord` impls do. It used to be
+    // derived, which hashed the fields equality ignores - so two plugins that compare equal
+    // could land in different buckets, and a `HashSet<RunPlugin>` (`pending_plugin_reloads`)
+    // could hold both.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.location.hash(state);
+        self.configuration.hash(state);
+    }
+}
+
 impl Ord for RunPlugin {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // NOTE: Keep this in sync with what the `PartialEq` and `Hash` impls do:
         // ordering has to agree with equality, so it compares the same fields
-        // and deliberately ignores `initial_cwd` and `_allow_exec_host_cmd`.
+        // and deliberately ignores `initial_cwd`, `relative_path` and `_allow_exec_host_cmd`.
         (&self.location, &self.configuration).cmp(&(&other.location, &other.configuration))
     }
 }
@@ -660,15 +677,50 @@ impl Default for RunPluginLocation {
     }
 }
 
+/// Shell-expand a plugin path. A path that cannot be expanded is kept as written: the error is
+/// worth a log, but refusing to load over it would turn a stray `$` into a missing plugin.
+fn expand_plugin_path(path: PathBuf) -> PathBuf {
+    match shellexpand::full(&path.to_string_lossy()) {
+        Ok(expanded) => PathBuf::from(expanded.as_ref()),
+        Err(e) => {
+            log::error!("Failed to shell expand plugin path: {}", e);
+            path
+        },
+    }
+}
+
 impl RunPluginLocation {
     pub fn parse(location: &str, cwd: Option<PathBuf>) -> Result<Self, PluginsConfigError> {
+        Self::parse_with_relative(location, cwd).map(|(location, _)| location)
+    }
+
+    /// The same parse, also reporting the path *as written* when the URL was a relative `file:`
+    /// one.
+    ///
+    /// A relative path is joined onto the cwd below, and everything downstream sees only the
+    /// absolute result - which is a problem for anything that wants to look the plugin up
+    /// somewhere else, because `Path::join` on an absolute path returns it unchanged. So
+    /// `PluginConfig::resolve_lua_source` searching the user's plugin folder for `file:keys.lua`
+    /// would search for `$cwd/keys.lua` in it and always miss. Callers that hand a user-typed URL
+    /// to `RunPlugin` keep this second value in `relative_path` so that lookup has a name to use.
+    ///
+    /// `None` for everything else, and that is the load-bearing half: an *explicitly* absolute
+    /// path that is not there must fail rather than quietly load a same-named plugin from the
+    /// user's folder.
+    pub fn parse_with_relative(
+        location: &str,
+        cwd: Option<PathBuf>,
+    ) -> Result<(Self, Option<PathBuf>), PluginsConfigError> {
         let url = Url::parse(location)?;
 
         let decoded_path = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
 
         match url.scheme() {
-            "zellij" => Ok(Self::Zellij(PluginTag::new(decoded_path))),
+            "zellij" => Ok((Self::Zellij(PluginTag::new(decoded_path)), None)),
             "file" => {
+                // Set by the one branch that joins a cwd, so it is exactly "what the user wrote,
+                // before it was made absolute".
+                let mut relative = None;
                 let path = if location.starts_with("file:/") {
                     // Path is absolute, its safe to use URL path.
                     //
@@ -683,21 +735,15 @@ impl RunPluginLocation {
                     //
                     // Unwrap is safe here since location is a valid URL
                     let stripped = location.strip_prefix("file:").unwrap();
+                    relative = Some(expand_plugin_path(PathBuf::from(stripped)));
                     match cwd {
                         Some(cwd) => cwd.join(stripped),
                         None => PathBuf::from(stripped),
                     }
                 };
-                let path = match shellexpand::full(&path.to_string_lossy().to_string()) {
-                    Ok(s) => PathBuf::from(s.as_ref()),
-                    Err(e) => {
-                        log::error!("Failed to shell expand plugin path: {}", e);
-                        path
-                    },
-                };
-                Ok(Self::File(path))
+                Ok((Self::File(expand_plugin_path(path)), relative))
             },
-            "https" | "http" => Ok(Self::Remote(url.as_str().to_owned())),
+            "https" | "http" => Ok((Self::Remote(url.as_str().to_owned()), None)),
             _ => Err(PluginsConfigError::InvalidUrlScheme(url)),
         }
     }
