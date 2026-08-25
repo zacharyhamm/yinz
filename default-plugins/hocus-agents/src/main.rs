@@ -1,10 +1,10 @@
-//! hocus-agents — the agent list as a real pane in the hocus sidebar strip.
+//! hocus-agents — the agent list as a real pane in the hocus overlay column.
 //!
 //! This used to be the top third of the hocus pane, drawn by hocus itself with
-//! an `agents_focused` flag deciding who owned the keys. Now it is its own
-//! global pane, split off above the chat in the same strip, so the ordinary
-//! pane-movement keys walk between the list and the conversation and each one
-//! keeps its own focus, scrollback and cursor.
+//! an `agents_focused` flag deciding who owned the keys. Now it is its own pane
+//! — the overlay directly above the chat in the same bottom-left column — so the
+//! ordinary pane-movement keys walk between the list and the conversation and
+//! each one keeps its own focus, scrollback and cursor.
 //!
 //! **hocus computes, this pane draws.** Which panes are agents, which project
 //! owns them and what branch they are on takes the agentd snapshot, the project
@@ -22,17 +22,23 @@
 //! draws it dim, which is the difference between "you are here" and "here is
 //! where you were".
 //!
-//! Either half of the strip spawns the other, through the same
-//! `launch_or_focus_global_pane_split` call: hocus splits this pane in above
-//! itself on load, and this pane splits hocus in below itself. So the `Ctrl+``
-//! keybinding keeps working unchanged — revealing hocus reveals the whole
-//! strip, and `hide_self()` here hides it likewise — and a binding that opens
-//! the list directly gets a whole sidebar rather than a view with nothing
-//! feeding it.
+//! Either half of the column opens the other, through a `MessageToPlugin`
+//! carrying the other's url: that is launch-or-reuse, so hocus opens this pane
+//! on load and this pane opens a hocus when a keybinding got here first. A
+//! binding that opens the list directly therefore gets a whole column rather
+//! than a view with nothing feeding it.
+//!
+//! **Hiding, though, does not work in both directions.** An overlay is hidden by
+//! name, where the old global strip hid by edge and so went away as one unit, and
+//! this pane does not know the chat's id. So Esc here sends `AGENT_STRIP_HIDE` to
+//! hocus, which holds both ids and puts the column away as one — rather than
+//! `hide_self`, which would leave the conversation on screen with its list
+//! missing.
 
 use std::collections::BTreeMap;
 
 use hocus_proto::agents::{Strip, StripRow};
+use hocus_proto::launch;
 use hocus_proto::wire;
 use zellij_tile::prelude::*;
 
@@ -71,34 +77,30 @@ impl ZellijPlugin for State {
         ]);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
-        // hocus pushes the strip on every change; this asks for the current one
-        // so a reload (or a session restore) does not sit empty until the next
-        // agentd snapshot.
-        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HELLO));
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
         // from "some other plugin pane is". The pane it names follows with the
         // strip, a moment later.
         self.send_selection();
-        // The chat is the other half of this strip, and it is the half that
-        // computes the rows drawn here. Usually hocus spawns *this* pane and
-        // this call adopts the hocus that did it; when a keybinding got here
-        // first there is no hocus yet, so split one in below. Idempotent
-        // server-side, and a no-op when this is not a global pane — the same
-        // contract hocus relies on in the other direction.
-        launch_or_focus_global_pane_split(
-            "hocus",
-            // the spelling hocus's own binding uses: plugin identity is
-            // (location, configuration), and a second spelling would make a
-            // second pane rather than adopt the one that is there
-            BTreeMap::new(),
-            // below the list, where the conversation belongs
-            false,
-            // sizes the *new* pane, leaving this one the remainder — the same
-            // two-thirds-to-the-chat split the other direction produces
-            Some(PercentOrFixed::Percent(67)),
-            // whoever opened this pane meant to land on the list
-            false,
+        // One message doing two jobs. It asks hocus for the current strip, so a
+        // reload (or a session restore) does not sit empty until the next agentd
+        // snapshot — and, by naming hocus's url, it opens the chat if there is no
+        // hocus to ask. The chat is the other half of this column and the half
+        // that computes the rows drawn here, so a list with nothing feeding it is
+        // not worth having: usually hocus opened *this* pane and the message
+        // simply reaches it, but a keybinding can get here first.
+        //
+        // `MessageToPlugin` with a `plugin_url` is launch-or-reuse — an instance
+        // with the same (location, configuration) is handed the message rather
+        // than a second one being spawned — which is the same idempotence hocus
+        // relies on in the other direction.
+        //
+        // No coordinates: this pane does not know the column's proportions. hocus
+        // places both halves itself, on load and on every resize.
+        pipe_message_to_plugin(
+            MessageToPlugin::new(wire::AGENT_STRIP_HELLO)
+                .with_plugin_url(launch::HOCUS_ALIAS)
+                .with_plugin_config(launch::overlay_configuration()),
         );
     }
 
@@ -119,6 +121,14 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_STRIP_OPEN {
+            // hocus asking for this pane. If it is reaching us at all then we already exist and
+            // the message opened nothing - but a hocus that reloaded has forgotten our id, and
+            // `send_selection` on load is the only other thing that ever tells it. Answering here
+            // is what stops a reloaded hocus being unable to place or hide the list beside it.
+            self.send_selection();
+            return false;
+        }
         if pipe_message.name != wire::AGENT_STRIP {
             return false;
         }
@@ -187,9 +197,9 @@ impl ZellijPlugin for State {
 impl State {
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            // hides the whole sidebar strip, chat included - the same gesture
-            // that revealed it
-            hide_self();
+            // puts the whole column away, chat included - the same gesture that
+            // revealed it. Routed through hocus: see the module doc.
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
             return false;
         }
         if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
@@ -206,7 +216,7 @@ impl State {
         }
         match key.bare_key {
             BareKey::Esc => {
-                hide_self();
+                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
                 false
             },
             BareKey::Enter => {
@@ -396,7 +406,7 @@ mod tests {
         ]
     }
 
-    /// A push from hocus with nobody in a terminal pane - what the sidebar
+    /// A push from hocus with nobody in a terminal pane - what the hocus column
     /// having the focus looks like on the wire.
     fn unfocused(rows: Vec<StripRow>) -> Strip {
         Strip {

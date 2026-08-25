@@ -151,17 +151,17 @@ keybinds clear-defaults=true {
     agent {
         bind "a" {
             LaunchOrFocusPlugin "hocus-agents" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                move_to_focused_tab true
+                overlay true
             }
             SwitchToMode "normal"
         }
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                move_to_focused_tab true
+                overlay true
             }
             SwitchToMode "normal"
         }

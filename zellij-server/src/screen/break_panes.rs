@@ -127,7 +127,7 @@ impl Screen {
             let pane_id = pane.pid();
             let without_relayout = true;
 
-            if let ExtractedPanePlacement::Overlay(overlay_placement) = placement {
+            if let ExtractedPanePlacement::Overlay(overlay_placement, hidden) = placement {
                 // no geom: an overlay's geometry is resolved from its coordinates against the
                 // new tab's surface, which is exactly what carrying the placement is for. Not
                 // focused, for the same reason the tiled arm below is not.
@@ -136,6 +136,7 @@ impl Screen {
                     pane_id,
                     overlay_placement.kind,
                     overlay_placement.coordinates.unwrap_or_default(),
+                    hidden,
                     false,
                     None,
                 )?;
@@ -213,6 +214,9 @@ impl Screen {
                     active_pane_id,
                     placement.kind,
                     placement.coordinates.unwrap_or_default(),
+                    // this breaks out the *active* pane, and `hide_pane` moves clients off what
+                    // it hides - so the pane reaching here cannot be a hidden one
+                    false,
                     true,
                     Some(client_id),
                 )?;

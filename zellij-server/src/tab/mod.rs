@@ -266,7 +266,10 @@ pub(crate) enum AcceptedPane {
 pub(crate) enum ExtractedPanePlacement {
     Tiled,
     Floating,
-    Overlay(OverlayPlacement),
+    /// `bool` is whether the overlay was hidden. It rides here rather than in `OverlayPlacement`
+    /// because that struct crosses the protobuf boundary and this is in-memory state, not
+    /// placement - the same split `position_is_user_stated` is on.
+    Overlay(OverlayPlacement, bool),
 }
 
 enum BufferedTabInstruction {
@@ -3269,6 +3272,8 @@ impl Tab {
             pid,
             placement.kind,
             placement.coordinates.unwrap_or_default(),
+            // a newly opened overlay is on screen; hiding is something that happens to it later
+            false,
             should_focus_pane,
             None,
         )
@@ -4156,7 +4161,9 @@ impl Tab {
     /// deliberately no layer-visibility test: an overlay is not on the floating layer, and it was
     /// the exception carved into that test - and every path that forgot the exception - that this
     /// collection exists to remove. `overlays_are_rendered` is still consulted so that focus and
-    /// what is drawn cannot disagree, but it no longer has a way to be false for a live overlay.
+    /// what is drawn cannot disagree; the one way it is false for a live overlay is that every
+    /// overlay here has been set aside by `hide_pane`, which drops their focus on the way out - so
+    /// this filter is a second lock on a door that is already shut, not the thing holding it.
     pub fn get_active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
         self.overlay_panes
             .active_pane_id(client_id)
@@ -5192,6 +5199,28 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
+    /// Set an overlay aside without unloading it - the overlay half of `suppress_pane`, which
+    /// cannot be used here because it extracts the pane from its collection and an overlay put
+    /// back afterwards would have lost its kind and its coordinates.
+    pub fn hide_overlay_pane(&mut self, pane_id: PaneId) -> bool {
+        if !self.overlay_panes.hide_pane(pane_id) {
+            return false;
+        }
+        // An overlay is drawn after the tab and after the global panes, so the cells it vacates
+        // have no other writer: without dirtying everything underneath, the overlay stays on
+        // screen as an unrepainted ghost of itself.
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        true
+    }
+    /// Draw an overlay again. Does not focus it - see `OverlayPanes::show_pane`.
+    pub fn show_overlay_pane(&mut self, pane_id: PaneId) -> bool {
+        if !self.overlay_panes.show_pane(pane_id) {
+            return false;
+        }
+        self.set_force_render();
+        true
+    }
     /// Whether an overlay is being painted at `position`, whatever it is covering.
     ///
     /// The mouse pipeline needs this as a fact about the *position* rather than about a pane,
@@ -5300,7 +5329,7 @@ impl Tab {
     /// out of.
     pub fn placement_for_extraction(&self, pane_id: PaneId) -> ExtractedPanePlacement {
         if let Some(placement) = self.overlay_placement_for(pane_id) {
-            ExtractedPanePlacement::Overlay(placement)
+            ExtractedPanePlacement::Overlay(placement, self.overlay_panes.is_hidden(&pane_id))
         } else if self.pane_id_is_floating(&pane_id) {
             ExtractedPanePlacement::Floating
         } else {
@@ -5502,8 +5531,9 @@ impl Tab {
 
     /// Whether the overlays contribute to this frame at all.
     ///
-    /// An overlay is drawn for as long as it exists. There is no layer to raise, no visibility to
-    /// check, and - since Phase 4 - not even a fullscreen tiled pane to yield to: a UI-covering
+    /// An overlay is drawn for as long as it exists and has not been set aside by `hide_pane`.
+    /// There is still no *layer* to raise and no layer visibility to check, and - since Phase 4 -
+    /// not even a fullscreen tiled pane to yield to: a UI-covering
     /// fullscreen used to hide overlays, which left a modal focused and invisible, a state the
     /// user has no way out of because the modal is the thing that has the keyboard. An overlay
     /// outranks fullscreen for the same reason it outranks a pinned pane.
@@ -6427,6 +6457,20 @@ impl Tab {
         let mut suppressed_pane_ids = self.suppressed_panes.keys().copied().collect();
         static_and_floating_pane_ids.append(&mut suppressed_pane_ids);
         static_and_floating_pane_ids
+    }
+    /// Every overlay this tab holds, hidden ones included.
+    ///
+    /// Hidden ones on purpose: an overlay that has been set aside still has to hear the events it
+    /// will act on when it comes back - a hidden hocus learns which tab to reappear on from the
+    /// `TabUpdate`s it receives while hidden.
+    pub fn overlay_plugin_ids(&self) -> Vec<PluginId> {
+        self.overlay_panes
+            .pane_ids()
+            .filter_map(|pane_id| match pane_id {
+                PaneId::Plugin(pid) => Some(*pid),
+                _ => None,
+            })
+            .collect()
     }
     pub fn get_static_and_floating_pane_ids(&self) -> Vec<PaneId> {
         self.tiled_panes
@@ -7515,12 +7559,16 @@ impl Tab {
         // (`PaneUpdate` only reaches plugins in a client's *active* tab).
         // Suppressed panes are deliberately still left out - `suppress_pane`
         // extracts them from both collections, and a hidden plugin is not on
-        // screen to begin with.
+        // screen to begin with. A hidden *overlay* is the same statement about
+        // the same thing, so it is filtered here rather than extracted: hocus
+        // set aside with Esc must not be told the tab it is not being drawn on
+        // just became visible.
+        let visible_overlays: Vec<PaneId> = self.overlay_panes.stack_layer_ids();
         let pids_in_this_tab = self
             .tiled_panes
             .pane_ids()
             .chain(self.floating_panes.pane_ids())
-            .chain(self.overlay_panes.pane_ids())
+            .chain(visible_overlays.iter())
             .filter_map(|p| match p {
                 PaneId::Plugin(pid) => Some(pid),
                 _ => None,
@@ -8164,12 +8212,19 @@ impl Tab {
     /// function of its coordinates and the surface, and `OverlayPanes::add_pane` resolves it. It
     /// is also the reason there is no `find_room_for_new_pane` here - overlays do not tile
     /// themselves out of each other's way, they stack.
+    ///
+    /// `hidden` is carried rather than derived: an overlay that follows a client to another tab is
+    /// extracted as a bare `Box<dyn Pane>`, so everything the `OverlayPane` wrapper held - its
+    /// kind, its coordinates, and whether it was set aside - has to be handed back in here or the
+    /// pane arrives on the new tab suddenly visible. `Tab::overlay_placement_for` and
+    /// `OverlayPanes::is_hidden` are what a mover reads before `extract_pane` drops the wrapper.
     pub fn add_overlay_pane(
         &mut self,
         mut pane: Box<dyn Pane>,
         pane_id: PaneId,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
+        hidden: bool,
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
@@ -8181,7 +8236,7 @@ impl Tab {
         }
         pane.set_active_at(Instant::now());
         self.overlay_panes
-            .add_pane(pane_id, pane, kind, coordinates);
+            .add_pane(pane_id, pane, kind, coordinates, hidden);
         resize_pty!(
             self.overlay_panes
                 .get_mut(&pane_id)
@@ -8191,7 +8246,9 @@ impl Tab {
             self.character_cell_size
         )
         .with_context(err_context)?;
-        if should_focus_new_pane {
+        // a pane that arrived hidden is not on screen, so there is nothing to focus and no
+        // `may_be_focused` that would allow it anyway
+        if should_focus_new_pane && !hidden {
             match client_id {
                 Some(client_id) => self.overlay_panes.focus_pane(pane_id, client_id),
                 None => self.overlay_panes.focus_pane_for_all_clients(pane_id),
@@ -8222,6 +8279,9 @@ impl Tab {
                 pane_id,
                 placement.kind,
                 placement.coordinates.unwrap_or_default(),
+                // this arm re-derives overlay-ness for a pane arriving through the floating door;
+                // nothing on that path carries a hidden overlay
+                false,
                 should_focus_new_pane,
                 client_id,
             );
@@ -8358,7 +8418,7 @@ impl Tab {
     ) -> AcceptedPane {
         let pane_id = pane.pid();
         match placement {
-            ExtractedPanePlacement::Overlay(overlay_placement) => {
+            ExtractedPanePlacement::Overlay(overlay_placement, hidden) => {
                 // no room check: an overlay is not on a layer and does not tile, so there is nothing
                 // for it to run out of. That is also why this arm cannot return `NoRoom` - only
                 // `Accepted` or, if the pty thread is already gone, `LostInAdd`.
@@ -8371,6 +8431,7 @@ impl Tab {
                     pane_id,
                     overlay_placement.kind,
                     overlay_placement.coordinates.unwrap_or_default(),
+                    hidden,
                     false,
                     None,
                 )

@@ -200,28 +200,9 @@ impl State {
         // focus is leaving the conversation, so a temporary list would sit
         // open with nobody holding it
         let had_picker = self.picker.take().is_some();
-        Self::launch_agents_pane(true);
+        self.launch_agents_pane(true);
         Self::request_branch_refresh();
         had_picker
-    }
-
-    /// Spawn the hocus-agents pane as a split above this pane in its own global
-    /// strip - or reveal the existing one. Idempotent server-side (an existing
-    /// hocus-agents global pane is adopted, not split again), and a no-op when
-    /// hocus is not running as a global pane.
-    ///
-    /// One place for the call so the spawn on load and every later focus use
-    /// the same url and configuration — plugin identity is (location,
-    /// configuration), and two spellings would make two panes.
-    pub(crate) fn launch_agents_pane(should_focus: bool) {
-        launch_or_focus_global_pane_split(
-            "hocus-agents",
-            BTreeMap::new(),
-            // above the conversation, where the strip used to be drawn
-            true,
-            Some(PercentOrFixed::Percent(33)),
-            should_focus,
-        );
     }
 
     /// The agent strip as the hocus-agents pane should draw it.

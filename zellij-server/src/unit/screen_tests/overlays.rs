@@ -284,6 +284,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
             popup_id,
             OverlayKind::Dismissible,
             coordinates,
+            false,
             true,
             Some(1),
         )
@@ -3762,5 +3763,220 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
         (after.x, after.y),
         (dropped_at.x, dropped_at.y),
         "the overlay stays where it was dropped instead of being re-centred"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Per-pane suppression: an overlay set aside without being unloaded.
+//
+// hocus draws itself as an overlay column in the bottom-left corner, and Esc has to put it away
+// while keeping the conversation, the parked chats and anything still streaming. That is what
+// `SuppressPane` on an overlay now means. These pin the instruction routing; the collection's own
+// rules are pinned in `overlay_panes/unit/overlay_panes_tests.rs`.
+// ---------------------------------------------------------------------------
+
+/// `SuppressPane` on an overlay hides it in place rather than extracting it.
+///
+/// The extraction is the thing to avoid: `Tab::suppress_pane` moves a pane into `suppressed_panes`,
+/// which drops the kind and coordinates that make it an overlay - the same loss
+/// `placement_for_extraction` exists to prevent on a cross-tab move. Before this arm existed the
+/// instruction fell through to the tab loop and did exactly that.
+#[test]
+fn suppressing_an_overlay_hides_it_in_place() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    assert!(screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)));
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+
+    assert!(
+        screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)),
+        "still an overlay, and still loaded - hiding is not closing"
+    );
+    assert!(
+        !screen.tabs[&0].overlays_are_rendered(),
+        "but nothing is drawn for it"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("OVERLAY"),
+        "and the cells it vacated are repainted, got:\n{frame}"
+    );
+
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (
+            before.x,
+            before.y,
+            before.cols.as_usize(),
+            before.rows.as_usize()
+        ),
+        (
+            after.x,
+            after.y,
+            after.cols.as_usize(),
+            after.rows.as_usize()
+        ),
+        "and it comes back exactly where it was"
+    );
+}
+
+/// A hidden overlay is re-resolved while hidden, so it comes back sized for the screen as it is
+/// now rather than as it was when it went away.
+#[test]
+fn a_hidden_overlay_survives_a_resize_and_returns_proportional() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+
+    let bigger = Size {
+        cols: 160,
+        rows: 40,
+    };
+    screen.resize_to_screen(bigger).expect("TEST");
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        geom.cols.as_usize(),
+        96,
+        "60% of the surface as it is now, not the 48 it had when it was hidden"
+    );
+}
+
+/// A tab whose only overlay is hidden must behave exactly like a tab with no overlay at all -
+/// otherwise `get_active_pane_id` keeps preferring the overlay collection and the occlusion stack
+/// keeps a layer for a pane nothing draws.
+#[test]
+fn a_tab_holding_only_a_hidden_overlay_has_no_overlays_to_render() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    assert!(screen.tabs[&0].overlays_are_rendered());
+
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+    assert!(!screen.tabs[&0].overlays_are_rendered());
+    assert_ne!(
+        screen.tabs[&0].get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the keyboard is not left on a pane nobody can see"
+    );
+}
+
+/// An overlay in a tab nobody is looking at still hears broadcast events.
+///
+/// This is what lets hocus follow tab switches at all: it moves itself when it sees the
+/// `TabUpdate`, and the overlay it moves is by definition sitting in the tab the user just left.
+/// The active-tab walk in `targeted_plugin_ids` would never reach it.
+#[test]
+fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let overlay = PaneFactory::plugin(
+        9,
+        Default::default(),
+        plugin_sender,
+        "overlay".to_owned(),
+        "overlay".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        None,
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .add_overlay_pane(
+            overlay,
+            PaneId::Plugin(9),
+            OverlayKind::Dismissible,
+            FloatingPaneCoordinates::default(),
+            false,
+            true,
+            Some(1),
+        )
+        .expect("TEST");
+
+    // client 1 is looking at tab 1, so the overlay in tab 0 is in nobody's active tab
+    screen.go_to_tab(2, 1).expect("TEST");
+    assert_eq!(screen.active_tab_ids.get(&1), Some(&1));
+
+    let targets = screen.targeted_plugin_ids(1, EventType::TabUpdate);
+    assert!(
+        targets.contains(&9),
+        "an overlay left behind on another tab must still hear the event it moves on, got {targets:?}"
+    );
+}
+
+/// Why `SuppressPane`'s overlay arm has to come *before* the tab loop.
+///
+/// An overlay is matched by `has_non_suppressed_pane_with_pid` like any other pane, so without an
+/// arm of its own the instruction reaches `Tab::suppress_pane`, which extracts the pane into
+/// `suppressed_panes` and loses the kind and coordinates that make it an overlay. This pins the
+/// precondition rather than the arm: if this assertion ever goes false the arm is no longer load
+/// bearing, and if it stays true the arm must stay ahead of the loop.
+#[test]
+fn an_overlay_would_be_caught_by_the_tab_suppression_loop() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+
+    assert!(
+        screen.tabs[&0].has_non_suppressed_pane_with_pid(&PaneId::Terminal(2)),
+        "the tab loop would claim this overlay, so the overlay arm must be reached first"
+    );
+    assert!(
+        screen.tab_containing_overlay(PaneId::Terminal(2)).is_some(),
+        "and the overlay arm's own lookup finds it"
     );
 }

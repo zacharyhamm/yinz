@@ -3632,6 +3632,22 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
+                // Before the tab loop: an overlay is in none of the collections
+                // `has_non_suppressed_pane_with_pid` walks, so without this arm hiding one is a
+                // silent no-op. It is also not `suppress_pane`, which extracts the pane and would
+                // lose the kind and coordinates that make it an overlay.
+                if screen.tab_containing_overlay(pane_id).is_some() {
+                    // asked while the overlay still holds the focus: `hide_pane` moves clients off
+                    // it, and this reads which of them had a global pane suspended underneath
+                    let restore = screen.take_global_focus_after_overlay_close(pane_id);
+                    if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                        tab.hide_overlay_pane(pane_id);
+                    }
+                    screen.restore_global_focus(restore);
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
                 let all_tabs = screen.get_tabs_mut();
                 for tab in all_tabs.values_mut() {
                     if tab.has_non_suppressed_pane_with_pid(&pane_id) {
@@ -3649,6 +3665,12 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
+                if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                    tab.show_overlay_pane(pane_id);
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.unsuppress_pane(pane_id, should_float_if_hidden);
                     drop(screen.render(None));
@@ -3658,6 +3680,12 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::UnsuppressOrExpandPane(pane_id, should_float_if_hidden) => {
                 if screen.global_panes.pane(pane_id).is_some() {
                     screen.show_pane(pane_id)?;
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
+                if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                    tab.show_overlay_pane(pane_id);
                     screen.render(None)?;
                     screen.log_and_report_session_state()?;
                     continue;

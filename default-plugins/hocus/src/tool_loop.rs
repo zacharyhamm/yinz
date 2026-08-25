@@ -41,7 +41,7 @@ impl State {
             if needs_confirmation && !self.job_auto_confirm {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
-                // The prompt renders into the sidebar, and the sidebar is very
+                // The prompt renders into hocus's own pane, which is very
                 // often not the thing being looked at: Esc hides it, a parked
                 // chat can be confirming while another is in the foreground, and
                 // a scheduled run with `show: false` never opens it at all. A
@@ -751,9 +751,10 @@ impl State {
     }
 
     pub(crate) fn project_assign(&mut self, args: &tools::Args) -> String {
-        // The focused agent's tab before the active one: hocus is a global pane, so
-        // "the tab I am in" is a question it cannot answer about itself, and the
-        // agent the user was last looking at is the tab they mean.
+        // The focused agent's tab before the active one. hocus's overlay does sit in a
+        // tab now, but that tab is the active one by construction — it follows every
+        // switch — so "the tab I am in" still answers the wrong question. The agent the
+        // user was last looking at is the tab they mean.
         let tab_id = match args.tab_id.or_else(|| self.focused_tab()).or_else(|| {
             self.tabs
                 .iter()
@@ -1015,7 +1016,7 @@ impl State {
 
     /// Take note of which pane the user is looking at.
     ///
-    /// Only an agent pane is remembered. Anything else — the sidebar, a shell, an
+    /// Only an agent pane is remembered. Anything else — hocus itself, a shell, an
     /// editor — leaves the last agent standing, which is what makes the active
     /// project survive the user coming here to ask about it.
     pub(crate) fn note_focus(&mut self, focused: Option<u32>) {
@@ -1195,9 +1196,10 @@ impl State {
         self.auto_tab_projects
             .retain(|tab_id, _| !self.tab_projects.contains_key(tab_id));
         // A closed tab is still named by the panes of the last snapshot, so without
-        // this it comes straight back. Only when we have heard of any tab at all:
-        // an empty list is "nobody has told us" — hocus is a global pane and an
-        // older host sends it no `TabUpdate` — and is not the same as "no tabs".
+        // this it comes straight back. Only when we have heard of any tab at all: an
+        // empty list is "nobody has told us" — hocus's overlay may be sitting in a tab
+        // nobody is looking at, and it is the host's routing of `TabUpdate` to overlays
+        // in every tab that gets it the news — and is not the same as "no tabs".
         if !self.tabs.is_empty() {
             self.auto_tab_projects
                 .retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
@@ -1516,8 +1518,17 @@ impl State {
             return false;
         };
         let inset = self.inset_key();
+        let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
         self.agents_selected = selection.pane_id;
+        // This is the only word hocus gets of the list's id, and it can arrive after the
+        // `TabUpdate` that placed the column - in which case that pass placed the conversation
+        // alone, and no later same-sized update would come back to it, leaving the list at the
+        // centred default the host gave it. Gated on the id actually changing: walking the list
+        // under `j`/`k` sends one of these per keystroke, and none of them move anything.
+        if announced {
+            self.apply_overlay_geometry();
+        }
         self.inset_key() != inset
     }
 
