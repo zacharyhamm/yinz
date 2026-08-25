@@ -3109,11 +3109,13 @@ impl TryFrom<ProtobufRunPlugin> for RunPlugin {
             .ok_or("RunPlugin must have configuration")?
             .try_into()?;
         let initial_cwd = protobuf.initial_cwd.map(PathBuf::from);
+        let relative_path = protobuf.relative_path.map(PathBuf::from);
         Ok(RunPlugin {
             _allow_exec_host_cmd: protobuf.allow_exec_host_cmd,
             location,
             configuration,
             initial_cwd,
+            relative_path,
         })
     }
 }
@@ -3126,6 +3128,7 @@ impl TryFrom<RunPlugin> for ProtobufRunPlugin {
             location: Some(internal.location.try_into()?),
             configuration: Some(internal.configuration.try_into()?),
             initial_cwd: internal.initial_cwd.map(|p| p.display().to_string()),
+            relative_path: internal.relative_path.map(|p| p.display().to_string()),
         })
     }
 }
@@ -3593,6 +3596,21 @@ mod tests {
     use super::*;
     use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
     use crate::input::options::PaneFrameStyle;
+
+    /// `RunPlugin`'s `PartialEq` ignores `relative_path`, so an `assert_eq!` on a round-tripped
+    /// plugin cannot see the field dropped - and dropping it silently costs a plugin named by a
+    /// relative `file:` URL its lookup in the user's plugin folder. Assert the field itself.
+    #[test]
+    fn a_relative_plugin_path_survives_the_plugin_api_round_trip() {
+        let original = RunPlugin {
+            location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.lua")),
+            relative_path: Some(PathBuf::from("keys.lua")),
+            ..Default::default()
+        };
+        let protobuf: ProtobufRunPlugin = original.clone().try_into().expect("encode");
+        let decoded: RunPlugin = protobuf.try_into().expect("decode");
+        assert_eq!(decoded.relative_path, original.relative_path);
+    }
 
     #[test]
     fn set_pane_frame_style_action_protobuf_round_trip() {

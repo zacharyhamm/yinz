@@ -478,9 +478,10 @@ impl State {
 
     /// Run one of the plugin-authoring tools.
     ///
-    /// Two of the five answer here and now — `plugin_docs` from compiled-in text, and
-    /// `plugin_reload` because `start_or_reload_plugin` is fire-and-forget. The other three
-    /// shell out and answer later on `RunCommandResult`, exactly as the file tools do.
+    /// One of the five answers here and now — `plugin_docs`, from compiled-in text. The other
+    /// four shell out and answer later on `RunCommandResult`, exactly as the file tools do.
+    /// `plugin_reload` is among them even though `start_or_reload_plugin` is fire-and-forget:
+    /// what it waits for is `PLUGIN_SYMLINK_GUARD`, which only the host can run.
     ///
     /// Everything refusable without running anything is refused here: no plugin folder, a bad
     /// name, a source over the size cap.
@@ -515,15 +516,6 @@ impl State {
                 return true;
             },
         };
-
-        if call.name == "plugin_reload" {
-            // Absolute, and load-bearing: `RunPluginLocation::parse` joins a *relative* `file:`
-            // path onto the cwd whenever one is supplied, and `start_or_reload_plugin` always
-            // supplies one - so a relative URL here would never reach the plugin folder at all.
-            let result = tools::reload_plugin(&target);
-            self.finish_head(result);
-            return true;
-        }
 
         let (argv, env) = match tools::plugin_argv(&call.name, &args, &dir, &target) {
             Ok(argv) => argv,

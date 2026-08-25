@@ -173,6 +173,117 @@ pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
     );
 }
 
+/// A reload naming the file in full finds the plugin that was started by bare name.
+///
+/// The two spellings do not look alike to the plugin map: `file:probe.lua` keeps the cwd-joined
+/// path as its `location` - that is its identity, and what a dumped layout has to say - while its
+/// source is read from the user's plugin folder. A reload can only name the file it wrote, so
+/// without `resolved_source_path` the lookup misses, the reload is answered with
+/// `PluginDoesNotExist`, and the plugin is *started again* in a second pane instead. That is what
+/// this covers: the same instance re-renders, and no `AddPlugin` is sent.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let user_plugin_dir = tempdir().unwrap();
+    let plugin_file = user_plugin_dir.path().join("probe.lua");
+    let source = |version: &str| {
+        format!(
+            r#"
+            local M = {{}}
+            function M.render() return "{version}" end
+            return M
+            "#
+        )
+    };
+    std::fs::write(&plugin_file, source("first version")).unwrap();
+
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread_with_user_plugin_dir(
+            Some(plugin_host_folder),
+            None,
+            Some(PathBuf::from(user_plugin_dir.path())),
+        );
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+    let received_screen_instructions = Watched::new(vec![]);
+    // Two renders: the load, then the reload.
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        2
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    // A bare file name, exactly as a layout or a keybinding would say it.
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_test_plugin".to_owned()),
+        lua_run_plugin_at("probe.lua", BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    // The reload has to arrive after the load has finished, or `plugin_is_currently_being_loaded`
+    // defers it - a different path, and not the one under test.
+    received_screen_instructions.wait_until(
+        "the plugin to render its first version",
+        std::time::Duration::from_secs(10),
+        |instructions| {
+            rendered_output(instructions)
+                .iter()
+                .any(|rendered| rendered.contains("first version"))
+                .then_some(())
+        },
+    );
+
+    std::fs::write(&plugin_file, source("second version")).unwrap();
+    let _ = plugin_thread_sender.send(PluginInstruction::Reload(
+        Some(false),
+        Some("lua_test_plugin".to_owned()),
+        // The absolute path, which is all a plugin that just wrote the file can name.
+        lua_run_plugin_at(&plugin_file.display().to_string(), BTreeMap::new()),
+        1,
+        size,
+        None,
+    ));
+
+    screen_thread.join().unwrap();
+    teardown();
+
+    let logged = received_screen_instructions.lock();
+    let rendered = rendered_output(&logged);
+    assert!(
+        rendered.iter().any(|r| r.contains("second version")),
+        "the reload should have re-read the file, got: {:?}",
+        rendered
+    );
+    // One `AddPlugin`, from the initial load that opened the pane. A second one is the failure
+    // this covers: the reload was answered with `PluginDoesNotExist` and started a new instance.
+    let panes_opened = logged
+        .iter()
+        .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+        .count();
+    assert_eq!(
+        panes_opened, 1,
+        "the running plugin should have been reloaded, not started a second time in a new pane"
+    );
+}
+
 #[test]
 #[serial(plugin_tests)]
 pub fn lua_plugin_receives_its_configuration() {

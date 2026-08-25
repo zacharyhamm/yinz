@@ -750,6 +750,7 @@ impl MockScreen {
             current_input_modes: self.session_metadata.current_input_modes.clone(),
             web_sharing: WebSharing::Off,
             config_file_path: self.session_metadata.config_file_path.clone(),
+            config_dir: self.session_metadata.config_dir.clone(),
             key_passthrough_clients: self.session_metadata.key_passthrough_clients.clone(),
         }
     }
@@ -806,6 +807,7 @@ impl MockScreen {
             current_input_modes: HashMap::new(),
             web_sharing: WebSharing::Off,
             config_file_path: None,
+            config_dir: None,
             key_passthrough_clients: Default::default(),
         };
 

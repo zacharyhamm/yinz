@@ -121,16 +121,16 @@ fn listing_asks_find_for_the_lua_files_one_level_down() {
 #[test]
 fn reading_a_plugin_uses_the_read_file_shape() {
     let (argv, env) = plugin_argv_for("plugin_read", r#"{"name":"keys"}"#).unwrap();
-    assert_eq!(
-        argv,
-        vec![
-            "sed",
-            "-n",
-            &format!("1,{}p", FILE_TOOL_LINES),
-            "--",
-            &format!("{DIR}/keys.lua"),
-        ]
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert!(
+        argv[2].contains(r#"exec sed -n "$2" -- "$1""#),
+        "{}",
+        argv[2]
     );
+    assert_eq!(argv[3], "sh", "$0, so the file is $1 and the range $2");
+    assert_eq!(argv[4], format!("{DIR}/keys.lua"));
+    assert_eq!(argv[5], format!("1,{}p", FILE_TOOL_LINES));
     assert!(env.is_empty());
 
     let (argv, _) = plugin_argv_for(
@@ -138,7 +138,83 @@ fn reading_a_plugin_uses_the_read_file_shape() {
         r#"{"name":"keys","start_line":10,"line_count":5}"#,
     )
     .unwrap();
-    assert_eq!(argv[2], "10,14p");
+    assert_eq!(argv[5], "10,14p");
+}
+
+/// A reload runs no reload: the command asks the host the one question a wasm plugin cannot
+/// answer, and `plugin_tool_result` starts the plugin when it comes back clean.
+#[test]
+fn a_reload_only_asks_whether_the_file_may_be_loaded() {
+    let (argv, env) = plugin_argv_for("plugin_reload", r#"{"name":"keys"}"#).unwrap();
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert!(argv[2].contains("-L"), "{}", argv[2]);
+    assert!(
+        argv[2].contains("[ ! -f \"$1\" ]"),
+        "a name that was never written should be refused here: {}",
+        argv[2]
+    );
+    assert!(
+        !argv[2].contains("sed") && !argv[2].contains("printf %s"),
+        "nothing is read or written by a reload: {}",
+        argv[2]
+    );
+    assert_eq!(argv[4], format!("{DIR}/keys.lua"));
+    assert!(env.is_empty());
+}
+
+/// The containment `resolve_plugin_file` can only assert lexically, enforced where it can
+/// actually be checked: a symlink in the folder passes every rule about the *name*.
+#[test]
+fn every_tool_that_opens_the_path_refuses_a_symlink_first() {
+    for (tool, arguments) in [
+        ("plugin_read", r#"{"name":"keys"}"#),
+        ("plugin_reload", r#"{"name":"keys"}"#),
+        ("plugin_write", r#"{"name":"keys","source":"x"}"#),
+        (
+            "plugin_write",
+            r#"{"name":"keys","source":"x","overwrite":true}"#,
+        ),
+    ] {
+        let (argv, _) = plugin_argv_for(tool, arguments).unwrap();
+        assert!(
+            argv[2].contains(r#"if [ -L "$1" ]"#),
+            "{tool} follows a symlink out of the plugin folder: {}",
+            argv[2]
+        );
+        assert!(
+            argv[2].contains("exit 1"),
+            "{tool}'s guard does not stop the command: {}",
+            argv[2]
+        );
+    }
+}
+
+/// The guard runs before the redirect, not merely somewhere in the script: an `overwrite=true`
+/// that truncates first and checks afterwards would have destroyed the file already.
+#[test]
+fn a_write_checks_for_a_symlink_before_it_opens_anything() {
+    for arguments in [
+        r#"{"name":"keys","source":"x"}"#,
+        r#"{"name":"keys","source":"x","overwrite":true}"#,
+    ] {
+        let (argv, _) = plugin_argv_for("plugin_write", arguments).unwrap();
+        let guard = argv[2].find(r#"if [ -L "$1" ]"#).unwrap();
+        let redirect = argv[2].find("printf %s").unwrap();
+        assert!(guard < redirect, "{}", argv[2]);
+    }
+}
+
+/// A failed `mkdir` must not fall through to the write. It used to be one `&&` chain, which the
+/// guard's `if ... fi` would have broken: what follows the `;` after `fi` runs regardless.
+#[test]
+fn a_write_stops_at_the_first_step_that_fails() {
+    let (argv, _) = plugin_argv_for("plugin_write", r#"{"name":"keys","source":"x"}"#).unwrap();
+    assert!(
+        argv[2].contains(r#"mkdir -p "$2" || exit 1"#),
+        "{}",
+        argv[2]
+    );
 }
 
 /// The source travels in the environment, not in an argument: that keeps it out of `ps`, and

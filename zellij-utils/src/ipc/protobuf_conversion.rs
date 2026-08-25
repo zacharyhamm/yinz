@@ -4814,6 +4814,7 @@ impl From<crate::input::layout::RunPlugin>
             location: Some(plugin.location.into()),
             configuration: Some(plugin.configuration.into()),
             initial_cwd: plugin.initial_cwd.map(|p| p.display().to_string()),
+            relative_path: plugin.relative_path.map(|p| p.display().to_string()),
         }
     }
 }
@@ -5302,12 +5303,14 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPlugin>
             .ok_or_else(|| anyhow!("RunPlugin missing configuration"))?
             .try_into()?;
         let initial_cwd = plugin.initial_cwd.map(std::path::PathBuf::from);
+        let relative_path = plugin.relative_path.map(std::path::PathBuf::from);
 
         Ok(crate::input::layout::RunPlugin {
             _allow_exec_host_cmd: plugin.allow_exec_host_cmd,
             location,
             configuration,
             initial_cwd,
+            relative_path,
         })
     }
 }

@@ -93,6 +93,17 @@ pub fn default_user_plugin_dir() -> Option<PathBuf> {
     find_default_config_dir().map(|dir| dir.join("plugins"))
 }
 
+/// The user's plugin folder for a session started with `config_dir`: the `--config-dir` or
+/// `ZELLIJ_CONFIG_DIR` value when there is one, and the first conventional config dir otherwise.
+///
+/// This precedence, rather than the bare `default_user_plugin_dir`, is what `zellij setup --check`
+/// reports (see `setup.rs`), so anything that tells a plugin where its folder is has to use it
+/// too - otherwise a session started with `--config-dir` loads plugins from one folder while
+/// `setup --check` names another.
+pub fn user_plugin_dir_or_default(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    get_user_plugin_dir(config_dir.or_else(find_default_config_dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +115,24 @@ mod tests {
             Some(PathBuf::from("/etc/zellij/plugins")),
         );
         assert_eq!(get_user_plugin_dir(None), None);
+    }
+
+    /// The whole point of the helper: a session started with `--config-dir` must not be handed
+    /// the conventional config dir's plugin folder, which is what the argument-less
+    /// `default_user_plugin_dir` would give it.
+    #[test]
+    fn a_supplied_config_dir_beats_the_conventional_ones() {
+        assert_eq!(
+            user_plugin_dir_or_default(Some(PathBuf::from("/etc/zellij"))),
+            Some(PathBuf::from("/etc/zellij/plugins")),
+        );
+    }
+
+    /// `find_default_config_dir` is `None` under `cfg(test)`, so with nothing supplied there is
+    /// nothing to fall back to and the answer is honestly "no folder" rather than a guess.
+    #[test]
+    fn no_config_dir_anywhere_resolves_to_no_plugin_dir() {
+        assert_eq!(user_plugin_dir_or_default(None), None);
     }
 
     /// It must not be `<data_dir>/plugins`, which is the wasm cache and a different folder

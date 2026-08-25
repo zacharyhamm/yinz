@@ -52,6 +52,11 @@ pub struct PluginConfig {
     pub initial_userspace_configuration: PluginUserConfiguration,
     /// plugin initial working directory
     pub initial_cwd: Option<PathBuf>,
+    /// The path as the user wrote it, when this plugin was named by a relative `file:` URL.
+    /// `path` above is absolute by then - the cwd was joined onto it at parse time - so this is
+    /// what the folder lookups below have to join instead. See
+    /// `RunPluginLocation::parse_with_relative`.
+    pub relative_path: Option<PathBuf>,
 }
 
 /// Read one candidate Lua source. `Ok(None)` means only that nothing is there, so the search can
@@ -100,6 +105,7 @@ impl PluginConfig {
                 location: run_plugin.location.clone(),
                 initial_userspace_configuration: run_plugin.configuration.clone(),
                 initial_cwd: run_plugin.initial_cwd.clone(),
+                relative_path: run_plugin.relative_path.clone(),
             }),
             RunPluginLocation::Zellij(tag) => {
                 let tag = tag.to_string();
@@ -115,6 +121,9 @@ impl PluginConfig {
                             .ok()?,
                         initial_userspace_configuration: run_plugin.configuration.clone(),
                         initial_cwd: run_plugin.initial_cwd.clone(),
+                        // A builtin is named by a tag, not by a path, so there is no relative
+                        // form of it to keep.
+                        relative_path: None,
                     })
                 } else {
                     None
@@ -126,6 +135,7 @@ impl PluginConfig {
                 location: run_plugin.location.clone(),
                 initial_userspace_configuration: run_plugin.configuration.clone(),
                 initial_cwd: run_plugin.initial_cwd.clone(),
+                relative_path: None,
             }),
         }
     }
@@ -186,18 +196,22 @@ impl PluginConfig {
             }
         }
 
-        // Locations we check for valid plugins
+        // Locations we check for valid plugins. The folder lookups join `relative_path` when
+        // there is one, for the reason spelled out on `resolve_lua_source`: `path` has had the
+        // cwd joined onto it, and joining an absolute path onto a folder is a no-op, so
+        // `file:tab-bar.wasm` would otherwise never be looked for in a plugin folder at all.
+        let lookup_name = self.relative_path.as_ref().unwrap_or(&self.path);
         #[allow(unused_mut)]
         let mut paths: Vec<PathBuf> = vec![
             self.path.clone(),
             self.path.with_extension("wasm"),
-            plugin_dir.join(&self.path).with_extension("wasm"),
+            plugin_dir.join(lookup_name).with_extension("wasm"),
         ];
         #[cfg(not(target_family = "wasm"))]
         paths.push(
             crate::home::system_data_dir()
                 .join("plugins")
-                .join(&self.path)
+                .join(lookup_name)
                 .with_extension("wasm"),
         );
         #[cfg(not(target_family = "wasm"))]
@@ -289,30 +303,41 @@ impl PluginConfig {
     /// it, which is what makes `file:keys.lua` - and `file:keys` - mean the obvious thing.
     ///
     /// The fallback keys on "the file is not there" rather than on "the path is relative",
-    /// because relativity is already gone by the time we are called: `RunPluginLocation::parse`
-    /// joins a relative `file:` path onto the cwd whenever one is supplied.
+    /// because the path itself is absolute by the time we are called: `RunPluginLocation::parse`
+    /// joins a relative `file:` path onto the cwd whenever one is supplied. What the folder is
+    /// searched for is `relative_path` - the name as the user wrote it - so `file:keys.lua` looks
+    /// for `keys.lua` there rather than for `$cwd/keys.lua`, which could never be found. A path
+    /// the user gave in full has no `relative_path`, and so has no second place to be: it must
+    /// fail rather than resolve to a same-named plugin the user did not ask for.
     ///
     /// The extension is *not* appended for a bare `file:keys`, tempting as that is: `runtime()`
     /// decides Lua by the `.lua` extension, so an extensionless path is taken for wasm and never
     /// arrives here at all. Appending it would be dead code that reads as a working feature.
-    pub fn resolve_lua_source(&self, user_plugin_dir: Option<&Path>) -> Result<String> {
+    ///
+    /// The path that was read comes back alongside the source, because for `file:keys.lua` it is
+    /// *not* `self.path` and nothing else records which of the two candidates won. A reload names
+    /// the file in full, so that path - not the location, which is the cwd-joined identity - is
+    /// what `all_plugin_ids_for_plugin_location` has to match it against.
+    pub fn resolve_lua_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
         if let Some(source) = self.builtin_lua_source() {
-            return Ok(source.to_owned());
+            // A builtin has no file at all; its `path` is the bare tag. Handing it back keeps the
+            // signature honest, and nothing matches a builtin by file path.
+            return Ok((self.path.clone(), source.to_owned()));
         }
 
         let mut tried = vec![self.path.clone()];
         if let Some(source) = read_lua_file(&self.path)? {
-            return Ok(source);
+            return Ok((self.path.clone(), source));
         }
 
         if let Some(dir) = user_plugin_dir {
             // `join` on an absolute path yields the absolute path, so this is a no-op for one
             // that was already tried above rather than a second read of the same file.
-            let in_dir = dir.join(&self.path);
+            let in_dir = dir.join(self.relative_path.as_ref().unwrap_or(&self.path));
             if in_dir != self.path {
                 tried.push(in_dir.clone());
                 if let Some(source) = read_lua_file(&in_dir)? {
-                    return Ok(source);
+                    return Ok((in_dir, source));
                 }
             }
         }
@@ -393,8 +418,76 @@ mod tests {
             file_plugin("keys.lua")
                 .resolve_lua_source(Some(plugin_dir.path()))
                 .unwrap(),
-            "-- from the dir"
+            (
+                plugin_dir.path().join("keys.lua"),
+                "-- from the dir".to_owned()
+            )
         );
+    }
+
+    /// A plugin as the `zellij plugin -- file:keys.lua` path builds one: the URL was relative, so
+    /// the cwd has already been joined onto it and the path is absolute by now. Only
+    /// `relative_path` still knows the plugin was named `keys.lua`, and without it the folder
+    /// would be searched for `$cwd/keys.lua` - which `Path::join` returns unchanged, so nothing
+    /// in the folder could ever match.
+    #[test]
+    fn a_relative_url_launched_from_elsewhere_is_found_in_the_user_plugin_dir() {
+        let plugin_dir = tempdir().unwrap();
+        fs::write(plugin_dir.path().join("keys.lua"), "-- from the dir").unwrap();
+        let cwd = tempdir().unwrap();
+
+        let (location, relative_path) =
+            RunPluginLocation::parse_with_relative("file:keys.lua", Some(cwd.path().to_owned()))
+                .unwrap();
+        assert!(
+            matches!(&location, RunPluginLocation::File(path) if path.is_absolute()),
+            "the cwd should already have been joined on: {location:?}"
+        );
+        let plugin = PluginConfig::from_run_plugin(&RunPlugin {
+            location,
+            relative_path,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            plugin.resolve_lua_source(Some(plugin_dir.path())).unwrap(),
+            (
+                plugin_dir.path().join("keys.lua"),
+                "-- from the dir".to_owned()
+            )
+        );
+    }
+
+    /// The other half of the same rule, and the reason relativity is carried rather than the
+    /// file name simply being retried: a path the user gave in full names one file. If it is not
+    /// there, that is the answer - loading a same-named plugin out of the user's folder instead
+    /// would run something they did not ask for.
+    #[test]
+    fn an_absolute_url_that_is_missing_does_not_fall_back_to_the_user_plugin_dir() {
+        let plugin_dir = tempdir().unwrap();
+        fs::write(plugin_dir.path().join("keys.lua"), "-- from the dir").unwrap();
+        let elsewhere = tempdir().unwrap();
+        let missing = elsewhere.path().join("keys.lua");
+
+        let (location, relative_path) = RunPluginLocation::parse_with_relative(
+            &format!("file:{}", missing.display()),
+            Some(elsewhere.path().to_owned()),
+        )
+        .unwrap();
+        assert_eq!(relative_path, None, "the URL was absolute");
+        let plugin = PluginConfig::from_run_plugin(&RunPlugin {
+            location,
+            relative_path,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let error = plugin
+            .resolve_lua_source(Some(plugin_dir.path()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("keys.lua"), "{error}");
     }
 
     /// The path as given always wins, so an existing declaration cannot start meaning a
@@ -411,7 +504,7 @@ mod tests {
             file_plugin(&explicit.display().to_string())
                 .resolve_lua_source(Some(plugin_dir.path()))
                 .unwrap(),
-            "-- from the explicit path"
+            (explicit, "-- from the explicit path".to_owned())
         );
     }
 
@@ -420,7 +513,7 @@ mod tests {
         let plugin_dir = tempdir().unwrap();
         fs::write(plugin_dir.path().join("agent-exit.lua"), "-- impostor").unwrap();
 
-        let source = builtin_plugin("agent-exit")
+        let (_path, source) = builtin_plugin("agent-exit")
             .resolve_lua_source(Some(plugin_dir.path()))
             .unwrap();
         assert!(
@@ -455,7 +548,7 @@ mod tests {
             file_plugin(&explicit.display().to_string())
                 .resolve_lua_source(None)
                 .unwrap(),
-            "-- standalone"
+            (explicit, "-- standalone".to_owned())
         );
     }
 
@@ -473,7 +566,7 @@ mod tests {
 
     #[test]
     fn a_builtin_lua_plugin_serves_its_compiled_in_source() {
-        let source = builtin_plugin("agent-exit")
+        let (_path, source) = builtin_plugin("agent-exit")
             .resolve_lua_source(None)
             .unwrap();
         assert!(

@@ -176,18 +176,22 @@ impl<'a> PluginLoader<'a> {
             )
         };
         self.loading_indication.override_previous_error();
-        let source = self
+        let (resolved_path, source) = self
             .plugin_config
             .resolve_lua_source(self.user_plugin_dir.as_deref())
             .with_context(err_context)?;
 
         // A Lua plugin has no WASI layer, so it gets no wasi context. The pipes go unused, but
         // `PluginEnv` is shared with the wasm runtime and they are cheap.
-        let plugin_env = self.create_plugin_env(
+        let mut plugin_env = self.create_plugin_env(
             None,
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(VecDeque::new())),
         );
+        // Which of the two candidate files was actually read - `location` cannot say, and a
+        // reload arrives naming this path in full. `create_plugin_env` is shared with the wasm
+        // runtime, so it is recorded here rather than threaded through as a parameter.
+        plugin_env.resolved_source_path = Some(resolved_path);
         let subscriptions = plugin_env.subscriptions.clone();
         let chunk_name = self.plugin_config.path.display().to_string();
         let lua_plugin =
@@ -341,6 +345,9 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
+            // Set by `start_lua_plugin` once the source has been resolved; a wasm plugin has
+            // its own lookup and leaves it unset.
+            resolved_source_path: None,
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),
@@ -499,6 +506,8 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
+            // Only the Lua runtime resolves a source file; wasm has its own lookup.
+            resolved_source_path: None,
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),

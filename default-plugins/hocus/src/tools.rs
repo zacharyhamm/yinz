@@ -1982,8 +1982,17 @@ pub const PLUGIN_TOOLS: [&str; 5] = [
     "plugin_reload",
 ];
 
-/// The plugin tools that shell out, as opposed to the two answered from in here.
-pub const PLUGIN_FILE_TOOLS: [&str; 3] = ["plugin_list", "plugin_read", "plugin_write"];
+/// The plugin tools that shell out, as opposed to `plugin_docs`, answered from in here.
+///
+/// `plugin_reload` is one of them even though the reload itself is a plugin command rather than a
+/// process: what it shells out for is the symlink check below, and the reload happens on the
+/// result.
+pub const PLUGIN_FILE_TOOLS: [&str; 4] = [
+    "plugin_list",
+    "plugin_read",
+    "plugin_write",
+    "plugin_reload",
+];
 
 /// The largest plugin source a write may carry.
 ///
@@ -2001,6 +2010,25 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
                                     Zellij config, or start a session where the config dir can \
                                     be found";
 
+/// Refuse a target that is a symlink, in the one place that can actually tell: the host.
+///
+/// `resolve_plugin_file` proves the path is a single component under the plugin folder, but that
+/// proof is *lexical* — a link sitting in the folder under a perfectly ordinary name satisfies it
+/// while pointing anywhere at all. Following one would let a read leave the folder and let an
+/// `overwrite=true` truncate a file the confirmation never named.
+///
+/// Only the last component needs checking: the folder itself is the user's own configuration, and
+/// the name contributes exactly one component to the path.
+///
+/// `-L` is true for a link whatever it points at, including a dangling one, so this refuses
+/// before `set -C` has to reason about what a link "existing" means.
+///
+/// The check and the use of the path are two syscalls, so a link planted between them would still
+/// be followed. Nothing hocus offers writes into that folder except the guarded script below, and
+/// closing the window properly needs an `O_NOFOLLOW` open that no shell exposes.
+const PLUGIN_SYMLINK_GUARD: &str =
+    r#"if [ -L "$1" ]; then printf '%s\n' "$1 is a symlink; refusing" >&2; exit 1; fi"#;
+
 /// Write `$HOCUS_PLUGIN_SOURCE` to `$1`, creating the folder `$2` first.
 ///
 /// `sh -c` is the only way to redirect: Zellij execs argv directly, and `RunCommand` gives the
@@ -2013,12 +2041,22 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
 /// `printf %s` rather than `echo`, which mangles backslashes and eats a leading `-n`.
 ///
 /// `set -C` is `noclobber`: the write *fails* rather than truncating an existing file, which is
-/// how `overwrite=false` is enforced without an existence check this plugin cannot perform.
-const PLUGIN_WRITE_SCRIPT: &str =
-    r#"mkdir -p "$2" && set -C && printf %s "$HOCUS_PLUGIN_SOURCE" > "$1""#;
-
-/// The same write with the `noclobber` guard removed, for `overwrite=true`.
-const PLUGIN_OVERWRITE_SCRIPT: &str = r#"mkdir -p "$2" && printf %s "$HOCUS_PLUGIN_SOURCE" > "$1""#;
+/// how `overwrite=false` is enforced without an existence check this plugin cannot perform. It is
+/// dropped for `overwrite=true`, which is the only difference between the two forms.
+///
+/// One statement per line, rather than the `&&` chain this used to be: a compound `if` in the
+/// middle of a chain still lets what follows the next `;` run, so a failed `mkdir` would go on to
+/// write. Every step that can fail says `|| exit 1` for itself.
+fn plugin_write_script(overwrite: bool) -> String {
+    let noclobber = match overwrite {
+        true => "",
+        false => "set -C\n",
+    };
+    format!(
+        "mkdir -p \"$2\" || exit 1\n{PLUGIN_SYMLINK_GUARD}\n{noclobber}printf %s \
+         \"$HOCUS_PLUGIN_SOURCE\" > \"$1\""
+    )
+}
 
 /// The environment variable carrying a plugin's source to the write script.
 const PLUGIN_SOURCE_VAR: &str = "HOCUS_PLUGIN_SOURCE";
@@ -2033,6 +2071,11 @@ const PLUGIN_SOURCE_VAR: &str = "HOCUS_PLUGIN_SOURCE";
 /// The name is accepted with or without its `.lua`, and always resolves to the `.lua` file:
 /// `plugin_reload` resolves through here too, so the URL it loads and the file that was written
 /// cannot disagree.
+///
+/// Everything here is lexical, which is the whole of what a wasm plugin can check: a symlink in
+/// the folder passes every rule below while pointing anywhere at all. `PLUGIN_SYMLINK_GUARD` is
+/// the other half of the containment, and runs on the host in front of every tool that opens the
+/// resolved path.
 pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, String> {
     let dir = dir.trim();
     if dir.is_empty() {
@@ -2105,6 +2148,9 @@ pub fn plugin_argv(
         )),
         // The `read_file` shape, for the same reason it uses `sed`: an unbounded read of
         // something enormous would be cut mid-line after the host had already read all of it.
+        //
+        // Wrapped in `sh` only so the symlink guard can run first; `exec` then leaves `sed` as
+        // the process, so what the model sees is what `read_file` would have shown it.
         "plugin_read" => {
             let start = args.start_line.unwrap_or(1).max(1);
             let end = match args.line_count {
@@ -2113,15 +2159,33 @@ pub fn plugin_argv(
             };
             Ok((
                 vec![
-                    "sed".to_owned(),
-                    "-n".to_owned(),
-                    format!("{start},{end}p"),
-                    "--".to_owned(),
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    format!("{PLUGIN_SYMLINK_GUARD}\nexec sed -n \"$2\" -- \"$1\""),
+                    // `$0`, so the file is `$1` and the line range `$2`.
+                    "sh".to_owned(),
                     target.to_owned(),
+                    format!("{start},{end}p"),
                 ],
                 BTreeMap::new(),
             ))
         },
+        // A reload runs nothing: this command exists to answer "may that file be loaded at all",
+        // and `plugin_tool_result` starts the plugin when it says yes. `-f` after the guard, so
+        // a name that was never written is refused here rather than opening a pane to say so.
+        "plugin_reload" => Ok((
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!(
+                    "{PLUGIN_SYMLINK_GUARD}\nif [ ! -f \"$1\" ]; then printf '%s\\n' \"$1: no \
+                     such plugin; write it first\" >&2; exit 1; fi"
+                ),
+                "sh".to_owned(),
+                target.to_owned(),
+            ],
+            BTreeMap::new(),
+        )),
         "plugin_write" => {
             let source = args
                 .source
@@ -2140,15 +2204,11 @@ pub fn plugin_argv(
             // Exactly one trailing newline, so `printf %s` leaves a well-formed file whatever
             // the model sent.
             let source = format!("{}\n", source.trim_end_matches('\n'));
-            let script = match args.overwrite {
-                true => PLUGIN_OVERWRITE_SCRIPT,
-                false => PLUGIN_WRITE_SCRIPT,
-            };
             Ok((
                 vec![
                     "sh".to_owned(),
                     "-c".to_owned(),
-                    script.to_owned(),
+                    plugin_write_script(args.overwrite),
                     // `$0`, so the file is `$1` and the folder `$2`.
                     "sh".to_owned(),
                     target.to_owned(),
