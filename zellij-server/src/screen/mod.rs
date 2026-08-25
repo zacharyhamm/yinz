@@ -2345,6 +2345,10 @@ impl Screen {
                     pane_id,
                     placement.kind,
                     placement.coordinates.unwrap_or_default(),
+                    // this is the reveal path - `LaunchOrFocusPlugin` naming a plugin is the user
+                    // asking for it back, so an overlay that was hidden arrives shown, exactly as
+                    // the same-tab branch below reveals it through `focus_pane_if_exists`
+                    false,
                     true,
                     Some(client_id),
                 )?;

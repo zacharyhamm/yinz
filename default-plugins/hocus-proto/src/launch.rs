@@ -186,6 +186,27 @@ pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<PaneI
     Err("agents cannot be started outside zellij".to_owned())
 }
 
+/// The plugin alias for each half of the hocus column.
+///
+/// Aliases rather than `zellij:` urls: plugin identity is (location, configuration), an alias
+/// contributes its own block - `shared true` - to that configuration, and the keybindings open
+/// both halves by alias. A second spelling would open a second pane rather than reach the one
+/// already there.
+pub const HOCUS_ALIAS: &str = "hocus";
+pub const HOCUS_AGENTS_ALIAS: &str = "hocus-agents";
+
+/// The configuration that makes a launched hocus pane an overlay.
+///
+/// One definition for both halves and both directions. `LaunchOrFocusPlugin { overlay true }`
+/// writes exactly this key, so a launch from a plugin has to match it character for character or
+/// the keybinding and the plugin address two different instances - and the failure looks like a
+/// duplicate pane rather than an error.
+pub fn overlay_configuration() -> std::collections::BTreeMap<String, String> {
+    let mut configuration = std::collections::BTreeMap::new();
+    configuration.insert("overlay".to_owned(), "true".to_owned());
+    configuration
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

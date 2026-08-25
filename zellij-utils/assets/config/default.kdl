@@ -182,24 +182,24 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Land on the agent list, the top pane of the hocus sidebar, without
-        // going through the conversation first. Reveals the strip if it was
+        // Land on the agent list, the top pane of the hocus column, without
+        // going through the conversation first. Reveals the column if it was
         // hidden, and starts one from scratch — chat pane included — if hocus
         // is not running at all.
         bind "a" {
             LaunchOrFocusPlugin "hocus-agents" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                overlay true
+                move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
-        // The conversation itself, the bottom pane of the same sidebar.
+        // The conversation itself, the bottom pane of the same column.
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                overlay true
+                move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
@@ -371,12 +371,30 @@ plugins {
     //                       session was started from. Unset, the `linear_*` tools stay
     //                       advertised and answer with a sentence saying which variable
     //                       to set; nothing else about hocus changes.
+    //
+    // hocus draws itself as an overlay column in the bottom-left corner of the
+    // screen — over a tab rather than beside it, so no tab is shrunk to make
+    // room. Three keys size that column, and hocus re-places itself whenever the
+    // terminal is resized:
+    //
+    //   width          the column's width. A percentage of the screen ("25%",
+    //                  the default) or a fixed number of columns ("60").
+    //   pad            cells of clear screen left around the column on every
+    //                  side. Default 2, capped at a quarter of the screen.
+    //   agents_height  the agent list's share of the column, above the
+    //                  conversation. Default "33%". The conversation keeps
+    //                  enough rows to draw whatever this asks for.
+    //
+    // Esc hides the column without unloading it — the conversation, the parked
+    // chats and anything still streaming are all still there — and `Ctrl e c`
+    // brings it back.
     hocus location="zellij:hocus" {
         shared true
     }
-    // The agent list, spawned by hocus itself as a split of its own global
-    // pane. Shared for the same reason hocus is: the strip it draws is pushed
-    // by the one hocus instance, and there is one strip per session.
+    // The agent list, opened by hocus itself as the overlay directly above the
+    // conversation in the same column. Shared for the same reason hocus is: the
+    // strip it draws is pushed by the one hocus instance, and there is one
+    // column per session. Sized by hocus's `agents_height`, above.
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }

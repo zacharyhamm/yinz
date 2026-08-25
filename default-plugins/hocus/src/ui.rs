@@ -14,8 +14,8 @@ use crate::{Picker, PickerKind, Role, RowKind, State, Status};
 
 /// Below this we can't lay out a title, a transcript row and an input row,
 /// so we say so instead of rendering nonsense.
-const MIN_ROWS: usize = 6;
-const MIN_COLS: usize = 24;
+pub(crate) const MIN_ROWS: usize = 6;
+pub(crate) const MIN_COLS: usize = 24;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
 /// How wide the idle-summary inset is allowed to get. A box the full width of a

@@ -37,6 +37,20 @@ pub const AGENT_REFRESH: &str = "agent_refresh";
 pub const AGENT_STRIP: &str = "agent_strip";
 /// hocus-agents → hocus: "I just loaded; send me the strip".
 pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
+/// hocus → hocus-agents: open the agent list, or reveal the one already open.
+///
+/// Deliberately a name of its own rather than a `plugin_url` hung on `AGENT_STRIP`: that message
+/// is sent on every snapshot, and a url attached to it would re-open the agent list every second
+/// after the user closed it. Nothing reads the payload - the message exists for the launch-or-reuse
+/// its url performs, and the pane answers with `AGENT_STRIP_HELLO` once it is up.
+pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
+/// hocus-agents → hocus: put the whole column away.
+///
+/// The column is two overlays and an overlay is hidden *by name*, where the old global strip hid
+/// by edge and so went away as one unit. hocus is the half that knows both pane ids, so Esc in
+/// either half is routed through it rather than each half hiding only itself and leaving the other
+/// stranded on screen.
+pub const AGENT_STRIP_HIDE: &str = "agent_strip_hide";
 /// hocus-agents → hocus: which row the cursor is on (`Selection` as JSON).
 ///
 /// The strip goes one way and this comes back: hocus draws the selected agent's

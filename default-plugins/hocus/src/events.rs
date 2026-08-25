@@ -112,6 +112,33 @@ impl State {
         self.auto_tab_projects
             .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
         self.tabs = tabs;
+        // The column is placed against the screen, and this is the only event that reports its
+        // size - there is no resize event for a plugin, and `render` is handed the pane's size
+        // rather than the screen's.
+        if let Some(active) = self.tabs.iter().find(|tab| tab.active) {
+            let (rows, cols) = (active.display_area_rows, active.display_area_columns);
+            let position = active.position;
+            let resized = (rows, cols) != (self.display_area_rows, self.display_area_cols);
+            if resized {
+                self.display_area_rows = rows;
+                self.display_area_cols = cols;
+            }
+            // Where this client is now, against where they were. The rule that reads it is in
+            // `overlay::tab_to_follow`: only the client the column is sitting with may move it,
+            // because every client gets its own `TabUpdate` and obeying all of them puts two
+            // clients on different tabs into a move loop with each other.
+            let was_on = self.client_tabs.insert(self.client, position);
+            // Not while hidden: an overlay that moves between tabs arrives visible, because the
+            // hidden flag does not survive the move. `reveal_column` does the move instead.
+            if !self.hidden {
+                if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
+                    self.follow_tab(target);
+                }
+                if resized {
+                    self.apply_overlay_geometry();
+                }
+            }
+        }
         // Rather than deriving the active project a second way here. Switching tabs
         // does not change which agent was focused last, but a tab that went away
         // can still change the answer.
@@ -119,9 +146,94 @@ impl State {
         false
     }
 
+    /// Watch our own pane for the two things only the server knows: which tab it is on, and
+    /// whether it has been set aside.
+    ///
+    /// The reveal comes from *outside* - the `c` keybinding, or a `show_self` from a tool - and
+    /// this is the only word hocus gets of it. `is_suppressed` is what an overlay reports while
+    /// hidden, the same field a suppressed tab pane uses.
+    ///
+    /// The agent list is *not* discovered here. It announces itself with `AGENT_SELECTION` on
+    /// load, which carries its plugin id and is what `agents_plugin` is already set from; a pane
+    /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
+    pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
+        let own_id = self.own_plugin_id;
+        // An agent list the user closed has to be forgotten, or `launch_agents_pane` keeps
+        // revealing a pane that is not there and never opens a new one. Cleared from the whole
+        // manifest rather than from our own tab: the two halves can be on different tabs for as
+        // long as it takes a `follow_tab` to land.
+        if let Some(agents_id) = self.agents_plugin {
+            self.agents_tab_index = manifest
+                .panes
+                .iter()
+                .find(|(_, panes)| {
+                    panes
+                        .iter()
+                        .any(|pane| pane.is_plugin && pane.id == agents_id)
+                })
+                .map(|(tab_index, _)| *tab_index);
+            if self.agents_tab_index.is_none() {
+                self.agents_plugin = None;
+            }
+        }
+        for (tab_index, panes) in &manifest.panes {
+            let Some(own) = panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == own_id)
+            else {
+                continue;
+            };
+            self.own_tab_index = Some(*tab_index);
+            if own.is_suppressed {
+                // the hide we asked for has landed
+                self.hide_pending = false;
+                self.hidden = true;
+            } else if self.hide_pending {
+                // A snapshot taken before our hide reached the server. Reading this as a reveal
+                // would un-hide the column the instant the user pressed Esc, so a hide we have
+                // asked for but not yet seen suppresses exactly one thing: this inference.
+            } else if self.hidden {
+                self.hidden = false;
+                self.reveal_column();
+            }
+            break;
+        }
+        self.rejoin_agents_pane();
+        false
+    }
+
+    /// Drag the agent list back onto our tab if it has been left on another one.
+    ///
+    /// `follow_tab` moves the pair together and so cannot part them, but two paths outside hocus
+    /// can. The `a` and `c` keybindings carry `move_to_focused_tab`, which moves only the pane the
+    /// binding names - so revealing the conversation from another tab brings it across on its own
+    /// and leaves the list where it was. `follow_tab` is no help afterwards: `own_tab_index` has
+    /// already been set from this very manifest, so it reads as a column that is where it belongs
+    /// and returns.
+    ///
+    /// Converges by construction: the move is what makes the next manifest report the two
+    /// together, at which point this does nothing.
+    fn rejoin_agents_pane(&mut self) {
+        let (Some(agents_id), Some(own_tab), Some(agents_tab)) = (
+            self.agents_plugin,
+            self.own_tab_index,
+            self.agents_tab_index,
+        ) else {
+            return;
+        };
+        if agents_tab == own_tab {
+            return;
+        }
+        break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], own_tab, false);
+        self.agents_tab_index = Some(own_tab);
+        // The destination resolves coordinates against its own surface, and the list arrives with
+        // whatever the keybinding's launch gave it - the same restatement `follow_tab` makes.
+        self.apply_overlay_geometry();
+    }
+
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if Self::is_toggle_key(&key) {
-            hide_self();
+            self.hide_column();
             return false;
         }
 
@@ -195,10 +307,11 @@ impl State {
             // cancel whatever is arriving, no matter who started it.
             InputAction::Cancel if self.is_streaming() => self.cancel_stream(),
             InputAction::Cancel => {
-                // Hide the session-global sidebar without unloading the plugin.
-                // The launch binding restores the same plugin from any tab.
-                // Ctrl-l starts a new archived conversation.
-                hide_self();
+                // Hide the overlay column - this pane and the agent list above
+                // it - without unloading either. The launch binding restores the
+                // same plugin from any tab. Ctrl-l starts a new archived
+                // conversation.
+                self.hide_column();
                 false
             },
             InputAction::Continue => true,

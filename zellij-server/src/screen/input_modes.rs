@@ -215,6 +215,18 @@ impl Screen {
                 plugin_ids.push(plugin_id);
             }
         }
+        // An overlay follows the client between tabs under its own steam - hocus moves itself on
+        // `TabUpdate` - so a client's active tab is not necessarily where the overlay is right
+        // now, and the active-tab walk above would leave it deaf to the very event it moves on.
+        // Same shape and same justification as the global-pane arm: this widens who *may* hear an
+        // event, never what a plugin actually receives.
+        for tab in self.tabs.values() {
+            for plugin_id in tab.overlay_plugin_ids() {
+                if !plugin_ids.contains(&plugin_id) {
+                    plugin_ids.push(plugin_id);
+                }
+            }
+        }
         // Background plugins subscribed to this event type
         for ((bg_pid, bg_cid), subs) in &self.background_plugin_subscriptions {
             if subs.contains(&event_type) && *bg_cid == client_id {

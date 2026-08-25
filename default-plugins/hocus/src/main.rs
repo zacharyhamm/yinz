@@ -8,6 +8,7 @@ mod linear;
 mod log;
 mod lua_docs;
 mod message;
+mod overlay;
 mod present;
 mod tool_loop;
 mod tools;
@@ -290,7 +291,7 @@ pub struct State {
     /// The agent strip as last pushed to the hocus-agents pane, so a snapshot
     /// that changes no row sends nothing. hocus owns the data (the agentd
     /// snapshot, the project registry, the branch probes); the strip itself is
-    /// a separate global pane split off above this one, and it only draws.
+    /// a separate pane - the overlay above this one - and it only draws.
     last_strip: agents::Strip,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
@@ -403,6 +404,46 @@ pub struct State {
     /// is whether the user is standing in the agents pane, which is what the summary
     /// inset is drawn for. `None` whenever a terminal has the focus.
     focused_plugin: Option<u32>,
+    /// The display area the overlay column is placed against, from the active tab's `TabInfo`.
+    ///
+    /// The whole screen, not the session surface - see `overlay::column_geometry`, which does the
+    /// arithmetic, and the note there about the two denominators.
+    pub(crate) display_area_rows: usize,
+    pub(crate) display_area_cols: usize,
+    /// This plugin's own pane id, read once at load.
+    ///
+    /// Cached rather than asked for each time: `get_plugin_ids` is a host round-trip, and the
+    /// overlay paths want it on every `TabUpdate`. It never changes for the life of the plugin.
+    pub(crate) own_plugin_id: u32,
+    /// Which tab the column is currently on. An overlay lives on a tab, so hocus carries the pair
+    /// to whichever tab became active - `None` until the first `TabUpdate` says.
+    pub(crate) own_tab_index: Option<usize>,
+    /// Which tab the agent list is on, as the last `PaneUpdate` found it.
+    ///
+    /// Tracked separately from `own_tab_index` because the two halves can be parted: the `a` and
+    /// `c` keybindings carry `move_to_focused_tab`, which moves only the pane the binding names,
+    /// so a reveal from another tab brings the conversation across and leaves the list behind.
+    /// `on_panes` is what notices and drags it after us.
+    pub(crate) agents_tab_index: Option<usize>,
+    /// Where each attached client was looking, as of their last `TabUpdate`.
+    ///
+    /// hocus is one shared instance and the host reports tab state *per client*, so without this
+    /// every client's update is a move order: two clients on different tabs would drag the column
+    /// back and forth between them for as long as they stayed attached, each move provoking the
+    /// report that causes the next one. See `overlay::tab_to_follow` for the rule this feeds.
+    pub(crate) client_tabs: BTreeMap<ClientId, usize>,
+    /// Whether the column has been set aside with Esc.
+    ///
+    /// Tracked here as well as server-side because it gates two things hocus decides for itself:
+    /// it does not follow tab switches while hidden (a moved overlay arrives visible), and a
+    /// reveal from outside has to be noticed so the agent list comes back beside the conversation.
+    pub(crate) hidden: bool,
+    /// A hide we have asked for and not yet seen take effect.
+    ///
+    /// `PaneUpdate` is a snapshot, and one taken before our `hide_self` reached the screen thread
+    /// still reports us visible. Without this the transition test in `on_panes` would read that
+    /// stale frame as a reveal and put the column straight back.
+    pub(crate) hide_pending: bool,
     /// The agents pane, as it announced itself.
     ///
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
@@ -497,6 +538,14 @@ impl Default for State {
             last_focused_agent: None,
             focused_pane: None,
             focused_plugin: None,
+            own_plugin_id: 0,
+            display_area_rows: 0,
+            display_area_cols: 0,
+            own_tab_index: None,
+            agents_tab_index: None,
+            client_tabs: BTreeMap::new(),
+            hidden: false,
+            hide_pending: false,
             agents_plugin: None,
             agents_selected: None,
             active_project: None,
@@ -517,6 +566,7 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
+        self.own_plugin_id = get_plugin_ids().plugin_id;
         self.open_store();
         subscribe(&[
             EventType::Key,
@@ -537,6 +587,12 @@ impl ZellijPlugin for State {
             EventType::PluginConfigurationChanged,
             // Worker replies. Not subscribing means they are silently dropped.
             EventType::TabUpdate,
+            // How hocus learns it was revealed from outside - the `c` keybinding, or `show_self`.
+            // `is_suppressed` on our own pane is the bit, and a `PaneUpdate` is the only place it
+            // is reported. Deliberately not `EventType::Visible`, which is about the *tab* going
+            // off screen and fires on every tab switch: reading that as "I was hidden" would fight
+            // the reveal below.
+            EventType::PaneUpdate,
         ]);
         set_selectable(true);
         set_self_mouse_selection_support(true);
@@ -580,13 +636,15 @@ impl ZellijPlugin for State {
             // a thing you have to go out of your way to do.
         ]);
 
-        // The agent list is its own pane, split off above this one in the same
-        // global strip. Idempotent server-side: an existing hocus-agents global
-        // pane (a reload, a session restore) is adopted rather than split
-        // again, and a hocus that is not a global pane spawns nothing. Fire-
-        // and-forget, so calling it before the permission grant resolves is
-        // fine - and a builtin is exempt from the gate anyway.
-        Self::launch_agents_pane(false);
+        // The agent list is its own pane, the overlay directly above this one in the same
+        // bottom-left column. Idempotent: an existing hocus-agents instance (a reload, a session
+        // restore, the `a` keybinding having got here first) is handed the message rather than a
+        // second pane being opened. Fire-and-forget, so calling it before the permission grant
+        // resolves is fine - and a builtin is exempt from the gate anyway.
+        self.launch_agents_pane(false);
+        // Places this pane, and the agent list once it announces itself. Does nothing useful until
+        // the first `TabUpdate` says how big the screen is, which is why `on_tabs` calls it too.
+        self.apply_overlay_geometry();
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -621,6 +679,13 @@ impl ZellijPlugin for State {
         match pipe_message.name.as_str() {
             wire::AGENT_HELLO => {
                 self.subscribe_to_agentd();
+                return false;
+            },
+            wire::AGENT_STRIP_HIDE => {
+                // Esc in the agent list. It cannot hide the column itself - an overlay
+                // is hidden by name and it does not know this pane's id - so the gesture
+                // is routed here, where both ids are.
+                self.hide_column();
                 return false;
             },
             wire::AGENT_STRIP_HELLO => {
@@ -737,6 +802,7 @@ impl State {
                 self.on_projects_changed(watch_id, &rows)
             },
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
+            Event::PaneUpdate(manifest) => self.on_panes(manifest),
             Event::BeforeClose => {
                 self.cancel_in_flight();
                 // Nobody is left to press `y`, and the mark outlives the plugin:

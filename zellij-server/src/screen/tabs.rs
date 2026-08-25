@@ -61,6 +61,22 @@ impl Screen {
             .find(|tab| tab.has_pane_with_pid(&pane_id))
     }
 
+    /// The tab holding `pane_id` as an overlay, if any.
+    ///
+    /// Separate from `tab_containing_pane_mut` because the suppress/unsuppress instructions have
+    /// to tell the two apart: an overlay is hidden in place, whereas a tab pane is extracted into
+    /// `suppressed_panes`, and running an overlay through the second would drop the kind and
+    /// coordinates that make it one.
+    pub(super) fn tab_containing_overlay(&self, pane_id: PaneId) -> Option<&Tab> {
+        self.tabs.values().find(|tab| tab.pane_is_overlay(pane_id))
+    }
+
+    pub(super) fn tab_containing_overlay_mut(&mut self, pane_id: PaneId) -> Option<&mut Tab> {
+        self.tabs
+            .values_mut()
+            .find(|tab| tab.pane_is_overlay(pane_id))
+    }
+
     /// Reports a pane id that matched no tab, both to the log and to a CLI client waiting on the
     /// instruction. The `None` arm of nearly every `tab_containing_pane_mut` lookup.
     pub(super) fn report_pane_not_found(
