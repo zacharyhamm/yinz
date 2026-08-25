@@ -307,3 +307,66 @@ fn agent_spawn_offers_exactly_the_agents_the_new_agent_modal_does() {
         json!(launch::OFFERED),
     );
 }
+
+// -- the read-only set --------------------------------------------------
+
+/// The allowlist is the whole of planning mode's enforcement, so a name in it
+/// that no longer exists is a tool silently dropped from the mode rather than a
+/// compile error. This is the test that catches a rename.
+#[test]
+fn every_read_only_tool_is_a_real_tool() {
+    let names = names();
+    for tool in READ_ONLY {
+        assert!(names.contains(&(*tool).to_owned()), "no such tool: {tool}");
+    }
+    assert_eq!(
+        read_only_specs().as_array().map(Vec::len),
+        Some(READ_ONLY.len()),
+        "the filtered specs and the allowlist disagree",
+    );
+}
+
+/// The two lists answer different questions — "changes nothing" and "changes
+/// something badly enough to stop for a y/n" — and the first has to be strictly
+/// inside the complement of the second. Pinned because the tempting refactor is
+/// to derive one from the other, which would quietly let planning mode open
+/// panes.
+#[test]
+fn nothing_read_only_is_ever_confirmed() {
+    for tool in READ_ONLY {
+        assert!(!needs_confirmation(tool), "{tool} both reads and confirms");
+    }
+}
+
+/// A sample of what must stay out, one per family, so the exclusions are pinned
+/// rather than left to whoever last edited the list.
+#[test]
+fn the_tools_that_act_are_withheld_from_planning() {
+    for tool in [
+        "close_pane",
+        "new_pane",
+        "focus",
+        "scroll_pane",
+        "send_input",
+        "agent_spawn",
+        "agent_register",
+        "project_assign",
+        "project_open",
+        "todo_add",
+        "schedule",
+        "unschedule",
+        "slack_post",
+        "slack_backfill",
+        "plugin_write",
+        "plugin_reload",
+    ] {
+        assert!(!READ_ONLY.contains(&tool), "{tool} is not read-only");
+    }
+    let listed: Vec<String> = read_only_specs()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(!listed.contains(&"close_pane".to_owned()));
+}
