@@ -245,6 +245,7 @@ enum CommandName {
   GetPaneGitProbe = 252;
   ChangeOverlayCoordinates = 253;
   OpenCommandPaneOverlay = 254;
+  SetPaneTitlePrefix = 256;
 }
 
 message PluginCommand {
@@ -430,6 +431,7 @@ message PluginCommand {
     GetPaneGitProbePayload get_pane_git_probe_payload = 193;
     ChangeOverlayCoordinatesPayload change_overlay_coordinates_payload = 194;
     OpenCommandPaneOverlayPayload open_command_pane_overlay_payload = 195;
+    SetPaneTitlePrefixPayload set_pane_title_prefix_payload = 197;
   }
 }
 
@@ -510,6 +512,12 @@ message DataWatchPayload {
 
 message DataUnwatchPayload {
   uint64 watch_id = 1;
+}
+
+message SetPaneTitlePrefixPayload {
+  PaneId pane_id = 1;
+  // Absent drops the prefix.
+  optional string prefix = 2;
 }
 
 message DataDefineResponse {

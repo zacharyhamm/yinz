@@ -820,9 +820,16 @@ pub trait Pane {
     fn progress_animation_offset(&mut self) {} // only relevant for plugins
     fn current_title(&self) -> String;
     fn set_remote_host(&mut self, _host: Option<String>) {} // only relevant for terminal panes
-    /// `current_title()`, prefixed with the remote hostname for panes running
-    /// on another host. Use this for anything a human looks at; `current_title()`
-    /// stays the raw title for session serialization / layouts / plugins.
+    /// A decoration to compose in front of the title, whatever the title is.
+    ///
+    /// Set by whoever knows something durable about the pane that its own title
+    /// cannot be trusted to keep — hocus-agentd puts an agent's checkout here.
+    /// Only relevant for terminal panes.
+    fn set_title_prefix(&mut self, _prefix: Option<String>) {}
+    /// `current_title()`, prefixed with where the pane is: the remote hostname
+    /// for a pane running on another host, and whatever `set_title_prefix` last
+    /// said. Use this for anything a human looks at; `current_title()` stays the
+    /// raw title for session serialization / layouts / plugins.
     fn display_title(&self) -> String {
         self.current_title()
     }
