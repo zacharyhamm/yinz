@@ -15,23 +15,23 @@
 //! answer for a response this does not yet know how to read, and it is what
 //! `docs/LUA_PLUGINS.md` says.
 
-use mlua::{Lua, LuaSerdeExt, Value as LuaValue};
+use mlua::{Lua, Value as LuaValue};
 use prost::Message;
 use serde::Serialize;
 
-use zellij_utils::data::{CommandType, PaneId, PluginIds};
+use zellij_utils::data::{CommandType, PaneId, PluginIds, QueueStatusResponse};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::plugin_api::plugin_command::{
-    dump_layout_response, get_focused_pane_info_response, get_pane_cwd_response,
-    get_pane_pid_response, get_pane_running_command_response, new_tab_response,
-    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDumpLayoutResponse,
-    ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
-    ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    dump_layout_response, enqueue_queue_job_response, get_focused_pane_info_response,
+    get_pane_cwd_response, get_pane_pid_response, get_pane_running_command_response,
+    new_tab_response, ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDumpLayoutResponse,
+    ProtobufEnqueueQueueJobResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
     ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse, ProtobufNewTabResponse,
     ProtobufOpenCommandPaneResponse, ProtobufOpenFileResponse, ProtobufOpenTerminalResponse,
-    ProtobufPaneId,
+    ProtobufPaneId, ProtobufQueueStatusResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -143,6 +143,17 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 None => Err(anyhow!("zellij answered with nothing")),
             })
         },
+        CommandType::EnqueueQueueJob => {
+            decode(bytes).and_then(|r: ProtobufEnqueueQueueJobResponse| match r.result {
+                Some(enqueue_queue_job_response::Result::JobId(job_id)) => value(lua, job_id),
+                Some(enqueue_queue_job_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+                None => Err(anyhow!("zellij answered with nothing")),
+            })
+        },
+        CommandType::QueueStatus => decode(bytes).and_then(|r: ProtobufQueueStatusResponse| {
+            let queues = QueueStatusResponse::try_from(r).map_err(|e| anyhow!("{}", e))?;
+            value(lua, queues)
+        }),
         CommandType::NewTab | CommandType::NewTabUnfocused => {
             decode(bytes).and_then(|r: ProtobufNewTabResponse| match r.result {
                 Some(new_tab_response::Result::TabId(tab_id)) => value(lua, tab_id),
@@ -187,6 +198,6 @@ fn pane_id(lua: &Lua, id: Option<ProtobufPaneId>) -> Result<LuaValue> {
 }
 
 fn value<T: Serialize>(lua: &Lua, from: T) -> Result<LuaValue> {
-    lua.to_value(&from)
+    super::to_lua_value(lua, &from)
         .map_err(|e| anyhow!("zellij's answer could not be given to Lua: {}", e))
 }

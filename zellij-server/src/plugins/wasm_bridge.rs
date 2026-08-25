@@ -12,6 +12,7 @@ use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
 
 use crate::plugins::plugin_worker::MessageToWorker;
+use crate::plugins::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
 use crate::plugins::watch_filesystem::watch_filesystem;
 use highway::{HighwayHash, PortableHash};
 use log::info;
@@ -28,7 +29,7 @@ use wasmi::{Engine, Module};
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
     FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutWithError, PaneContents,
-    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource,
+    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
 };
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
@@ -107,6 +108,7 @@ pub struct LoadingContext {
     pub plugin_dir: PathBuf,
     pub zellij_data_dir: PathBuf,
     pub plugin_data_store: Arc<PluginDataStore>,
+    pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
 }
 
@@ -161,6 +163,7 @@ impl LoadingContext {
             plugin_dir: wasm_bridge.plugin_dir.clone(),
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
             plugin_data_store: wasm_bridge.plugin_data_store.clone(),
+            queues: wasm_bridge.queues.clone(),
             size,
         }
     }
@@ -193,7 +196,19 @@ pub struct WasmBridge {
     // message,
     // payload>
     loading_plugins: HashSet<(PluginId, RunPlugin)>, // tracks loading plugins without handles
+    /// Plugins unloaded before their loader ran. `unload_plugin` marks a plugin here when it is
+    /// in `loading_plugins` but not yet in the `PluginMap`; the loader closure checks the mark
+    /// and gives up instead of instantiating. Both sides do so **under the `plugin_map` lock**,
+    /// which the loader holds from before instantiation until after `load` returns, so an unload
+    /// either finds the runtime in the map or the loader finds the mark - never neither. Do not
+    /// move either check outside that lock.
+    unloaded_while_loading: Arc<Mutex<HashSet<PluginId>>>,
     pending_plugin_reloads: HashSet<RunPlugin>,
+    /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
+    /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
+    /// and reads status directly - see the note on `PluginEnv::queues`. Never hold this lock
+    /// across `load_plugin` or `unload_plugin`.
+    queues: Arc<Mutex<Queues>>,
     path_to_default_shell: PathBuf,
     watcher: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
     zellij_cwd: PathBuf,
@@ -277,7 +292,9 @@ impl WasmBridge {
             cached_resizes_for_pending_plugins: HashMap::new(),
             cached_worker_messages: HashMap::new(),
             loading_plugins: HashSet::new(),
+            unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
+            queues: Default::default(),
             zellij_cwd,
             session_env_vars,
             default_shell,
@@ -373,6 +390,7 @@ impl WasmBridge {
                 let plugin_executor = self.plugin_executor.clone();
                 let senders = self.senders.clone();
                 let zellij_cwd = cwd.unwrap_or_else(|| self.zellij_cwd.clone());
+                let unloaded_while_loading = self.unloaded_while_loading.clone();
 
                 // Check if we need to download (async I/O required)
                 let needs_download = matches!(plugin.location, RunPluginLocation::Remote(_));
@@ -395,7 +413,12 @@ impl WasmBridge {
                         );
                         let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
-                        if let RunPluginLocation::Remote(url) = &plugin.location {
+                        // Only an optimisation - the check that counts is the locked one below.
+                        if unloaded_while_loading.lock().unwrap().contains(&plugin_id) {
+                            log::info!(
+                                "plugin {plugin_id} was unloaded before its download, skipping it"
+                            );
+                        } else if let RunPluginLocation::Remote(url) = &plugin.location {
                             let file_name: String = PortableHash::default()
                                 .hash128(url.as_bytes())
                                 .iter()
@@ -418,6 +441,7 @@ impl WasmBridge {
                             }
                         }
 
+                        let loader_executor = plugin_executor.clone();
                         plugin_executor.execute_plugin_load(
                             plugin_id,
                             move |senders: ThreadSenders,
@@ -426,6 +450,14 @@ impl WasmBridge {
                                   plugin_cache: PluginCache,
                                   engine| {
                                 let mut plugin_map = plugin_map.lock().unwrap();
+                                if load_was_cancelled(
+                                    &unloaded_while_loading,
+                                    plugin_id,
+                                    &senders,
+                                    &loader_executor,
+                                ) {
+                                    return;
+                                }
                                 match PluginLoader::new(
                                     skip_cache,
                                     loading_context,
@@ -475,6 +507,14 @@ impl WasmBridge {
                               plugin_cache: PluginCache,
                               engine: Engine| {
                             let mut plugin_map = plugin_map.lock().unwrap();
+                            if load_was_cancelled(
+                                &unloaded_while_loading,
+                                plugin_id,
+                                &senders,
+                                &plugin_executor,
+                            ) {
+                                return;
+                            }
                             match PluginLoader::new(
                                 skip_cache,
                                 loading_context,
@@ -531,11 +571,21 @@ impl WasmBridge {
         info!("Bye from plugin {}", pid);
         self.shared_plugin_ids.remove(&pid);
 
-        // Remove from plugin_map on main thread
+        // Remove from plugin_map on main thread. A plugin whose loader has not run yet has
+        // nothing to remove; it is marked instead, under the same lock, so the loader gives up
+        // when its turn comes - see `unloaded_while_loading`.
         let plugins_to_cleanup: Vec<_> = {
             let mut plugin_map = self.plugin_map.lock().unwrap();
-            plugin_map.remove_plugins(pid).into_iter().collect()
+            let removed: Vec<_> = plugin_map.remove_plugins(pid).into_iter().collect();
+            let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
+            if removed.is_empty() && still_loading {
+                self.unloaded_while_loading.lock().unwrap().insert(pid);
+            }
+            removed
         };
+        self.loading_plugins.retain(|(p_id, _)| *p_id != pid);
+        self.cached_events_for_pending_plugins.remove(&pid);
+        self.cached_resizes_for_pending_plugins.remove(&pid);
 
         // Schedule cleanup on each plugin's pinned thread
         for ((plugin_id, client_id), (running_plugin, subscriptions, workers)) in plugins_to_cleanup
@@ -619,7 +669,242 @@ impl WasmBridge {
             .senders
             .send_to_background_jobs(BackgroundJob::ReportPluginList(plugin_list));
 
+        // The one place a queue slot is released. Every way a job can end - it reported, it was
+        // cancelled, it closed itself, its pane was closed, it crashed - comes through here.
+        let finished = self.queues.lock().unwrap().on_plugin_unloaded(pid);
+        if let Some(finished) = finished {
+            let queue = finished.queue.clone();
+            self.report_finished_jobs(vec![finished]);
+            self.pump_queue(&queue);
+        }
+
         Ok(())
+    }
+
+    // --- work queues ---------------------------------------------------------------------------
+
+    /// The configuration keys a job can read to learn what it is.
+    pub const QUEUE_CONFIG_KEY: &'static str = "zellij_queue";
+    pub const QUEUE_JOB_ID_CONFIG_KEY: &'static str = "zellij_queue_job_id";
+    pub const QUEUE_ENQUEUER_CONFIG_KEY: &'static str = "zellij_queue_enqueuer_plugin_id";
+
+    pub fn queue_configure(&mut self, queue: &str, concurrency: usize) {
+        self.queues.lock().unwrap().configure(queue, concurrency);
+        self.pump_queue(queue);
+    }
+
+    pub fn queue_cancel(&mut self, job_id: u64) -> Result<()> {
+        let result = self.queues.lock().unwrap().cancel(job_id);
+        match result {
+            CancelResult::DroppedPending(finished) => {
+                let queue = finished.queue.clone();
+                self.report_finished_jobs(vec![finished]);
+                self.broadcast_queue_changed(&queue);
+                Ok(())
+            },
+            CancelResult::UnloadRunning(plugin_id) => self.close_job_plugin(plugin_id),
+            CancelResult::NotFound => {
+                log::warn!("cancel_queue_job: no job {job_id}");
+                Ok(())
+            },
+        }
+    }
+
+    pub fn queue_finish_job(
+        &mut self,
+        plugin_id: PluginId,
+        success: bool,
+        payload: Option<String>,
+    ) -> Result<()> {
+        let outcome = if success {
+            QueueJobOutcome::Succeeded
+        } else {
+            QueueJobOutcome::Failed
+        };
+        let recorded = self
+            .queues
+            .lock()
+            .unwrap()
+            .record_outcome(plugin_id, outcome, payload);
+        if !recorded {
+            log::warn!("finish_queue_job: plugin {plugin_id} is not a queued job, ignoring");
+            return Ok(());
+        }
+        self.close_job_plugin(plugin_id)
+    }
+
+    /// A plugin failed to load or trapped. If it was a job, it is over: record why and unload
+    /// it, so the slot frees and the enqueuer hears. Anything else keeps today's behaviour of
+    /// staying loaded with its error on screen.
+    pub fn queue_plugin_failed(
+        &mut self,
+        plugin_id: PluginId,
+        error: String,
+        failed_to_load: bool,
+    ) -> Result<()> {
+        let recorded = self.queues.lock().unwrap().record_outcome(
+            plugin_id,
+            QueueJobOutcome::Failed,
+            Some(error),
+        );
+        if !recorded {
+            return Ok(());
+        }
+        if failed_to_load {
+            self.forget_failed_load(plugin_id);
+        }
+        self.close_job_plugin(plugin_id)
+    }
+
+    /// A job whose *load* failed, on its way to being unloaded. Its loader has already run and
+    /// given up, so there is nothing left to cancel: dropping it from `loading_plugins` here is
+    /// what stops the unload below from leaving behind a cancellation mark nobody will consume
+    /// (the loader's trailing `ApplyCachedEvents`, which usually does this, has not arrived yet).
+    /// The load registered the plugin with the executor and never unloaded it, so that is ours
+    /// to undo too.
+    fn forget_failed_load(&mut self, plugin_id: PluginId) {
+        self.loading_plugins.retain(|(p_id, _)| *p_id != plugin_id);
+        // a no-op on the plugin's own thread, so the unregister lands after the loader closure
+        self.plugin_executor
+            .execute_plugin_unload(plugin_id, |_, _, _, _, _| {});
+    }
+
+    /// The `close_self` pair, done host-side: drop the suppressed pane, unload the plugin. The
+    /// unload runs the queue hook, which reports the job and starts the next one.
+    fn close_job_plugin(&mut self, plugin_id: PluginId) -> Result<()> {
+        self.senders
+            .send_to_screen(ScreenInstruction::ClosePane(
+                PaneId::Plugin(plugin_id),
+                None,
+                None,
+                None,
+            ))
+            .with_context(|| format!("failed to close the pane of job plugin {plugin_id}"))
+            .non_fatal();
+        self.unload_plugin(plugin_id)
+            .with_context(|| format!("failed to unload job plugin {plugin_id}"))
+    }
+
+    /// Start jobs on `queue` until it is at its limit or empty, one at a time so that a launch
+    /// that fails frees its slot for the next before we decide whether there is room.
+    pub fn pump_queue(&mut self, queue: &str) {
+        if self.queues.lock().unwrap().is_shut_down() {
+            return;
+        }
+        let mut finished = vec![];
+        loop {
+            let job = self.queues.lock().unwrap().pop_launchable(queue);
+            let Some(job) = job else {
+                break;
+            };
+            match self.launch_job(&job) {
+                Ok(plugin_id) => {
+                    let started = Event::QueueJobStarted {
+                        queue: job.queue.clone(),
+                        job_id: job.job_id,
+                        plugin_id,
+                        context: job.context.clone(),
+                    };
+                    let enqueuer = job.enqueuer;
+                    self.queues.lock().unwrap().on_job_launched(job, plugin_id);
+                    self.send_event_to(enqueuer, started);
+                },
+                Err(e) => {
+                    finished.push(
+                        self.queues
+                            .lock()
+                            .unwrap()
+                            .on_launch_failed(job, format!("{e:#}")),
+                    );
+                },
+            }
+        }
+        self.report_finished_jobs(finished);
+        self.broadcast_queue_changed(queue);
+    }
+
+    /// Load the job's plugin as a fresh headless instance, with its queue identity in its
+    /// configuration. Bypasses `get_or_load_plugins` deliberately: that dedupes on
+    /// `(location, configuration)`, and two jobs of the same plugin must be two instances.
+    fn launch_job(&mut self, job: &QueuedJob) -> Result<PluginId> {
+        let mut run_plugin_or_alias = job.run_plugin_or_alias.clone();
+        run_plugin_or_alias.populate_run_plugin_if_needed(&self.plugin_aliases.lock().unwrap());
+        let mut run_plugin = run_plugin_or_alias.get_run_plugin().ok_or_else(|| {
+            anyhow!(
+                "{} could not be resolved",
+                job.run_plugin_or_alias.location_string()
+            )
+        })?;
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_CONFIG_KEY, job.queue.clone());
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_JOB_ID_CONFIG_KEY, job.job_id.to_string());
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_ENQUEUER_CONFIG_KEY, job.enqueuer.0.to_string());
+        // A job is session work, not per-client UI: one instance, however many clients are
+        // attached now or later. Without this the loader would instantiate it once per client,
+        // each copy running the same job. Set last so the enqueuer's configuration cannot undo it.
+        run_plugin.configuration.insert("shared", "true".to_owned());
+        let (plugin_id, client_id) = self.load_plugin(
+            &Some(run_plugin.clone()),
+            None,
+            Size::default(),
+            job.cwd.clone(),
+            false,
+            Some(job.enqueuer.1),
+        )?;
+        let _ = self
+            .senders
+            .send_to_screen(super::add_suppressed_plugin_pane(
+                RunPluginOrAlias::RunPlugin(run_plugin),
+                plugin_id,
+                job.cwd.clone(),
+                client_id,
+            ));
+        Ok(plugin_id)
+    }
+
+    fn report_finished_jobs(&self, finished: Vec<FinishedJob>) {
+        for job in finished {
+            let event = Event::QueueJobFinished {
+                queue: job.queue,
+                job_id: job.job_id,
+                outcome: job.outcome,
+                payload: job.payload,
+                context: job.context,
+            };
+            self.send_event_to(job.enqueuer, event);
+        }
+    }
+
+    fn broadcast_queue_changed(&self, queue: &str) {
+        let snapshot = self.queues.lock().unwrap().queue_snapshot(queue);
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let event = Event::QueueChanged {
+            queue: snapshot.queue,
+            concurrency: snapshot.concurrency,
+            pending: snapshot.pending,
+            running: snapshot.running,
+        };
+        let _ = self
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(None, None, event)]));
+    }
+
+    /// Queue events go back through the bus like a `RunCommandResult` does, rather than being
+    /// applied here: this can run from inside `unload_plugin`, and the update path takes the
+    /// same locks.
+    fn send_event_to(&self, (plugin_id, client_id): (PluginId, ClientId), event: Event) {
+        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            event,
+        )]));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: u32) -> Result<()> {
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
@@ -1427,7 +1712,17 @@ impl WasmBridge {
     }
 
     pub fn cleanup(&mut self) {
-        self.loading_plugins.clear();
+        // Before any unload: the unload hook pumps queues, and nothing may start now.
+        self.queues.lock().unwrap().shut_down();
+
+        // A plugin whose loader has not run yet is not in the plugin map, so the loop below
+        // would miss it and its loader would instantiate it after this thread is gone. Unload
+        // it first: that is what records the cancellation the loader checks for.
+        let still_loading: Vec<PluginId> =
+            self.loading_plugins.iter().map(|(pid, _)| *pid).collect();
+        for plugin_id in still_loading {
+            drop(self.unload_plugin(plugin_id));
+        }
 
         let plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
         for plugin_id in &plugin_ids {
@@ -2104,6 +2399,24 @@ impl WasmBridge {
     }
 }
 
+/// The loader's first move, with the `PluginMap` lock held: if the plugin was unloaded while it
+/// was still loading, tidy up what `load_plugin` set in motion and report that there is nothing
+/// to do. See `WasmBridge::unloaded_while_loading` for why the lock matters.
+fn load_was_cancelled(
+    unloaded_while_loading: &Arc<Mutex<HashSet<PluginId>>>,
+    plugin_id: PluginId,
+    senders: &ThreadSenders,
+    plugin_executor: &Arc<PinnedExecutor>,
+) -> bool {
+    if !unloaded_while_loading.lock().unwrap().remove(&plugin_id) {
+        return false;
+    }
+    log::info!("plugin {plugin_id} was unloaded before it finished loading, not starting it");
+    let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+    plugin_executor.unregister_plugin(plugin_id);
+    true
+}
+
 fn handle_plugin_successful_loading(
     senders: &ThreadSenders,
     plugin_id: PluginId,
@@ -2124,6 +2437,11 @@ fn handle_plugin_loading_failure(
 ) {
     log::error!("{:?}", error);
     let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+    let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
+        plugin_id,
+        error: format!("{:?}", error),
+        failed_to_load: true,
+    });
     loading_indication.indicate_loading_error(format!("{:?}", error));
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
         plugin_id,
@@ -2173,6 +2491,9 @@ fn check_event_permission(
         | Event::InputReceived => PermissionType::ReadApplicationState,
         Event::WebServerStatus(..) => PermissionType::StartWebServer,
         Event::PluginDataChanged { .. } => PermissionType::PluginData,
+        // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
+        // need nothing more than the permission it enqueued with.
+        Event::QueueChanged { .. } => PermissionType::ReadApplicationState,
         Event::PaneRenderReport(..) => PermissionType::ReadPaneContents,
         Event::UserAction(..) => PermissionType::InterceptInput,
         _ => return (PermissionStatus::Granted, None),
@@ -2295,6 +2616,11 @@ pub fn apply_event_to_plugin(
 }
 
 pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: ThreadSenders) {
+    let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
+        plugin_id,
+        error: message.clone(),
+        failed_to_load: false,
+    });
     let mut loading_indication = LoadingIndication::new("Panic!".to_owned());
     loading_indication.indicate_loading_error(message);
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
@@ -2387,3 +2713,7 @@ mod tests {
         ));
     }
 }
+
+#[path = "./unit/wasm_bridge_tests.rs"]
+#[cfg(test)]
+mod wasm_bridge_tests;

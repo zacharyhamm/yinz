@@ -12,6 +12,7 @@ mod plugin_limits;
 mod plugin_loader;
 mod plugin_map;
 mod plugin_worker;
+pub mod queues;
 mod wasm_bridge;
 mod watch_filesystem;
 mod zellij_exports;
@@ -246,6 +247,34 @@ pub enum PluginInstruction {
         response_channel: crossbeam::channel::Sender<Option<u64>>,
     },
     DetectPluginConfigChanges(PluginAliases),
+    /// Something was put on `queue` (by a plugin, straight into the shared `Queues`): start
+    /// whatever it now has room for.
+    QueuePump {
+        queue: String,
+    },
+    QueueConfigure {
+        queue: String,
+        concurrency: usize,
+    },
+    QueueCancelJob {
+        job_id: u64,
+    },
+    /// A job (`plugin_id`) reported its outcome and wants to be unloaded.
+    QueueFinishJob {
+        plugin_id: PluginId,
+        success: bool,
+        payload: Option<String>,
+    },
+    /// A plugin failed to load or trapped. Only queued jobs act on this: a job that can no
+    /// longer run must not keep its slot.
+    PluginFailed {
+        plugin_id: PluginId,
+        error: String,
+        /// True when the load itself failed, so the loader has already run and given up; false
+        /// when a plugin that was loaded trapped. The two need different cleanup - see
+        /// `WasmBridge::queue_plugin_failed`.
+        failed_to_load: bool,
+    },
     HighlightClicked {
         plugin_id: u32,
         client_id: ClientId,
@@ -1313,6 +1342,33 @@ pub(crate) fn plugin_thread_main(
                 let timestamp = *wasm_bridge.last_session_save_time.lock().unwrap();
                 let _ = response_channel.send(timestamp);
             },
+            PluginInstruction::QueuePump { queue } => {
+                wasm_bridge.pump_queue(&queue);
+            },
+            PluginInstruction::QueueConfigure { queue, concurrency } => {
+                wasm_bridge.queue_configure(&queue, concurrency);
+            },
+            PluginInstruction::QueueCancelJob { job_id } => {
+                wasm_bridge.queue_cancel(job_id).non_fatal();
+            },
+            PluginInstruction::QueueFinishJob {
+                plugin_id,
+                success,
+                payload,
+            } => {
+                wasm_bridge
+                    .queue_finish_job(plugin_id, success, payload)
+                    .non_fatal();
+            },
+            PluginInstruction::PluginFailed {
+                plugin_id,
+                error,
+                failed_to_load,
+            } => {
+                wasm_bridge
+                    .queue_plugin_failed(plugin_id, error, failed_to_load)
+                    .non_fatal();
+            },
             PluginInstruction::DetectPluginConfigChanges(new_plugins) => {
                 wasm_bridge
                     .detect_and_notify_plugin_config_changes(&new_plugins, shutdown_send.clone())?;
@@ -1554,33 +1610,49 @@ fn load_background_plugin(
         Some(client_id),
     ) {
         Ok((plugin_id, client_id)) => {
-            let should_float = None;
-            let should_be_open_in_place = false;
-            let pane_title = None;
-            let pane_id_to_replace = None;
-            let start_suppressed = true;
-            drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                should_float,
-                should_be_open_in_place,
-                false, // close_replaced_pane
+            drop(bus.senders.send_to_screen(add_suppressed_plugin_pane(
                 run_plugin_or_alias,
-                pane_title,
-                None,
                 plugin_id,
-                pane_id_to_replace,
                 cwd,
-                start_suppressed,
-                None,
-                None,
-                Some(client_id),
-                None,
-                None,
+                client_id,
             )));
         },
         Err(e) => {
             log::error!("Failed to load plugin: {e}");
         },
     }
+}
+
+/// The screen-side half of a headless plugin: a suppressed pane that holds no place in any
+/// layout, so the plugin has a `PaneId` to be closed by but nothing on screen.
+pub(crate) fn add_suppressed_plugin_pane(
+    run_plugin_or_alias: RunPluginOrAlias,
+    plugin_id: PluginId,
+    cwd: Option<PathBuf>,
+    client_id: ClientId,
+) -> ScreenInstruction {
+    let should_float = None;
+    let should_be_open_in_place = false;
+    let pane_title = None;
+    let pane_id_to_replace = None;
+    let start_suppressed = true;
+    ScreenInstruction::AddPlugin(
+        should_float,
+        should_be_open_in_place,
+        false, // close_replaced_pane
+        run_plugin_or_alias,
+        pane_title,
+        None,
+        plugin_id,
+        pane_id_to_replace,
+        cwd,
+        start_suppressed,
+        None,
+        None,
+        Some(client_id),
+        None,
+        None,
+    )
 }
 
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);

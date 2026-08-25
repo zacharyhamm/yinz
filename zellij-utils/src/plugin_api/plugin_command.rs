@@ -16,26 +16,26 @@ pub use super::generated_api::api::{
         break_panes_to_tab_with_index_response, data_apply_response, data_count_response,
         data_define_response, data_fetch_response, data_unwatch_response, data_watch_response,
         delete_layout_response, dump_layout_response, dump_session_layout_response,
-        edit_layout_response, focus_or_create_tab_response, get_focused_pane_info_response,
-        get_pane_cwd_response, get_pane_git_probe_response, get_pane_pid_response,
-        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
-        highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
-        new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
-        open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
-        rename_layout_response, save_layout_response, save_session_response,
-        show_floating_panes_response, warp_pane_response, AdoptOrphanedPanePayload,
-        BreakPanesToNewTabPayload,
+        edit_layout_response, enqueue_queue_job_response, focus_or_create_tab_response,
+        get_focused_pane_info_response, get_pane_cwd_response, get_pane_git_probe_response,
+        get_pane_pid_response, get_pane_running_command_response, get_session_list_response,
+        hide_floating_panes_response, highlight_style::Style as ProtobufHighlightStyleVariant,
+        list_orphaned_panes_response, new_tab_response, new_tab_unfocused_response,
+        open_command_pane_in_git_checkout_payload, open_command_pane_in_git_checkout_response,
+        parse_layout_response, plugin_command::Payload, rename_layout_response,
+        save_layout_response, save_session_response, show_floating_panes_response,
+        warp_pane_response, AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
-        CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload, ChangeHostFolderPayload,
-        ChangeOverlayCoordinatesPayload, ClearPaneHighlightsPayload, ClearScreenForPaneIdPayload,
-        CliPipeOutputPayload, CloseMultiplePanesPayload, CloseTabWithIdPayload,
-        CloseTabWithIndexPayload, CommandName, ContextItem, CopyToClipboardPayload,
-        CreateTokenResponse as ProtobufCreateTokenResponse, CreateTokenResponse,
-        CurrentSessionLastSavedTimePayload,
+        CancelQueueJobPayload, CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload,
+        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, ClearPaneHighlightsPayload,
+        ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
+        CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ConfigureQueuePayload,
+        ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
+        CreateTokenResponse, CurrentSessionLastSavedTimePayload,
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
         CustomRgbHighlight as ProtobufCustomRgbHighlight, DataApplyPayload,
@@ -51,8 +51,9 @@ pub use super::generated_api::api::{
         DumpLayoutResponse as ProtobufDumpLayoutResponse, DumpSessionLayoutPayload,
         DumpSessionLayoutResponse as ProtobufDumpSessionLayoutResponse, EditLayoutPayload,
         EditLayoutResponse as ProtobufEditLayoutResponse, EditScrollbackForPaneWithIdPayload,
-        EmbedMultiplePanesPayload, EnvVariable, ExecCmdPayload,
-        FixedOrPercent as ProtobufFixedOrPercent,
+        EmbedMultiplePanesPayload, EnqueueQueueJobPayload,
+        EnqueueQueueJobResponse as ProtobufEnqueueQueueJobResponse, EnvVariable, ExecCmdPayload,
+        FinishQueueJobPayload, FixedOrPercent as ProtobufFixedOrPercent,
         FixedOrPercentValue as ProtobufFixedOrPercentValue, FloatMultiplePanesPayload,
         FloatingPaneCoordinates as ProtobufFloatingPaneCoordinates,
         FocusOrCreateTabResponse as ProtobufFocusOrCreateTabResponse, FocusedPaneInfo,
@@ -142,7 +143,8 @@ pub use super::generated_api::api::{
         PaneGitProbe as ProtobufPaneGitProbe, PaneId as ProtobufPaneId,
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
-        PluginMessagePayload, RebindKeysPayload, ReconfigurePayload,
+        PluginMessagePayload, QueueStatusPayload,
+        QueueStatusResponse as ProtobufQueueStatusResponse, RebindKeysPayload, ReconfigurePayload,
         RecordingSummary as ProtobufRecordingSummary, RegexHighlight as ProtobufRegexHighlight,
         ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
@@ -182,13 +184,14 @@ use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, Prot
 use crate::data::{
     ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse, DataFetchResponse,
     DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
-    DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates,
-    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
-    HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
-    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
-    OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, RecordingSummary,
+    DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse,
+    FloatingPaneCoordinates, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
+    GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
+    GetSessionListResponse, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb, InputMode,
+    KeyWithModifier, KillSessionsResponse, ListOrphanedPanesResponse, MessageToPlugin, Mutation,
+    NewPluginArgs, NotificationInfo, OpenCommandPaneInGitCheckoutResponse,
+    OpenCommandPaneOverlayResponse, OrphanedPane, OverlayPlacement, PaneGitProbe, PaneId,
+    PermissionType, PluginCommand, QueueSnapshot, QueueStatusResponse, RecordingSummary,
     RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit, SessionInfo,
     SessionListSnapshot, WarpPaneResponse, WarpPlacement,
 };
@@ -3213,6 +3216,57 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for DataUnwatch"),
             },
+            Some(CommandName::EnqueueQueueJob) => match protobuf_plugin_command.payload {
+                Some(Payload::EnqueueQueueJobPayload(payload)) => {
+                    Ok(PluginCommand::EnqueueQueueJob {
+                        queue: payload.queue,
+                        plugin_url: payload.plugin_url,
+                        config: payload
+                            .config
+                            .into_iter()
+                            .map(|e| (e.name, e.value))
+                            .collect(),
+                        context: payload
+                            .context
+                            .into_iter()
+                            .map(|e| (e.name, e.value))
+                            .collect(),
+                    })
+                },
+                _ => Err("Mismatched payload for EnqueueQueueJob"),
+            },
+            Some(CommandName::ConfigureQueue) => match protobuf_plugin_command.payload {
+                Some(Payload::ConfigureQueuePayload(payload)) => {
+                    Ok(PluginCommand::ConfigureQueue {
+                        queue: payload.queue,
+                        concurrency: payload.concurrency as usize,
+                    })
+                },
+                _ => Err("Mismatched payload for ConfigureQueue"),
+            },
+            Some(CommandName::CancelQueueJob) => match protobuf_plugin_command.payload {
+                Some(Payload::CancelQueueJobPayload(payload)) => {
+                    Ok(PluginCommand::CancelQueueJob {
+                        job_id: payload.job_id,
+                    })
+                },
+                _ => Err("Mismatched payload for CancelQueueJob"),
+            },
+            Some(CommandName::QueueStatus) => match protobuf_plugin_command.payload {
+                Some(Payload::QueueStatusPayload(payload)) => Ok(PluginCommand::QueueStatus {
+                    queue: payload.queue,
+                }),
+                _ => Err("Mismatched payload for QueueStatus"),
+            },
+            Some(CommandName::FinishQueueJob) => match protobuf_plugin_command.payload {
+                Some(Payload::FinishQueueJobPayload(payload)) => {
+                    Ok(PluginCommand::FinishQueueJob {
+                        success: payload.success,
+                        payload: payload.payload,
+                    })
+                },
+                _ => Err("Mismatched payload for FinishQueueJob"),
+            },
             None => Err("Unrecognized plugin command"),
         }
     }
@@ -5313,7 +5367,100 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::DataUnwatch as i32,
                 payload: Some(Payload::DataUnwatchPayload(DataUnwatchPayload { watch_id })),
             }),
+            PluginCommand::EnqueueQueueJob {
+                queue,
+                plugin_url,
+                config,
+                context,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::EnqueueQueueJob as i32,
+                payload: Some(Payload::EnqueueQueueJobPayload(EnqueueQueueJobPayload {
+                    queue,
+                    plugin_url,
+                    config: config
+                        .into_iter()
+                        .map(|(name, value)| ContextItem { name, value })
+                        .collect(),
+                    context: context
+                        .into_iter()
+                        .map(|(name, value)| ContextItem { name, value })
+                        .collect(),
+                })),
+            }),
+            PluginCommand::ConfigureQueue { queue, concurrency } => Ok(ProtobufPluginCommand {
+                name: CommandName::ConfigureQueue as i32,
+                payload: Some(Payload::ConfigureQueuePayload(ConfigureQueuePayload {
+                    queue,
+                    concurrency: concurrency.min(u32::MAX as usize) as u32,
+                })),
+            }),
+            PluginCommand::CancelQueueJob { job_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::CancelQueueJob as i32,
+                payload: Some(Payload::CancelQueueJobPayload(CancelQueueJobPayload {
+                    job_id,
+                })),
+            }),
+            PluginCommand::QueueStatus { queue } => Ok(ProtobufPluginCommand {
+                name: CommandName::QueueStatus as i32,
+                payload: Some(Payload::QueueStatusPayload(QueueStatusPayload { queue })),
+            }),
+            PluginCommand::FinishQueueJob { success, payload } => Ok(ProtobufPluginCommand {
+                name: CommandName::FinishQueueJob as i32,
+                payload: Some(Payload::FinishQueueJobPayload(FinishQueueJobPayload {
+                    success,
+                    payload,
+                })),
+            }),
         }
+    }
+}
+
+impl From<EnqueueQueueJobResponse> for ProtobufEnqueueQueueJobResponse {
+    fn from(response: EnqueueQueueJobResponse) -> Self {
+        ProtobufEnqueueQueueJobResponse {
+            result: Some(match response {
+                EnqueueQueueJobResponse::Ok(job_id) => {
+                    enqueue_queue_job_response::Result::JobId(job_id)
+                },
+                EnqueueQueueJobResponse::Err(error) => {
+                    enqueue_queue_job_response::Result::Error(error)
+                },
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufEnqueueQueueJobResponse> for EnqueueQueueJobResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufEnqueueQueueJobResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(enqueue_queue_job_response::Result::JobId(job_id)) => {
+                Ok(EnqueueQueueJobResponse::Ok(job_id))
+            },
+            Some(enqueue_queue_job_response::Result::Error(error)) => {
+                Ok(EnqueueQueueJobResponse::Err(error))
+            },
+            None => Err("EnqueueQueueJobResponse without a result"),
+        }
+    }
+}
+
+impl From<QueueStatusResponse> for ProtobufQueueStatusResponse {
+    fn from(queues: QueueStatusResponse) -> Self {
+        ProtobufQueueStatusResponse {
+            queues: queues.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl TryFrom<ProtobufQueueStatusResponse> for QueueStatusResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufQueueStatusResponse) -> Result<Self, &'static str> {
+        protobuf
+            .queues
+            .into_iter()
+            .map(QueueSnapshot::try_from)
+            .collect()
     }
 }
 

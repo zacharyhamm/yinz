@@ -18,12 +18,13 @@ const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 12] = [
+pub const SECTIONS: [&str; 13] = [
     "index",
     "quickstart",
     "contract",
     "events",
     "commands",
+    "queues",
     "hooks",
     "errors",
     "restrictions",
@@ -40,6 +41,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "contract" => "The contract",
         "events" => "Events",
         "commands" => "Commands",
+        "queues" => "Work queues",
         "hooks" => "Hooks",
         "errors" => "Errors",
         "restrictions" => "What Lua plugins may not do",

@@ -23,7 +23,7 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
     ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
     ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
+    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
     ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
     ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
     ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
@@ -46,9 +46,10 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
     ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
-    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufQueueStatusResponse, ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse,
+    ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
+    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
+    RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -3230,6 +3231,91 @@ pub fn load_new_plugin<S>(
         load_in_background,
         skip_plugin_cache,
     };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+// Work queues
+
+/// Put a plugin on a named work queue, to run as a fresh headless instance when the queue has a
+/// free slot. Returns the job id.
+///
+/// The queue is created with concurrency 1 if it does not exist; see [`configure_queue`].
+/// `config` becomes the job's configuration - alongside `zellij_queue`, `zellij_queue_job_id` and
+/// `zellij_queue_enqueuer_plugin_id`, which the host adds - and `context` is never given to the
+/// job but echoed back in [`Event::QueueJobStarted`] and [`Event::QueueJobFinished`], which only
+/// the enqueuer receives (subscribe to them). Needs `MessageAndLaunchOtherPlugins`.
+pub fn enqueue_queue_job<Q, U>(
+    queue: Q,
+    plugin_url: U,
+    config: BTreeMap<String, String>,
+    context: BTreeMap<String, String>,
+) -> Result<u64, String>
+where
+    Q: ToString,
+    U: ToString,
+{
+    let plugin_command = PluginCommand::EnqueueQueueJob {
+        queue: queue.to_string(),
+        plugin_url: plugin_url.to_string(),
+        config,
+        context,
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let protobuf_response =
+        ProtobufEnqueueQueueJobResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    match EnqueueQueueJobResponse::try_from(protobuf_response) {
+        Ok(EnqueueQueueJobResponse::Ok(job_id)) => Ok(job_id),
+        Ok(EnqueueQueueJobResponse::Err(error)) => Err(error),
+        Err(e) => Err(e.to_owned()),
+    }
+}
+
+/// Set how many jobs `queue` may run at once, creating it if needed. Lowering the limit below
+/// the number of running jobs evicts none of them. Needs `ChangeApplicationState`.
+pub fn configure_queue<Q: ToString>(queue: Q, concurrency: usize) {
+    let plugin_command = PluginCommand::ConfigureQueue {
+        queue: queue.to_string(),
+        concurrency,
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`. Needs
+/// `ChangeApplicationState`.
+pub fn cancel_queue_job(job_id: u64) {
+    let plugin_command = PluginCommand::CancelQueueJob { job_id };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Every queue, or just the named one, with its pending and running jobs. Needs
+/// `ReadApplicationState`. To be told about changes instead of asking, subscribe to
+/// [`Event::QueueChanged`].
+pub fn queue_status(queue: Option<&str>) -> Vec<QueueSnapshot> {
+    let plugin_command = PluginCommand::QueueStatus {
+        queue: queue.map(ToOwned::to_owned),
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    let protobuf_response =
+        ProtobufQueueStatusResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    QueueStatusResponse::try_from(protobuf_response).unwrap_or_default()
+}
+
+/// Called by a job to report its outcome. The host unloads this plugin afterwards, so anything
+/// still to do should be done before. Ignored when the caller is not a queued job.
+pub fn finish_queue_job(success: bool, payload: Option<String>) {
+    let plugin_command = PluginCommand::FinishQueueJob { success, payload };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

@@ -24,7 +24,7 @@ pub use loader::load_lua_plugin;
 
 use std::cell::RefCell;
 
-use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
+use mlua::{Lua, Table, Value as LuaValue};
 use zellij_utils::data::{CommandType, Event, PermissionStatus, PipeMessage};
 use zellij_utils::errors::prelude::*;
 
@@ -60,19 +60,19 @@ impl LuaPlugin {
         &mut self,
         configuration: &std::collections::BTreeMap<String, String>,
     ) -> Result<()> {
-        let config = self.lua.to_value(configuration).map_err(lua_err)?;
+        let config = to_lua_value(&self.lua, configuration)?;
         self.call_entrypoint("__load", |plugin| Ok((plugin, config)))
             .context("failed to run the plugin's `load`")
     }
 
     pub fn update(&mut self, event: &Event) -> Result<bool> {
-        let event = self.lua.to_value(event).map_err(lua_err)?;
+        let event = to_lua_value(&self.lua, event)?;
         self.call_entrypoint("__update", |plugin| Ok((plugin, event)))
             .context("failed to run the plugin's `update`")
     }
 
     pub fn pipe(&mut self, message: &PipeMessage) -> Result<bool> {
-        let message = self.lua.to_value(message).map_err(lua_err)?;
+        let message = to_lua_value(&self.lua, message)?;
         self.call_entrypoint("__pipe", |plugin| Ok((plugin, message)))
             .context("failed to run the plugin's `pipe`")
     }
@@ -192,4 +192,17 @@ fn dispatch(
         },
         None => Ok(LuaValue::Nil),
     }
+}
+
+/// Serialize a host value for Lua. An absent `Option` becomes `nil`, not mlua's `null`
+/// userdata: a plugin checking `if event.payload then` must get the answer Lua would give.
+pub(crate) fn to_lua_value<T: serde::Serialize + ?Sized>(lua: &Lua, value: &T) -> Result<LuaValue> {
+    use mlua::{serde::SerializeOptions, LuaSerdeExt};
+    lua.to_value_with(
+        value,
+        SerializeOptions::new()
+            .serialize_none_to_null(false)
+            .serialize_unit_to_null(false),
+    )
+    .map_err(lua_err)
 }
