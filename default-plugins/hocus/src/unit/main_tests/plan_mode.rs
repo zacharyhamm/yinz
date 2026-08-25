@@ -302,6 +302,60 @@ fn a_parked_chat_keeps_its_mode() {
     assert!(state.awaiting_plan(), "and it comes back asking");
 }
 
+/// A `y`/`n` typed as the start of a correction must reach the input box, not
+/// be read as an answer to the approval prompt.
+#[test]
+fn ynot_composing_feedback_is_not_approval() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state.input.set_text("you should reconsider".to_owned());
+
+    state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+
+    assert!(
+        state.awaiting_plan(),
+        "the plan is still waiting, not approved out from under the user",
+    );
+    assert_eq!(
+        state.input.get_text(),
+        "you should reconsidery",
+        "the keystroke reached the editor rather than being swallowed"
+    );
+}
+
+/// Pressing Enter on an empty box while a plan awaits approval must leave the
+/// prompt up, not silently drop back into planning mode.
+#[test]
+fn empty_enter_does_not_dismiss_the_approval_prompt() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state.input.set_text("   ".to_owned());
+
+    state.submit();
+
+    assert!(
+        state.awaiting_plan(),
+        "an empty submission is not a correction and must not clear the prompt",
+    );
+}
+
+/// A chat that is merely `Planning` — no approval pending yet — must stay
+/// live too, or switching away from it loses the mode entirely.
+#[test]
+fn a_parked_planning_chat_keeps_its_mode_too() {
+    let state = planning_state();
+
+    let chat = Chat {
+        messages: state.messages.clone(),
+        plan: state.plan,
+        ..Chat::default()
+    };
+    assert!(
+        chat.is_live(),
+        "a chat still in planning mode is owed the rest of its plan",
+    );
+}
+
 /// `/plan` and the five `plugin_*` tools share a prefix, so completion must not
 /// silently pick one of them for the other.
 #[test]
