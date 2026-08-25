@@ -12,6 +12,7 @@ use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
 
 use crate::plugins::plugin_worker::MessageToWorker;
+use crate::plugins::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
 use crate::plugins::watch_filesystem::watch_filesystem;
 use highway::{HighwayHash, PortableHash};
 use log::info;
@@ -28,7 +29,7 @@ use wasmi::{Engine, Module};
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
     FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutWithError, PaneContents,
-    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource,
+    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
 };
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
@@ -107,6 +108,7 @@ pub struct LoadingContext {
     pub plugin_dir: PathBuf,
     pub zellij_data_dir: PathBuf,
     pub plugin_data_store: Arc<PluginDataStore>,
+    pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
 }
 
@@ -161,6 +163,7 @@ impl LoadingContext {
             plugin_dir: wasm_bridge.plugin_dir.clone(),
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
             plugin_data_store: wasm_bridge.plugin_data_store.clone(),
+            queues: wasm_bridge.queues.clone(),
             size,
         }
     }
@@ -194,6 +197,11 @@ pub struct WasmBridge {
     // payload>
     loading_plugins: HashSet<(PluginId, RunPlugin)>, // tracks loading plugins without handles
     pending_plugin_reloads: HashSet<RunPlugin>,
+    /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
+    /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
+    /// and reads status directly - see the note on `PluginEnv::queues`. Never hold this lock
+    /// across `load_plugin` or `unload_plugin`.
+    queues: Arc<Mutex<Queues>>,
     path_to_default_shell: PathBuf,
     watcher: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
     zellij_cwd: PathBuf,
@@ -278,6 +286,7 @@ impl WasmBridge {
             cached_worker_messages: HashMap::new(),
             loading_plugins: HashSet::new(),
             pending_plugin_reloads: HashSet::new(),
+            queues: Default::default(),
             zellij_cwd,
             session_env_vars,
             default_shell,
@@ -619,7 +628,214 @@ impl WasmBridge {
             .senders
             .send_to_background_jobs(BackgroundJob::ReportPluginList(plugin_list));
 
+        // The one place a queue slot is released. Every way a job can end - it reported, it was
+        // cancelled, it closed itself, its pane was closed, it crashed - comes through here.
+        let finished = self.queues.lock().unwrap().on_plugin_unloaded(pid);
+        if let Some(finished) = finished {
+            let queue = finished.queue.clone();
+            self.report_finished_jobs(vec![finished]);
+            self.pump_queue(&queue);
+        }
+
         Ok(())
+    }
+
+    // --- work queues ---------------------------------------------------------------------------
+
+    /// The configuration keys a job can read to learn what it is.
+    pub const QUEUE_CONFIG_KEY: &'static str = "zellij_queue";
+    pub const QUEUE_JOB_ID_CONFIG_KEY: &'static str = "zellij_queue_job_id";
+    pub const QUEUE_ENQUEUER_CONFIG_KEY: &'static str = "zellij_queue_enqueuer_plugin_id";
+
+    pub fn queue_configure(&mut self, queue: &str, concurrency: usize) {
+        self.queues.lock().unwrap().configure(queue, concurrency);
+        self.pump_queue(queue);
+    }
+
+    pub fn queue_cancel(&mut self, job_id: u64) -> Result<()> {
+        let result = self.queues.lock().unwrap().cancel(job_id);
+        match result {
+            CancelResult::DroppedPending(finished) => {
+                let queue = finished.queue.clone();
+                self.report_finished_jobs(vec![finished]);
+                self.broadcast_queue_changed(&queue);
+                Ok(())
+            },
+            CancelResult::UnloadRunning(plugin_id) => self.close_job_plugin(plugin_id),
+            CancelResult::NotFound => {
+                log::warn!("cancel_queue_job: no job {job_id}");
+                Ok(())
+            },
+        }
+    }
+
+    pub fn queue_finish_job(
+        &mut self,
+        plugin_id: PluginId,
+        success: bool,
+        payload: Option<String>,
+    ) -> Result<()> {
+        let outcome = if success {
+            QueueJobOutcome::Succeeded
+        } else {
+            QueueJobOutcome::Failed
+        };
+        let recorded = self
+            .queues
+            .lock()
+            .unwrap()
+            .record_outcome(plugin_id, outcome, payload);
+        if !recorded {
+            log::warn!("finish_queue_job: plugin {plugin_id} is not a queued job, ignoring");
+            return Ok(());
+        }
+        self.close_job_plugin(plugin_id)
+    }
+
+    /// A plugin failed to load or trapped. If it was a job, it is over: record why and unload
+    /// it, so the slot frees and the enqueuer hears. Anything else keeps today's behaviour of
+    /// staying loaded with its error on screen.
+    pub fn queue_plugin_failed(&mut self, plugin_id: PluginId, error: String) -> Result<()> {
+        let recorded = self.queues.lock().unwrap().record_outcome(
+            plugin_id,
+            QueueJobOutcome::Failed,
+            Some(error),
+        );
+        if !recorded {
+            return Ok(());
+        }
+        self.close_job_plugin(plugin_id)
+    }
+
+    /// The `close_self` pair, done host-side: drop the suppressed pane, unload the plugin. The
+    /// unload runs the queue hook, which reports the job and starts the next one.
+    fn close_job_plugin(&mut self, plugin_id: PluginId) -> Result<()> {
+        self.senders
+            .send_to_screen(ScreenInstruction::ClosePane(
+                PaneId::Plugin(plugin_id),
+                None,
+                None,
+                None,
+            ))
+            .with_context(|| format!("failed to close the pane of job plugin {plugin_id}"))
+            .non_fatal();
+        self.unload_plugin(plugin_id)
+            .with_context(|| format!("failed to unload job plugin {plugin_id}"))
+    }
+
+    /// Start jobs on `queue` until it is at its limit or empty, one at a time so that a launch
+    /// that fails frees its slot for the next before we decide whether there is room.
+    pub fn pump_queue(&mut self, queue: &str) {
+        let mut finished = vec![];
+        loop {
+            let job = self.queues.lock().unwrap().pop_launchable(queue);
+            let Some(job) = job else {
+                break;
+            };
+            match self.launch_job(&job) {
+                Ok(plugin_id) => {
+                    let started = Event::QueueJobStarted {
+                        queue: job.queue.clone(),
+                        job_id: job.job_id,
+                        plugin_id,
+                        context: job.context.clone(),
+                    };
+                    let enqueuer = job.enqueuer;
+                    self.queues.lock().unwrap().on_job_launched(job, plugin_id);
+                    self.send_event_to(enqueuer, started);
+                },
+                Err(e) => {
+                    finished.push(
+                        self.queues
+                            .lock()
+                            .unwrap()
+                            .on_launch_failed(job, format!("{e:#}")),
+                    );
+                },
+            }
+        }
+        self.report_finished_jobs(finished);
+        self.broadcast_queue_changed(queue);
+    }
+
+    /// Load the job's plugin as a fresh headless instance, with its queue identity in its
+    /// configuration. Bypasses `get_or_load_plugins` deliberately: that dedupes on
+    /// `(location, configuration)`, and two jobs of the same plugin must be two instances.
+    fn launch_job(&mut self, job: &QueuedJob) -> Result<PluginId> {
+        let mut run_plugin_or_alias = job.run_plugin_or_alias.clone();
+        run_plugin_or_alias.populate_run_plugin_if_needed(&self.plugin_aliases.lock().unwrap());
+        let mut run_plugin = run_plugin_or_alias.get_run_plugin().ok_or_else(|| {
+            anyhow!(
+                "{} could not be resolved",
+                job.run_plugin_or_alias.location_string()
+            )
+        })?;
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_CONFIG_KEY, job.queue.clone());
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_JOB_ID_CONFIG_KEY, job.job_id.to_string());
+        run_plugin
+            .configuration
+            .insert(Self::QUEUE_ENQUEUER_CONFIG_KEY, job.enqueuer.0.to_string());
+        let (plugin_id, client_id) = self.load_plugin(
+            &Some(run_plugin.clone()),
+            None,
+            Size::default(),
+            job.cwd.clone(),
+            false,
+            Some(job.enqueuer.1),
+        )?;
+        let _ = self
+            .senders
+            .send_to_screen(super::add_suppressed_plugin_pane(
+                RunPluginOrAlias::RunPlugin(run_plugin),
+                plugin_id,
+                job.cwd.clone(),
+                client_id,
+            ));
+        Ok(plugin_id)
+    }
+
+    fn report_finished_jobs(&self, finished: Vec<FinishedJob>) {
+        for job in finished {
+            let event = Event::QueueJobFinished {
+                queue: job.queue,
+                job_id: job.job_id,
+                outcome: job.outcome,
+                payload: job.payload,
+                context: job.context,
+            };
+            self.send_event_to(job.enqueuer, event);
+        }
+    }
+
+    fn broadcast_queue_changed(&self, queue: &str) {
+        let snapshot = self.queues.lock().unwrap().queue_snapshot(queue);
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let event = Event::QueueChanged {
+            queue: snapshot.queue,
+            concurrency: snapshot.concurrency,
+            pending: snapshot.pending,
+            running: snapshot.running,
+        };
+        let _ = self
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(None, None, event)]));
+    }
+
+    /// Queue events go back through the bus like a `RunCommandResult` does, rather than being
+    /// applied here: this can run from inside `unload_plugin`, and the update path takes the
+    /// same locks.
+    fn send_event_to(&self, (plugin_id, client_id): (PluginId, ClientId), event: Event) {
+        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            event,
+        )]));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: u32) -> Result<()> {
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
@@ -2124,6 +2340,10 @@ fn handle_plugin_loading_failure(
 ) {
     log::error!("{:?}", error);
     let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+    let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
+        plugin_id,
+        error: format!("{:?}", error),
+    });
     loading_indication.indicate_loading_error(format!("{:?}", error));
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
         plugin_id,
@@ -2173,6 +2393,9 @@ fn check_event_permission(
         | Event::InputReceived => PermissionType::ReadApplicationState,
         Event::WebServerStatus(..) => PermissionType::StartWebServer,
         Event::PluginDataChanged { .. } => PermissionType::PluginData,
+        // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
+        // need nothing more than the permission it enqueued with.
+        Event::QueueChanged { .. } => PermissionType::ReadApplicationState,
         Event::PaneRenderReport(..) => PermissionType::ReadPaneContents,
         Event::UserAction(..) => PermissionType::InterceptInput,
         _ => return (PermissionStatus::Granted, None),
@@ -2295,6 +2518,10 @@ pub fn apply_event_to_plugin(
 }
 
 pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: ThreadSenders) {
+    let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
+        plugin_id,
+        error: message.clone(),
+    });
     let mut loading_indication = LoadingIndication::new("Panic!".to_owned());
     loading_indication.indicate_loading_error(message);
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(

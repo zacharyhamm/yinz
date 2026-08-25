@@ -25,6 +25,8 @@ use crate::{
 };
 
 use zellij_utils::plugin_data_store::PluginDataStore;
+
+use crate::plugins::queues::Queues;
 use zellij_utils::{
     consts::ZELLIJ_TMP_DIR,
     data::InputMode,
@@ -86,6 +88,7 @@ pub struct PluginLoader<'a> {
     plugin_dir: PathBuf,
     zellij_data_dir: PathBuf,
     plugin_data_store: Arc<PluginDataStore>,
+    queues: Arc<Mutex<Queues>>,
     size: Size,
     loading_indication: LoadingIndication,
     senders: ThreadSenders,
@@ -132,6 +135,7 @@ impl<'a> PluginLoader<'a> {
             plugin_dir: loading_context.plugin_dir,
             zellij_data_dir: loading_context.zellij_data_dir,
             plugin_data_store: loading_context.plugin_data_store,
+            queues: loading_context.queues,
             size: loading_context.size,
 
             skip_cache,
@@ -334,6 +338,7 @@ impl<'a> PluginLoader<'a> {
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             zellij_data_dir: self.zellij_data_dir.clone(),
             plugin_data_store: self.plugin_data_store.clone(),
+            queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
             path_to_default_shell: self.path_to_default_shell.clone(),
@@ -495,6 +500,7 @@ impl<'a> PluginLoader<'a> {
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             zellij_data_dir: self.zellij_data_dir.clone(),
             plugin_data_store: self.plugin_data_store.clone(),
+            queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
             path_to_default_shell: self.path_to_default_shell.clone(),
