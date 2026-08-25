@@ -28,6 +28,17 @@ const INSET_MIN_COLS: usize = 20;
 const INSET_MAX_ROWS: usize = 6;
 
 const PROMPT: &str = "> ";
+/// The input box's prompt, which says which mode you are typing into.
+///
+/// Read by `chat_layout` and `place_cursor`, which is what stops the box and the
+/// cursor disagreeing about how wide it is — so both must go through here.
+fn prompt(state: &State) -> &'static str {
+    if state.plan_mode_on() {
+        "plan> "
+    } else {
+        PROMPT
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Wrapping
@@ -1099,7 +1110,7 @@ impl ChatLayout {
 }
 
 fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
-    let input_text = format!("{PROMPT}{}", state.input.get_text());
+    let input_text = format!("{}{}", prompt(state), state.input.get_text());
     let all_input_lines = wrap_hard(&input_text, cols);
     // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
     // minimum-height body a tall input would otherwise be laid out past the
@@ -1138,7 +1149,15 @@ fn render_title(state: &State, cols: usize) {
         Ok(cfg) => cfg.model.clone(),
         Err(error) => error.model.clone(),
     };
-    let title = format!("hocus — {model}");
+    // On the left with the model rather than in the right-hand slot: that slot
+    // is single-occupancy and already spoken for by what is *happening*
+    // (streaming, working, jobs), while planning is a standing state that has to
+    // stay legible through all of them.
+    let title = if state.plan_mode_on() {
+        format!("hocus (plan) — {model}")
+    } else {
+        format!("hocus — {model}")
+    };
     let text = Text::new(&title).color_range(0, ..title.chars().count().min(5));
     print_text_with_coordinates(text, 0, 0, Some(cols), None);
 
@@ -1423,6 +1442,11 @@ fn help_line(state: &State) -> &'static str {
         Some(PickerKind::Models) => return "<↑↓> choose  <Enter> use  <Esc> back",
         None => {},
     }
+    // Ahead of the `Status` match: a plan waits on the user rather than on the
+    // tool queue, so the two are orthogonal and this is the nearer question.
+    if state.awaiting_plan() {
+        return "carry out this plan?  <y> yes  <n> keep planning";
+    }
     // Tools before the stream, matching what Esc actually does when both are
     // outstanding.
     match state.status {
@@ -1431,6 +1455,7 @@ fn help_line(state: &State) -> &'static str {
         Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
         Status::AwaitingLinear => "reading linear…  <Esc> abort  <↑↓> scroll",
         Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
+        Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
         Status::Idle => "<Ctrl l> new chat  <Ctrl r> focus agents  <Esc> hide",
     }
@@ -1448,7 +1473,7 @@ fn place_cursor(state: &State, cols: usize, input_y: usize, skipped_rows: usize)
         .chars()
         .take(state.input.get_cursor_position())
         .collect();
-    let lines = wrap_hard(&format!("{PROMPT}{typed}"), cols);
+    let lines = wrap_hard(&format!("{}{typed}", prompt(state)), cols);
     let row = lines.len().saturating_sub(1);
     let column = lines.last().map(|line| line.width()).unwrap_or(0);
 

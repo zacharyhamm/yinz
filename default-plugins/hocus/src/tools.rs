@@ -1313,6 +1313,75 @@ pub fn specs() -> Value {
     ])
 }
 
+/// The tools planning mode leaves advertised: everything that only observes.
+///
+/// An explicit allowlist rather than the complement of [`needs_confirmation`],
+/// which answers a different and much weaker question — "destructive enough to
+/// stop for a y/n". `new_pane`, `focus`, `close_pane` and `todo_add` all change
+/// something without asking, so deriving one list from the other would let every
+/// tool added in future widen planning mode by default. Here a tool is read-only
+/// only because someone wrote it down.
+///
+/// The near misses, since they are the ones that will be argued about:
+/// `slack_backfill` reads Slack but writes the local archive; `schedule` arms a
+/// recurring billed run, which a plan should propose rather than start;
+/// `project_open`, `project_assign` and `agent_register` change state that
+/// outlives the turn; and `focus`, `rename` and `scroll_pane` are harmless to
+/// the session but move the screen under someone who is reading a plan.
+pub const READ_ONLY: &[&str] = &[
+    // The session, as it is.
+    "list_session",
+    "list_other_sessions",
+    "list_orphaned_panes",
+    "read_pane",
+    "agent_list",
+    // The active project's code and history.
+    "project_list",
+    "find_files",
+    "search_files",
+    "read_file",
+    "git_log",
+    "git_show",
+    // GET-only by construction; see its own schema.
+    "github_read",
+    // The world outside.
+    "web_search",
+    "linear_search",
+    "linear_issues",
+    "linear_issue",
+    "slack_status",
+    "slack_search",
+    "slack_read",
+    // Lists and plugin sources, read but not written.
+    "todo_list",
+    "todo_search",
+    "plugin_docs",
+    "plugin_list",
+    "plugin_read",
+];
+
+/// The `tools` array as planning mode sends it: [`specs`] minus everything that
+/// acts.
+///
+/// Filtered out of the real thing rather than built from a second list, so a
+/// tool cannot become readable by being forgotten — it has to be named in
+/// [`READ_ONLY`] to survive this.
+pub fn read_only_specs() -> Value {
+    let Value::Array(specs) = specs() else {
+        return json!([]);
+    };
+    Value::Array(
+        specs
+            .into_iter()
+            .filter(|spec| {
+                spec["function"]["name"]
+                    .as_str()
+                    .is_some_and(|name| READ_ONLY.contains(&name))
+            })
+            .collect(),
+    )
+}
+
 fn tool(name: &str, description: &str, parameters: Value) -> Value {
     json!({
         "type": "function",

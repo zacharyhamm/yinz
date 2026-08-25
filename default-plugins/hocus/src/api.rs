@@ -37,6 +37,15 @@ const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before 
 /// model answers from what it has instead of insisting it needs another call.
 const BUDGET_SPENT_PROMPT: &str =
     "The tool budget for this turn is spent. Answer now from the tool results you already have.";
+/// Sent in planning mode, where the tool set is narrowed to the ones that only
+/// read. Says so explicitly: a model that believes a missing tool is an
+/// oversight spends the turn asking for it back.
+const PLAN_PROMPT: &str = "Planning mode. You are working out an approach, not carrying it out. \
+Only read-only tools are available - every tool that changes anything has been withheld, \
+including ones you called earlier in this conversation - so do not plan around calling one, and \
+do not report a change as made or as failed. Investigate with the tools you have, then answer \
+with a plan: what you found, what you would do, in order, and what each step touches. Do not \
+end by asking permission; the user is asked for you.";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -250,7 +259,15 @@ pub fn models_headers(cfg: &Config) -> BTreeMap<String, String> {
 /// the model no move but to reply in text.
 #[cfg(test)]
 pub fn request_body(cfg: &Config, transcript: &[Message], allow_tools: bool) -> Vec<u8> {
-    request_body_with_project(cfg, transcript, allow_tools, None)
+    request_body_with_project(cfg, transcript, allow_tools, None, false)
+}
+
+/// The same, in planning mode. A second wrapper rather than a fifth argument on
+/// the one above, so the dozen tests that predate planning mode go on asserting
+/// what they always did against an untouched call.
+#[cfg(test)]
+pub fn request_body_planning(cfg: &Config, transcript: &[Message], allow_tools: bool) -> Vec<u8> {
+    request_body_with_project(cfg, transcript, allow_tools, None, true)
 }
 
 /// The request as it goes on the wire.
@@ -333,6 +350,7 @@ pub fn request_body_with_project(
     transcript: &[Message],
     allow_tools: bool,
     project: Option<(&str, &str)>,
+    plan: bool,
 ) -> Vec<u8> {
     let send_tools = cfg.tools && allow_tools;
     let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
@@ -349,6 +367,18 @@ pub fn request_body_with_project(
         if let Some(system) = system.as_mut() {
             system.push_str("\n\n");
             system.push_str(BUDGET_SPENT_PROMPT);
+        }
+    }
+    // After the configured prompt and before the project line: a custom
+    // `system_prompt` must not be able to displace the sentence explaining why
+    // half the tools are missing.
+    if plan {
+        match system.as_mut() {
+            Some(system) => {
+                system.push_str("\n\n");
+                system.push_str(PLAN_PROMPT);
+            },
+            None => system = Some(PLAN_PROMPT.to_owned()),
         }
     }
     if let Some((name, root)) = project {
@@ -407,7 +437,13 @@ pub fn request_body_with_project(
         model: &cfg.model,
         stream: true,
         messages,
-        tools: send_tools.then(tools::specs),
+        tools: send_tools.then(|| {
+            if plan {
+                tools::read_only_specs()
+            } else {
+                tools::specs()
+            }
+        }),
     };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
