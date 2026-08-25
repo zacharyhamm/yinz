@@ -1321,6 +1321,7 @@ message Options {
   optional string layout_dir = 7;
   optional string theme_dir = 8;
   optional string builtin_plugins_dir = 58;
+  optional string user_plugin_dir = 64;
   optional bool mouse_mode = 9;
   optional bool pane_frames = 10;
   optional bool mirror_session = 11;

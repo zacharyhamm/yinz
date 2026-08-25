@@ -77,3 +77,45 @@ pub fn get_theme_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
 pub fn default_theme_dir() -> Option<PathBuf> {
     find_default_config_dir().map(|dir| dir.join("themes"))
 }
+
+/// The folder holding the user's own plugins, as opposed to the two that already exist: the
+/// wasm cache under the *data* dir (`<data_dir>/plugins`), and `builtin_plugins_dir`, which
+/// overrides where the shipped builtins are read from. This one is for plugins the user wrote.
+///
+/// Like `get_layout_dir` this only computes a path - it deliberately creates nothing. A `get_*`
+/// that makes a directory is a trap, and an empty folder in every user's config dir would be
+/// one more thing to explain for a feature most sessions never touch.
+pub fn get_user_plugin_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    config_dir.map(|dir| dir.join("plugins"))
+}
+
+pub fn default_user_plugin_dir() -> Option<PathBuf> {
+    find_default_config_dir().map(|dir| dir.join("plugins"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_user_plugin_dir_hangs_off_the_config_dir() {
+        assert_eq!(
+            get_user_plugin_dir(Some(PathBuf::from("/etc/zellij"))),
+            Some(PathBuf::from("/etc/zellij/plugins")),
+        );
+        assert_eq!(get_user_plugin_dir(None), None);
+    }
+
+    /// It must not be `<data_dir>/plugins`, which is the wasm cache and a different folder
+    /// entirely - the two are told apart only by which of these functions produced them.
+    #[test]
+    fn the_user_plugin_dir_is_not_created_by_asking_for_it() {
+        let config_dir = tempfile::tempdir().expect("a temp dir");
+        let plugin_dir =
+            get_user_plugin_dir(Some(config_dir.path().to_path_buf())).expect("a dir was supplied");
+        assert!(
+            !plugin_dir.exists(),
+            "asking for the path must not make the folder"
+        );
+    }
+}

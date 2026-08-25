@@ -385,6 +385,9 @@ pub struct PluginEnv {
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
+    /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Lua
+    /// loader as the folder to search when a plugin is named rather than pathed.
+    pub user_plugin_dir: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     /// The `plugins { }` alias table, shared with `WasmBridge` so it stays current across
@@ -658,6 +661,9 @@ impl RunningPlugin {
     }
     pub fn update_layout_dir(&mut self, layout_dir: Option<PathBuf>) {
         self.env_mut().layout_dir = layout_dir;
+    }
+    pub fn update_user_plugin_dir(&mut self, user_plugin_dir: Option<PathBuf>) {
+        self.env_mut().user_plugin_dir = user_plugin_dir;
     }
     pub fn intercepting_key_presses(&self) -> bool {
         self.env().intercepting_key_presses

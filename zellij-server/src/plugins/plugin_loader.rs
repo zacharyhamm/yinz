@@ -79,6 +79,7 @@ pub struct PluginLoader<'a> {
     plugin_aliases: Arc<Mutex<PluginAliases>>,
     default_shell: Option<TerminalAction>,
     layout_dir: Option<PathBuf>,
+    user_plugin_dir: Option<PathBuf>,
     builtin_plugins_dir: Option<PathBuf>,
     default_mode: InputMode,
     keybinds: Keybinds,
@@ -124,6 +125,7 @@ impl<'a> PluginLoader<'a> {
             plugin_aliases: loading_context.plugin_aliases,
             default_shell: loading_context.default_shell,
             layout_dir: loading_context.layout_dir,
+            user_plugin_dir: loading_context.user_plugin_dir,
             builtin_plugins_dir: loading_context.builtin_plugins_dir,
             default_mode: loading_context.default_mode,
             keybinds: loading_context.keybinds,
@@ -176,7 +178,7 @@ impl<'a> PluginLoader<'a> {
         self.loading_indication.override_previous_error();
         let source = self
             .plugin_config
-            .resolve_lua_source()
+            .resolve_lua_source(self.user_plugin_dir.as_deref())
             .with_context(err_context)?;
 
         // A Lua plugin has no WASI layer, so it gets no wasi context. The pipes go unused, but
@@ -338,6 +340,7 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
+            user_plugin_dir: self.user_plugin_dir.clone(),
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),
@@ -495,6 +498,7 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
+            user_plugin_dir: self.user_plugin_dir.clone(),
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),

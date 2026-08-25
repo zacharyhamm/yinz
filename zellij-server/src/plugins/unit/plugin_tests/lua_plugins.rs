@@ -103,6 +103,76 @@ pub fn lua_plugin_loads_and_renders() {
     );
 }
 
+/// A plugin named rather than pathed is found in the user's plugin folder.
+///
+/// This is what makes `plugin location="file:probe.lua"` in a layout - and the same URL from a
+/// plugin asking for a reload - mean the obvious thing without anyone spelling out an absolute
+/// path. The resolution chain itself is unit-tested in `zellij-utils`; what this covers is that
+/// the folder actually reaches the loader through the whole plugin thread.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let user_plugin_dir = tempdir().unwrap();
+    std::fs::write(
+        user_plugin_dir.path().join("probe.lua"),
+        r#"
+        local M = {}
+        function M.render() return "found by name" end
+        return M
+        "#,
+    )
+    .unwrap();
+
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread_with_user_plugin_dir(
+            Some(plugin_host_folder),
+            None,
+            Some(PathBuf::from(user_plugin_dir.path())),
+        );
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        1
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    // A bare file name, with nothing to say where it lives.
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_test_plugin".to_owned()),
+        lua_run_plugin_at("probe.lua", BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    screen_thread.join().unwrap();
+    teardown();
+
+    let rendered = rendered_output(&received_screen_instructions.lock());
+    assert!(
+        rendered.iter().any(|r| r.contains("found by name")),
+        "expected the plugin from the user plugin dir to render, got: {:?}",
+        rendered
+    );
+}
+
 #[test]
 #[serial(plugin_tests)]
 pub fn lua_plugin_receives_its_configuration() {

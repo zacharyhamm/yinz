@@ -90,6 +90,7 @@ mod confirmation;
 mod file_tools;
 mod listing;
 mod planners;
+mod plugin_tools;
 mod repository_tools;
 mod schemas;
 mod send_input;

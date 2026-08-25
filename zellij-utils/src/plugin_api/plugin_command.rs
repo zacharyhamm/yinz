@@ -76,7 +76,8 @@ pub use super::generated_api::api::{
         GetSessionEnvironmentVariablesResponse as ProtobufGetSessionEnvironmentVariablesResponse,
         GetSessionListPayload as ProtobufGetSessionListPayload,
         GetSessionListResponse as ProtobufGetSessionListResponse, GetTabInfoPayload,
-        GetTabInfoResponse as ProtobufGetTabInfoResponse, GoToTabWithIdPayload,
+        GetTabInfoResponse as ProtobufGetTabInfoResponse, GetUserPluginDirPayload,
+        GetUserPluginDirResponse as ProtobufGetUserPluginDirResponse, GoToTabWithIdPayload,
         GroupAndUngroupPanesPayload, HideFloatingPanesPayload as ProtobufHideFloatingPanesPayload,
         HideFloatingPanesResponse as ProtobufHideFloatingPanesResponse, HidePaneWithIdPayload,
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
@@ -2768,6 +2769,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for ParseLayout"),
             },
             Some(CommandName::GetLayoutDir) => Ok(PluginCommand::GetLayoutDir),
+            Some(CommandName::GetUserPluginDir) => Ok(PluginCommand::GetUserPluginDir),
             Some(CommandName::GetFocusedPaneInfo) => Ok(PluginCommand::GetFocusedPaneInfo),
             Some(CommandName::SaveSession) => Ok(PluginCommand::SaveSession),
             Some(CommandName::CurrentSessionLastSavedTime) => {
@@ -4869,6 +4871,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::GetLayoutDir => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLayoutDir as i32,
                 payload: Some(Payload::GetLayoutDirPayload(GetLayoutDirPayload {})),
+            }),
+            PluginCommand::GetUserPluginDir => Ok(ProtobufPluginCommand {
+                name: CommandName::GetUserPluginDir as i32,
+                payload: Some(Payload::GetUserPluginDirPayload(GetUserPluginDirPayload {})),
             }),
             PluginCommand::GetFocusedPaneInfo => Ok(ProtobufPluginCommand {
                 name: CommandName::GetFocusedPaneInfo as i32,

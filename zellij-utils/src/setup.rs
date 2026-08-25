@@ -367,6 +367,10 @@ impl Setup {
             .layout_dir
             .clone()
             .or_else(|| get_layout_dir(config_dir.clone()));
+        let user_plugin_dir = config_options
+            .user_plugin_dir
+            .clone()
+            .or_else(|| get_user_plugin_dir(config_dir.clone()));
         let system_data_dir = system_data_dir();
         let config_file = opts
             .config
@@ -448,6 +452,18 @@ impl Setup {
             writeln!(&mut message, "[LAYOUT DIR]: \"{}\"", layout_dir.display()).unwrap();
         } else {
             message.push_str("[LAYOUT DIR]: Not Found\n");
+        }
+        // Reported whether or not it exists, as the layout dir is: the path is the useful
+        // answer, and nothing creates this folder until something writes a plugin into it.
+        if let Some(user_plugin_dir) = user_plugin_dir {
+            writeln!(
+                &mut message,
+                "[USER PLUGIN DIR]: \"{}\"",
+                user_plugin_dir.display()
+            )
+            .unwrap();
+        } else {
+            message.push_str("[USER PLUGIN DIR]: Not Found\n");
         }
         writeln!(
             &mut message,

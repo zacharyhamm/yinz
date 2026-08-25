@@ -100,6 +100,7 @@ pub struct LoadingContext {
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
+    pub user_plugin_dir: Option<PathBuf>,
     pub builtin_plugins_dir: Option<PathBuf>,
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
@@ -149,6 +150,7 @@ impl LoadingContext {
             plugin_cwd: cwd.unwrap_or_else(|| wasm_bridge.zellij_cwd.clone()),
             default_shell: wasm_bridge.default_shell.clone(),
             layout_dir: wasm_bridge.layout_dir.clone(),
+            user_plugin_dir: wasm_bridge.user_plugin_dir.clone(),
             builtin_plugins_dir: wasm_bridge.builtin_plugins_dir.clone(),
             keybinds,
             default_mode,
@@ -201,6 +203,7 @@ pub struct WasmBridge {
         HashMap<RunPluginLocation, HashMap<PluginUserConfiguration, Vec<(PluginId, ClientId)>>>,
     pending_pipes: PendingPipes,
     layout_dir: Option<PathBuf>,
+    user_plugin_dir: Option<PathBuf>,
     builtin_plugins_dir: Option<PathBuf>,
     available_layouts: Vec<LayoutInfo>,
     available_layout_errors: Vec<LayoutWithError>,
@@ -233,6 +236,7 @@ impl WasmBridge {
         session_env_vars: std::collections::BTreeMap<String, String>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        user_plugin_dir: Option<PathBuf>,
         builtin_plugins_dir: Option<PathBuf>,
         available_layouts: Vec<LayoutInfo>,
         available_layout_errors: Vec<LayoutWithError>,
@@ -280,6 +284,7 @@ impl WasmBridge {
             cached_plugin_map: HashMap::new(),
             pending_pipes: Default::default(),
             layout_dir,
+            user_plugin_dir,
             builtin_plugins_dir,
             available_layouts,
             available_layout_errors,
@@ -1452,6 +1457,7 @@ impl WasmBridge {
         default_mode: Option<InputMode>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        user_plugin_dir: Option<PathBuf>,
         builtin_plugins_dir: Option<PathBuf>,
     ) -> Result<()> {
         let plugins_to_reconfigure: Vec<(PluginId, Arc<Mutex<RunningPlugin>>)> = self
@@ -1477,6 +1483,7 @@ impl WasmBridge {
         }
         self.default_shell = default_shell.clone();
         self.layout_dir = layout_dir.clone();
+        self.user_plugin_dir = user_plugin_dir.clone();
         self.builtin_plugins_dir = builtin_plugins_dir;
         // Collect plugins subscribed to InitialKeybinds for post-reconfigure notification
         let plugins_subscribed_to_initial_keybinds: Vec<PluginId> = if keybinds.is_some() {
@@ -1500,6 +1507,7 @@ impl WasmBridge {
                 let keybinds = keybinds.clone();
                 let default_shell = default_shell.clone();
                 let layout_dir = layout_dir.clone();
+                let user_plugin_dir = user_plugin_dir.clone();
                 move |_senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
                     let mut running_plugin = running_plugin.lock().unwrap();
                     if let Some(keybinds) = keybinds {
@@ -1510,6 +1518,7 @@ impl WasmBridge {
                     }
                     running_plugin.update_default_shell(default_shell);
                     running_plugin.update_layout_dir(layout_dir);
+                    running_plugin.update_user_plugin_dir(user_plugin_dir);
                 }
             });
         }

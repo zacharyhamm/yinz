@@ -79,7 +79,7 @@ use zellij_utils::{
         Style, WebSharing,
     },
     errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
-    home::{default_layout_dir, get_default_data_dir},
+    home::{default_layout_dir, default_user_plugin_dir, get_default_data_dir},
     input::{
         actions::Action,
         command::{RunCommand, TerminalAction},
@@ -475,6 +475,7 @@ impl SessionMetaData {
                     default_mode: new_config.options.default_mode,
                     default_shell: self.default_shell.clone(),
                     layout_dir: new_config.options.layout_dir,
+                    user_plugin_dir: new_config.options.user_plugin_dir,
                     builtin_plugins_dir: new_config.options.builtin_plugins_dir,
                     was_written_to_disk: config_was_written_to_disk,
                 })
@@ -2119,6 +2120,10 @@ fn init_session(
                 .layout_dir
                 .clone()
                 .or_else(default_layout_dir);
+            let user_plugin_dir = config_options
+                .user_plugin_dir
+                .clone()
+                .or_else(default_user_plugin_dir);
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
             let hooks = config.hooks.clone();
@@ -2130,6 +2135,7 @@ fn init_session(
                     data_dir,
                     layout,
                     layout_dir,
+                    user_plugin_dir,
                     available_layouts,
                     available_layout_errors,
                     path_to_default_shell,
