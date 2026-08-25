@@ -178,6 +178,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         default_mode: None,
         default_shell: None,
         layout_dir: None,
+        user_plugin_dir: None,
         builtin_plugins_dir: None,
         was_written_to_disk: false,
     });
@@ -352,6 +353,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         default_mode: None,
         default_shell: None,
         layout_dir: None,
+        user_plugin_dir: None,
         builtin_plugins_dir: None,
         was_written_to_disk: false,
     });

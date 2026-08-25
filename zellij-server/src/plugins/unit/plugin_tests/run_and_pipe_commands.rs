@@ -1077,6 +1077,7 @@ pub fn run_plugin_in_specific_cwd() {
         location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
         configuration: Default::default(),
         initial_cwd: Some(plugin_initial_cwd.clone()),
+        relative_path: None,
     });
     let tab_index = 1;
     let client_id = 1;

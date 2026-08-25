@@ -79,7 +79,7 @@ use zellij_utils::{
         Style, WebSharing,
     },
     errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
-    home::{default_layout_dir, get_default_data_dir},
+    home::{default_layout_dir, get_default_data_dir, user_plugin_dir_or_default},
     input::{
         actions::Action,
         command::{RunCommand, TerminalAction},
@@ -323,6 +323,10 @@ pub(crate) struct SessionMetaData {
     background_jobs_thread: Option<thread::JoinHandle<()>>,
     session_recorder_thread: Option<thread::JoinHandle<()>>,
     config_file_path: Option<PathBuf>,
+    /// The session's `--config-dir` / `ZELLIJ_CONFIG_DIR`, kept so that a config reload can
+    /// re-derive the folders that hang off it. Without it, reloading a config that does not
+    /// name `user_plugin_dir` explicitly would wipe the one derived at startup.
+    config_dir: Option<PathBuf>,
 }
 
 impl SessionMetaData {
@@ -475,6 +479,14 @@ impl SessionMetaData {
                     default_mode: new_config.options.default_mode,
                     default_shell: self.default_shell.clone(),
                     layout_dir: new_config.options.layout_dir,
+                    // Re-derived rather than passed through: `WasmBridge::reconfigure` assigns
+                    // this verbatim, so a config that does not name the option explicitly would
+                    // otherwise wipe the folder derived at session start. The server's cwd has
+                    // not moved since then, so a relative folder resolves to the same place.
+                    user_plugin_dir: user_plugin_dir_or_default(
+                        new_config.options.user_plugin_dir,
+                        self.config_dir.clone(),
+                    ),
                     builtin_plugins_dir: new_config.options.builtin_plugins_dir,
                     was_written_to_disk: config_was_written_to_disk,
                 })
@@ -2119,6 +2131,13 @@ fn init_session(
                 .layout_dir
                 .clone()
                 .or_else(default_layout_dir);
+            // The session's *active* config dir, not whichever conventional one happens to exist:
+            // a session started with `--config-dir` must load plugins from the folder
+            // `zellij setup --check` names for it.
+            let user_plugin_dir = user_plugin_dir_or_default(
+                config_options.user_plugin_dir.clone(),
+                cli_assets.config_dir.clone(),
+            );
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
             let hooks = config.hooks.clone();
@@ -2130,6 +2149,7 @@ fn init_session(
                     data_dir,
                     layout,
                     layout_dir,
+                    user_plugin_dir,
                     available_layouts,
                     available_layout_errors,
                     path_to_default_shell,
@@ -2255,6 +2275,7 @@ fn init_session(
         web_sharing: WebSharing::Disabled,
         key_passthrough_clients: HashMap::new(),
         config_file_path: cli_assets.config_file_path,
+        config_dir: cli_assets.config_dir,
     }
 }
 

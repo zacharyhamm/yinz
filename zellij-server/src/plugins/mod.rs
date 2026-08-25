@@ -220,6 +220,7 @@ pub enum PluginInstruction {
         default_mode: Option<InputMode>,
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
+        user_plugin_dir: Option<PathBuf>,
         builtin_plugins_dir: Option<PathBuf>,
         was_written_to_disk: bool,
     },
@@ -282,6 +283,7 @@ pub(crate) fn plugin_thread_main(
     data_dir: PathBuf,
     mut layout: Box<Layout>,
     layout_dir: Option<PathBuf>,
+    user_plugin_dir: Option<PathBuf>,
     available_layouts: Vec<LayoutInfo>,
     available_layout_errors: Vec<LayoutWithError>,
     path_to_default_shell: PathBuf,
@@ -320,6 +322,7 @@ pub(crate) fn plugin_thread_main(
         session_env_vars,
         default_shell,
         layout_dir,
+        user_plugin_dir,
         builtin_plugins_dir,
         available_layouts,
         available_layout_errors,
@@ -1211,6 +1214,7 @@ pub(crate) fn plugin_thread_main(
                 default_mode,
                 default_shell,
                 layout_dir,
+                user_plugin_dir,
                 builtin_plugins_dir,
                 was_written_to_disk,
             } => {
@@ -1221,6 +1225,7 @@ pub(crate) fn plugin_thread_main(
                         default_mode,
                         default_shell,
                         layout_dir,
+                        user_plugin_dir,
                         builtin_plugins_dir,
                     )
                     .non_fatal();

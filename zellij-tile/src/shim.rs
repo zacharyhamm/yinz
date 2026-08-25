@@ -28,10 +28,11 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
     ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-    ProtobufKillSessionsResponse, ProtobufListNotificationsResponse,
-    ProtobufListOrphanedPanesResponse, ProtobufListRecordingsResponse, ProtobufNewTabResponse,
-    ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
+    ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
+    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
+    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
     ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
     ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
     ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
@@ -203,6 +204,22 @@ pub fn get_layout_dir() -> String {
     let response =
         ProtobufGetLayoutDirResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
     response.layout_dir
+}
+
+/// The folder Zellij looks in for the user's own plugins.
+///
+/// # Returns
+/// A String containing the absolute path to that folder.
+/// Returns an empty string if it cannot be determined, in which case there is nowhere to write
+/// a plugin and the caller should say so rather than pick a path of its own.
+pub fn get_user_plugin_dir() -> String {
+    let plugin_command = PluginCommand::GetUserPluginDir;
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response =
+        ProtobufGetUserPluginDirResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    response.user_plugin_dir
 }
 
 pub fn get_session_environment_variables() -> BTreeMap<String, String> {

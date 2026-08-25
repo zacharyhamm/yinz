@@ -3056,6 +3056,9 @@ impl Options {
                 .map(|(string, _entry)| PathBuf::from(string));
         let theme_dir = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme_dir")
             .map(|(string, _entry)| PathBuf::from(string));
+        let user_plugin_dir =
+            kdl_property_first_arg_as_string_or_error!(kdl_options, "user_plugin_dir")
+                .map(|(string, _entry)| PathBuf::from(string));
         let mouse_mode =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_mode").map(|(v, _)| v);
         let detachable_panes =
@@ -3242,6 +3245,7 @@ impl Options {
             layout_dir,
             builtin_plugins_dir,
             theme_dir,
+            user_plugin_dir,
             mouse_mode,
             detachable_panes,
             pane_frames,
@@ -3623,6 +3627,34 @@ impl Options {
         };
         if let Some(theme_dir) = &self.theme_dir {
             let mut node = create_node(&theme_dir.display().to_string());
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node("/tmp");
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn user_plugin_dir_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}",
+            " ",
+            "// The folder in which Zellij will look for plugins you wrote yourself",
+            "// (Requires restart)",
+            "// ",
+        );
+
+        let create_node = |node_value: &str| -> KdlNode {
+            let mut node = KdlNode::new("user_plugin_dir");
+            node.push(node_value.to_owned());
+            node
+        };
+        if let Some(user_plugin_dir) = &self.user_plugin_dir {
+            let mut node = create_node(&user_plugin_dir.display().to_string());
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -5121,6 +5153,9 @@ impl Options {
         }
         if let Some(theme_dir) = self.theme_dir_to_kdl(add_comments) {
             nodes.push(theme_dir);
+        }
+        if let Some(user_plugin_dir) = self.user_plugin_dir_to_kdl(add_comments) {
+            nodes.push(user_plugin_dir);
         }
         if let Some(detachable_panes) = self.detachable_panes_to_kdl(add_comments) {
             nodes.push(detachable_panes);

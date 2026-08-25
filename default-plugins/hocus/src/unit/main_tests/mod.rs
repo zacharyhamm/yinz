@@ -639,6 +639,7 @@ mod jobs;
 mod keys;
 mod linear_tools;
 mod picker;
+mod plugin_tools;
 mod project_assignment;
 mod project_discovery;
 mod questions;

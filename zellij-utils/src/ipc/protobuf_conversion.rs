@@ -895,6 +895,9 @@ impl From<crate::input::options::Options>
                 .map(|p| p.to_string_lossy().to_string()),
             layout_dir: options.layout_dir.map(|p| p.to_string_lossy().to_string()),
             theme_dir: options.theme_dir.map(|p| p.to_string_lossy().to_string()),
+            user_plugin_dir: options
+                .user_plugin_dir
+                .map(|p| p.to_string_lossy().to_string()),
             builtin_plugins_dir: options
                 .builtin_plugins_dir
                 .map(|p| p.to_string_lossy().to_string()),
@@ -1010,6 +1013,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             default_layout: options.default_layout.map(std::path::PathBuf::from),
             layout_dir: options.layout_dir.map(std::path::PathBuf::from),
             theme_dir: options.theme_dir.map(std::path::PathBuf::from),
+            user_plugin_dir: options.user_plugin_dir.map(std::path::PathBuf::from),
             builtin_plugins_dir: options.builtin_plugins_dir.map(std::path::PathBuf::from),
             mouse_mode: options.mouse_mode,
             // Not on the wire: the server reads this straight out of the config
@@ -4810,6 +4814,7 @@ impl From<crate::input::layout::RunPlugin>
             location: Some(plugin.location.into()),
             configuration: Some(plugin.configuration.into()),
             initial_cwd: plugin.initial_cwd.map(|p| p.display().to_string()),
+            relative_path: plugin.relative_path.map(|p| p.display().to_string()),
         }
     }
 }
@@ -5298,12 +5303,14 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPlugin>
             .ok_or_else(|| anyhow!("RunPlugin missing configuration"))?
             .try_into()?;
         let initial_cwd = plugin.initial_cwd.map(std::path::PathBuf::from);
+        let relative_path = plugin.relative_path.map(std::path::PathBuf::from);
 
         Ok(crate::input::layout::RunPlugin {
             _allow_exec_host_cmd: plugin.allow_exec_host_cmd,
             location,
             configuration,
             initial_cwd,
+            relative_path,
         })
     }
 }

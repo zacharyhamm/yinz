@@ -85,6 +85,10 @@ impl State {
                 // afterwards it follows Zellij's pane events.
                 self.subscribe_to_agentd();
                 self.env = get_session_environment_variables();
+                // Here rather than in `load` for the same reason as the environment: a
+                // value-returning gated call before the grant lands waits on a reply the host
+                // never sends. Like the environment, it is fixed for the session.
+                self.user_plugin_dir = get_user_plugin_dir();
                 Config::resolve(&self.kdl, &self.env)
             },
             PermissionStatus::Denied => Err(ConfigError {
@@ -698,7 +702,9 @@ impl State {
     /// missing and that hunting for it is not on the table.
     fn project_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
         let head = self.pending.front()?;
-        if !tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
+        let is_project = tools::PROJECT_READ_TOOLS.contains(&head.name.as_str());
+        let is_plugin = tools::PLUGIN_FILE_TOOLS.contains(&head.name.as_str());
+        if (!is_project && !is_plugin) || exit_code != Some(2) {
             return None;
         }
         if !String::from_utf8_lossy(stderr).contains("os error 2") {
@@ -709,6 +715,9 @@ impl State {
             "find_files" | "search_files" => "rg",
             "git_log" | "git_show" => "git",
             "github_read" => "gh",
+            "plugin_list" => "find",
+            // The three that run behind the symlink guard, so `sh` is what failed to spawn.
+            "plugin_write" | "plugin_read" | "plugin_reload" => "sh",
             _ => return None,
         };
         let install = if binary == "rg" {
@@ -732,6 +741,108 @@ impl State {
     /// The listing is cut to the call's line cap before `MAX_TOOL_OUTPUT` gets
     /// near it, so a search of a large repository comes back as a usable head of
     /// the matches with a count, rather than 40 000 bytes ending mid-line.
+    /// The deferred half of the plugin-authoring tools.
+    ///
+    /// The shapes that need saying in the model's terms rather than the shell's: a write that
+    /// worked and what to do next, a write refused by `noclobber`, an empty listing - and a
+    /// reload, whose command only asks permission, leaving the loading itself to happen here.
+    fn plugin_tool_result(
+        head: &ToolCall,
+        dir: &str,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+    ) -> String {
+        let stdout = String::from_utf8_lossy(stdout);
+        let stdout = stdout.trim_end_matches('\n');
+        let stderr = String::from_utf8_lossy(stderr);
+        let stderr = stderr.trim();
+        let name = tools::Args::parse(&head.arguments)
+            .ok()
+            .and_then(|args| args.name)
+            .unwrap_or_else(|| "the plugin".to_owned());
+        let name = name.trim_end_matches(".lua").to_owned();
+
+        if head.name == "plugin_write" {
+            if exit_code == Some(0) {
+                return format!("wrote {name}.lua; call plugin_reload to load it");
+            }
+            // What the shell says when `set -C` refuses to truncate. Checked by text because it
+            // is reported as an ordinary non-zero exit like any other failure — and matched
+            // against both wordings, because bash says "cannot overwrite existing file" while
+            // dash says "cannot create <path>: File exists".
+            if stderr.contains("cannot overwrite existing file")
+                || (stderr.contains("cannot create") && stderr.contains("File exists"))
+            {
+                return format!(
+                    "{name}.lua already exists; pass overwrite=true to replace it, or read it \
+                     first with plugin_read"
+                );
+            }
+        }
+
+        // The reload proper. Its command did nothing but ask the host whether this file may be
+        // loaded - it is not a link out of the folder, and it is there - so a clean exit is the
+        // point at which the plugin is actually started.
+        //
+        // The path is re-resolved rather than carried: `resolve_plugin_file` is pure and was
+        // already given the same folder and name, so it cannot answer differently here, and a
+        // reload must be built from an absolute path - `RunPluginLocation::parse` joins a
+        // relative `file:` path onto the cwd, which `start_or_reload_plugin` always supplies.
+        if head.name == "plugin_reload" && exit_code == Some(0) {
+            let target = tools::Args::parse(&head.arguments)
+                .ok()
+                .and_then(|args| tools::resolve_plugin_file(dir, args.name.as_deref()).ok());
+            return match target {
+                Some(target) => tools::reload_plugin(&target),
+                None => format!("{name} could not be resolved to a plugin file"),
+            };
+        }
+
+        // The folder is made by the first write, so until then it is legitimately absent -
+        // which `find` reports as an error and the model would read as something being wrong.
+        // Nothing there and nowhere to look are the same answer to "what plugins are there".
+        if head.name == "plugin_list"
+            && exit_code != Some(0)
+            && stderr.contains("No such file or directory")
+        {
+            return "no plugins yet".to_owned();
+        }
+
+        if exit_code != Some(0) {
+            let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
+            if !stderr.is_empty() {
+                result.push_str(&format!(
+                    "\n\n{}",
+                    log::truncate_str(stderr, MAX_TOOL_OUTPUT)
+                ));
+            }
+            return result;
+        }
+
+        if stdout.is_empty() {
+            return match head.name.as_str() {
+                "plugin_list" => "no plugins yet".to_owned(),
+                // `sed` on an empty range, or a start_line past the end of the file.
+                "plugin_read" => "no lines".to_owned(),
+                _ => "no output".to_owned(),
+            };
+        }
+
+        // A listing is of names, not of paths: the tools take a name, so handing back absolute
+        // paths would invite the model to send one back and be refused.
+        if head.name == "plugin_list" {
+            let prefix = format!("{}/", dir.trim_end_matches('/'));
+            let names: Vec<&str> = stdout
+                .lines()
+                .map(|line| line.strip_prefix(&prefix).unwrap_or(line))
+                .collect();
+            return log::truncate_str(&names.join("\n"), MAX_TOOL_OUTPUT);
+        }
+
+        log::truncate_str(stdout, MAX_TOOL_OUTPUT)
+    }
+
     fn project_tool_result(
         head: &ToolCall,
         exit_code: Option<i32>,
@@ -837,6 +948,9 @@ impl State {
             Some(hint) => hint,
             None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
                 Self::project_tool_result(head, exit_code, stdout, stderr)
+            },
+            None if tools::PLUGIN_FILE_TOOLS.contains(&head.name.as_str()) => {
+                Self::plugin_tool_result(head, &self.user_plugin_dir, exit_code, stdout, stderr)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));

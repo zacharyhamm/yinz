@@ -63,6 +63,9 @@ message RunPlugin {
   RunPluginLocationData location = 2;
   PluginUserConfiguration configuration = 3;
   optional string initial_cwd = 4;
+  // The path as written, when the plugin was named by a relative `file:` URL. `location` is
+  // absolute by then, so this is what lets the user's plugin folder be searched for it.
+  optional string relative_path = 5;
 }
 
 message PluginAlias {

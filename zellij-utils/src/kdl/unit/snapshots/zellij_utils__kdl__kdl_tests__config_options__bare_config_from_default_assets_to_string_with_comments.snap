@@ -429,6 +429,11 @@ web_client {
 // 
 // theme_dir "/tmp"
  
+// The folder in which Zellij will look for plugins you wrote yourself
+// (Requires restart)
+// 
+// user_plugin_dir "/tmp"
+ 
 // Run each pane's process under a small supervisor process, so that
 // panes keep running when the session's server exits (for example if
 // it is killed or crashes).
