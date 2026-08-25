@@ -16,8 +16,8 @@ mod ui;
 mod worker;
 
 pub use message::{
-    Job, Message, Picker, PickerKind, PickerRow, Reasoning, ReasoningKey, Role, RowKind, Status,
-    StreamState,
+    Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningKey, Role, RowKind,
+    Status, StreamState,
 };
 use worker::post_log;
 
@@ -64,7 +64,7 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 4] = ["history", "models", "stop_jobs", "keys"];
+const LOCAL_COMMANDS: [&str; 5] = ["history", "models", "stop_jobs", "keys", "plan"];
 
 /// Full keybinding reference for `/keys`. The chat view has no persistent
 /// help line, so this is the one place all of these are written down.
@@ -77,7 +77,10 @@ Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
 Esc           cancel a stream or tool, or hide hocus
-y / n         confirm or decline a pending tool call
+y / n         confirm or decline a pending tool call,
+              or carry out / keep refining a plan
+/plan         plan before acting: read-only tools until
+              you approve the plan hocus writes
 
 In history or models:
 Up / Down     choose
@@ -120,13 +123,20 @@ struct Chat {
     pub(crate) saved: (usize, usize),
     pub(crate) view: View,
     pub(crate) job_auto_confirm: bool,
+    pub(crate) plan: Plan,
 }
 
 impl Chat {
     /// Whether this chat is still owed something — the only reason to hold it
     /// rather than let the archive have it back.
     pub(crate) fn is_live(&self) -> bool {
-        self.stream.is_some() || !matches!(self.status, Status::Idle)
+        // A plan waiting on a `y`/`n` is owed an answer as surely as a stream is
+        // owed its last chunk. Without this arm, switching away from one would
+        // archive the chat and drop it, and reopening it from `/history` would
+        // show the plan with the question silently gone.
+        self.stream.is_some()
+            || !matches!(self.status, Status::Idle)
+            || matches!(self.plan, Plan::AwaitingApproval)
     }
 }
 
@@ -218,6 +228,8 @@ pub struct State {
     spotlight: Option<PaneId>,
     /// Consecutive tool rounds in this exchange, reset by any new user message.
     tool_rounds: usize,
+    /// Whether this conversation is planning rather than acting. See [`Plan`].
+    pub(crate) plan: Plan,
     /// Whether the model is waiting on tool results. A call the user typed is
     /// its own destination — the result is in the transcript for the next
     /// message to build on, but it answers no question — so only the model's
@@ -428,6 +440,7 @@ impl Default for State {
             pending: VecDeque::new(),
             spotlight: None,
             tool_rounds: 0,
+            plan: Plan::Off,
             owes_reply: false,
             manual_head: false,
             stream_seq: 0,
