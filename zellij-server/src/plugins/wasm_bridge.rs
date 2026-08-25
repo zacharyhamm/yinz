@@ -736,7 +736,12 @@ impl WasmBridge {
     /// A plugin failed to load or trapped. If it was a job, it is over: record why and unload
     /// it, so the slot frees and the enqueuer hears. Anything else keeps today's behaviour of
     /// staying loaded with its error on screen.
-    pub fn queue_plugin_failed(&mut self, plugin_id: PluginId, error: String) -> Result<()> {
+    pub fn queue_plugin_failed(
+        &mut self,
+        plugin_id: PluginId,
+        error: String,
+        failed_to_load: bool,
+    ) -> Result<()> {
         let recorded = self.queues.lock().unwrap().record_outcome(
             plugin_id,
             QueueJobOutcome::Failed,
@@ -745,7 +750,23 @@ impl WasmBridge {
         if !recorded {
             return Ok(());
         }
+        if failed_to_load {
+            self.forget_failed_load(plugin_id);
+        }
         self.close_job_plugin(plugin_id)
+    }
+
+    /// A job whose *load* failed, on its way to being unloaded. Its loader has already run and
+    /// given up, so there is nothing left to cancel: dropping it from `loading_plugins` here is
+    /// what stops the unload below from leaving behind a cancellation mark nobody will consume
+    /// (the loader's trailing `ApplyCachedEvents`, which usually does this, has not arrived yet).
+    /// The load registered the plugin with the executor and never unloaded it, so that is ours
+    /// to undo too.
+    fn forget_failed_load(&mut self, plugin_id: PluginId) {
+        self.loading_plugins.retain(|(p_id, _)| *p_id != plugin_id);
+        // a no-op on the plugin's own thread, so the unregister lands after the loader closure
+        self.plugin_executor
+            .execute_plugin_unload(plugin_id, |_, _, _, _, _| {});
     }
 
     /// The `close_self` pair, done host-side: drop the suppressed pane, unload the plugin. The
@@ -1693,7 +1714,15 @@ impl WasmBridge {
     pub fn cleanup(&mut self) {
         // Before any unload: the unload hook pumps queues, and nothing may start now.
         self.queues.lock().unwrap().shut_down();
-        self.loading_plugins.clear();
+
+        // A plugin whose loader has not run yet is not in the plugin map, so the loop below
+        // would miss it and its loader would instantiate it after this thread is gone. Unload
+        // it first: that is what records the cancellation the loader checks for.
+        let still_loading: Vec<PluginId> =
+            self.loading_plugins.iter().map(|(pid, _)| *pid).collect();
+        for plugin_id in still_loading {
+            drop(self.unload_plugin(plugin_id));
+        }
 
         let plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
         for plugin_id in &plugin_ids {
@@ -2411,6 +2440,7 @@ fn handle_plugin_loading_failure(
     let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
         plugin_id,
         error: format!("{:?}", error),
+        failed_to_load: true,
     });
     loading_indication.indicate_loading_error(format!("{:?}", error));
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
@@ -2589,6 +2619,7 @@ pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: Thread
     let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
         plugin_id,
         error: message.clone(),
+        failed_to_load: false,
     });
     let mut loading_indication = LoadingIndication::new("Panic!".to_owned());
     loading_indication.indicate_loading_error(message);
@@ -2682,3 +2713,7 @@ mod tests {
         ));
     }
 }
+
+#[path = "./unit/wasm_bridge_tests.rs"]
+#[cfg(test)]
+mod wasm_bridge_tests;
