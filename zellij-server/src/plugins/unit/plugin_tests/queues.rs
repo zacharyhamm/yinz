@@ -21,6 +21,7 @@ const ENQUEUE_BAD_URL: char = 'b';
 const RAISE_CONCURRENCY: char = 'c';
 const CANCEL_JOB_1: char = '1';
 const CANCEL_JOB_2: char = '2';
+const ENQUEUE_AND_CANCEL: char = 'x';
 const STATUS: char = 's';
 
 fn enqueuer_source(job_url: &str) -> String {
@@ -30,6 +31,7 @@ fn enqueuer_source(job_url: &str) -> String {
         local M = {{}}
         local lines = {{}}
         local n = 0
+        local last
         local function log(s) lines[#lines + 1] = s end
         local function enqueue(url)
           n = n + 1
@@ -37,7 +39,7 @@ fn enqueuer_source(job_url: &str) -> String {
             queue = "merge", plugin_url = url,
             config = {{ n = tostring(n) }}, context = {{ n = tostring(n) }},
           }})
-          if ok then log("enqueued " .. result) else log("enqueue error: " .. tostring(result)) end
+          if ok then last = result log("enqueued " .. result) else log("enqueue error: " .. tostring(result)) end
         end
         function M.load()
           zellij.subscribe {{ "key", "queue_job_started", "queue_job_finished", "queue_changed" }}
@@ -67,6 +69,9 @@ fn enqueuer_source(job_url: &str) -> String {
           elseif k == "{RAISE_CONCURRENCY}" then zellij.configure_queue {{ queue = "merge", concurrency = 2 }}
           elseif k == "{CANCEL_JOB_1}" then zellij.cancel_queue_job {{ job_id = 1 }}
           elseif k == "{CANCEL_JOB_2}" then zellij.cancel_queue_job {{ job_id = 2 }}
+          elseif k == "{ENQUEUE_AND_CANCEL}" then
+            enqueue("{job_url}")
+            zellij.cancel_queue_job {{ job_id = last }}
           elseif k == "{STATUS}" then
             local q = zellij.queue_status {{ queue = "merge" }}[1]
             log("status p=" .. #q.pending .. " r=" .. #q.running .. " c=" .. q.concurrency
@@ -75,11 +80,39 @@ fn enqueuer_source(job_url: &str) -> String {
           end
           return true
         end
+        function M.pipe(message)
+          log("pipe " .. message.name)
+          return true
+        end
         function M.render() return table.concat(lines, "\n") end
         return M
         "#
     )
 }
+
+/// A job that tells its enqueuer when it has loaded, then waits to be finished or pinged. It
+/// cannot render - a job has no pane - so a message is the only way to see it run.
+const CHATTY_JOB: &str = r#"
+    local zellij = require("zellij")
+    local M = {}
+    local enqueuer
+    local function tell(name)
+      zellij.message_to_plugin { destination_plugin_id = enqueuer, message_name = name }
+    end
+    function M.load(config)
+      enqueuer = tonumber(config.zellij_queue_enqueuer_plugin_id)
+      zellij.subscribe { "permission_request_result" }
+      zellij.request_permission { "message_and_launch_other_plugins" }
+    end
+    zellij.on("permission_request_result", function() tell("job_loaded") return false end)
+    function M.pipe(message)
+      if message.name == "ping" then tell("job_alive")
+      elseif message.name == "finish" then zellij.finish_queue_job { success = true }
+      end
+      return false
+    end
+    return M
+"#;
 
 /// A job that reports as soon as it is loaded.
 const FINISHING_JOB: &str = r#"
@@ -194,9 +227,23 @@ impl Harness {
         format!("file:{}", path.display())
     }
 
+    /// A second (or third) client attaching to the session.
+    fn add_client(&self, client_id: ClientId) {
+        let _ = self.to_plugin.send(PluginInstruction::AddClient(client_id));
+    }
+
     /// Load a plugin into a pane, as the enqueuer is.
     fn load(&self, url: &str) {
-        let run_plugin = RunPluginOrAlias::from_url(url, &None, None, None).unwrap();
+        self.load_with_configuration(url, &[]);
+    }
+
+    fn load_with_configuration(&self, url: &str, configuration: &[(&str, &str)]) {
+        let mut run_plugin = RunPluginOrAlias::from_url(url, &None, None, None).unwrap();
+        if let RunPluginOrAlias::RunPlugin(run_plugin) = &mut run_plugin {
+            for (key, value) in configuration {
+                run_plugin.configuration.insert(*key, *value);
+            }
+        }
         let _ = self.to_plugin.send(PluginInstruction::Load(
             Some(false),
             false,
@@ -258,16 +305,7 @@ impl Harness {
     /// The job's plugin id, from the enqueuer's `started` line.
     fn wait_for_started(&self, job_id: u64) -> u32 {
         let frame = self.wait_for(&format!("started {job_id} pid="));
-        let line = frame
-            .lines()
-            .find(|line| line.starts_with(&format!("started {job_id} pid=")))
-            .unwrap();
-        line["started N pid=".len()..]
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap()
+        started_plugin_id(&frame, job_id).unwrap()
     }
 
     fn close_pane_instructions(&self) -> Vec<PaneId> {
@@ -304,6 +342,16 @@ impl Drop for Harness {
             let _ = screen_thread.join();
         }
     }
+}
+
+/// The plugin id in the enqueuer's `started <job_id> pid=<plugin_id> ...` line, if `frame` has it.
+fn started_plugin_id(frame: &str, job_id: u64) -> Option<u32> {
+    let prefix = format!("started {job_id} pid=");
+    let line = frame.lines().find(|line| line.starts_with(&prefix))?;
+    line[prefix.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|plugin_id| plugin_id.parse().ok())
 }
 
 fn rendered_frames(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -453,6 +501,66 @@ pub fn cancelling_a_running_job_unloads_it_and_starts_the_next() {
 
     harness.pipe_to(second, "finish");
     harness.wait_for("finished 2 Failed");
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_job_is_one_instance_no_matter_how_many_clients_are_attached() {
+    // a job is loaded `shared`: the client attached when it starts does not get it cloned, and
+    // neither does one attaching while it runs. otherwise every client's copy would run the job.
+    // the enqueuer is shared too, so that its log comes from one instance.
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", CHATTY_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load_with_configuration(&enqueuer, &[("shared", "true")]);
+    harness.wait_for("ready");
+    harness.add_client(2);
+    harness.key(ENQUEUE);
+
+    let job_plugin_id = harness.wait_for_started(1);
+    harness.wait_for("pipe job_loaded");
+    harness.add_client(3);
+    harness.pipe_to(job_plugin_id, "finish");
+    let frame = harness.wait_for("finished 1 Succeeded");
+    assert_eq!(
+        frame.matches("pipe job_loaded").count(),
+        1,
+        "the job loaded exactly once for two clients and a third that joined it: {frame}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn cancelling_a_job_before_its_loader_ran_leaves_no_orphan() {
+    // a cancel that lands after the job was popped but before its loader took the plugin map
+    // lock must stop the load, not just forget the job. the enqueuer cancels in the same update
+    // that enqueues, so the cancel instruction sits on the bus directly behind the pump that
+    // launches the job, and the main thread's unload races the executor thread's load. which
+    // side wins is up to the scheduler, so this loops a few times, and both interleavings must
+    // come out the same: the job is gone by the time its cancellation is reported, and a ping to
+    // its plugin id reaches nothing.
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.lua", CHATTY_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
+    harness.load(&enqueuer);
+    harness.wait_for("ready");
+
+    let mut job_id = 0;
+    for _ in 0..20 {
+        job_id += 1;
+        harness.key(ENQUEUE_AND_CANCEL);
+        let frame = harness.wait_for(&format!("finished {job_id} Cancelled"));
+        if let Some(plugin_id) = started_plugin_id(&frame, job_id) {
+            harness.pipe_to(plugin_id, "ping");
+        }
+    }
+    // an ordering sentinel: a job finished after every ping above was delivered
+    job_id += 1;
+    harness.key(ENQUEUE);
+    let sentinel = harness.wait_for_started(job_id);
+    harness.pipe_to(sentinel, "finish");
+    harness.wait_for(&format!("finished {job_id} Succeeded"));
+    assert_never_rendered(&harness, "pipe job_alive");
 }
 
 #[test]
