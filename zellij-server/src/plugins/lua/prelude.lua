@@ -145,6 +145,67 @@ function zellij.close_self()
   return dispatch("close_self")
 end
 
+--- Files ---------------------------------------------------------------------------------------
+---
+--- Sugar over the `fs_*` commands, which the catch-all below already makes reachable as
+--- `zellij.fs_read(...)`. The table exists so that a plugin reads `zellij.fs.read`, which is how
+--- the same thing is spelled in every other language a plugin author has used.
+---
+--- Paths are the ones the wasm runtime preopens: `/host` is the plugin's own folder (normally
+--- where the session was started), `/data` is per-session scratch, `/cache` outlives the session,
+--- and `/tmp` is shared by every plugin. A relative path is read against `/host`. Reaching
+--- outside all four needs the `full_hd_access` permission on top of `read_files`/`write_files`.
+---
+--- Every one of these raises on failure rather than returning nil, so wrap in `pcall` when a
+--- missing file is an ordinary outcome rather than a bug.
+zellij.fs = {}
+
+--- Read a whole file and return it as a string. `max_bytes` asks for less than the host's own
+--- ceiling; it cannot ask for more.
+function zellij.fs.read(path, max_bytes)
+  return dispatch("fs_read", { path = path, max_bytes = max_bytes })
+end
+
+--- List a folder. Returns an array of `{ path = ..., metadata = ... }`, with each path spelled
+--- in the same root that was asked for, so it can be passed straight back to `read`.
+function zellij.fs.list(path)
+  return dispatch("fs_list", { path = path })
+end
+
+--- Metadata for one path (`is_dir`, `is_file`, `is_symlink`, `len`), or nil if nothing is there.
+--- This is the way to ask whether a file exists without a `pcall` around `read`.
+function zellij.fs.metadata(path)
+  return dispatch("fs_metadata", { path = path })
+end
+
+--- Write `contents`, replacing the file. `opts.append` adds to it instead, and
+--- `opts.create_dirs` makes the folders above it first.
+function zellij.fs.write(path, contents, opts)
+  opts = opts or {}
+  return dispatch("fs_write", {
+    path = path,
+    contents = contents,
+    append = opts.append and true or false,
+    create_dirs = opts.create_dirs and true or false,
+  })
+end
+
+--- Remove a file, or a folder when `recursive` is true.
+function zellij.fs.remove(path, recursive)
+  return dispatch("fs_remove", { path = path, recursive = recursive and true or false })
+end
+
+--- Create a folder. `all` creates the folders above it too, and succeeds if it already exists.
+function zellij.fs.mkdir(path, all)
+  return dispatch("fs_create_dir", { path = path, all = all and true or false })
+end
+
+--- Rename a path. Both ends are confined the same way, so this cannot move a file out of the
+--- plugin's folders any more than a write could put one there.
+function zellij.fs.rename(from, to)
+  return dispatch("fs_rename", { from = from, to = to })
+end
+
 --- Call a host command by name, for one this prelude has no named wrapper for yet. It reaches
 --- only commands the host knows how to marshal, so an unrecognized name is an error rather than
 --- a silent no-op.

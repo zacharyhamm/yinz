@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -382,6 +382,165 @@ pub mod plugin_command {
         QueueStatusPayload(super::QueueStatusPayload),
         #[prost(message, tag="202")]
         FinishQueueJobPayload(super::FinishQueueJobPayload),
+        #[prost(message, tag="203")]
+        FsReadPayload(super::FsReadPayload),
+        #[prost(message, tag="204")]
+        FsListPayload(super::FsListPayload),
+        #[prost(message, tag="205")]
+        FsMetadataPayload(super::FsMetadataPayload),
+        #[prost(message, tag="206")]
+        FsWritePayload(super::FsWritePayload),
+        #[prost(message, tag="207")]
+        FsRemovePayload(super::FsRemovePayload),
+        #[prost(message, tag="208")]
+        FsCreateDirPayload(super::FsCreateDirPayload),
+        #[prost(message, tag="209")]
+        FsRenamePayload(super::FsRenamePayload),
+    }
+}
+// Filesystem access, confined by the server to the plugin's four roots
+// (/host, /data, /cache, /tmp) unless the plugin also holds FullHdAccess.
+
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsReadPayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag="2")]
+    pub max_bytes: ::core::option::Option<u64>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsListPayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsMetadataPayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsWritePayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub contents: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag="3")]
+    pub append: bool,
+    #[prost(bool, tag="4")]
+    pub create_dirs: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsRemovePayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bool, tag="2")]
+    pub recursive: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsCreateDirPayload {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bool, tag="2")]
+    pub all: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsRenamePayload {
+    #[prost(string, tag="1")]
+    pub from: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub to: ::prost::alloc::string::String,
+}
+// Every Fs command answers, so that a failure can be raised rather than logged.
+
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsReadResponse {
+    #[prost(oneof="fs_read_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<fs_read_response::Result>,
+}
+/// Nested message and enum types in `FsReadResponse`.
+pub mod fs_read_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(bytes, tag="1")]
+        Contents(::prost::alloc::vec::Vec<u8>),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsEntry {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="2")]
+    pub metadata: ::core::option::Option<super::event::FileMetadata>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsListResponse {
+    #[prost(oneof="fs_list_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<fs_list_response::Result>,
+}
+/// Nested message and enum types in `FsListResponse`.
+pub mod fs_list_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Entries(super::FsEntryList),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsEntryList {
+    #[prost(message, repeated, tag="1")]
+    pub entries: ::prost::alloc::vec::Vec<FsEntry>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsMetadataResponse {
+    #[prost(oneof="fs_metadata_response::Result", tags="1, 2, 3")]
+    pub result: ::core::option::Option<fs_metadata_response::Result>,
+}
+/// Nested message and enum types in `FsMetadataResponse`.
+pub mod fs_metadata_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Metadata(super::super::event::FileMetadata),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+        #[prost(bool, tag="3")]
+        NotFound(bool),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FsMutateResponse {
+    #[prost(oneof="fs_mutate_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<fs_mutate_response::Result>,
+}
+/// Nested message and enum types in `FsMutateResponse`.
+pub mod fs_mutate_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(bool, tag="1")]
+        Success(bool),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -2957,6 +3116,13 @@ pub enum CommandName {
     CancelQueueJob = 259,
     QueueStatus = 260,
     FinishQueueJob = 261,
+    FsRead = 262,
+    FsList = 263,
+    FsMetadata = 264,
+    FsWrite = 265,
+    FsRemove = 266,
+    FsCreateDir = 267,
+    FsRename = 268,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3200,6 +3366,13 @@ impl CommandName {
             CommandName::CancelQueueJob => "CancelQueueJob",
             CommandName::QueueStatus => "QueueStatus",
             CommandName::FinishQueueJob => "FinishQueueJob",
+            CommandName::FsRead => "FsRead",
+            CommandName::FsList => "FsList",
+            CommandName::FsMetadata => "FsMetadata",
+            CommandName::FsWrite => "FsWrite",
+            CommandName::FsRemove => "FsRemove",
+            CommandName::FsCreateDir => "FsCreateDir",
+            CommandName::FsRename => "FsRename",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3440,6 +3613,13 @@ impl CommandName {
             "CancelQueueJob" => Some(Self::CancelQueueJob),
             "QueueStatus" => Some(Self::QueueStatus),
             "FinishQueueJob" => Some(Self::FinishQueueJob),
+            "FsRead" => Some(Self::FsRead),
+            "FsList" => Some(Self::FsList),
+            "FsMetadata" => Some(Self::FsMetadata),
+            "FsWrite" => Some(Self::FsWrite),
+            "FsRemove" => Some(Self::FsRemove),
+            "FsCreateDir" => Some(Self::FsCreateDir),
+            "FsRename" => Some(Self::FsRename),
             _ => None,
         }
     }

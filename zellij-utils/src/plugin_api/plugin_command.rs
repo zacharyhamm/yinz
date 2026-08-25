@@ -17,6 +17,7 @@ pub use super::generated_api::api::{
         data_define_response, data_fetch_response, data_unwatch_response, data_watch_response,
         delete_layout_response, dump_layout_response, dump_session_layout_response,
         edit_layout_response, enqueue_queue_job_response, focus_or_create_tab_response,
+        fs_list_response, fs_metadata_response, fs_mutate_response, fs_read_response,
         get_focused_pane_info_response, get_pane_cwd_response, get_pane_git_probe_response,
         get_pane_pid_response, get_pane_running_command_response, get_session_list_response,
         hide_floating_panes_response, highlight_style::Style as ProtobufHighlightStyleVariant,
@@ -57,6 +58,11 @@ pub use super::generated_api::api::{
         FixedOrPercentValue as ProtobufFixedOrPercentValue, FloatMultiplePanesPayload,
         FloatingPaneCoordinates as ProtobufFloatingPaneCoordinates,
         FocusOrCreateTabResponse as ProtobufFocusOrCreateTabResponse, FocusedPaneInfo,
+        FsCreateDirPayload, FsEntry as ProtobufFsEntry, FsEntryList as ProtobufFsEntryList,
+        FsListPayload, FsListResponse as ProtobufFsListResponse, FsMetadataPayload,
+        FsMetadataResponse as ProtobufFsMetadataResponse,
+        FsMutateResponse as ProtobufFsMutateResponse, FsReadPayload,
+        FsReadResponse as ProtobufFsReadResponse, FsRemovePayload, FsRenamePayload, FsWritePayload,
         GenerateRandomNamePayload,
         GenerateRandomNameResponse as ProtobufGenerateRandomNameResponse,
         GenerateWebLoginTokenPayload, GetFocusedPaneInfoPayload,
@@ -1694,6 +1700,55 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::WatchFilesystem) => match protobuf_plugin_command.payload {
                 Some(_) => Err("WatchFilesystem should have no payload, found a payload"),
                 None => Ok(PluginCommand::WatchFilesystem),
+            },
+            Some(CommandName::FsRead) => match protobuf_plugin_command.payload {
+                Some(Payload::FsReadPayload(payload)) => Ok(PluginCommand::FsRead {
+                    path: PathBuf::from(payload.path),
+                    max_bytes: payload.max_bytes.map(|b| b as usize),
+                }),
+                _ => Err("Mismatched payload for FsRead"),
+            },
+            Some(CommandName::FsList) => match protobuf_plugin_command.payload {
+                Some(Payload::FsListPayload(payload)) => Ok(PluginCommand::FsList {
+                    path: PathBuf::from(payload.path),
+                }),
+                _ => Err("Mismatched payload for FsList"),
+            },
+            Some(CommandName::FsMetadata) => match protobuf_plugin_command.payload {
+                Some(Payload::FsMetadataPayload(payload)) => Ok(PluginCommand::FsMetadata {
+                    path: PathBuf::from(payload.path),
+                }),
+                _ => Err("Mismatched payload for FsMetadata"),
+            },
+            Some(CommandName::FsWrite) => match protobuf_plugin_command.payload {
+                Some(Payload::FsWritePayload(payload)) => Ok(PluginCommand::FsWrite {
+                    path: PathBuf::from(payload.path),
+                    contents: payload.contents,
+                    append: payload.append,
+                    create_dirs: payload.create_dirs,
+                }),
+                _ => Err("Mismatched payload for FsWrite"),
+            },
+            Some(CommandName::FsRemove) => match protobuf_plugin_command.payload {
+                Some(Payload::FsRemovePayload(payload)) => Ok(PluginCommand::FsRemove {
+                    path: PathBuf::from(payload.path),
+                    recursive: payload.recursive,
+                }),
+                _ => Err("Mismatched payload for FsRemove"),
+            },
+            Some(CommandName::FsCreateDir) => match protobuf_plugin_command.payload {
+                Some(Payload::FsCreateDirPayload(payload)) => Ok(PluginCommand::FsCreateDir {
+                    path: PathBuf::from(payload.path),
+                    all: payload.all,
+                }),
+                _ => Err("Mismatched payload for FsCreateDir"),
+            },
+            Some(CommandName::FsRename) => match protobuf_plugin_command.payload {
+                Some(Payload::FsRenamePayload(payload)) => Ok(PluginCommand::FsRename {
+                    from: PathBuf::from(payload.from),
+                    to: PathBuf::from(payload.to),
+                }),
+                _ => Err("Mismatched payload for FsRename"),
             },
             Some(CommandName::GetSessionList) => match protobuf_plugin_command.payload {
                 Some(Payload::GetSessionListPayload(_)) => Ok(PluginCommand::GetSessionList),
@@ -4003,6 +4058,60 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::WatchFilesystem => Ok(ProtobufPluginCommand {
                 name: CommandName::WatchFilesystem as i32,
                 payload: None,
+            }),
+            PluginCommand::FsRead { path, max_bytes } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsRead as i32,
+                payload: Some(Payload::FsReadPayload(FsReadPayload {
+                    path: path.display().to_string(),
+                    max_bytes: max_bytes.map(|b| b as u64),
+                })),
+            }),
+            PluginCommand::FsList { path } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsList as i32,
+                payload: Some(Payload::FsListPayload(FsListPayload {
+                    path: path.display().to_string(),
+                })),
+            }),
+            PluginCommand::FsMetadata { path } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsMetadata as i32,
+                payload: Some(Payload::FsMetadataPayload(FsMetadataPayload {
+                    path: path.display().to_string(),
+                })),
+            }),
+            PluginCommand::FsWrite {
+                path,
+                contents,
+                append,
+                create_dirs,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsWrite as i32,
+                payload: Some(Payload::FsWritePayload(FsWritePayload {
+                    path: path.display().to_string(),
+                    contents,
+                    append,
+                    create_dirs,
+                })),
+            }),
+            PluginCommand::FsRemove { path, recursive } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsRemove as i32,
+                payload: Some(Payload::FsRemovePayload(FsRemovePayload {
+                    path: path.display().to_string(),
+                    recursive,
+                })),
+            }),
+            PluginCommand::FsCreateDir { path, all } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsCreateDir as i32,
+                payload: Some(Payload::FsCreateDirPayload(FsCreateDirPayload {
+                    path: path.display().to_string(),
+                    all,
+                })),
+            }),
+            PluginCommand::FsRename { from, to } => Ok(ProtobufPluginCommand {
+                name: CommandName::FsRename as i32,
+                payload: Some(Payload::FsRenamePayload(FsRenamePayload {
+                    from: from.display().to_string(),
+                    to: to.display().to_string(),
+                })),
             }),
             PluginCommand::GetSessionList => Ok(ProtobufPluginCommand {
                 name: CommandName::GetSessionList as i32,
