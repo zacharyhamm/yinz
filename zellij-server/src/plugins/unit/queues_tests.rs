@@ -307,3 +307,25 @@ mod properties {
         assert!(ended.iter().all(|id| *id >= 1 && *id <= enqueued));
     }
 }
+
+#[test]
+fn shut_down_drops_pending_jobs_and_launches_nothing_more() {
+    let mut queues = Queues::default();
+    enqueue(&mut queues, "merge", "a");
+    enqueue(&mut queues, "merge", "b");
+    let mut pid = 10;
+    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1]);
+
+    queues.shut_down();
+    assert!(queues.is_shut_down());
+    assert!(queues.queue_snapshot("merge").unwrap().pending.is_empty());
+
+    // the running job still ends the normal way when the host unloads it...
+    let finished = queues.on_plugin_unloaded(10).unwrap();
+    assert_eq!(finished.job_id, 1);
+    assert_eq!(finished.outcome, QueueJobOutcome::Aborted);
+    // ...but nothing takes its slot, not even a job enqueued afterwards
+    assert!(queues.pop_launchable("merge").is_none());
+    enqueue(&mut queues, "merge", "c");
+    assert!(queues.pop_launchable("merge").is_none());
+}

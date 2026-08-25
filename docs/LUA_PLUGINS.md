@@ -239,8 +239,9 @@ local queues = zellij.queue_status { queue = "merge" }   -- {} for every queue
 zellij.cancel_queue_job { job_id = job_id }
 ```
 
-The job is an ordinary plugin with no `render`. It learns what it is from its configuration and
-ends itself by reporting:
+The job is an ordinary plugin with no `render`. It is loaded `shared`, so it is one instance for
+the whole session however many clients are attached (its configuration carries `shared = "true"`).
+It learns what it is from its configuration and ends itself by reporting:
 
 ```lua
 local zellij = require("zellij")

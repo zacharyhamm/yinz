@@ -150,6 +150,9 @@ pub struct Queues {
     queues: BTreeMap<String, Queue>,
     next_job_id: JobId,
     plugin_to_queue: HashMap<PluginId, String>,
+    /// Set once the session is going away. Nothing launches after this: the plugin thread has
+    /// stopped listening, so a job started now would run with nobody to unload it.
+    shut_down: bool,
 }
 
 impl Queues {
@@ -230,6 +233,9 @@ impl Queues {
     /// [`Queues::on_job_launched`] or [`Queues::on_launch_failed`] before popping again, which is
     /// what keeps `running.len() <= concurrency` no matter how many launches fail.
     pub fn pop_launchable(&mut self, queue: &str) -> Option<QueuedJob> {
+        if self.shut_down {
+            return None;
+        }
         let queue = self.queues.get_mut(queue)?;
         if !queue.has_free_slot() {
             return None;
@@ -261,6 +267,22 @@ impl Queues {
             .remove(&plugin_id)?;
         let (outcome, payload) = running.outcome.unwrap_or((QueueJobOutcome::Aborted, None));
         Some(FinishedJob::new(running.job, outcome, payload))
+    }
+
+    /// The session is exiting. Drop everything that has not started and refuse to start anything
+    /// more. Jobs already running are unloaded by the host's cleanup and come back through
+    /// [`Queues::on_plugin_unloaded`] as usual; their events go to a channel nobody reads, which
+    /// is fine. What must not happen is the unload hook pumping the queue and launching a plugin
+    /// after the plugin thread has stopped listening - that plugin would never be unloaded.
+    pub fn shut_down(&mut self) {
+        self.shut_down = true;
+        for queue in self.queues.values_mut() {
+            queue.pending.clear();
+        }
+    }
+
+    pub fn is_shut_down(&self) -> bool {
+        self.shut_down
     }
 
     #[cfg(test)]

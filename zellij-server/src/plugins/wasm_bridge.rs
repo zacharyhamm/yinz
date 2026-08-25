@@ -196,6 +196,13 @@ pub struct WasmBridge {
     // message,
     // payload>
     loading_plugins: HashSet<(PluginId, RunPlugin)>, // tracks loading plugins without handles
+    /// Plugins unloaded before their loader ran. `unload_plugin` marks a plugin here when it is
+    /// in `loading_plugins` but not yet in the `PluginMap`; the loader closure checks the mark
+    /// and gives up instead of instantiating. Both sides do so **under the `plugin_map` lock**,
+    /// which the loader holds from before instantiation until after `load` returns, so an unload
+    /// either finds the runtime in the map or the loader finds the mark - never neither. Do not
+    /// move either check outside that lock.
+    unloaded_while_loading: Arc<Mutex<HashSet<PluginId>>>,
     pending_plugin_reloads: HashSet<RunPlugin>,
     /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
     /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
@@ -285,6 +292,7 @@ impl WasmBridge {
             cached_resizes_for_pending_plugins: HashMap::new(),
             cached_worker_messages: HashMap::new(),
             loading_plugins: HashSet::new(),
+            unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
             queues: Default::default(),
             zellij_cwd,
@@ -382,6 +390,7 @@ impl WasmBridge {
                 let plugin_executor = self.plugin_executor.clone();
                 let senders = self.senders.clone();
                 let zellij_cwd = cwd.unwrap_or_else(|| self.zellij_cwd.clone());
+                let unloaded_while_loading = self.unloaded_while_loading.clone();
 
                 // Check if we need to download (async I/O required)
                 let needs_download = matches!(plugin.location, RunPluginLocation::Remote(_));
@@ -404,7 +413,12 @@ impl WasmBridge {
                         );
                         let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
-                        if let RunPluginLocation::Remote(url) = &plugin.location {
+                        // Only an optimisation - the check that counts is the locked one below.
+                        if unloaded_while_loading.lock().unwrap().contains(&plugin_id) {
+                            log::info!(
+                                "plugin {plugin_id} was unloaded before its download, skipping it"
+                            );
+                        } else if let RunPluginLocation::Remote(url) = &plugin.location {
                             let file_name: String = PortableHash::default()
                                 .hash128(url.as_bytes())
                                 .iter()
@@ -427,6 +441,7 @@ impl WasmBridge {
                             }
                         }
 
+                        let loader_executor = plugin_executor.clone();
                         plugin_executor.execute_plugin_load(
                             plugin_id,
                             move |senders: ThreadSenders,
@@ -435,6 +450,14 @@ impl WasmBridge {
                                   plugin_cache: PluginCache,
                                   engine| {
                                 let mut plugin_map = plugin_map.lock().unwrap();
+                                if load_was_cancelled(
+                                    &unloaded_while_loading,
+                                    plugin_id,
+                                    &senders,
+                                    &loader_executor,
+                                ) {
+                                    return;
+                                }
                                 match PluginLoader::new(
                                     skip_cache,
                                     loading_context,
@@ -484,6 +507,14 @@ impl WasmBridge {
                               plugin_cache: PluginCache,
                               engine: Engine| {
                             let mut plugin_map = plugin_map.lock().unwrap();
+                            if load_was_cancelled(
+                                &unloaded_while_loading,
+                                plugin_id,
+                                &senders,
+                                &plugin_executor,
+                            ) {
+                                return;
+                            }
                             match PluginLoader::new(
                                 skip_cache,
                                 loading_context,
@@ -540,11 +571,21 @@ impl WasmBridge {
         info!("Bye from plugin {}", pid);
         self.shared_plugin_ids.remove(&pid);
 
-        // Remove from plugin_map on main thread
+        // Remove from plugin_map on main thread. A plugin whose loader has not run yet has
+        // nothing to remove; it is marked instead, under the same lock, so the loader gives up
+        // when its turn comes - see `unloaded_while_loading`.
         let plugins_to_cleanup: Vec<_> = {
             let mut plugin_map = self.plugin_map.lock().unwrap();
-            plugin_map.remove_plugins(pid).into_iter().collect()
+            let removed: Vec<_> = plugin_map.remove_plugins(pid).into_iter().collect();
+            let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
+            if removed.is_empty() && still_loading {
+                self.unloaded_while_loading.lock().unwrap().insert(pid);
+            }
+            removed
         };
+        self.loading_plugins.retain(|(p_id, _)| *p_id != pid);
+        self.cached_events_for_pending_plugins.remove(&pid);
+        self.cached_resizes_for_pending_plugins.remove(&pid);
 
         // Schedule cleanup on each plugin's pinned thread
         for ((plugin_id, client_id), (running_plugin, subscriptions, workers)) in plugins_to_cleanup
@@ -726,6 +767,9 @@ impl WasmBridge {
     /// Start jobs on `queue` until it is at its limit or empty, one at a time so that a launch
     /// that fails frees its slot for the next before we decide whether there is room.
     pub fn pump_queue(&mut self, queue: &str) {
+        if self.queues.lock().unwrap().is_shut_down() {
+            return;
+        }
         let mut finished = vec![];
         loop {
             let job = self.queues.lock().unwrap().pop_launchable(queue);
@@ -779,6 +823,10 @@ impl WasmBridge {
         run_plugin
             .configuration
             .insert(Self::QUEUE_ENQUEUER_CONFIG_KEY, job.enqueuer.0.to_string());
+        // A job is session work, not per-client UI: one instance, however many clients are
+        // attached now or later. Without this the loader would instantiate it once per client,
+        // each copy running the same job. Set last so the enqueuer's configuration cannot undo it.
+        run_plugin.configuration.insert("shared", "true".to_owned());
         let (plugin_id, client_id) = self.load_plugin(
             &Some(run_plugin.clone()),
             None,
@@ -1643,6 +1691,8 @@ impl WasmBridge {
     }
 
     pub fn cleanup(&mut self) {
+        // Before any unload: the unload hook pumps queues, and nothing may start now.
+        self.queues.lock().unwrap().shut_down();
         self.loading_plugins.clear();
 
         let plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
@@ -2318,6 +2368,24 @@ impl WasmBridge {
 
         Ok(())
     }
+}
+
+/// The loader's first move, with the `PluginMap` lock held: if the plugin was unloaded while it
+/// was still loading, tidy up what `load_plugin` set in motion and report that there is nothing
+/// to do. See `WasmBridge::unloaded_while_loading` for why the lock matters.
+fn load_was_cancelled(
+    unloaded_while_loading: &Arc<Mutex<HashSet<PluginId>>>,
+    plugin_id: PluginId,
+    senders: &ThreadSenders,
+    plugin_executor: &Arc<PinnedExecutor>,
+) -> bool {
+    if !unloaded_while_loading.lock().unwrap().remove(&plugin_id) {
+        return false;
+    }
+    log::info!("plugin {plugin_id} was unloaded before it finished loading, not starting it");
+    let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+    plugin_executor.unregister_plugin(plugin_id);
+    true
 }
 
 fn handle_plugin_successful_loading(
