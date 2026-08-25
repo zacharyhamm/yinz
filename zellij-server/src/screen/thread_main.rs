@@ -1961,6 +1961,18 @@ pub(crate) fn screen_thread_main(
                 };
                 screen.log_and_report_session_state()?;
             },
+            ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix) => {
+                // No `log_and_report_session_state`: the prefix is a decoration on
+                // the frame and never enters `current_title`, so nothing a plugin
+                // can see has changed — and the plugin that sets this is reading
+                // that very manifest to decide what to set.
+                if screen
+                    .with_pane(pane_id, |pane| pane.set_title_prefix(prefix))
+                    .is_some()
+                {
+                    screen.render(None)?;
+                }
+            },
             ScreenInstruction::UndoRenamePane(
                 client_id,
                 _completion_tx, // the action ends here, dropping this will release anything

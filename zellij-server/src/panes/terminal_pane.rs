@@ -148,6 +148,14 @@ pub struct TerminalPane {
     pane_name: String,
     prev_pane_name: String,
     remote_host: Option<String>,
+    /// A decoration composed in front of the title, whatever the title is.
+    ///
+    /// Deliberately not `pane_name`: that slot has three writers already (the
+    /// user's rename, the pane's own OSC title, and hocus-agentd's idle
+    /// summary), so anything put there is erased by the next one. A pane's
+    /// checkout is a fact about the pane rather than a name for it, and the
+    /// remote host beside this field is the same kind of fact.
+    title_prefix: Option<String>,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
@@ -1214,13 +1222,31 @@ impl Pane for TerminalPane {
     fn set_remote_host(&mut self, host: Option<String>) {
         self.remote_host = host;
     }
+    fn set_title_prefix(&mut self, prefix: Option<String>) {
+        if self.title_prefix != prefix {
+            self.title_prefix = prefix;
+            self.set_should_render(true);
+        }
+    }
     fn display_title(&self) -> String {
-        match &self.remote_host {
-            Some(host) if self.has_explicit_title() => {
-                format!("{}: {}", host, self.current_title())
-            },
-            Some(host) => host.clone(),
-            None => self.current_title(),
+        // Where the pane is, before what it is doing: the host it runs on, then
+        // the checkout it sits in. Both are stable facts about the pane, so they
+        // read as an address and the title reads as the news.
+        let lead: Vec<&str> = self
+            .remote_host
+            .iter()
+            .chain(self.title_prefix.iter())
+            .map(String::as_str)
+            .collect();
+        if lead.is_empty() {
+            self.current_title()
+        } else if self.has_explicit_title() {
+            format!("{}: {}", lead.join(" "), self.current_title())
+        } else {
+            // No explicit title means the title is "Pane #3" or the command the
+            // pane was launched with, which says less than the address does — so
+            // the address stands alone rather than introducing a placeholder.
+            lead.join(" ")
         }
     }
     fn stack_list_entry_label(&self) -> String {
@@ -1491,6 +1517,7 @@ impl TerminalPane {
             pane_name: pane_name.clone(),
             prev_pane_name: pane_name,
             remote_host: None,
+            title_prefix: None,
             borderless: false,
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),

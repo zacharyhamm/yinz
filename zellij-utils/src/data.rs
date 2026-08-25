@@ -4215,6 +4215,18 @@ pub enum PluginCommand {
     DataUnwatch {
         watch_id: u64,
     },
+    /// Compose a decoration in front of a pane's title, or drop it with `None`.
+    ///
+    /// Not a rename: the pane's name, its own OSC title and the title a layout gave
+    /// it are all untouched, and so is the `title` every plugin reads off the pane
+    /// manifest. The prefix only shows where a human looks at the pane — its frame
+    /// and its row in a stack list — and survives every rename, which is the point:
+    /// it carries a fact about the pane that the pane's name cannot be trusted to
+    /// keep. Terminal panes only.
+    SetPaneTitlePrefix {
+        pane_id: PaneId,
+        prefix: Option<String>,
+    },
 }
 
 /// The outcome of declaring an entity in the data store.
