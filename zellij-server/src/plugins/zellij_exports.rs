@@ -61,7 +61,7 @@ use zellij_utils::data::{
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
     SaveLayoutResponse, TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::home::{default_layout_dir, default_user_plugin_dir};
+use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_utils::input::layout::PercentOrFixed;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
@@ -1123,7 +1123,14 @@ fn get_layout_dir(env: &mut PluginEnv) {
 /// `get_layout_dir` uses - a plugin that cannot be told where to write says so rather than
 /// guessing at a path.
 fn get_user_plugin_dir(env: &mut PluginEnv) {
-    let user_plugin_dir = env.user_plugin_dir.clone().or_else(default_user_plugin_dir);
+    // Absolutized here as well as in `home.rs`, because this is the one place the folder crosses
+    // into a plugin: a plugin has no cwd to join a relative path onto, so whatever route the
+    // value took to `PluginEnv` it must arrive absolute or not at all.
+    let user_plugin_dir = env
+        .user_plugin_dir
+        .clone()
+        .or_else(default_user_plugin_dir)
+        .map(|dir| absolute_lexical(&dir));
 
     let user_plugin_dir_string = user_plugin_dir
         .and_then(|path| path.to_str().map(|s| s.to_string()))

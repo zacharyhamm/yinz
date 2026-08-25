@@ -481,11 +481,12 @@ impl SessionMetaData {
                     layout_dir: new_config.options.layout_dir,
                     // Re-derived rather than passed through: `WasmBridge::reconfigure` assigns
                     // this verbatim, so a config that does not name the option explicitly would
-                    // otherwise wipe the folder derived at session start.
-                    user_plugin_dir: new_config
-                        .options
-                        .user_plugin_dir
-                        .or_else(|| user_plugin_dir_or_default(self.config_dir.clone())),
+                    // otherwise wipe the folder derived at session start. The server's cwd has
+                    // not moved since then, so a relative folder resolves to the same place.
+                    user_plugin_dir: user_plugin_dir_or_default(
+                        new_config.options.user_plugin_dir,
+                        self.config_dir.clone(),
+                    ),
                     builtin_plugins_dir: new_config.options.builtin_plugins_dir,
                     was_written_to_disk: config_was_written_to_disk,
                 })
@@ -2133,10 +2134,10 @@ fn init_session(
             // The session's *active* config dir, not whichever conventional one happens to exist:
             // a session started with `--config-dir` must load plugins from the folder
             // `zellij setup --check` names for it.
-            let user_plugin_dir = config_options
-                .user_plugin_dir
-                .clone()
-                .or_else(|| user_plugin_dir_or_default(cli_assets.config_dir.clone()));
+            let user_plugin_dir = user_plugin_dir_or_default(
+                config_options.user_plugin_dir.clone(),
+                cli_assets.config_dir.clone(),
+            );
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
             let hooks = config.hooks.clone();
