@@ -197,13 +197,20 @@ pub const HOCUS_AGENTS_ALIAS: &str = "hocus-agents";
 
 /// The configuration that makes a launched hocus pane an overlay.
 ///
-/// One definition for both halves and both directions. `LaunchOrFocusPlugin { overlay true }`
-/// writes exactly this key, so a launch from a plugin has to match it character for character or
-/// the keybinding and the plugin address two different instances - and the failure looks like a
-/// duplicate pane rather than an error.
+/// One definition for both halves and both directions. `LaunchOrFocusPlugin { overlay true;
+/// awaits_placement true }` writes exactly these keys, so a launch from a plugin has to match them
+/// character for character or the keybinding and the plugin address two different instances - and
+/// the failure looks like a duplicate pane rather than an error.
+///
+/// `awaits_placement` is here for that reason and not because a plugin-opened half needs it any
+/// less: it says "do not paint me at the default geometry I was born with, my owner will place
+/// me", which is what keeps a launched panel from flashing in the middle of the screen on top of
+/// its other half. Both halves place themselves through hocus's `apply_overlay_geometry`, which
+/// is what releases it.
 pub fn overlay_configuration() -> std::collections::BTreeMap<String, String> {
     let mut configuration = std::collections::BTreeMap::new();
     configuration.insert("overlay".to_owned(), "true".to_owned());
+    configuration.insert("awaits_placement".to_owned(), "true".to_owned());
     configuration
 }
 

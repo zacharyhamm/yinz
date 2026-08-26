@@ -139,7 +139,9 @@ impl State {
                 // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
                 // reports a *change* of display area, so a placement it could not land - our pane
                 // not being on a tab yet - would otherwise never be retried. See `State::placed`.
-                if resized || !self.placed {
+                // `!agents_placed` for the same reason, about the other pane - see
+                // `State::agents_placed`.
+                if resized || !self.placed || !self.agents_placed {
                     self.apply_overlay_geometry();
                 }
             }
@@ -201,6 +203,10 @@ impl State {
             });
             if self.agents_tab_index.is_none() {
                 self.agents_plugin = None;
+                // A list that is gone is nothing to place. Said rather than left behind, because
+                // the next one the user opens is a fresh pane at the centered default and the
+                // retry that moves it out of the way reads this.
+                self.agents_placed = true;
             }
         }
         // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
@@ -214,11 +220,15 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
-            // The manifest is what makes a placement possible at all: it names the tab our pane is
-            // on, which is the thing `change_overlay_coordinates` needs to find it. A column still
+            // The manifest is what makes a placement possible at all: it names the tab a pane is
+            // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
             // sitting at the centered default the host gave it is placed here, whichever event
-            // failed to place it first. Converges by construction - the call sets `placed`.
-            if !self.placed {
+            // failed to place it first. Converges by construction - the call sets both flags.
+            //
+            // Either half, and the list's half is the one that had nowhere else to be caught:
+            // `agents_tab_index` was read from this very manifest a few lines up, so this is the
+            // first pass that can place a list which announced itself before it was on a tab.
+            if !self.placed || !self.agents_placed {
                 self.apply_overlay_geometry();
             }
             if own.is_suppressed {

@@ -186,10 +186,17 @@ keybinds {
         // first. The list is its own pane: this reveals it if it was hidden and
         // opens one if there is none, and leaves the conversation exactly as it
         // was — hidden if it was hidden, where it is if it is on screen.
+        //
+        // `awaits_placement` says hocus puts this pane where it goes, so don't
+        // paint it at the centered default it is born with in the meantime —
+        // otherwise opening one half flashes in the middle of the screen, on
+        // top of the other. The key is part of plugin identity, like `overlay`,
+        // so it has to match what the halves launch each other with.
         bind "a" {
             LaunchOrFocusPlugin "hocus-agents" {
                 floating true
                 overlay true
+                awaits_placement true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
@@ -200,6 +207,7 @@ keybinds {
             LaunchOrFocusPlugin "hocus" {
                 floating true
                 overlay true
+                awaits_placement true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"

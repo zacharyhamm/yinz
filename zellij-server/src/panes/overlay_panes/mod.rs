@@ -176,6 +176,25 @@ pub struct OverlayCarry {
     /// the resize wrote travel in `OverlayPlacement` already, only the "the user said so" bit does
     /// not.
     pub size_is_user_stated: bool,
+    /// This overlay is placed by its owner and has not been placed yet, so it is not painted.
+    ///
+    /// **Not `hidden`, deliberately.** `hidden` is the user setting a pane aside: it moves clients
+    /// off the pane, refuses focus, and is reported as `is_suppressed` - which is the very field a
+    /// plugin reads to tell that it was hidden or revealed. A pane that arrived a frame ago and is
+    /// waiting to be told where it goes has been neither hidden nor revealed, and saying so in
+    /// that field would have hocus believe the user had put it away. This suppresses *painting*
+    /// and nothing else: the pane exists, can be focused, and reports itself visible.
+    ///
+    /// What it buys is the flash. An overlay that named no coordinates is born half the surface,
+    /// centered (`OverlayPanes::base_geom`), and only its owner moves it out of there - a round
+    /// trip later, and only once the pane is on a tab for the placement to find. Until then the
+    /// panel that belongs in the corner is painted in the middle of the screen, on top of its
+    /// other half. Asked for at launch with `awaits_placement true`
+    /// (`RunPluginOrAlias::awaits_placement`), and released by the first
+    /// `change_pane_coordinates` - or by a `reapply_coordinates`, which is the safety valve: an
+    /// overlay whose owner never places it becomes visible at the default on the next resize
+    /// rather than being invisible for as long as it lives.
+    pub awaiting_placement: bool,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -632,9 +651,9 @@ impl OverlayPanes {
         self.z_indices
             .iter()
             .filter(|pane_id| {
-                self.panes
-                    .get(pane_id)
-                    .is_some_and(|overlay| !overlay.carry.hidden)
+                self.panes.get(pane_id).is_some_and(|overlay| {
+                    !overlay.carry.hidden && !overlay.carry.awaiting_placement
+                })
             })
             .copied()
             .collect()
@@ -962,6 +981,9 @@ impl OverlayPanes {
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
         overlay.coordinates = new_coordinates;
+        // Somebody has placed it, which is the whole of what it was waiting for. See
+        // `OverlayCarry::awaiting_placement`.
+        overlay.carry.awaiting_placement = false;
 
         self.set_pane_frames().non_fatal();
         Ok(())
@@ -1003,6 +1025,10 @@ impl OverlayPanes {
             let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
             geom.adjust_coordinates(overlay.coordinates.clone(), surface, origin);
             overlay.pane.set_geom(geom);
+            // The safety valve for `awaiting_placement`: an overlay nobody ever placed would
+            // otherwise be invisible for as long as it lived. A resize shows it where it was born,
+            // which is the behaviour it would have had without the flag at all.
+            overlay.carry.awaiting_placement = false;
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -1366,11 +1392,12 @@ impl OverlayPanes {
 
         // This loop feeds `output.add_pane_contents` and does not derive from `stack_layer_ids`,
         // so it needs the hidden filter of its own - otherwise a hidden overlay's contents reach
-        // the render report with no geometry ever drawn for them.
+        // the render report with no geometry ever drawn for them. Same for an overlay still
+        // waiting to be placed, whose geometry is the centered default it was born with.
         for (pane_id, overlay) in self
             .panes
             .iter()
-            .filter(|(_, overlay)| !overlay.carry.hidden)
+            .filter(|(_, overlay)| !overlay.carry.hidden && !overlay.carry.awaiting_placement)
         {
             match pane_id {
                 PaneId::Terminal(_) => {

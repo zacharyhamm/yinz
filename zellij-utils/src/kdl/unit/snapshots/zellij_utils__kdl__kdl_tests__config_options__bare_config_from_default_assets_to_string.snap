@@ -153,6 +153,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus-agents" {
                 floating true
                 move_to_focused_tab true
+                awaits_placement true
                 overlay true
             }
             SwitchToMode "normal"
@@ -161,6 +162,7 @@ keybinds clear-defaults=true {
             LaunchOrFocusPlugin "hocus" {
                 floating true
                 move_to_focused_tab true
+                awaits_placement true
                 overlay true
             }
             SwitchToMode "normal"

@@ -1500,6 +1500,13 @@ impl State {
         };
         let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
+        if announced {
+            // `agents_tab_index` was about the *previous* id and is the evidence
+            // `apply_overlay_geometry` reads to decide whether a placement landed. Left standing it
+            // would say this pane was already placed, and the retry that exists for exactly this
+            // case would never run.
+            self.agents_tab_index = None;
+        }
         // This is the only word hocus gets of the list's id, and it can arrive after the
         // `TabUpdate` that placed the conversation - in which case that pass placed this pane
         // alone, and no later same-sized update would come back to it, leaving the list at the

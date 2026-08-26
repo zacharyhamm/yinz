@@ -1333,8 +1333,10 @@ impl Action {
                             continue;
                         }
                         let mut node = KdlNode::new(config_key.clone());
-                        if matches!(config_key.as_str(), "overlay" | "modal")
-                            && config_value == "true"
+                        if matches!(
+                            config_key.as_str(),
+                            "overlay" | "modal" | "awaits_placement"
+                        ) && config_value == "true"
                         {
                             node.push(KdlValue::Bool(true));
                         } else {
