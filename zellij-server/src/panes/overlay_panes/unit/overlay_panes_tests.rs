@@ -1286,6 +1286,7 @@ fn a_resize_that_changes_nothing_reports_so() {
 
 /// Growing against the edge of the surface inverts into a shrink, exactly as it does for a
 /// floating pane against the edge of the viewport - the arithmetic is literally the same function.
+/// This is the keyboard strategy, which asks for the inversion.
 #[test]
 fn growing_an_overlay_that_is_already_on_the_boundary_inverts() {
     let mut panes = overlay_panes(80, 20);
@@ -1298,9 +1299,36 @@ fn growing_an_overlay_that_is_already_on_the_boundary_inverts() {
     // 100% wide clamps to the surface, so the right border has nowhere left to go
     let (cols, _) = size(&panes, 1);
     panes
-        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 0))
+        .resize_pane_with_strategies(
+            PaneId::Terminal(1),
+            &[ResizeStrategy::new(
+                Resize::Increase,
+                Some(Direction::Right),
+            )],
+            (5, 0),
+        )
         .unwrap();
     assert_eq!(size(&panes, 1).0, cols - 5);
+}
+
+/// A drag does *not* get that inversion: the mouse builds its strategies with
+/// `invert_on_boundaries: false`, and a pointer pushing the right edge outward past the edge of the
+/// surface means "no further", not "shrink from the left". Inverting here would slide the overlay
+/// out from under the pointer that is pushing it.
+#[test]
+fn dragging_an_overlay_edge_outward_on_the_boundary_does_not_invert() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("100%", "50%"),
+    );
+    let before = size(&panes, 1);
+    assert!(!panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 0))
+        .unwrap());
+    assert_eq!(size(&panes, 1), before);
 }
 
 /// The keyboard entry point resizes the overlay the client is on, and answers `false` rather than
