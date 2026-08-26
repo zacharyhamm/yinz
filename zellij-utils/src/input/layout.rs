@@ -258,12 +258,9 @@ impl RunPluginOrAlias {
                 Some(Run::Plugin(RunPluginOrAlias::Alias(run_alias))),
             ) => {
                 let without_caller_context = |configuration: Option<&PluginUserConfiguration>| {
-                    let mut configuration = configuration
-                        .map(|configuration| configuration.inner().clone())
-                        .unwrap_or_default();
-                    configuration.remove("caller_cwd");
-                    configuration.remove("caller_terminal_pane_id");
                     configuration
+                        .map(PluginUserConfiguration::without_caller_context)
+                        .unwrap_or_default()
                 };
                 self_alias.name == run_alias.name
                     && without_caller_context(self_alias.configuration.as_ref())
@@ -657,6 +654,25 @@ impl PluginUserConfiguration {
     }
     pub fn inner(&self) -> &BTreeMap<String, String> {
         &self.0
+    }
+    /// This configuration with the per-launch caller context taken out of it.
+    ///
+    /// `caller_cwd` and `caller_terminal_pane_id` are stamped onto a launch by whoever asked for
+    /// it (`Pty::spawn_plugin`, `zellij_exports::message_to_plugin`) rather than written by the
+    /// user, so two launches of the same plugin from two different places carry different values
+    /// for them. They are therefore *not* part of a plugin's identity, and every comparison that
+    /// asks "is this the plugin that is already running?" has to look past them - otherwise a
+    /// plugin asking for its other half by url opens a second copy of a pane that is already on
+    /// screen, which is how hocus ended up with two conversations and an agent list placed by the
+    /// wrong one.
+    ///
+    /// Here rather than copied into each caller: it was three separate closures, one of which
+    /// (the plugin map lookup) was a plain equality that had not been given the treatment at all.
+    pub fn without_caller_context(&self) -> BTreeMap<String, String> {
+        let mut configuration = self.0.clone();
+        configuration.remove("caller_cwd");
+        configuration.remove("caller_terminal_pane_id");
+        configuration
     }
     pub fn insert(&mut self, config_key: impl Into<String>, config_value: impl Into<String>) {
         self.0.insert(config_key.into(), config_value.into());
