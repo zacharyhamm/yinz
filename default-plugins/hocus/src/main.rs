@@ -486,6 +486,14 @@ pub struct State {
     /// have landed. **No list counts as placed**, or the retry would spin on every event for as
     /// long as nobody had opened one.
     pub(crate) agents_placed: bool,
+    /// The surface the last placement was computed against.
+    ///
+    /// Test-only, and a test hook rather than state: `change_overlay_coordinates` is a host call
+    /// with no reply, so nothing in the plugin can otherwise tell a geometry that was restated
+    /// from one that was skipped - `placed` and `agents_placed` answer *where the panes are*, not
+    /// *what they were last placed against*.
+    #[cfg(test)]
+    pub(crate) placed_against: (usize, usize),
     /// Whether this instance might be a hocus restored from a pre-overlay session dump, and so
     /// one that has to hand over to an overlay-configured hocus and close.
     ///
@@ -611,6 +619,8 @@ impl Default for State {
             hide_pending: false,
             placed: false,
             agents_placed: true,
+            #[cfg(test)]
+            placed_against: (0, 0),
             agents_plugin: None,
             open_hidden: false,
             active_project: None,

@@ -492,6 +492,45 @@ fn a_tab_update_retries_the_lists_placement() {
     );
 }
 
+/// A resize that lands while *both* halves are set aside still has to reach the geometry.
+///
+/// Every `TabUpdate` caches the surface whether or not anything is on screen, and it is the only
+/// event that reports one - so a resize skipped because nothing was drawn is never re-reported,
+/// and the pane the user reveals afterwards comes back sized to a screen that is gone.
+#[test]
+fn a_resize_while_both_halves_are_hidden_is_still_placed() {
+    let mut state = placed_state();
+    state.pipe(selection(9));
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
+    assert_eq!(state.placed_against, (50, 200));
+
+    // both away: the conversation on Esc, the list on its own binding
+    state.on_panes(manifest(0, vec![pane(7, true), pane(9, true)]));
+    assert!(state.hidden && !state.agents_visible);
+
+    state.on_tabs(vec![TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 25,
+        display_area_columns: 100,
+        ..TabInfo::default()
+    }]);
+    assert_eq!(
+        state.placed_against,
+        (25, 100),
+        "the surface was cached, so the placement it implies cannot be skipped for being invisible"
+    );
+
+    state.on_panes(manifest(0, vec![pane(7, true), pane(9, false)]));
+    assert!(state.agents_visible);
+    assert_eq!(
+        state.placed_against,
+        (25, 100),
+        "and the list comes back to a geometry that is already the new screen's"
+    );
+}
+
 /// A pane never collapses to nothing: `FloatingPaneCoordinates::new` rejects a zero height, and
 /// what comes back in its place is half the surface, *centered* - the pane would jump to the
 /// middle of the screen rather than simply being small.

@@ -293,6 +293,10 @@ impl State {
         // could have landed. A list nobody has opened is nothing to place and so counts as placed,
         // which is what keeps `on_panes` and `on_tabs` from retrying on every event forever.
         self.agents_placed = self.agents_plugin.is_none() || self.agents_tab_index.is_some();
+        #[cfg(test)]
+        {
+            self.placed_against = (self.surface_rows, self.surface_cols);
+        }
     }
 
     /// Put the conversation away without unloading it, leaving the agent list where it is.
