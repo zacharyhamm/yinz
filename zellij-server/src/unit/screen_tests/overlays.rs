@@ -2260,9 +2260,9 @@ fn a_modal_broken_out_to_a_new_tab_arrives_as_a_modal() {
 }
 
 /// `Tab::resize` was a two-way floating/tiled split, and an overlay answers `false` to the
-/// floating half - so a resize keystroke with a modal up dissolved the tab's stack lists and
-/// resized whatever the modal was covering. An overlay is not resizable; the keystroke does
-/// nothing at all.
+/// floating half - so a resize keystroke with an overlay up dissolved the tab's stack lists and
+/// resized whatever the overlay was covering. It now resizes the overlay itself; what must not
+/// happen, then or now, is the keystroke reaching the panes behind it.
 #[test]
 fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
     let size = Size { cols: 80, rows: 20 };
@@ -2314,10 +2314,123 @@ fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
     );
 }
 
+/// The other half of the same keystroke: it reaches the overlay, rather than being swallowed the
+/// way it was while overlays were unresizable.
+#[test]
+fn a_resize_keystroke_resizes_the_overlay_that_has_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .expect("TEST");
+
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert!(
+        after.cols.as_usize() > before.cols.as_usize(),
+        "the overlay grew: {before:?} -> {after:?}"
+    );
+}
+
+/// The mouse half, end to end. `start_pane_resize_with_mouse` used to look in the floating and
+/// tiled collections only, so an overlay id resolved to neither and errored the whole mouse event
+/// - which is why the ctrl-press branch refused an overlay outright rather than being taught to
+///   find one.
+#[test]
+fn a_ctrl_drag_on_an_overlay_frame_resizes_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 2, overlay_coordinates());
+
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    // the bottom-right corner of the overlay's own frame, dragged 6 columns further right
+    let row = (before.y + before.rows.as_usize() - 1) as i32;
+    let from = (before.x + before.cols.as_usize() - 1) as u16;
+    let mut press = MouseEvent::new_left_press_event(Position::new(row, from));
+    press.ctrl = true;
+    let mut motion = MouseEvent::new_left_motion_event(Position::new(row, from + 6));
+    motion.ctrl = true;
+    let mut release = MouseEvent::new_left_release_event(Position::new(row, from + 6));
+    release.ctrl = true;
+    screen.handle_mouse_event(press, 1);
+    screen.handle_mouse_event(motion, 1);
+    screen.handle_mouse_event(release, 1);
+
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        after.cols.as_usize(),
+        before.cols.as_usize() + 6,
+        "the overlay followed the pointer: {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        (after.x, after.y),
+        (before.x, before.y),
+        "and grew from the corner that was grabbed"
+    );
+}
+
+/// A modal keeps the size its plugin asked for, so the same keystroke changes nothing anywhere -
+/// not the modal, and not the pane behind it.
+#[test]
+fn a_resize_keystroke_on_a_modal_changes_nothing() {
+    let mut screen = screen_with_diverged_tab_ids();
+    let modal = PaneId::Terminal(42);
+    open_modal_terminal_in_tab(&mut screen, 2, modal);
+    screen.tabs.get_mut(&2).expect("TEST").set_force_render();
+
+    let before = screen.tabs[&2]
+        .get_pane_with_id(modal)
+        .expect("TEST")
+        .position_and_size();
+
+    screen
+        .tabs
+        .get_mut(&2)
+        .expect("TEST")
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .expect("TEST");
+
+    assert_eq!(
+        screen.tabs[&2]
+            .get_pane_with_id(modal)
+            .expect("TEST")
+            .position_and_size(),
+        before,
+        "a modal is sized by its plugin, not by the user"
+    );
+}
+
 /// `active_pane_is_flush_with_edge` is the sole input to
 /// `Screen::resize_global_pane_from_adjacent_tab_pane`, and it excused only *floating* active
 /// panes. An overlay that happened to reach an edge of the surface therefore let a resize
-/// keystroke aimed at nothing in particular resize a global pane instead.
+/// keystroke aimed at nothing in particular resize a global pane instead. Still true now that the
+/// keystroke resizes the overlay: what it must never do is escape to another layer.
 #[test]
 fn a_resize_keystroke_on_an_overlay_does_not_reach_a_global_pane() {
     let size = Size { cols: 80, rows: 20 };

@@ -108,7 +108,7 @@ enum MouseAction {
     StartResize {
         pane_id: PaneId,
         edge: PaneEdge,
-        is_floating: bool,
+        target: ResizeDragTarget,
         position: Position,
     },
     ContinueResize {
@@ -209,13 +209,25 @@ pub enum PaneEdge {
     BottomRight,
 }
 
+/// Which collection is holding a mouse *resize*, while one is in flight.
+///
+/// The resize twin of `MouseDragTarget`, and a third state rather than `is_floating: bool`:
+/// since overlays gained a resize they are neither floating nor tiled, and a boolean would send
+/// one to `tiled_panes` - which does not hold it, and would error the whole mouse event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDragTarget {
+    Tiled,
+    Floating,
+    Overlay,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneResizeState {
     pub pane_id: PaneId,
     pub edge: PaneEdge,
     pub start_position: Position,
     pub start_geom: PaneGeom,
-    pub is_floating: bool,
+    pub target: ResizeDragTarget,
 }
 
 /// Which collection is holding a mouse drag, while one is in flight.
@@ -239,6 +251,10 @@ struct ClickedPaneDetails {
     /// they answer `false` to both `panes_contain` *and* the layer-visibility flag, so the frame
     /// branches below had no way to tell an overlay from a tiled pane and treated it as one.
     is_overlay: bool,
+    /// An overlay the user may resize - one that is not a modal. Separate from `is_overlay`
+    /// because the two frame branches answer differently: every overlay is draggable, only a
+    /// non-modal one is resizable.
+    overlay_is_resizable: bool,
     terminal_wants_mouse: bool,
 }
 
@@ -377,6 +393,17 @@ fn edge_and_delta_to_strategies(
 /// this reason.
 fn drag_should_be_tracked(pane_id: PaneId, pane: &dyn Pane) -> bool {
     pane.supports_mouse_selection() || matches!(pane_id, PaneId::Plugin(_))
+}
+
+/// Which collection a frame press belongs to, for the resize that press starts.
+fn resize_target(details: &ClickedPaneDetails) -> ResizeDragTarget {
+    if details.is_overlay {
+        ResizeDragTarget::Overlay
+    } else if details.is_floating {
+        ResizeDragTarget::Floating
+    } else {
+        ResizeDragTarget::Tiled
+    }
 }
 
 pub struct MouseHandler;
@@ -525,6 +552,7 @@ impl MouseHandler {
     ) -> Option<ClickedPaneDetails> {
         let is_floating = tab.floating_panes.panes_contain(&pane_id);
         let is_overlay = tab.pane_is_overlay(pane_id);
+        let overlay_is_resizable = tab.overlay_panes.is_resizable(&pane_id);
         let is_hidden_stack_list_member = tab.pane_is_hidden_stack_list_member(&pane_id);
         let pane = Self::get_pane_at(tab, position, false).ok()??;
 
@@ -549,6 +577,7 @@ impl MouseHandler {
             edge,
             is_floating,
             is_overlay,
+            overlay_is_resizable,
             terminal_wants_mouse,
         })
     }
@@ -562,18 +591,30 @@ impl MouseHandler {
     ) -> Result<()> {
         let err_context = || format!("failed to start pane resize for pane {pane_id:?}");
 
-        let is_floating = tab.floating_panes.panes_contain(&pane_id);
-
-        let start_geom = if is_floating {
-            tab.floating_panes
-                .get_pane(pane_id)
-                .map(|p| p.position_and_size())
-                .with_context(err_context)?
+        let target = if tab.floating_panes.panes_contain(&pane_id) {
+            ResizeDragTarget::Floating
+        } else if tab.overlay_panes.panes_contain(&pane_id) {
+            ResizeDragTarget::Overlay
         } else {
-            tab.tiled_panes
+            ResizeDragTarget::Tiled
+        };
+
+        let start_geom = match target {
+            ResizeDragTarget::Floating => tab
+                .floating_panes
                 .get_pane(pane_id)
                 .map(|p| p.position_and_size())
-                .with_context(err_context)?
+                .with_context(err_context)?,
+            ResizeDragTarget::Overlay => tab
+                .overlay_panes
+                .get_pane(pane_id)
+                .map(|p| p.position_and_size())
+                .with_context(err_context)?,
+            ResizeDragTarget::Tiled => tab
+                .tiled_panes
+                .get_pane(pane_id)
+                .map(|p| p.position_and_size())
+                .with_context(err_context)?,
         };
 
         tab.pane_being_resized_with_mouse = Some(PaneResizeState {
@@ -581,7 +622,7 @@ impl MouseHandler {
             edge,
             start_position: position,
             start_geom,
-            is_floating,
+            target,
         });
 
         Ok(())
@@ -594,7 +635,7 @@ impl MouseHandler {
     ) -> Result<bool> {
         let err_context = || "failed to continue pane resize with mouse";
 
-        let (pane_id, edge, is_floating, delta_x, delta_y) =
+        let (pane_id, edge, target, delta_x, delta_y) =
             if let Some(resize_state) = &tab.pane_being_resized_with_mouse {
                 let delta_x = current_position.column() as isize
                     - resize_state.start_position.column() as isize;
@@ -607,7 +648,7 @@ impl MouseHandler {
                 (
                     resize_state.pane_id,
                     resize_state.edge,
-                    resize_state.is_floating,
+                    resize_state.target,
                     delta_x,
                     delta_y,
                 )
@@ -617,22 +658,28 @@ impl MouseHandler {
 
         let strategies = edge_and_delta_to_strategies(edge, delta_x, delta_y);
 
-        if is_floating {
-            Self::resize_floating_pane_with_strategies(
+        match target {
+            ResizeDragTarget::Floating => Self::resize_floating_pane_with_strategies(
                 tab,
                 pane_id,
                 &strategies,
                 (delta_x.unsigned_abs(), delta_y.unsigned_abs()),
             )
-            .with_context(err_context)?;
-        } else {
-            Self::resize_tiled_pane_with_strategies(
+            .with_context(err_context)?,
+            ResizeDragTarget::Overlay => Self::resize_overlay_with_strategies(
+                tab,
+                pane_id,
+                &strategies,
+                (delta_x.unsigned_abs(), delta_y.unsigned_abs()),
+            )
+            .with_context(err_context)?,
+            ResizeDragTarget::Tiled => Self::resize_tiled_pane_with_strategies(
                 tab,
                 pane_id,
                 &strategies,
                 (delta_x.abs() as f64, delta_y.abs() as f64),
             )
-            .with_context(err_context)?;
+            .with_context(err_context)?,
         }
 
         if let Some(resize_state) = tab.pane_being_resized_with_mouse.as_mut() {
@@ -687,6 +734,23 @@ impl MouseHandler {
             .with_context(err_context)?;
 
         tab.swap_layouts.set_is_floating_damaged();
+
+        Ok(())
+    }
+
+    /// The overlay twin of `resize_floating_pane_with_strategies`. No swap-layout damage flag:
+    /// an overlay is not part of a swap layout, and the collection re-renders itself.
+    fn resize_overlay_with_strategies(
+        tab: &mut Tab,
+        pane_id: PaneId,
+        strategies: &[ResizeStrategy],
+        change_by: (usize, usize),
+    ) -> Result<()> {
+        let err_context = || format!("failed to resize overlay {pane_id:?}");
+
+        tab.overlay_panes
+            .resize_pane_with_strategies(pane_id, strategies, change_by)
+            .with_context(err_context)?;
 
         Ok(())
     }
@@ -787,7 +851,7 @@ impl MouseHandler {
             MouseAction::StartResize {
                 pane_id,
                 edge,
-                is_floating: _,
+                target: _,
                 position,
             } => {
                 clear_hover_for_client(tab, client_id);
@@ -1505,15 +1569,16 @@ impl MouseHandler {
                         pane_id: details.pane_id,
                     });
                 }
-                // an overlay is not user-resizable, and `is_floating` is `false` for one - so
-                // this used to hand an overlay id to `start_pane_resize_with_mouse`, which looks
-                // in the floating and tiled collections only and errors the whole mouse event
-                if !details.is_overlay {
+                // a modal is not user-resizable, so a ctrl-drag on one is nothing at all rather
+                // than falling through to `start_pane_resize_with_mouse` - which would find it in
+                // neither the floating nor the tiled collection and error the whole mouse event
+                let may_resize = !details.is_overlay || details.overlay_is_resizable;
+                if may_resize {
                     if let Some(edge) = details.edge {
                         return Ok(MouseAction::StartResize {
                             pane_id: details.pane_id,
                             edge,
-                            is_floating: details.is_floating,
+                            target: resize_target(details),
                             position: event.position,
                         });
                     }
@@ -1550,8 +1615,11 @@ impl MouseHandler {
                 // alone. `execute_move_overlay` never re-resolves past the overlay, because the
                 // overlay collection's own hit test cannot see what an overlay is covering.
                 //
-                // An overlay is still not *resizable*, which is why there is no `edge` branch
-                // here and none in the ctrl-press block above.
+                // The frame press stays a *move* even though an overlay is now resizable: this
+                // is the floating-pane split, which is what "resizable like a floating pane"
+                // means - plain drag on the frame moves, ctrl-drag resizes. (A tiled pane is the
+                // odd one out, resizing on a plain frame drag, because it has nowhere to move
+                // to.)
                 if details.is_overlay {
                     return Ok(MouseAction::StartMovingOverlay {
                         position: event.position,
@@ -1568,7 +1636,7 @@ impl MouseHandler {
                     return Ok(MouseAction::StartResize {
                         pane_id: details.pane_id,
                         edge,
-                        is_floating: false,
+                        target: ResizeDragTarget::Tiled,
                         position: event.position,
                     });
                 }
@@ -2036,6 +2104,7 @@ mod tests {
         }
     }
 
+    /// A frame press on a pane that is either not an overlay, or a *resizable* (non-modal) one.
     fn frame_click_on(pane_id: PaneId, is_overlay: bool) -> ClickedPaneDetails {
         ClickedPaneDetails {
             pane_id,
@@ -2044,7 +2113,15 @@ mod tests {
             edge: Some(PaneEdge::TopLeft),
             is_floating: false,
             is_overlay,
+            overlay_is_resizable: is_overlay,
             terminal_wants_mouse: false,
+        }
+    }
+
+    fn frame_click_on_modal(pane_id: PaneId) -> ClickedPaneDetails {
+        ClickedPaneDetails {
+            overlay_is_resizable: false,
+            ..frame_click_on(pane_id, true)
         }
     }
 
@@ -2166,27 +2243,89 @@ mod tests {
         ));
     }
 
-    /// With the layer down the same frame press fell to `StartResize`, and
-    /// `start_pane_resize_with_mouse` looks in the floating and tiled collections only - so an
-    /// overlay id missed both and errored the whole mouse event. An overlay is not resizable.
+    /// A *plain* frame press on an overlay is a move, never a resize - the floating-pane split,
+    /// which is what "resizable like a floating pane" means. With the layer down this press used
+    /// to fall to `StartResize` for an overlay, and `start_pane_resize_with_mouse` then looked in
+    /// the floating and tiled collections only, so the overlay id missed both and errored the
+    /// whole mouse event.
     #[test]
-    fn a_press_on_an_overlay_frame_does_not_start_a_resize() {
+    fn a_plain_press_on_an_overlay_frame_does_not_start_a_resize() {
         let overlay = PaneId::Terminal(9);
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(overlay);
         context.active_pane_id = Some(PaneId::Terminal(1));
         context.clicked_pane = Some(frame_click_on(overlay, true));
 
-        let position = Position::new(1, 1);
-        let mut ctrl_left_press = MouseEvent::new_left_press_event(position);
-        ctrl_left_press.ctrl = true;
-        for event in [MouseEvent::new_left_press_event(position), ctrl_left_press] {
-            let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
-            assert!(
-                !matches!(action, MouseAction::StartResize { .. }),
-                "got {action:?}"
-            );
-        }
+        let action = MouseHandler::determine_mouse_action(
+            &MouseEvent::new_left_press_event(Position::new(1, 1)),
+            &context,
+        )
+        .unwrap();
+        assert!(
+            !matches!(action, MouseAction::StartResize { .. }),
+            "got {action:?}"
+        );
+    }
+
+    /// The ctrl-drag half: a non-modal overlay resizes, and it resizes through its own collection
+    /// rather than being handed to the floating or tiled one, neither of which holds it.
+    #[test]
+    fn a_ctrl_press_on_an_overlay_frame_starts_an_overlay_resize() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(overlay);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(frame_click_on(overlay, true));
+
+        let mut event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        event.ctrl = true;
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(
+            matches!(
+                action,
+                MouseAction::StartResize {
+                    target: ResizeDragTarget::Overlay,
+                    ..
+                }
+            ),
+            "got {action:?}"
+        );
+    }
+
+    /// A modal keeps the size its plugin asked for, so the ctrl-drag is nothing at all - and in
+    /// particular not a `StartResize` that `start_pane_resize_with_mouse` would then fail to
+    /// resolve.
+    #[test]
+    fn a_ctrl_press_on_a_modal_frame_does_not_start_a_resize() {
+        let modal = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(modal);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(frame_click_on_modal(modal));
+
+        let mut event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        event.ctrl = true;
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(matches!(action, MouseAction::NoAction), "got {action:?}");
+    }
+
+    /// A modal is still draggable - only its *size* is the plugin's.
+    #[test]
+    fn a_plain_press_on_a_modal_frame_still_starts_a_move() {
+        let modal = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(modal);
+        context.clicked_pane = Some(frame_click_on_modal(modal));
+
+        let action = MouseHandler::determine_mouse_action(
+            &MouseEvent::new_left_press_event(Position::new(1, 1)),
+            &context,
+        )
+        .unwrap();
+        assert!(
+            matches!(action, MouseAction::StartMovingOverlay { .. }),
+            "got {action:?}"
+        );
     }
 
     #[test]

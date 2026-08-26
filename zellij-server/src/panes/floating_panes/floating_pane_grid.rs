@@ -476,7 +476,7 @@ impl<'a> FloatingPaneGrid<'a> {
     ) -> Result<()> {
         let err_context = || format!("failed to {strategy} for pane {pane_id:?}");
 
-        let mut geometry = self
+        let geometry = self
             .panes
             .borrow()
             .get(pane_id)
@@ -484,107 +484,7 @@ impl<'a> FloatingPaneGrid<'a> {
             .with_context(err_context)?
             .position_and_size();
 
-        let change_by = if strategy.direction.is_none() {
-            (change_by.0 / 2, change_by.1 / 2)
-        } else {
-            change_by
-        };
-
-        // Move left border
-        if strategy.move_left_border_left() || strategy.move_all_borders_out() {
-            let increment = std::cmp::min(geometry.x.saturating_sub(self.viewport.x), change_by.0);
-            // Invert if on boundary already
-            if increment == 0 && strategy.direction.is_some() {
-                return self.change_pane_size(pane_id, &strategy.invert(), change_by);
-            }
-
-            geometry.x -= increment;
-            geometry
-                .cols
-                .set_inner(geometry.cols.as_usize() + increment);
-        } else if strategy.move_left_border_right() || strategy.move_all_borders_in() {
-            let increment = std::cmp::min(
-                geometry.cols.as_usize().saturating_sub(MIN_TERMINAL_WIDTH),
-                change_by.0,
-            );
-            geometry.x += increment;
-            geometry
-                .cols
-                .set_inner(geometry.cols.as_usize() - increment);
-        };
-
-        // Move right border
-        if strategy.move_right_border_right() || strategy.move_all_borders_out() {
-            let increment = std::cmp::min(
-                (self.viewport.x + self.viewport.cols)
-                    .saturating_sub(geometry.x + geometry.cols.as_usize()),
-                change_by.0,
-            );
-            // Invert if on boundary already
-            if increment == 0 && strategy.direction.is_some() {
-                return self.change_pane_size(pane_id, &strategy.invert(), change_by);
-            }
-
-            geometry
-                .cols
-                .set_inner(geometry.cols.as_usize() + increment);
-        } else if strategy.move_right_border_left() || strategy.move_all_borders_in() {
-            let increment = std::cmp::min(
-                geometry.cols.as_usize().saturating_sub(MIN_TERMINAL_WIDTH),
-                change_by.0,
-            );
-            geometry
-                .cols
-                .set_inner(geometry.cols.as_usize() - increment);
-        };
-
-        // Move upper border
-        if strategy.move_upper_border_up() || strategy.move_all_borders_out() {
-            let increment = std::cmp::min(geometry.y.saturating_sub(self.viewport.y), change_by.1);
-            // Invert if on boundary already
-            if increment == 0 && strategy.direction.is_some() {
-                return self.change_pane_size(pane_id, &strategy.invert(), change_by);
-            }
-
-            geometry.y -= increment;
-            geometry
-                .rows
-                .set_inner(geometry.rows.as_usize() + increment);
-        } else if strategy.move_upper_border_down() || strategy.move_all_borders_in() {
-            let increment = std::cmp::min(
-                geometry.rows.as_usize().saturating_sub(MIN_TERMINAL_HEIGHT),
-                change_by.1,
-            );
-            geometry.y += increment;
-            geometry
-                .rows
-                .set_inner(geometry.rows.as_usize() - increment);
-        }
-
-        // Move lower border
-        if strategy.move_lower_border_down() || strategy.move_all_borders_out() {
-            let increment = std::cmp::min(
-                (self.viewport.y + self.viewport.rows)
-                    .saturating_sub(geometry.y + geometry.rows.as_usize()),
-                change_by.1,
-            );
-            // Invert if on boundary already
-            if increment == 0 && strategy.direction.is_some() {
-                return self.change_pane_size(pane_id, &strategy.invert(), change_by);
-            }
-
-            geometry
-                .rows
-                .set_inner(geometry.rows.as_usize() + increment);
-        } else if strategy.move_lower_border_up() || strategy.move_all_borders_in() {
-            let increment = std::cmp::min(
-                geometry.rows.as_usize().saturating_sub(MIN_TERMINAL_HEIGHT),
-                change_by.1,
-            );
-            geometry
-                .rows
-                .set_inner(geometry.rows.as_usize() - increment);
-        }
+        let geometry = geom_resized_within(geometry, self.viewport, strategy, change_by);
 
         self.set_pane_geom(*pane_id, geometry)
             .with_context(err_context)
@@ -860,6 +760,127 @@ pub fn geom_moved_within(geom: PaneGeom, viewport: Viewport, x: isize, y: isize)
     moved.x = new_x as usize;
     moved.y = new_y as usize;
     moved
+}
+
+/// `geom` with the borders `strategy` names moved by `change_by`, clamped so it stays inside
+/// `viewport` and never shrinks below `MIN_TERMINAL_WIDTH` x `MIN_TERMINAL_HEIGHT`.
+///
+/// Shared with `OverlayPanes` for the same reason `geom_moved_within` is: the two collections
+/// resize against different surfaces - the tab's placement space and the whole session surface -
+/// but the border arithmetic, the floors and the "already on the boundary, so invert" rule are
+/// one piece of logic, and there is one of it.
+///
+/// The inversion recurses on the *original* geom rather than on the partially adjusted one,
+/// which is what `FloatingPaneGrid::change_pane_size` did when it re-read the pane's geometry.
+pub fn geom_resized_within(
+    geom: PaneGeom,
+    viewport: Viewport,
+    strategy: &ResizeStrategy,
+    change_by: (usize, usize), // (x, y)
+) -> PaneGeom {
+    let mut geometry = geom;
+
+    let change_by = if strategy.direction.is_none() {
+        (change_by.0 / 2, change_by.1 / 2)
+    } else {
+        change_by
+    };
+
+    // Move left border
+    if strategy.move_left_border_left() || strategy.move_all_borders_out() {
+        let increment = std::cmp::min(geometry.x.saturating_sub(viewport.x), change_by.0);
+        // Invert if on boundary already
+        if increment == 0 && strategy.direction.is_some() {
+            return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
+        }
+
+        geometry.x -= increment;
+        geometry
+            .cols
+            .set_inner(geometry.cols.as_usize() + increment);
+    } else if strategy.move_left_border_right() || strategy.move_all_borders_in() {
+        let increment = std::cmp::min(
+            geometry.cols.as_usize().saturating_sub(MIN_TERMINAL_WIDTH),
+            change_by.0,
+        );
+        geometry.x += increment;
+        geometry
+            .cols
+            .set_inner(geometry.cols.as_usize() - increment);
+    };
+
+    // Move right border
+    if strategy.move_right_border_right() || strategy.move_all_borders_out() {
+        let increment = std::cmp::min(
+            (viewport.x + viewport.cols).saturating_sub(geometry.x + geometry.cols.as_usize()),
+            change_by.0,
+        );
+        // Invert if on boundary already
+        if increment == 0 && strategy.direction.is_some() {
+            return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
+        }
+
+        geometry
+            .cols
+            .set_inner(geometry.cols.as_usize() + increment);
+    } else if strategy.move_right_border_left() || strategy.move_all_borders_in() {
+        let increment = std::cmp::min(
+            geometry.cols.as_usize().saturating_sub(MIN_TERMINAL_WIDTH),
+            change_by.0,
+        );
+        geometry
+            .cols
+            .set_inner(geometry.cols.as_usize() - increment);
+    };
+
+    // Move upper border
+    if strategy.move_upper_border_up() || strategy.move_all_borders_out() {
+        let increment = std::cmp::min(geometry.y.saturating_sub(viewport.y), change_by.1);
+        // Invert if on boundary already
+        if increment == 0 && strategy.direction.is_some() {
+            return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
+        }
+
+        geometry.y -= increment;
+        geometry
+            .rows
+            .set_inner(geometry.rows.as_usize() + increment);
+    } else if strategy.move_upper_border_down() || strategy.move_all_borders_in() {
+        let increment = std::cmp::min(
+            geometry.rows.as_usize().saturating_sub(MIN_TERMINAL_HEIGHT),
+            change_by.1,
+        );
+        geometry.y += increment;
+        geometry
+            .rows
+            .set_inner(geometry.rows.as_usize() - increment);
+    }
+
+    // Move lower border
+    if strategy.move_lower_border_down() || strategy.move_all_borders_out() {
+        let increment = std::cmp::min(
+            (viewport.y + viewport.rows).saturating_sub(geometry.y + geometry.rows.as_usize()),
+            change_by.1,
+        );
+        // Invert if on boundary already
+        if increment == 0 && strategy.direction.is_some() {
+            return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
+        }
+
+        geometry
+            .rows
+            .set_inner(geometry.rows.as_usize() + increment);
+    } else if strategy.move_lower_border_up() || strategy.move_all_borders_in() {
+        let increment = std::cmp::min(
+            geometry.rows.as_usize().saturating_sub(MIN_TERMINAL_HEIGHT),
+            change_by.1,
+        );
+        geometry
+            .rows
+            .set_inner(geometry.rows.as_usize() - increment);
+    }
+
+    geometry
 }
 
 pub fn half_size_middle_geom(space: &Viewport, offset: usize) -> PaneGeom {
