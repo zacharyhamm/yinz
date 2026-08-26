@@ -1981,11 +1981,12 @@ impl WasmBridge {
         plugin_location: &RunPluginLocation,
         plugin_configuration: &PluginUserConfiguration,
     ) -> Option<PluginId> {
+        let wanted = plugin_configuration.without_caller_context();
         self.loading_plugins
             .iter()
             .find_map(|(plugin_id, run_plugin)| {
                 if &run_plugin.location == plugin_location
-                    && &run_plugin.configuration == plugin_configuration
+                    && run_plugin.configuration.without_caller_context() == wanted
                 {
                     Some(*plugin_id)
                 } else {
@@ -2011,12 +2012,8 @@ impl WasmBridge {
         if self.cached_plugin_map.is_empty() {
             self.cached_plugin_map = self.plugin_map.lock().unwrap().clone_plugin_assets();
         }
-        match self
-            .cached_plugin_map
-            .get(plugin_location)
-            .and_then(|m| m.get(plugin_configuration))
-        {
-            Some(plugin_and_client_ids) => plugin_and_client_ids
+        match self.cached_plugin_map.get(plugin_location) {
+            Some(at_this_location) => instances_of(at_this_location, plugin_configuration)
                 .iter()
                 .map(|(plugin_id, client_id)| (*plugin_id, Some(*client_id)))
                 .collect(),
@@ -2650,6 +2647,31 @@ pub fn apply_before_close_event_to_plugin(
     Ok(())
 }
 
+/// The instances running at one location whose configuration is the one asked for.
+///
+/// **Compared without the caller context, not looked up by key.** The map is keyed on the whole
+/// `PluginUserConfiguration`, and `caller_cwd` / `caller_terminal_pane_id` are stamped onto that
+/// map by whoever asked for the launch rather than written by the user: the keybinding path writes
+/// both (`Pty::spawn_plugin`), a plugin asking for another plugin by url writes only the first
+/// (`zellij_exports::message_to_plugin`). An exact key lookup therefore failed to see a plugin
+/// that was already running and started a second copy of it - which is how a second, hidden hocus
+/// conversation ended up behind the agent list, placing the list into the visible conversation's
+/// slot on top of it.
+///
+/// `RunPluginOrAlias::is_equivalent_to_run` and `configuration_matches_for_reload` have always
+/// asked the question this way. This was the one lookup that did not.
+fn instances_of<'a>(
+    at_this_location: &'a HashMap<PluginUserConfiguration, Vec<(PluginId, ClientId)>>,
+    plugin_configuration: &PluginUserConfiguration,
+) -> &'a [(PluginId, ClientId)] {
+    let wanted = plugin_configuration.without_caller_context();
+    at_this_location
+        .iter()
+        .find(|(configuration, _)| configuration.without_caller_context() == wanted)
+        .map(|(_, instances)| instances.as_slice())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2675,6 +2697,53 @@ mod tests {
         assert!(plugin_config(&[("shared", "true")]).is_shared());
         assert!(!plugin_config(&[("shared", "false")]).is_shared());
         assert!(!plugin_config(&[("shared", "yes please")]).is_shared());
+    }
+
+    /// The two halves of hocus address each other by url, and the launch behind that url has to
+    /// find the half that is already on screen rather than open a second one.
+    ///
+    /// The running instance carries the caller context the keybinding stamped on it; the greeting
+    /// from the other half carries its own, and less of it. Neither is identity.
+    #[test]
+    fn caller_context_does_not_hide_a_running_plugin_from_the_launch_lookup() {
+        let configuration = |pairs: &[(&str, &str)]| {
+            PluginUserConfiguration::new(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )
+        };
+        // as launched by the `c` keybinding, which goes through `Pty::spawn_plugin`
+        let running = configuration(&[
+            ("overlay", "true"),
+            ("awaits_placement", "true"),
+            ("shared", "true"),
+            ("caller_cwd", "/repo"),
+            ("caller_terminal_pane_id", "0"),
+        ]);
+        let at_this_location = HashMap::from([(running, vec![(7, 1)])]);
+
+        // as asked for by `hocus-agents`, whose message is stamped with `caller_cwd` alone
+        let greeting = configuration(&[
+            ("overlay", "true"),
+            ("awaits_placement", "true"),
+            ("shared", "true"),
+            ("caller_cwd", "/somewhere/else"),
+        ]);
+        assert_eq!(
+            instances_of(&at_this_location, &greeting),
+            &[(7, 1)],
+            "the conversation that is already open"
+        );
+
+        // and a configuration that differs by something the user actually wrote is still a
+        // different plugin
+        let other = configuration(&[("overlay", "true"), ("shared", "true")]);
+        assert!(
+            instances_of(&at_this_location, &other).is_empty(),
+            "an overlay that does not await placement is not the same plugin"
+        );
     }
 
     #[test]
