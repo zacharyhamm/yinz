@@ -1485,30 +1485,11 @@ impl State {
         })
     }
 
-    /// The agent selected in the agents pane and what the daemon last made of it, for
-    /// the inset drawn at the head of the transcript.
+    /// Take the agents pane's announcement of itself.
     ///
-    /// Drawn only while the agents pane itself holds the focus. That is the moment the
-    /// note is for: the user is working the list, deciding which agent to walk into,
-    /// and the box says what the one under the cursor was last seen doing. Standing in
-    /// an agent, or here in the chat, it is not what anyone is reading, so it goes.
-    ///
-    /// No idleness gate, unlike `waiting_marker` and the strip's `!`: what is asked for
-    /// here is the *last* thing the daemon made of this agent, and an agent that has
-    /// gone back to work still has one. The header carries the pane id, so what the box
-    /// claims to be is an account of a moment, not of right now.
-    pub(crate) fn selected_summary(&self) -> Option<(u32, &str, &agents::Summary)> {
-        if self.focused_plugin.is_none() || self.focused_plugin != self.agents_plugin {
-            return None;
-        }
-        let pane_id = self.agents_selected?;
-        let summary = self.summaries.get(&pane_id)?;
-        let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
-        let (kind, _) = agents::classify(pane, &self.manual_kinds)?;
-        Some((pane_id, kind, summary))
-    }
-
-    /// Take the agents pane's cursor. Answers whether the inset moved with it.
+    /// Nothing is drawn from it here any more - the summary box moved into the agents pane, which
+    /// is where the cursor that picks it lives. What is left is the one thing only this message
+    /// carries: the list's plugin id, which is what `apply_overlay_geometry` needs to place it.
     pub(crate) fn on_selection(&mut self, message: &PipeMessage) -> bool {
         let Some(selection) = message
             .payload
@@ -1517,27 +1498,17 @@ impl State {
         else {
             return false;
         };
-        let inset = self.inset_key();
         let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
-        self.agents_selected = selection.pane_id;
         // This is the only word hocus gets of the list's id, and it can arrive after the
-        // `TabUpdate` that placed the column - in which case that pass placed the conversation
+        // `TabUpdate` that placed the conversation - in which case that pass placed this pane
         // alone, and no later same-sized update would come back to it, leaving the list at the
         // centred default the host gave it. Gated on the id actually changing: walking the list
         // under `j`/`k` sends one of these per keystroke, and none of them move anything.
         if announced {
             self.apply_overlay_geometry();
         }
-        self.inset_key() != inset
-    }
-
-    /// What the inset is showing, small enough to hold across a snapshot and
-    /// compare. The hash names the screen the summary was made from, so a change
-    /// here is a change on screen and nothing else is.
-    pub(crate) fn inset_key(&self) -> Option<(u32, u64, bool)> {
-        self.selected_summary()
-            .map(|(pane_id, _, summary)| (pane_id, summary.hash, summary.awaiting))
+        false
     }
 
     /// Merge an event-fed daemon snapshot.

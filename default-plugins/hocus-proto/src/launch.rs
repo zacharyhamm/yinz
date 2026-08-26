@@ -186,7 +186,7 @@ pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<PaneI
     Err("agents cannot be started outside zellij".to_owned())
 }
 
-/// The plugin alias for each half of the hocus column.
+/// The plugin alias for each of the two hocus panes.
 ///
 /// Aliases rather than `zellij:` urls: plugin identity is (location, configuration), an alias
 /// contributes its own block - `shared true` - to that configuration, and the keybindings open
@@ -214,7 +214,7 @@ pub fn overlay_configuration() -> std::collections::BTreeMap<String, String> {
 /// both halves back as global panes configured `shared true` and nothing else. Plugin identity is
 /// `(location, configuration)` and both halves now address each other with
 /// [`overlay_configuration`], so a restored pane matches nothing anybody asks for: the keybinding
-/// opens a second, overlay column beside a strip that will not go away on its own.
+/// opens a second, overlay conversation beside a strip that will not go away on its own.
 ///
 /// The manifest is the authority rather than the absent `overlay` key, because the two questions
 /// are not the same one. "My configuration says no overlay" is true of any deliberate non-overlay
@@ -402,7 +402,7 @@ mod tests {
         ));
     }
 
-    /// The overlay column's own panes live on a tab and never appear in this list, which is the
+    /// The hocus overlays live on a tab and never appear in this list, which is the
     /// whole reason the list is the discriminator.
     #[test]
     fn a_half_that_is_not_a_global_pane_is_not_a_legacy_one() {

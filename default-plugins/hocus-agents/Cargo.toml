@@ -11,3 +11,4 @@ workspace = true
 zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }
 serde_json = { workspace = true }
+unicode-width = { workspace = true }
