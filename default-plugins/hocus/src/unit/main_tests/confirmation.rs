@@ -173,7 +173,7 @@ fn answering_takes_the_mark_back_off() {
     for (answer, resolve) in [
         ("y", State::confirm_tool as fn(&mut State) -> bool),
         ("n", State::decline_tool),
-        ("Esc", State::abort_tools),
+        ("Ctrl-c", State::abort_tools),
         ("Ctrl-l", State::new_chat),
     ] {
         let mut state = ready_state();

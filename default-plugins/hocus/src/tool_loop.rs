@@ -197,7 +197,7 @@ impl State {
         // queue runs one call at a time, and its head owns the deferred result
         // the host is about to deliver.
         if self.tools_busy() {
-            let notice = "a tool is already running — <Esc> aborts it";
+            let notice = "a tool is already running — <Ctrl c> aborts it";
             self.messages.push(Message::notice(notice));
             self.log("notice", serde_json::json!({"content": notice}));
             return true;

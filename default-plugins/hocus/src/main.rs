@@ -76,7 +76,9 @@ Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
-Esc           cancel a stream or tool, or hide hocus
+Esc           hide hocus
+Ctrl+c        cancel a stream or tool, decline a plan,
+              or clear the prompt
 y / n         confirm or decline a pending tool call,
               or carry out / keep refining a plan
 /plan         plan before acting: read-only tools until

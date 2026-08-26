@@ -1163,16 +1163,20 @@ fn help_line(state: &State) -> &'static str {
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
     if state.awaiting_plan() {
-        return "carry out this plan?  <y> yes  <n> keep planning";
+        return "carry out this plan?  <y> yes  <n> keep planning  <Esc> hide";
     }
-    // Tools before the stream, matching what Esc actually does when both are
-    // outstanding.
+    // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
+    // and a stream are both outstanding it takes the tool first.
     match state.status {
-        Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Esc> abort",
-        Status::AwaitingCommand => "running…  <Esc> abort  <↑↓> scroll",
-        Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
-        Status::AwaitingLinear => "reading linear…  <Esc> abort  <↑↓> scroll",
-        Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
+        Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide",
+        Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingLinear => {
+            "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll"
+        },
+        Status::Idle if state.is_streaming() => {
+            "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
+        },
         Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
         Status::Idle => "<Ctrl l> new chat  <Esc> hide",
