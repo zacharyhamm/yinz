@@ -36,10 +36,14 @@ use crate::ui;
 use crate::State;
 
 /// Cells of clear screen left around the column on every side.
-const DEFAULT_PAD: usize = 2;
-/// The column's width, as a percentage of the display area - the width the left-edge global strip
-/// used to take, so the change of placement is not also a change of size.
-const DEFAULT_WIDTH_PERCENT: usize = 25;
+const DEFAULT_PAD: usize = 3;
+/// The column's width, as a percentage of the display area. Under a third of the screen, so the
+/// column reads as a panel beside the work rather than a split of it, and wide enough that a chat
+/// message is not wrapped every other word.
+const DEFAULT_WIDTH_PERCENT: usize = 30;
+/// The column's height, as a percentage of the display area. Two thirds: taller than it is wide,
+/// and short enough that the top of the screen stays the user's own.
+const DEFAULT_HEIGHT_PERCENT: usize = 66;
 /// The agent list's share of the column. The two-thirds-to-the-conversation split the global pane
 /// used.
 const DEFAULT_AGENTS_PERCENT: usize = 33;
@@ -94,8 +98,15 @@ pub(crate) fn column_geometry(
         .max(ui::MIN_COLS + 2)
         .min(cols.saturating_sub(pad * 2).max(1));
 
-    // What is left of the screen once the padding is taken off the top and the bottom.
-    let column = rows.saturating_sub(pad * 2);
+    // What is left of the screen once the padding is taken off the top and the bottom, and the
+    // share of it the column actually takes. The column is anchored to the *bottom*, so a height
+    // short of the whole leaves the top of the screen alone rather than the bottom - see `chat_y`.
+    // Floored at two halves' worth of rows so a small `height` cannot ask for a column neither
+    // half fits in, and capped at what is between the paddings so a large one cannot run off the
+    // top of the screen.
+    let available = rows.saturating_sub(pad * 2);
+    let column = resolve(config.get("height"), rows, DEFAULT_HEIGHT_PERCENT)
+        .clamp((MIN_HALF_ROWS * 2).min(available).max(1), available.max(1));
     // The smallest either half is allowed to be. A frame costs two rows, so this is the frame plus
     // one row of content: below it the pane draws nothing but "pane too small", but it is at least
     // *there*, in the column, where the user is looking for it.
@@ -169,7 +180,13 @@ impl State {
     /// Safe to call whenever: `change_overlay_coordinates` names panes by id and does nothing for
     /// an id that is not an overlay, and once the user has dragged an overlay the server keeps
     /// their position and takes only the size from here.
-    pub(crate) fn apply_overlay_geometry(&self) {
+    ///
+    /// **Doing nothing is exactly what happens when the pane is not on a tab yet**, and it is
+    /// silent - `Screen::change_overlay_coordinates` looks the id up and moves on. That is why
+    /// `placed` is set from `own_tab_index` rather than from having made the call: the manifest
+    /// saying where our pane is, is the only evidence the call could have landed. A placement that
+    /// could not land leaves `placed` false, and `on_panes` tries again the moment it can.
+    pub(crate) fn apply_overlay_geometry(&mut self) {
         let Some((chat, agents)) =
             column_geometry(&self.kdl, self.display_area_rows, self.display_area_cols)
         else {
@@ -180,6 +197,7 @@ impl State {
             placements.push((PaneId::Plugin(agents_id), agents));
         }
         change_overlay_coordinates(placements);
+        self.placed = self.own_tab_index.is_some();
     }
 
     /// Hide the column - this pane and the agent list above it - without unloading either.

@@ -374,13 +374,16 @@ plugins {
     //
     // hocus draws itself as an overlay column in the bottom-left corner of the
     // screen — over a tab rather than beside it, so no tab is shrunk to make
-    // room. Three keys size that column, and hocus re-places itself whenever the
+    // room. Four keys size that column, and hocus re-places itself whenever the
     // terminal is resized:
     //
-    //   width          the column's width. A percentage of the screen ("25%",
+    //   width          the column's width. A percentage of the screen ("30%",
     //                  the default) or a fixed number of columns ("60").
+    //   height         the column's height. A percentage of the screen ("66%",
+    //                  the default) or a fixed number of rows ("30"). The
+    //                  column is anchored to the bottom, so this grows upward.
     //   pad            cells of clear screen left around the column on every
-    //                  side. Default 2, capped at a quarter of the screen.
+    //                  side. Default 3, capped at a quarter of the screen.
     //   agents_height  the agent list's share of the column, above the
     //                  conversation. Default "33%". The conversation keeps
     //                  enough rows to draw whatever this asks for.
