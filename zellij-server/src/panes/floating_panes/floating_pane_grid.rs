@@ -770,6 +770,11 @@ pub fn geom_moved_within(geom: PaneGeom, viewport: Viewport, x: isize, y: isize)
 /// but the border arithmetic, the floors and the "already on the boundary, so invert" rule are
 /// one piece of logic, and there is one of it.
 ///
+/// The inversion only happens when the strategy asks for it: a keyboard resize (`ResizeStrategy`'s
+/// default) grows from the far border once the near one is flush with the boundary, while a mouse
+/// drag sets `invert_on_boundaries: false` and stays clamped under the pointer instead of jumping
+/// to the opposite edge. This is the same condition `TiledPaneGrid::change_pane_size` applies.
+///
 /// The inversion recurses on the *original* geom rather than on the partially adjusted one,
 /// which is what `FloatingPaneGrid::change_pane_size` did when it re-read the pane's geometry.
 pub fn geom_resized_within(
@@ -789,8 +794,8 @@ pub fn geom_resized_within(
     // Move left border
     if strategy.move_left_border_left() || strategy.move_all_borders_out() {
         let increment = std::cmp::min(geometry.x.saturating_sub(viewport.x), change_by.0);
-        // Invert if on boundary already
-        if increment == 0 && strategy.direction.is_some() {
+        // Invert if on boundary already, when the strategy allows it
+        if increment == 0 && strategy.direction.is_some() && strategy.invert_on_boundaries {
             return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
         }
 
@@ -815,8 +820,8 @@ pub fn geom_resized_within(
             (viewport.x + viewport.cols).saturating_sub(geometry.x + geometry.cols.as_usize()),
             change_by.0,
         );
-        // Invert if on boundary already
-        if increment == 0 && strategy.direction.is_some() {
+        // Invert if on boundary already, when the strategy allows it
+        if increment == 0 && strategy.direction.is_some() && strategy.invert_on_boundaries {
             return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
         }
 
@@ -836,8 +841,8 @@ pub fn geom_resized_within(
     // Move upper border
     if strategy.move_upper_border_up() || strategy.move_all_borders_out() {
         let increment = std::cmp::min(geometry.y.saturating_sub(viewport.y), change_by.1);
-        // Invert if on boundary already
-        if increment == 0 && strategy.direction.is_some() {
+        // Invert if on boundary already, when the strategy allows it
+        if increment == 0 && strategy.direction.is_some() && strategy.invert_on_boundaries {
             return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
         }
 
@@ -862,8 +867,8 @@ pub fn geom_resized_within(
             (viewport.y + viewport.rows).saturating_sub(geometry.y + geometry.rows.as_usize()),
             change_by.1,
         );
-        // Invert if on boundary already
-        if increment == 0 && strategy.direction.is_some() {
+        // Invert if on boundary already, when the strategy allows it
+        if increment == 0 && strategy.direction.is_some() && strategy.invert_on_boundaries {
             return geom_resized_within(geom, viewport, &strategy.invert(), change_by);
         }
 
