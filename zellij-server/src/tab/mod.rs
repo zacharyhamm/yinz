@@ -5884,15 +5884,17 @@ impl Tab {
     }
     pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
         let err_context = || "unable to resize pane".to_string();
-        if self.floating_panes.fullscreen_is_active() {
-            return Ok(());
-        }
         // The branch below is a two-way floating/tiled split, so an overlay has to be dispatched
         // before it: without this the keystroke fell through to `tiled_panes.resize_active_pane`
         // and resized whatever the overlay was covering. `OverlayPanes::resize_active_pane`
         // refuses a modal on its own, and writes the new size back into the overlay's
         // coordinates rather than onto its geometry - an overlay's geometry stays a function of
         // its coordinates and the surface.
+        //
+        // It precedes the fullscreen guard for the same reason: that guard is about the floating
+        // layer, where a fullscreen pane has no size of its own to change. An overlay is not on
+        // that layer, and is resizable by ctrl-drag in this state either way, so the restriction
+        // must not reach it.
         if self
             .get_active_pane_id(client_id)
             .is_some_and(|pane_id| self.pane_is_overlay(pane_id))
@@ -5904,6 +5906,9 @@ impl Tab {
             if resized {
                 self.set_force_render();
             }
+            return Ok(());
+        }
+        if self.floating_panes.fullscreen_is_active() {
             return Ok(());
         }
         let active_pane_is_floating = self
