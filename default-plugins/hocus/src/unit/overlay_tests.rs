@@ -65,10 +65,27 @@ fn the_agent_list_sits_to_the_right_of_the_conversation() {
     assert_eq!(agents_w, chat_w, "and the same width");
     assert_eq!(
         agents_x,
-        chat_x + chat_w,
-        "immediately to its right - each pane draws its own frame, so the two frames meeting \
-         is the seam"
+        chat_x + chat_w + DEFAULT_PAD,
+        "to its right, with one padding of clear screen between them - the same padding that \
+         insets the pair from the edges of the screen"
     );
+}
+
+/// The gap is the padding, so it follows the padding rather than being a second thing to set.
+#[test]
+fn the_gap_between_the_panels_is_the_configured_padding() {
+    for pad in ["1", "2", "5"] {
+        let config = config(&[("pad", pad)]);
+        let (chat, agents) = beside(&config, 50, 200);
+        let (chat_x, _, chat_w, _) = rect(&chat);
+        let (agents_x, _, _, _) = rect(&agents);
+        let pad: usize = pad.parse().expect("TEST");
+        assert_eq!(
+            agents_x - (chat_x + chat_w),
+            pad,
+            "a pad of {pad} is a gap of {pad}"
+        );
+    }
 }
 
 /// And with the conversation away, the list takes the slot the conversation had: a lone pane
@@ -108,7 +125,11 @@ fn width_and_pad_are_configurable() {
     assert_eq!(chat_x, 1, "the configured padding");
     assert_eq!(chat_w, 40, "a fixed width is taken as written");
     assert_eq!(chat_y + chat_h, 49, "and the bottom follows the padding");
-    assert_eq!(rect(&agents).0, 41, "the list follows the width across");
+    assert_eq!(
+        rect(&agents).0,
+        42,
+        "the list follows the width across, one padding clear of it"
+    );
 }
 
 /// The shape asked for: a panel taller than it is wide, roughly two thirds of the screen's rows
@@ -194,6 +215,12 @@ fn a_width_too_wide_for_two_panes_is_halved_rather_than_overflowed() {
     );
     assert_eq!(chat_x, 2);
     assert_eq!(chat_w, agents_w, "and they split what there is evenly");
+    assert_eq!(
+        agents_x - (chat_x + chat_w),
+        2,
+        "the gap between them is the padding, taken out of the pair's width rather than \
+         added to it"
+    );
 
     let (_, alone) = overlay_geometry(&config, 50, cols, false).expect("some geometry");
     assert_eq!(

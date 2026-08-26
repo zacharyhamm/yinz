@@ -8,9 +8,9 @@
 //!
 //! **They are two panes, not one column.** Either can be open without the other, either hides
 //! on its own, and neither opens the other unbidden. The one thing that couples them is the
-//! left-hand slot: the conversation owns it, so the list sits at `pad + width` while the
-//! conversation is on screen and slides back to `pad` when it is not. hocus is the half that
-//! knows both, so hocus does the arithmetic for both.
+//! left-hand slot: the conversation owns it, so the list sits one padding to the right of it
+//! while the conversation is on screen and slides back to `pad` when it is not. hocus is the half
+//! that knows both, so hocus does the arithmetic for both.
 //!
 //! **The plugin computes the geometry, not the server.** `FloatingPaneCoordinates` measures `x`
 //! and `y` from the top-left corner only - there is no bottom or right anchoring - so "the bottom
@@ -46,7 +46,7 @@ use hocus_proto::launch::{overlay_configuration, HOCUS_ALIAS};
 use crate::ui;
 use crate::State;
 
-/// Cells of clear screen left around the panel on every side.
+/// Cells of clear screen left around the panel on every side, and between the two panels.
 const DEFAULT_PAD: usize = 3;
 /// One pane's width, as a percentage of the display area. Under a third of the screen, so a pane
 /// reads as a panel beside the work rather than a split of it, and wide enough that a chat message
@@ -79,9 +79,10 @@ fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usiz
 /// The two rectangles, in the order `(chat, agents)`.
 ///
 /// Both are the same size and share a `y`: they sit beside each other along the bottom of the
-/// surface, inset by `pad`. The conversation owns the left-hand slot, so `chat_visible` is what
-/// decides where the agent list goes - beside the conversation at `pad + width`, or in its place
-/// at `pad` when there is no conversation on screen to sit beside.
+/// surface, inset by `pad` and separated by another `pad`. The conversation owns the left-hand
+/// slot, so `chat_visible` is what decides where the agent list goes - beside the conversation at
+/// `pad + width + pad`, or in its place at `pad` when there is no conversation on screen to sit
+/// beside.
 ///
 /// `None` before any `TabUpdate` has said how big the screen is - there is nothing to compute
 /// against yet, and a guess would put the panes somewhere the user would see them move away from.
@@ -109,12 +110,13 @@ pub(crate) fn overlay_geometry(
         .min(rows / 4)
         .min(cols / 4);
     // What is between the paddings, and how much of it one pane may take. With the conversation
-    // on screen the two panes are laid end to end, so neither may exceed half of it - a `width`
-    // wide enough for one is not wide enough for two, and the list would otherwise run off the
-    // right-hand edge. Alone, a pane may take the whole of it.
+    // on screen the two panes and the gap between them are laid end to end, so neither may exceed
+    // half of what is left once the gap is taken off - a `width` wide enough for one is not wide
+    // enough for two, and the list would otherwise run off the right-hand edge. Alone, a pane may
+    // take the whole of it: there is no gap to leave room for.
     let across = cols.saturating_sub(pad * 2).max(1);
     let each = match chat_visible {
-        true => across / 2,
+        true => across.saturating_sub(pad) / 2,
         false => across,
     };
     let width = resolve(config.get("width"), cols, DEFAULT_WIDTH_PERCENT)
@@ -147,9 +149,12 @@ pub(crate) fn overlay_geometry(
         .unwrap_or_default()
     };
     let agents_x = match chat_visible {
-        // Adjacent, with no gap: each pane draws its own frame, so the two frames meeting is the
-        // seam between them and a column of clear screen between would read as a third thing.
-        true => pad + width,
+        // One padding of clear screen between the two, the same padding that insets the pair from
+        // the edges of the screen. They used to meet frame to frame; two framed panels touching
+        // read as one panel with a line down it, and the gap is what makes them two things sitting
+        // beside each other. One value rather than a second key, so a `pad` the user changes moves
+        // the panels and the seam together.
+        true => pad + width + pad,
         false => pad,
     };
     Some((
