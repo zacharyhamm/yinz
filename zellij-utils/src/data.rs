@@ -3288,6 +3288,14 @@ impl MessageToPlugin {
         new_plugin_args.should_focus = Some(true);
         self
     }
+    /// The other half of `new_plugin_instance_should_be_focused`, for a message that opens a
+    /// plugin the sender wants running rather than looked at. Distinct from leaving
+    /// `should_focus` unset, which lets the launch decide.
+    pub fn new_plugin_instance_should_not_be_focused(mut self) -> Self {
+        let new_plugin_args = self.new_plugin_args.get_or_insert_with(Default::default);
+        new_plugin_args.should_focus = Some(false);
+        self
+    }
     pub fn has_cwd(&self) -> bool {
         self.new_plugin_args
             .as_ref()

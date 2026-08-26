@@ -1755,6 +1755,7 @@ version = "0.1.0"
 dependencies = [
  "hocus-proto",
  "serde_json",
+ "unicode-width 0.2.2",
  "zellij-tile",
 ]
 
@@ -1785,6 +1786,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-width 0.2.2",
  "zellij-tile",
  "zellij-utils",
 ]

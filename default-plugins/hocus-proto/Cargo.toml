@@ -11,6 +11,7 @@ workspace = true
 zellij-tile = { path = "../../zellij-tile" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+unicode-width = { workspace = true }
 
 # The store engine, for `store::Local`. Not a dev-dependency: the crates that
 # link this one test against `Local` too, and a dev-dependency would not reach
