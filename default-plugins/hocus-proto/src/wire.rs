@@ -64,8 +64,8 @@ pub const OPENED_BY_AGENTS: &str = "agents";
 /// Sent **without** a url by `State::greet_agents_pane` on hocus's load, which is the same
 /// question asked of an agent list that already exists without opening one that does not: the
 /// two panes are separate surfaces now, and hocus opening the list unbidden is exactly what
-/// that separation forbids. `State::open_agents_pane` - `Ctrl r`, and the `a` keybinding's
-/// own path - is the one that carries the url.
+/// that separation forbids. The `a` keybinding's own path is the one that carries the url, and
+/// the only thing that opens a list.
 pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
 /// legacy hocus → hocus: open the overlay conversation.
 ///

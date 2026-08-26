@@ -72,7 +72,6 @@ const LOCAL_COMMANDS: [&str; 5] = ["history", "models", "stop_jobs", "keys", "pl
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
 Ctrl+l        new chat
-Ctrl+r        focus agents
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
