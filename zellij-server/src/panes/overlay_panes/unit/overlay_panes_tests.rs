@@ -1644,3 +1644,176 @@ fn a_modal_opened_while_an_overlay_is_hidden_still_outranks_it_when_it_comes_bac
     );
     assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(2)));
 }
+
+// ---- a modal that was set aside ----------------------------------------------------------------
+//
+// Suppression and modality pull against each other, and the seam between them is `stack_layer_ids`:
+// the modal lock is read off it, and it filters `hidden`. So hiding a modal quietly lifts the lock
+// and showing it quietly puts it back - which means neither statement can be only about drawing.
+// A modal *is* its keyboard: it has no channel to learn it lost focus, so "on screen" and "holding
+// the keyboard" have to move together for one, exactly as "not drawn" and "not focused" already do
+// for every overlay.
+
+#[test]
+fn showing_a_hidden_modal_takes_the_keyboard_back() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+    panes.show_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal is back, and a modal that is back is a modal that is focused"
+    );
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(1), PaneId::Terminal(2)],
+        "and back at the top of the stack, above the dismissible it outranks"
+    );
+}
+
+/// The bug this is all for. Before, the round trip left a dialog drawn over everything, holding
+/// the lock that refuses every other overlay the keyboard, while the keyboard itself had fallen
+/// through to whatever was underneath - so nobody could type into the modal and nothing else could
+/// be focused past it.
+#[test]
+fn a_modal_put_back_locks_the_others_out_and_holds_the_keyboard_itself() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+    panes.show_pane(PaneId::Terminal(2));
+
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert!(
+        !panes.may_be_focused(&PaneId::Terminal(1)),
+        "the lock is armed again - the modal is back in the stack"
+    );
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the pane holding that lock is the one holding the keyboard, rather than the two \
+         having come apart"
+    );
+}
+
+#[test]
+fn hiding_a_modal_does_not_hand_the_keyboard_to_the_overlay_under_it() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        None,
+        "setting a modal aside is not the user withdrawing the refusal it was making - the \
+         dismissible underneath was not focusable a moment ago and does not become so now"
+    );
+}
+
+/// A modal *closing* does walk focus down (`move_clients_out_of_pane`), and a modal below is the
+/// one thing it may walk down to. Hiding follows the same rule for the same reason.
+#[test]
+fn hiding_a_modal_over_a_modal_walks_the_keyboard_to_the_modal_below() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn showing_a_modal_gives_it_to_every_connected_client() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    panes.connected_clients.borrow_mut().insert(2);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane_for_all_clients(PaneId::Terminal(1));
+
+    panes.hide_pane(PaneId::Terminal(1));
+    panes.show_pane(PaneId::Terminal(1));
+
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+    assert_eq!(
+        panes.active_pane_id(2),
+        Some(PaneId::Terminal(1)),
+        "a modal is focused for everybody, and coming back is no different from opening"
+    );
+}
+
+/// The other half of the contract, and the one hocus depends on: showing an *ordinary* overlay is
+/// still only about drawing it. hocus restores its agent list beside itself without wanting the
+/// keyboard to leave the conversation.
+#[test]
+fn showing_a_hidden_dismissible_overlay_still_leaves_the_keyboard_alone() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    panes.hide_pane(PaneId::Terminal(2));
+
+    panes.show_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "the pane that was drawn again is not the pane that is focused"
+    );
+}
+
+/// `focus_pane_if_exists` reveals through `show_pane`, so a modal now arrives focused twice over.
+/// Its contract is unchanged: `Ok` still means "this overlay is mine", which is what keeps
+/// `Tab::focus_pane_with_id`'s `.or_else` chain from going on to focus something else.
+#[test]
+fn focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.hide_pane(PaneId::Terminal(1));
+
+    assert!(panes.focus_pane_if_exists(PaneId::Terminal(1), 1).is_ok());
+    assert!(!panes.is_hidden(&PaneId::Terminal(1)));
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}

@@ -116,12 +116,12 @@ impl State {
         // size - there is no resize event for a plugin, and `render` is handed the pane's size
         // rather than the screen's.
         if let Some(active) = self.tabs.iter().find(|tab| tab.active) {
-            let (rows, cols) = (active.display_area_rows, active.display_area_columns);
+            let (rows, cols) = overlay::surface_of(active);
             let position = active.position;
-            let resized = (rows, cols) != (self.display_area_rows, self.display_area_cols);
+            let resized = (rows, cols) != (self.surface_rows, self.surface_cols);
             if resized {
-                self.display_area_rows = rows;
-                self.display_area_cols = cols;
+                self.surface_rows = rows;
+                self.surface_cols = cols;
             }
             // Where this client is now, against where they were. The rule that reads it is in
             // `overlay::tab_to_follow`: only the client the column is sitting with may move it,
@@ -161,6 +161,21 @@ impl State {
     /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
     pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
         let own_id = self.own_plugin_id;
+        // The first thing this event is good for, and the one thing that has to happen before
+        // anything else reads the manifest: settling whether this instance is a hocus restored as
+        // a *global pane* by a pre-overlay session dump. If it is, it hands over and closes, and
+        // none of the overlay bookkeeping below is about a pane that will still be here.
+        if self.legacy_suspect {
+            if hocus_proto::launch::is_legacy_global_instance(own_id, &manifest) {
+                self.migrate_to_overlay();
+                return false;
+            }
+            // Suspected on the configuration alone and cleared here: this is an ordinary
+            // non-overlay hocus, so it does the load-time work it deferred while it was in doubt.
+            self.legacy_suspect = false;
+            self.launch_agents_pane(false);
+            self.apply_overlay_geometry();
+        }
         // An agent list the user closed has to be forgotten, or `launch_agents_pane` keeps
         // revealing a pane that is not there and never opens a new one. Cleared from the whole
         // manifest rather than from our own tab: the two halves can be on different tabs for as
@@ -169,12 +184,17 @@ impl State {
         // Whether it is *drawn* is read in the same pass, because the `a` keybinding can reveal
         // the list on its own while this half is still set aside - see below.
         let mut agents_visible = false;
+        // Read in the same pass, and for the same reason: it is the only word this half gets about
+        // what happened to the other one. `rejoin` reads it to tell a list the user summoned from
+        // an apart list that was simply left behind - both bindings focus what they summon.
+        let mut agents_focused = false;
         if let Some(agents_id) = self.agents_plugin {
             self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
                 let agents = panes
                     .iter()
                     .find(|pane| pane.is_plugin && pane.id == agents_id)?;
                 agents_visible = !agents.is_suppressed;
+                agents_focused = agents.is_focused;
                 Some(*tab_index)
             });
             if self.agents_tab_index.is_none() {
@@ -212,7 +232,7 @@ impl State {
             }
             break;
         }
-        self.rejoin_agents_pane();
+        self.rejoin_agents_pane(agents_focused);
         false
     }
 
@@ -225,7 +245,9 @@ impl State {
     /// the hidden column's tab - the pane the user just asked for disappears in front of them.
     ///
     /// The binding is documented as revealing the *column*, so that is what happens: the
-    /// conversation comes back beside the list, on the tab the list was summoned to.
+    /// conversation comes back beside the list, on the tab the list was summoned to. This is the
+    /// suppressed case of the rule `overlay::rejoin` states for the visible one - the summoned
+    /// half's tab is the authoritative one, either way.
     ///
     /// Two details carry the weight:
     ///
@@ -251,18 +273,23 @@ impl State {
         self.apply_overlay_geometry();
     }
 
-    /// Drag the agent list back onto our tab if it has been left on another one.
+    /// Put a parted column back together, in whichever direction the user asked for.
     ///
     /// `follow_tab` moves the pair together and so cannot part them, but two paths outside hocus
     /// can. The `a` and `c` keybindings carry `move_to_focused_tab`, which moves only the pane the
-    /// binding names - so revealing the conversation from another tab brings it across on its own
-    /// and leaves the list where it was. `follow_tab` is no help afterwards: `own_tab_index` has
-    /// already been set from this very manifest, so it reads as a column that is where it belongs
-    /// and returns.
+    /// binding names - so a summon from another tab brings one half across and leaves the other
+    /// where it was. `follow_tab` is no help afterwards: `own_tab_index` has already been set from
+    /// this very manifest, so it reads as a column that is where it belongs and returns.
     ///
-    /// Converges by construction: the move is what makes the next manifest report the two
-    /// together, at which point this does nothing.
-    fn rejoin_agents_pane(&mut self) {
+    /// **Which half moved decides which way this goes**, and `overlay::rejoin` is where that is
+    /// decided - see it for why the answer is "whichever half the server focused". Dragging
+    /// unconditionally was wrong in one of the two cases: the `a` binding is documented to reveal
+    /// the column, and an unconditional drag took the list the user had just summoned straight off
+    /// their tab again.
+    ///
+    /// Converges by construction either way: the move is what makes the next manifest report the
+    /// two together, at which point this does nothing.
+    fn rejoin_agents_pane(&mut self, agents_is_focused: bool) {
         let (Some(agents_id), Some(own_tab), Some(agents_tab)) = (
             self.agents_plugin,
             self.own_tab_index,
@@ -270,14 +297,26 @@ impl State {
         ) else {
             return;
         };
-        if agents_tab == own_tab {
-            return;
+        let agents_tab_is_someones = self.client_tabs.values().any(|tab| *tab == agents_tab);
+        match overlay::rejoin(
+            own_tab,
+            agents_tab,
+            agents_is_focused,
+            agents_tab_is_someones,
+        ) {
+            // `follow_tab` carries both panes and restates both indices, so the list stays where
+            // the user put it and the conversation arrives beside it.
+            Some(overlay::Rejoin::Follow(tab_index)) => self.follow_tab(tab_index),
+            Some(overlay::Rejoin::Drag(tab_index)) => {
+                break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], tab_index, false);
+                self.agents_tab_index = Some(tab_index);
+                // The destination resolves coordinates against its own surface, and the list
+                // arrives with whatever the keybinding's launch gave it - the same restatement
+                // `follow_tab` makes.
+                self.apply_overlay_geometry();
+            },
+            None => {},
         }
-        break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], own_tab, false);
-        self.agents_tab_index = Some(own_tab);
-        // The destination resolves coordinates against its own surface, and the list arrives with
-        // whatever the keybinding's launch gave it - the same restatement `follow_tab` makes.
-        self.apply_overlay_geometry();
     }
 
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {

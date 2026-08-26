@@ -59,7 +59,7 @@ use swap_layouts::SwapLayouts;
 use self::clipboard::ClipboardProvider;
 use crate::route::NotificationEnd;
 use crate::{
-    global_panes::{GlobalPaneBorder, GlobalPaneStrip},
+    global_panes::{session_surface, GlobalPaneBorder, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
@@ -9041,6 +9041,21 @@ impl Tab {
     }
     pub fn get_display_area_origin(&self) -> (usize, usize) {
         *self.display_area_origin.borrow()
+    }
+    /// The whole session surface: this tab's display area grown back over the global-pane strips.
+    ///
+    /// Not the same rectangle as `get_display_area`, and the difference is load-bearing rather
+    /// than cosmetic: the display area is the tab *centre*, what is left once the strips have been
+    /// carved off, while this is what an overlay's coordinates resolve against
+    /// (`OverlayPanes::surface`). A caller that computes an overlay's geometry from the display
+    /// area places it against a smaller rectangle than the server will, which reads as a pane that
+    /// is too small and floating short of the edge it was anchored to.
+    pub fn get_session_surface(&self) -> Viewport {
+        session_surface(
+            self.get_display_area(),
+            self.get_display_area_origin(),
+            &self.global_pane_strips.borrow(),
+        )
     }
     pub fn get_client_input_mode(&self, client_id: ClientId) -> Option<InputMode> {
         self.mode_info.borrow().get(&client_id).map(|m| m.mode)

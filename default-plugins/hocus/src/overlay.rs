@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
-use hocus_proto::launch::{overlay_configuration, HOCUS_AGENTS_ALIAS};
+use hocus_proto::launch::{overlay_configuration, HOCUS_AGENTS_ALIAS, HOCUS_ALIAS};
 
 use crate::ui;
 use crate::State;
@@ -74,9 +74,10 @@ fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usiz
 /// against yet, and a guess would put the column somewhere the user would see it move away from.
 pub(crate) fn column_geometry(
     config: &BTreeMap<String, String>,
-    rows: usize,
-    cols: usize,
+    surface_rows: usize,
+    surface_cols: usize,
 ) -> Option<(FloatingPaneCoordinates, FloatingPaneCoordinates)> {
+    let (rows, cols) = (surface_rows, surface_cols);
     if rows == 0 || cols == 0 {
         return None;
     }
@@ -125,10 +126,11 @@ pub(crate) fn column_geometry(
     let chat_y = rows.saturating_sub(chat_height + pad);
     let agents_y = chat_y.saturating_sub(agents_height);
 
-    // Fixed rather than percentages throughout: these are already resolved against the display
-    // area we were told about, and a percentage would be resolved a second time by the server -
-    // against the *session surface*, which is the display area minus any global pane strips, a
-    // different denominator.
+    // Fixed rather than percentages throughout: these are already resolved against the surface we
+    // were told about, and a percentage would be resolved a second time by the server. The two
+    // denominators would agree now that `surface_of` reads the session surface, but stating the
+    // arithmetic once is still the point - the column is anchored to the *bottom*, which no
+    // percentage can say.
     let rect = |x: usize, y: usize, w: usize, h: usize| {
         FloatingPaneCoordinates::new(
             Some(x.to_string()),
@@ -165,6 +167,78 @@ pub(crate) fn column_geometry(
 /// - Authority transfers on its own. `move_to_focused_tab` on the `a` and `c` keybindings puts the
 ///   column on the summoning client's tab, at which point their entry matches and the previous
 ///   client's no longer does - no owner has to be recorded anywhere.
+/// The surface the column is placed against, off the active tab's `TabInfo`.
+///
+/// An overlay's coordinates are resolved against the *session surface* - the tab's display area
+/// grown back over the global-pane strips (`OverlayPanes::surface`) - so that is the pair the
+/// arithmetic in `column_geometry` has to use. `display_area_*` is the tab centre, smaller by
+/// whatever the global panes took, and placing against it makes the column too small on both axes
+/// and floats it above the bottom edge it is anchored to by the strips' thickness.
+///
+/// Both-or-neither: a `TabInfo` from a server that predates `session_surface_*` reports zero for
+/// both, and one that somehow reported only one would otherwise mix denominators. The fallback is
+/// what the old code did - wrong by the strips, rather than a column collapsed to nothing.
+///
+/// `compact-bar` and `multiple-select` place themselves off `display_area_*` in the same way and
+/// have the same blind spot; they are deliberately left alone here.
+pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
+    match (tab.session_surface_rows, tab.session_surface_columns) {
+        (0, _) | (_, 0) => (tab.display_area_rows, tab.display_area_columns),
+        (rows, cols) => (rows, cols),
+    }
+}
+
+/// What to do about an agent list that is not on the column's tab.
+///
+/// See [`rejoin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rejoin {
+    /// The list is where the user asked for it. Carry the conversation over to join it.
+    Follow(usize),
+    /// The list was left behind. Bring it back to the column.
+    Drag(usize),
+}
+
+/// Which way a parted column should be put back together.
+///
+/// `follow_tab` moves the pair in one call and so cannot part them, but the `a` and `c`
+/// keybindings can: `move_to_focused_tab` moves only the pane the binding *names*. Which half
+/// moved is the whole question, and it is answered by which half the server focused, because both
+/// bindings focus what they summon:
+///
+/// - `a` summons the **list** onto the summoning client's tab and focuses it. Dragging it back is
+///   undoing what the user just asked for - the pane disappears in front of them. Follow it, and
+///   the conversation arrives beside it, which is what the binding is documented to do.
+/// - `c` summons the **conversation** and leaves the list behind, unfocused. Bring the list over.
+///
+/// This is the rule `State::reveal_beside_the_agents_pane` already applies when the column is
+/// suppressed - the summoned half's tab is the authoritative one - stated once for the visible
+/// case too.
+///
+/// `agents_tab_is_someones` is a corroborating guard rather than a second opinion: focus is
+/// per-pane and outlives the client that set it, so a list that was focused and then abandoned on
+/// a tab nobody is looking at must not be allowed to pull the column onto it. Read it from
+/// `State::client_tabs`, which is per-client and therefore says where people actually are;
+/// `State::tabs` is one client's `TabUpdate` and would answer for whoever was processed first.
+///
+/// Converges either way: both arms end with the pair on one tab, and the manifest that follows
+/// reads them as together and asks for nothing.
+pub(crate) fn rejoin(
+    own_tab: usize,
+    agents_tab: usize,
+    agents_is_focused: bool,
+    agents_tab_is_someones: bool,
+) -> Option<Rejoin> {
+    if own_tab == agents_tab {
+        return None;
+    }
+    Some(if agents_is_focused && agents_tab_is_someones {
+        Rejoin::Follow(agents_tab)
+    } else {
+        Rejoin::Drag(own_tab)
+    })
+}
+
 pub(crate) fn tab_to_follow(
     own_tab: Option<usize>,
     client_was_on: Option<usize>,
@@ -187,8 +261,7 @@ impl State {
     /// saying where our pane is, is the only evidence the call could have landed. A placement that
     /// could not land leaves `placed` false, and `on_panes` tries again the moment it can.
     pub(crate) fn apply_overlay_geometry(&mut self) {
-        let Some((chat, agents)) =
-            column_geometry(&self.kdl, self.display_area_rows, self.display_area_cols)
+        let Some((chat, agents)) = column_geometry(&self.kdl, self.surface_rows, self.surface_cols)
         else {
             return;
         };
@@ -279,6 +352,41 @@ impl State {
         self.apply_overlay_geometry();
     }
 
+    /// Hand over to an overlay-configured hocus and close.
+    ///
+    /// This instance was restored from a session dump written before hocus became an overlay, so
+    /// the server is drawing it as a *global pane* - a strip carved off the session surface, with
+    /// every tab shrunk to fit beside it. Nothing else will clear it: overlays are not serialized,
+    /// so the column the user asks for with the keybinding is a second one, opened beside a strip
+    /// that stays until it is closed by hand.
+    ///
+    /// **Only this half sends a launch.** The message names `HOCUS_ALIAS` with
+    /// `overlay_configuration()`, so the launch-or-reuse behind the url opens an overlay hocus,
+    /// whose own `load` opens the agent list beside it - and a legacy `hocus-agents` therefore has
+    /// nothing to do but close itself. Two launchers would be two chances to disagree about the
+    /// configuration the lookup matches on (`message_to_plugin` stamps a `caller_cwd` from the
+    /// sending plugin, and that lookup is exact), which is how you get two columns instead of one.
+    ///
+    /// **No coordinates.** A global pane's cached surface is not the one the new overlay will be
+    /// placed against, so any geometry computed here would be wrong. The new hocus places itself
+    /// on its first `TabUpdate`, which is what it does when it is launched any other way.
+    ///
+    /// The handover cannot loop: this instance's identity has no `overlay` key and the one being
+    /// asked for does, so the message can never be routed back here - and what it opens is never
+    /// a suspect.
+    pub(crate) fn migrate_to_overlay(&mut self) {
+        if self.migrating {
+            return;
+        }
+        self.migrating = true;
+        pipe_message_to_plugin(
+            MessageToPlugin::new(hocus_proto::wire::HOCUS_OPEN)
+                .with_plugin_url(HOCUS_ALIAS)
+                .with_plugin_config(overlay_configuration()),
+        );
+        close_self();
+    }
+
     /// Open the agent list as the overlay above this one - or reveal the one that is already there.
     ///
     /// `MessageToPlugin` with a `plugin_url` is launch-or-reuse: `get_or_load_plugins` hands the
@@ -295,8 +403,7 @@ impl State {
         let mut message = MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN)
             .with_plugin_url(HOCUS_AGENTS_ALIAS)
             .with_plugin_config(overlay_configuration());
-        if let Some((_, agents)) =
-            column_geometry(&self.kdl, self.display_area_rows, self.display_area_cols)
+        if let Some((_, agents)) = column_geometry(&self.kdl, self.surface_rows, self.surface_cols)
         {
             message = message.with_floating_pane_coordinates(agents);
         }

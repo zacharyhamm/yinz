@@ -6902,6 +6902,9 @@ impl TabInfo {
         let selectable_floating_panes_count =
             optional_int_node!("selectable_floating_panes_count", usize).unwrap_or(0);
         let tab_id = optional_int_node!("tab_id", usize).unwrap_or(0);
+        let session_surface_rows = optional_int_node!("session_surface_rows", usize).unwrap_or(0);
+        let session_surface_columns =
+            optional_int_node!("session_surface_columns", usize).unwrap_or(0);
         Ok(TabInfo {
             position,
             name,
@@ -6922,6 +6925,8 @@ impl TabInfo {
             tab_id,
             has_bell_notification: false,
             is_flashing_bell: false,
+            session_surface_rows,
+            session_surface_columns,
         })
     }
     pub fn encode_to_kdl(&self) -> KdlDocument {
@@ -6984,6 +6989,14 @@ impl TabInfo {
         let mut display_area_rows = KdlNode::new("display_area_rows");
         display_area_rows.push(self.display_area_rows as i64);
         kdl_doucment.nodes_mut().push(display_area_rows);
+
+        let mut session_surface_columns = KdlNode::new("session_surface_columns");
+        session_surface_columns.push(self.session_surface_columns as i64);
+        kdl_doucment.nodes_mut().push(session_surface_columns);
+
+        let mut session_surface_rows = KdlNode::new("session_surface_rows");
+        session_surface_rows.push(self.session_surface_rows as i64);
+        kdl_doucment.nodes_mut().push(session_surface_rows);
 
         let mut is_swap_layout_dirty = KdlNode::new("is_swap_layout_dirty");
         is_swap_layout_dirty.push(self.is_swap_layout_dirty);

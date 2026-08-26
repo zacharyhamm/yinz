@@ -1,7 +1,9 @@
 use zellij_utils::errors::prelude::*;
 
 use super::Screen;
-use crate::global_panes::{unowned_strip_rows, AllocatedGlobalPanes, GlobalPaneStrip};
+use crate::global_panes::{
+    session_surface, unowned_strip_rows, AllocatedGlobalPanes, GlobalPaneStrip,
+};
 use crate::output::{CharacterChunk, Output};
 use crate::panes::EMPTY_TERMINAL_CHARACTER;
 use crate::ClientId;
@@ -97,6 +99,33 @@ impl Screen {
             }
         }
         Ok(())
+    }
+
+    /// The whole session surface tab `tab_id` sits on: its display area grown back over the
+    /// global-pane strips.
+    ///
+    /// Derived from the layout rather than read off `Tab::get_session_surface`, and the difference
+    /// matters at exactly one moment: a tab's strip cache is pushed by `render_to_clients`, so
+    /// before the first frame it is empty and the tab would report its centre as the whole surface.
+    /// A `TabUpdate` is not tied to a render, so a plugin placing an overlay off that first report
+    /// would place it against the wrong rectangle and hear nothing more until something else
+    /// resized. Falling back to the tab's own answer when there is no client size to lay out
+    /// against is the same "keep the last layout" rule `reflow_tab` follows.
+    pub(super) fn session_surface_for_tab(&self, tab_id: usize) -> Option<Viewport> {
+        let tab = self.tabs.get(&tab_id)?;
+        let Some(tab_size) = self.tab_surface_size(tab_id) else {
+            return Some(tab.get_session_surface());
+        };
+        let layout = self.global_layout_for(tab_size).ok()?;
+        let center = layout.center;
+        Some(session_surface(
+            Size {
+                cols: center.cols,
+                rows: center.rows,
+            },
+            (center.x, center.y),
+            &self.strips_from_layout(&layout),
+        ))
     }
 
     /// The strips a tab must leave to the global panes for the supplied layout.

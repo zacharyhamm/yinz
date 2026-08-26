@@ -4164,3 +4164,44 @@ fn an_overlay_would_be_caught_by_the_tab_suppression_loop() {
         "and the overlay arm's own lookup finds it"
     );
 }
+
+/// A plugin's `show_pane_with_id(.., should_focus_pane = false)` arrives as
+/// `ScreenInstruction::UnsuppressOrExpandPane`, whose overlay arm is `Tab::show_overlay_pane` -
+/// the "put it back on screen, don't move the keyboard" path hocus uses to restore its agent list.
+///
+/// For a *modal* that separation does not exist. The modal lock is re-armed by this very
+/// statement, so a modal restored without its keyboard is a dialog nobody can type into that
+/// nothing else may be focused past. The plugin-facing bool decides whether an ordinary overlay
+/// takes focus; it does not get to decide whether a modal is a modal.
+#[test]
+fn unsuppressing_a_modal_overlay_gives_it_the_keyboard_back() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    assert_eq!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id)
+    );
+
+    screen
+        .tab_containing_overlay_mut(modal_id)
+        .expect("TEST")
+        .hide_overlay_pane(modal_id);
+    assert_ne!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id),
+        "a modal that is not drawn does not hold the keyboard either"
+    );
+
+    screen
+        .tab_containing_overlay_mut(modal_id)
+        .expect("TEST")
+        .show_overlay_pane(modal_id);
+    assert_eq!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id),
+        "and one that is drawn again does"
+    );
+}
