@@ -2863,6 +2863,123 @@ fn a_modal_broken_out_to_the_neighbouring_tab_arrives_as_a_modal() {
     );
 }
 
+/// `Screen::break_pane` - the plain "break the active pane out to its own new tab" action - was
+/// the one break path that never asked `placement_for_extraction`: it extracted whatever was
+/// active and handed it to `add_tiled_pane` unconditionally. With an overlay up the active pane
+/// *is* the overlay, so a modal broken out this way arrived in the new tab as an ordinary tiled
+/// pane, stripped of its kind and coordinates.
+#[test]
+fn a_modal_broken_out_to_its_own_new_tab_arrives_as_a_modal() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .vertical_split(PaneId::Terminal(2), None, 1, None, None)
+        .expect("TEST");
+
+    let modal = PaneId::Terminal(3);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+    assert_eq!(screen.active_pane_id(1), Some(modal), "pre-condition");
+
+    let tabs_before: HashSet<usize> = screen.tabs.keys().copied().collect();
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+    let new_tab_id = *screen
+        .tabs
+        .keys()
+        .find(|tab_id| !tabs_before.contains(tab_id))
+        .expect("the break was refused");
+
+    assert!(
+        screen.tabs[&new_tab_id].pane_is_overlay(modal),
+        "it is an overlay in the tab it made"
+    );
+    assert!(
+        screen.tabs[&new_tab_id]
+            .overlay_placement_for(modal)
+            .expect("TEST")
+            .is_modal(),
+        "and a modal, not merely a dismissible overlay"
+    );
+    assert!(
+        !screen.tabs[&new_tab_id].are_floating_panes_visible(),
+        "and did not raise the new tab's floating layer on the way in"
+    );
+    assert!(
+        !screen.tabs[&0].has_pane_with_pid(&modal),
+        "and is no longer in the tab it came from"
+    );
+    assert_eq!(
+        screen.tabs[&0].get_selectable_tiled_panes_count(),
+        2,
+        "which kept both of the panes the overlay was covering"
+    );
+}
+
+/// An overlay is not on a layer and does not tile, so taking it out cannot leave its tab without
+/// a pane - but the guard counted only what was underneath it, so over a single tiled pane the
+/// break was refused with "Cannot break single pane out!".
+#[test]
+fn an_overlay_can_be_broken_out_over_a_single_tiled_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal = PaneId::Terminal(2);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+    assert_eq!(
+        screen.tabs[&0].get_selectable_tiled_panes_count(),
+        1,
+        "pre-condition: nothing but the overlay and the pane it covers"
+    );
+
+    let tabs_before: HashSet<usize> = screen.tabs.keys().copied().collect();
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+    let new_tab_id = *screen
+        .tabs
+        .keys()
+        .find(|tab_id| !tabs_before.contains(tab_id))
+        .expect("the break was refused");
+
+    assert!(screen.tabs[&new_tab_id].pane_is_overlay(modal));
+    assert!(screen.tabs[&0].has_pane_with_pid(&PaneId::Terminal(1)));
+}
+
+/// An overlay does not tile, so the new tab still wants the layout's pane underneath it. The
+/// tiled arm tells the layout "this pane already exists, do not spawn it" - doing that for an
+/// overlay would leave a modal floating over an empty tab.
+#[test]
+fn breaking_an_overlay_out_still_spawns_the_new_tabs_own_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+
+    open_modal_terminal_in_tab(&mut screen, 0, PaneId::Terminal(2));
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+
+    let ignored = plugin_rx
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::NewTab(_, _, tiled_panes_layout, ..) => tiled_panes_layout,
+            _ => None,
+        })
+        .expect("no new tab was requested of the plugin thread")
+        .run_instructions_to_ignore;
+    assert!(
+        ignored.is_empty(),
+        "the overlay must not stand in for the new tab's own pane: {ignored:?}"
+    );
+}
+
 /// `execute_focus_on_hover` asked whether the hovered pane was on the *visible floating layer*,
 /// and an overlay answers `false` - so with the layer up, focus-follows-mouse over a modal
 /// reduced to a hover and left the keyboard where it was. An overlay is painted over everything

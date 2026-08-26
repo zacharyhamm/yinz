@@ -24,7 +24,13 @@ impl Screen {
         let active_pane_id = active_tab
             .get_active_pane_id(client_id)
             .with_context(err_context)?;
-        if active_tab.get_selectable_tiled_panes_count() > 1
+        // read before the extraction, which forgets that this was an overlay
+        let placement = active_tab.placement_for_extraction(active_pane_id);
+        let pane_is_overlay = matches!(placement, ExtractedPanePlacement::Overlay(..));
+        // an overlay is not on a layer and does not tile, so taking it out cannot leave this tab
+        // without a pane - how many panes sit underneath it has no say in whether it may leave
+        if pane_is_overlay
+            || active_tab.get_selectable_tiled_panes_count() > 1
             || active_tab.get_visible_selectable_floating_panes_count() > 0
             || active_tab.pane_is_stack_list_member(&active_pane_id)
         {
@@ -41,13 +47,39 @@ impl Screen {
             let tab = self.tabs.get_mut(&tab_index).with_context(err_context)?;
             let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
             let without_relayout = true;
-            tab.add_tiled_pane(
-                active_pane,
-                active_pane_id,
-                without_relayout,
-                Some(client_id),
-            )?;
-            tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
+            match placement {
+                ExtractedPanePlacement::Overlay(overlay_placement, carry) => {
+                    // no geom: an overlay's geometry is resolved from its coordinates against the
+                    // new tab's surface, which is exactly what carrying the placement is for.
+                    //
+                    // The run instruction is deliberately *not* ignored here: an overlay does not
+                    // tile, so ignoring it would leave the new tab with nothing underneath the
+                    // overlay at all.
+                    tab.add_overlay_pane(
+                        active_pane,
+                        active_pane_id,
+                        overlay_placement.kind,
+                        overlay_placement.coordinates.unwrap_or_default(),
+                        // this breaks out the *active* pane, and `hide_pane` moves clients off
+                        // what it hides - so the pane reaching here cannot be a hidden one
+                        OverlayCarry {
+                            hidden: false,
+                            ..carry
+                        },
+                        true,
+                        Some(client_id),
+                    )?;
+                },
+                _ => {
+                    tab.add_tiled_pane(
+                        active_pane,
+                        active_pane_id,
+                        without_relayout,
+                        Some(client_id),
+                    )?;
+                    tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
+                },
+            }
             let should_change_focus_to_new_tab = true;
             let is_web_client = self
                 .connected_clients
