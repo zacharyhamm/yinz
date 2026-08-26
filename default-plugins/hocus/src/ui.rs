@@ -1144,22 +1144,24 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
     }
 }
 
-fn render_title(state: &State, cols: usize) {
+fn render_title(state: &mut State, cols: usize) {
     let model = match &state.cfg {
         Ok(cfg) => cfg.model.clone(),
         Err(error) => error.model.clone(),
     };
-    // On the left with the model rather than in the right-hand slot: that slot
-    // is single-occupancy and already spoken for by what is *happening*
-    // (streaming, working, jobs), while planning is a standing state that has to
-    // stay legible through all of them.
+    // "hocus — {model}" lives in the real window title bar (set below) rather
+    // than drawn into the pane, so it survives even when the pane is scrolled
+    // or covered, and doesn't compete with the right-hand status slot for
+    // space.
     let title = if state.plan_mode_on() {
         format!("hocus (plan) — {model}")
     } else {
         format!("hocus — {model}")
     };
-    let text = Text::new(&title).color_range(0, ..title.chars().count().min(5));
-    print_text_with_coordinates(text, 0, 0, Some(cols), None);
+    if state.last_window_title.as_deref() != Some(title.as_str()) {
+        rename_plugin_pane(state.plugin_id, &title);
+        state.last_window_title = Some(title);
+    }
 
     // One slot at the right edge: what is happening now beats what is pending.
     // A count rides along when other chats are working too, so a background
