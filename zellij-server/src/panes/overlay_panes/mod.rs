@@ -30,27 +30,38 @@
 //!   the tiled collection, which used to fullscreen the pane *behind* the overlay.
 //! - **No `desired_pane_positions`.** A floating pane remembers where the user dragged it in a
 //!   second map beside the panes. An overlay has no such history *beside* itself: a mouse drag
-//!   rewrites the overlay's own stored `coordinates` (`move_pane_to_position`), so where the user
-//!   put it is expressed in the same terms as where it was opened, and `reapply_coordinates`
-//!   re-resolves a dragged overlay exactly as it re-resolves an untouched one. That is what keeps
-//!   the sentence above - geometry is a function of coordinates and the surface - true of a
-//!   draggable overlay.
-//! - **No resize.** An overlay is moved by the user, never resized by one: `Tab::resize` no-ops
-//!   for an overlay, the ctrl-drag branch of the mouse pipeline skips one, and there is no
-//!   `ResizeStrategy` API here. An overlay's *size* stays a function of its coordinates, which is
-//!   why a percentage-sized overlay still grows with the screen after being dragged.
+//!   rewrites the overlay's own stored `coordinates` (`move_pane_to_position`), and so does a
+//!   resize (`resize_pane_with_strategies`), so where the user put it and how big they made it
+//!   are expressed in the same terms as where it was opened, and `reapply_coordinates`
+//!   re-resolves a dragged or resized overlay exactly as it re-resolves an untouched one. That is
+//!   what keeps the sentence above - geometry is a function of coordinates and the surface - true
+//!   of an overlay the user has handled.
 //!
-//! `pane_being_moved_with_mouse` used to be on this list, as "overlays are not user-draggable".
-//! It is here now because the user asked to be able to move a popup out of the way of what it is
-//! covering. Nothing else about the concept moved: the drag never changes focus (so a modal keeps
-//! the keyboard throughout) and it edits the coordinates rather than introducing a position
-//! remembered anywhere else.
+//! `pane_being_moved_with_mouse` used to be on this list, as "overlays are not user-draggable",
+//! and so did resize, as "an overlay is moved by the user, never resized by one". Both are here
+//! now, and both for the same reason: the user asked to get a popup out of the way of what it is
+//! covering, and moving it is only half of that. Nothing else about the concept moved. Neither
+//! gesture changes focus (so a modal keeps the keyboard throughout) and both edit the overlay's
+//! *coordinates* rather than introducing a geometry remembered anywhere else, which is what keeps
+//! the sentence above - geometry is a function of coordinates and the surface - true of a
+//! draggable, resizable overlay.
 //!
-//! What the drag *does* add is a claim on half of those coordinates. A dragged overlay's position
-//! is the user's (`position_is_user_stated`), so `change_pane_coordinates` takes only a plugin's
-//! size from then on. Without that, an overlay whose plugin re-places itself on every `TabUpdate`
-//! is undraggable and looks it: the drag reports session state, session state is a `TabUpdate`,
-//! and the plugin answers each step of the drag by putting the overlay back.
+//! What they add is a claim on those coordinates. A dragged overlay's position is the user's
+//! (`position_is_user_stated`) and a resized overlay's size is (`size_is_user_stated`), so
+//! `change_pane_coordinates` stops taking a plugin's answer for whichever half the user has
+//! stated. Without that, an overlay whose plugin re-places itself on every `TabUpdate` is
+//! immovable and looks it: the gesture reports session state, session state is a `TabUpdate`, and
+//! the plugin answers each step by putting the overlay back. The two claims are independent - an
+//! overlay that was only dragged still takes a plugin's size.
+//!
+//! The resize has one cost, and it is worth stating rather than discovering: the new size is
+//! written back as `Fixed`, so an overlay the user has sized stops growing with the screen. That
+//! is the same trade the drag already makes for position, and it is what "the user said so" has
+//! to mean if it is to survive a re-resolution at all.
+//!
+//! A **modal is not resizable** (`is_resizable`). It is drawn because something needs an answer
+//! now, its content is sized to that question, and there is no case of it sitting over something
+//! the user is trying to read. It is still draggable, like any other overlay.
 //!
 //! If one of the remaining absences turns out to be needed, that is a signal that the concept is
 //! not as clean as assumed. Say so rather than adding it quietly.
@@ -65,7 +76,8 @@ use std::rc::Rc;
 
 use zellij_utils::{
     data::{
-        FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, Style, Styling,
+        FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, ResizeStrategy,
+        Style, Styling,
     },
     errors::prelude::*,
     input::layout::{PercentOrFixed, RunPluginOrAlias},
@@ -81,7 +93,9 @@ use crate::{
     global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
-    panes::floating_panes::floating_pane_grid::{geom_moved_within, half_size_middle_geom},
+    panes::floating_panes::floating_pane_grid::{
+        geom_moved_within, geom_resized_within, half_size_middle_geom,
+    },
     panes::{geom_is_outside_viewport, ActivePanes, PaneId, PaneLookup},
     plugins::PluginInstruction,
     thread_bus::ThreadSenders,
@@ -103,6 +117,13 @@ pub struct OverlayPane {
     /// drag wrote travel in it already. Only the "the user said so" bit is in-memory, and it is
     /// worth a proto change on the day a plugin re-places an overlay it has followed across.
     position_is_user_stated: bool,
+    /// The user resized this overlay, so its `width`/`height` are theirs and a plugin re-asserting
+    /// its placement no longer resizes it (`change_pane_coordinates`).
+    ///
+    /// The size twin of `position_is_user_stated`, and in memory for the same reason: the
+    /// *coordinates* the resize wrote travel in `OverlayPlacement` already, only the "the user
+    /// said so" bit does not.
+    size_is_user_stated: bool,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -259,6 +280,7 @@ impl OverlayPanes {
                 kind,
                 coordinates,
                 position_is_user_stated: false,
+                size_is_user_stated: false,
             },
         );
         self.raise_within_class(pane_id);
@@ -331,6 +353,7 @@ impl OverlayPanes {
                 // coordinates - a pane swapped into a dragged overlay is the pane the user
                 // dragged
                 position_is_user_stated: removed.position_is_user_stated,
+                size_is_user_stated: removed.size_is_user_stated,
             },
         );
         if let Some(index) = self.z_indices.iter().position(|p_id| p_id == &pane_id) {
@@ -404,6 +427,15 @@ impl OverlayPanes {
     }
     pub fn is_modal(&self, pane_id: &PaneId) -> bool {
         self.kind_of(pane_id).is_some_and(|kind| kind.is_modal())
+    }
+    /// Whether the user may resize this overlay: it is one, and it is not a modal.
+    ///
+    /// A modal keeps the size its plugin asked for. It is drawn *because* something needs an
+    /// answer right now, its content is sized to that question, and unlike a dismissible overlay
+    /// there is no case of it sitting over something the user is trying to read.
+    pub fn is_resizable(&self, pane_id: &PaneId) -> bool {
+        self.kind_of(pane_id)
+            .is_some_and(|kind| !matches!(kind, OverlayKind::Modal))
     }
     /// The last overlay a client could be sent to, bottom-of-stack-last. Used when focus has to
     /// land somewhere in this collection and nobody said where.
@@ -698,8 +730,12 @@ impl OverlayPanes {
     /// plugin re-asserting its placement resizes the overlay *where it is* rather than snapping it
     /// back. This is the difference between a draggable overlay and one that appears immovable: a
     /// drag reports session state, session state is a `TabUpdate`, and a plugin that re-places
-    /// itself on `TabUpdate` would otherwise undo every step of its own drag. `width`/`height`
-    /// still apply either way - the user moved the overlay, they did not take over its size.
+    /// itself on `TabUpdate` would otherwise undo every step of its own drag.
+    ///
+    /// `width`/`height` answer the same way once the user has resized the overlay
+    /// (`size_is_user_stated`), and for the same reason. The two claims are independent: an
+    /// overlay that was only dragged still takes a plugin's size, and one that was only resized
+    /// still takes a plugin's position.
     pub fn change_pane_coordinates(
         &mut self,
         pane_id: PaneId,
@@ -725,6 +761,10 @@ impl OverlayPanes {
         if overlay.position_is_user_stated {
             new_coordinates.x = overlay.coordinates.x;
             new_coordinates.y = overlay.coordinates.y;
+        }
+        if overlay.size_is_user_stated {
+            new_coordinates.width = overlay.coordinates.width;
+            new_coordinates.height = overlay.coordinates.height;
         }
         let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
         geom.adjust_coordinates(new_coordinates.clone(), surface, origin);
@@ -775,6 +815,104 @@ impl OverlayPanes {
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
+    }
+
+    // ---- being resized --------------------------------------------------------------------
+
+    /// One keyboard resize step, matching the floating layer's.
+    const RESIZE_INCREMENT_WIDTH: usize = 5;
+    const RESIZE_INCREMENT_HEIGHT: usize = 2;
+
+    /// Resize this client's overlay by one keyboard step; `true` => something changed.
+    ///
+    /// Deliberately answers `false` rather than falling through to another collection when the
+    /// client is not on an overlay - `Tab::resize` dispatches on membership, and an overlay
+    /// resize that quietly became a tiled one is exactly the bug the early return here used to
+    /// prevent.
+    pub fn resize_active_pane(
+        &mut self,
+        client_id: ClientId,
+        strategy: &ResizeStrategy,
+    ) -> Result<bool> {
+        let Some(pane_id) = self.active_panes.get(&client_id).copied() else {
+            return Ok(false);
+        };
+        self.resize_pane_with_id(pane_id, *strategy)
+    }
+
+    /// Resize `pane_id` by one keyboard step; `true` => something changed.
+    pub fn resize_pane_with_id(
+        &mut self,
+        pane_id: PaneId,
+        strategy: ResizeStrategy,
+    ) -> Result<bool> {
+        self.resize_pane_with_strategies(
+            pane_id,
+            &[strategy],
+            (Self::RESIZE_INCREMENT_WIDTH, Self::RESIZE_INCREMENT_HEIGHT),
+        )
+    }
+
+    /// Apply `strategies` in order to `pane_id`, each by `change_by`; `true` => something changed.
+    ///
+    /// The mouse entry point: a corner drag is two strategies (one per axis), exactly as it is
+    /// for a floating pane.
+    ///
+    /// **The new size is written back into the overlay's coordinates**, as `Fixed`, for the same
+    /// reason `move_pane_to_position` writes the new position back: this collection keeps no
+    /// geometry of record beside the panes, so a size that lived only on the geometry would be
+    /// undone by the next `reapply_coordinates` - a terminal resize, a global pane appearing, the
+    /// overlay following a client to another tab. A resize that moved the left or upper border
+    /// moved `x`/`y` too, so that half is written back as well and becomes the user's.
+    ///
+    /// The cost, stated plainly: an overlay the user has sized is `Fixed`, so it stops growing
+    /// with the screen. That is the same trade the drag already makes for position, and it is
+    /// what "the user said so" has to mean if it is to survive a re-resolution at all.
+    pub fn resize_pane_with_strategies(
+        &mut self,
+        pane_id: PaneId,
+        strategies: &[ResizeStrategy],
+        change_by: (usize, usize),
+    ) -> Result<bool> {
+        let err_context = || format!("failed to resize overlay {pane_id:?}");
+        if !self.is_resizable(&pane_id) {
+            return Ok(false);
+        }
+        let (surface, origin) = self.surface();
+        let overlay = self
+            .panes
+            .get_mut(&pane_id)
+            .with_context(|| format!("no overlay pane with ID {pane_id:?}"))
+            .with_context(err_context)?;
+
+        let before = overlay.pane.position_and_size();
+        let mut geom = before;
+        for strategy in strategies {
+            geom = geom_resized_within(geom, surface, strategy, change_by);
+        }
+        // `PaneGeom`'s equality covers x, y and both dimensions' inner sizes, which is exactly
+        // what a resize can change here
+        if geom == before {
+            return Ok(false);
+        }
+        overlay.pane.set_geom(geom);
+        overlay.pane.set_should_render(true);
+
+        overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
+        overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
+        overlay.size_is_user_stated = true;
+        if geom.x != before.x || geom.y != before.y {
+            // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as `origin + n`, so the
+            // position round-trips exactly - the same arithmetic `move_pane_to_position` does
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
+            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
+            overlay.position_is_user_stated = true;
+        }
+
+        // this is also what resizes the pane's pty to the new geometry
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        Ok(true)
     }
 
     // ---- being dragged with the mouse -------------------------------------------------------

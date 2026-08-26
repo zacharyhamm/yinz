@@ -21,7 +21,7 @@ mod swap_layouts;
 
 use crate::plugins::PluginId;
 use copy_command::CopyCommand;
-pub use mouse_handler::{MouseEffect, MouseHandler, PaneEdge, PaneResizeState};
+pub use mouse_handler::{MouseEffect, MouseHandler, PaneEdge, PaneResizeState, ResizeDragTarget};
 use std::env::temp_dir;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -5225,6 +5225,23 @@ impl Tab {
     pub fn a_pane_is_being_moved_with_mouse(&self) -> bool {
         self.floating_panes.pane_is_being_moved_with_mouse()
             || self.overlay_panes.pane_is_being_moved_with_mouse()
+            || self.an_overlay_is_being_resized_with_mouse()
+    }
+    /// Whether an overlay is mid ctrl-drag resize.
+    ///
+    /// Folded into `a_pane_is_being_moved_with_mouse` for the same reason the overlay *move* is:
+    /// an overlay is drawn over the whole session surface, so growing one downwards can put the
+    /// pointer over a global pane, and the drag has to survive that. Deliberately not extended to
+    /// floating or tiled resizes - those are clamped to the tab, and changing where their drags
+    /// are routed is a separate question.
+    fn an_overlay_is_being_resized_with_mouse(&self) -> bool {
+        matches!(
+            self.pane_being_resized_with_mouse,
+            Some(PaneResizeState {
+                target: ResizeDragTarget::Overlay,
+                ..
+            })
+        )
     }
     /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
     /// for callers outside the tab's own render (eg. the global panes, which paint after every
@@ -5870,16 +5887,23 @@ impl Tab {
         if self.floating_panes.fullscreen_is_active() {
             return Ok(());
         }
-        // An overlay is not resizable, and the branch below is a two-way floating/tiled split -
-        // so without this the keystroke fell through to `tiled_panes.resize_active_pane` and
-        // resized whatever the overlay was covering. `resize_pane_with_id` already dispatches on
-        // membership and no-ops for an overlay; this is the keyboard path agreeing with it.
-        // `OverlayPanes` has no `ResizeStrategy` API by design: an overlay's geometry is a
-        // function of its coordinates and the surface, not of its own history.
+        // The branch below is a two-way floating/tiled split, so an overlay has to be dispatched
+        // before it: without this the keystroke fell through to `tiled_panes.resize_active_pane`
+        // and resized whatever the overlay was covering. `OverlayPanes::resize_active_pane`
+        // refuses a modal on its own, and writes the new size back into the overlay's
+        // coordinates rather than onto its geometry - an overlay's geometry stays a function of
+        // its coordinates and the surface.
         if self
             .get_active_pane_id(client_id)
             .is_some_and(|pane_id| self.pane_is_overlay(pane_id))
         {
+            let resized = self
+                .overlay_panes
+                .resize_active_pane(client_id, &strategy)
+                .with_context(err_context)?;
+            if resized {
+                self.set_force_render();
+            }
             return Ok(());
         }
         let active_pane_is_floating = self
@@ -8512,6 +8536,16 @@ impl Tab {
                 self.swap_layouts.set_is_floating_damaged();
                 self.swap_layouts.set_is_tiled_damaged();
                 self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" in case of a decrease
+            }
+        } else if self.overlay_panes.panes_contain(&pane_id) {
+            // ahead of the tiled branch, which an overlay is not a member of but used to reach by
+            // falling through. No swap-layout damage: an overlay is not part of one.
+            let successfully_resized = self
+                .overlay_panes
+                .resize_pane_with_id(pane_id, strategy)
+                .with_context(err_context)?;
+            if successfully_resized {
+                self.set_force_render();
             }
         } else if self.tiled_panes.panes_contain(&pane_id) {
             match self

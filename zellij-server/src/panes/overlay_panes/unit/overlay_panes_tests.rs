@@ -3,9 +3,10 @@ use crate::os_input_output::{AsyncReader, ServerOsApi};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::{LinkHandler, PaneId, TerminalPane};
+use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
-use zellij_utils::data::{GlobalPaneEdge, Palette};
+use zellij_utils::data::{Direction, GlobalPaneEdge, Palette, Resize};
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 use zellij_utils::pane_size::Dimension;
@@ -1063,4 +1064,266 @@ fn a_replaced_pane_keeps_the_dragged_position() {
         .unwrap();
 
     assert_eq!(xy(&panes, 9), dropped_at);
+}
+
+// ---- being resized ----------------------------------------------------------------------
+
+fn grow(direction: Direction) -> ResizeStrategy {
+    ResizeStrategy {
+        resize: Resize::Increase,
+        direction: Some(direction),
+        invert_on_boundaries: false,
+    }
+}
+
+fn shrink(direction: Direction) -> ResizeStrategy {
+    ResizeStrategy {
+        resize: Resize::Decrease,
+        direction: Some(direction),
+        invert_on_boundaries: false,
+    }
+}
+
+fn size(panes: &OverlayPanes, id: u32) -> (usize, usize) {
+    let geom = panes
+        .get(&PaneId::Terminal(id))
+        .unwrap()
+        .position_and_size();
+    (geom.cols.as_usize(), geom.rows.as_usize())
+}
+
+/// The resize has to reach the stored *coordinates*, not only the geometry: this collection keeps
+/// no geometry of record beside the panes, so a size that lived only on the geom would be undone
+/// by the next `reapply_coordinates`.
+#[test]
+fn a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    assert_eq!(size(&panes, 1), (48, 10));
+
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap());
+    assert_eq!(size(&panes, 1), (53, 10));
+
+    // the terminal grows 80 -> 120. An untouched 60%-wide overlay would re-resolve to 72; this
+    // one keeps the size the user gave it
+    *display_area.borrow_mut() = Size {
+        cols: 120,
+        rows: 20,
+    };
+    panes.reapply_coordinates();
+    assert_eq!(
+        size(&panes, 1),
+        (53, 10),
+        "the resized size survives a re-resolution"
+    );
+}
+
+/// A resize from the left or upper border moves the pane as well as sizing it, so that half has to
+/// be written back too - otherwise the next re-resolution snaps the overlay back to where its
+/// coordinates still say it is, and the resize looks like it slid sideways.
+#[test]
+fn a_resize_from_the_upper_left_pins_the_position_as_well_as_the_size() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let (start_x, start_y) = xy(&panes, 1);
+
+    panes
+        .resize_pane_with_strategies(
+            PaneId::Terminal(1),
+            &[grow(Direction::Left), grow(Direction::Up)],
+            (5, 2),
+        )
+        .unwrap();
+    assert_eq!(xy(&panes, 1), (start_x - 5, start_y - 2));
+    assert_eq!(size(&panes, 1), (53, 12));
+
+    *display_area.borrow_mut() = Size {
+        cols: 120,
+        rows: 40,
+    };
+    panes.reapply_coordinates();
+    assert_eq!(xy(&panes, 1), (start_x - 5, start_y - 2));
+    assert_eq!(size(&panes, 1), (53, 12));
+}
+
+/// A modal is sized to the question it is asking. It is still draggable - only its size is the
+/// plugin's.
+#[test]
+fn a_modal_refuses_to_be_resized() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+    let before = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
+
+    assert!(!panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap());
+    assert_eq!(
+        panes.get(&PaneId::Terminal(1)).unwrap().position_and_size(),
+        before
+    );
+    assert!(!panes.is_resizable(&PaneId::Terminal(1)));
+    assert!(!panes.is_resizable(&PaneId::Terminal(7)), "not an overlay");
+}
+
+/// The size twin of `a_plugin_re_asserting_its_placement_does_not_undo_a_drag`: a plugin that
+/// re-places itself on every `TabUpdate` would otherwise answer each step of the resize by putting
+/// the overlay back.
+#[test]
+fn a_plugin_re_asserting_its_placement_does_not_undo_a_resize() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap();
+    let resized_to = size(&panes, 1);
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "60%", "10"))
+        .unwrap();
+
+    assert_eq!(
+        size(&panes, 1),
+        resized_to,
+        "the size the user chose outranks the one the plugin asks for"
+    );
+}
+
+/// The two claims are independent: a resize does not hand the plugin's position to the user.
+#[test]
+fn a_resize_alone_leaves_the_position_the_plugin_s() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap();
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("50%", "60%", "10"))
+        .unwrap();
+
+    assert_eq!(xy(&panes, 1).1, 10, "the plugin still places the overlay");
+}
+
+/// The resize clamps against the *session surface*, the same bound the drag clamps against, and
+/// never below the minimum a pane can be drawn at.
+#[test]
+fn a_resize_is_clamped_to_the_surface_and_to_the_minimum_pane_size() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    let (start_x, _) = xy(&panes, 1);
+
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (400, 0))
+        .unwrap();
+    assert_eq!(
+        size(&panes, 1).0,
+        80 - start_x,
+        "no further than the right edge of the surface"
+    );
+
+    panes
+        .resize_pane_with_strategies(
+            PaneId::Terminal(1),
+            &[shrink(Direction::Right), shrink(Direction::Down)],
+            (400, 400),
+        )
+        .unwrap();
+    assert_eq!(
+        size(&panes, 1),
+        (MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT),
+        "and no smaller than a pane can be drawn"
+    );
+}
+
+/// A resize that changes nothing is not a state change - the mouse pipeline asks this question on
+/// every motion event of a drag.
+#[test]
+fn a_resize_that_changes_nothing_reports_so() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    // already as small as a pane can be drawn, and shrinking does not invert the way growing on a
+    // boundary does
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[shrink(Direction::Right)], (400, 0))
+        .unwrap();
+    assert!(!panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[shrink(Direction::Right)], (5, 0))
+        .unwrap());
+}
+
+/// Growing against the edge of the surface inverts into a shrink, exactly as it does for a
+/// floating pane against the edge of the viewport - the arithmetic is literally the same function.
+#[test]
+fn growing_an_overlay_that_is_already_on_the_boundary_inverts() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("100%", "50%"),
+    );
+    // 100% wide clamps to the surface, so the right border has nowhere left to go
+    let (cols, _) = size(&panes, 1);
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 0))
+        .unwrap();
+    assert_eq!(size(&panes, 1).0, cols - 5);
+}
+
+/// The keyboard entry point resizes the overlay the client is on, and answers `false` rather than
+/// falling through to another collection when the client is not on one.
+#[test]
+fn the_keyboard_path_resizes_the_client_s_own_overlay() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    assert!(
+        !panes
+            .resize_active_pane(1, &grow(Direction::Right))
+            .unwrap(),
+        "the client is not on an overlay"
+    );
+
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert!(panes
+        .resize_active_pane(1, &grow(Direction::Right))
+        .unwrap());
+    assert_eq!(size(&panes, 1), (53, 10));
 }
