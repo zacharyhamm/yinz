@@ -2379,6 +2379,12 @@ impl Screen {
                     Some(client_id),
                 )?;
             }
+            // The tab now has this client on the overlay, but a client sitting on a global pane
+            // reads its focus from `Screen::active_pane_id`, which looks at the global panes
+            // first - so without this the pane comes back on screen and the keyboard does not
+            // follow it. The hide side has done the symmetric thing since overlays existed
+            // (`take_global_focus_after_overlay_close`); this is its other half.
+            self.activate_overlay(pane_id);
             // Set affected pane ID for CLI client output
             if let Some(ref mut completion) = completion_tx {
                 completion.set_affected_pane_id(pane_id);
@@ -2393,6 +2399,9 @@ impl Screen {
                     .with_context(err_context)?
                     .focus_pane_with_id(plugin_pane_id, should_float, should_be_in_place, client_id)
                     .context("failed to focus plugin pane")?;
+                // as above - and a no-op for a plugin that is not an overlay, which is what
+                // makes it safe to state once for every shape this branch focuses
+                self.activate_overlay(plugin_pane_id);
                 self.log_and_report_session_state()
                     .with_context(err_context)?;
                 // Set affected pane ID for CLI client output

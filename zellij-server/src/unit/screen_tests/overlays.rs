@@ -4205,3 +4205,184 @@ fn unsuppressing_a_modal_overlay_gives_it_the_keyboard_back() {
         "and one that is drawn again does"
     );
 }
+
+/// `Ctrl e c` on a hocus that was put away with Esc. `LaunchOrFocusPlugin` is the user asking for
+/// the pane back, so it has to come back *and* take the keyboard - a pane that reappears while
+/// typing still goes to whatever is underneath is worse than one that never reappeared.
+#[test]
+fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 2, 0, popup_coordinates());
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+
+    // Esc in hocus: `hide_self` -> `ScreenInstruction::SuppressPane` -> `hide_overlay_pane`
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(popup_id);
+    assert_ne!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "a hidden overlay does not hold the keyboard"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "the revealed overlay takes the keyboard"
+    );
+}
+
+/// The same reveal, for a client whose focus is on a global pane. `Screen::active_pane_id` reads
+/// the global focus before it reads the tab, so focusing the overlay inside the tab is only half
+/// of the move - the other half is suspending the global focus, which is what `activate_overlay`
+/// does for every other path that puts an overlay under a client's keyboard.
+#[test]
+fn launch_or_focus_plugin_focuses_a_hidden_overlay_over_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 2, 0, popup_coordinates());
+    screen.activate_overlay(popup_id);
+
+    let restore = screen.take_global_focus_after_overlay_close(popup_id);
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(popup_id);
+    screen.restore_global_focus(restore);
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99)),
+        "hiding puts the client back on the global pane it came from"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "the revealed overlay takes the keyboard back off the global pane"
+    );
+}
+
+/// `Ctrl e c` with no hocus running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
+/// creates the pane instead - the `AddPlugin` path, which is what this mirrors: `should_focus`
+/// defaults to true and the placement is an overlay.
+#[test]
+fn a_newly_created_overlay_plugin_takes_the_keyboard() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+
+    let popup_id = PaneId::Plugin(2);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            popup_id,
+            Some("popup".to_owned()),
+            Some(Run::Plugin(run_plugin)),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(popup_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.activate_overlay(popup_id);
+
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+}
+
+/// The same creation, for a client sitting on a global pane.
+#[test]
+fn a_newly_created_overlay_plugin_takes_the_keyboard_off_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let popup_id = PaneId::Plugin(2);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            popup_id,
+            Some("popup".to_owned()),
+            Some(Run::Plugin(run_plugin)),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(popup_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.activate_overlay(popup_id);
+
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+}
+
+/// The arrangement hocus actually runs: two overlay plugins side by side, the conversation and
+/// the agent list. Esc in the conversation hands the keyboard to the list (`move_clients_out_of_pane`
+/// walks focus down the stack rather than off it), so `Ctrl e c` has to take it back off a
+/// *sibling overlay* rather than off a tiled pane - a different arm of `focus_pane_with_id`.
+#[test]
+fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let coordinates = |x: usize| FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(x)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Fixed(20)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        ..Default::default()
+    };
+    let (_, agents_id) = open_overlay_plugin(&mut screen, 3, 0, coordinates(24));
+    let (chat_run, chat_id) = open_overlay_plugin(&mut screen, 2, 0, coordinates(2));
+    assert_eq!(screen.active_pane_id(1), Some(chat_id));
+
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(chat_id);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(agents_id),
+        "hiding the conversation drops the client onto the list beside it"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&chat_run, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(chat_id),
+        "the revealed conversation takes the keyboard back from the list"
+    );
+}
