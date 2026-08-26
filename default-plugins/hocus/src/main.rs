@@ -790,6 +790,12 @@ impl State {
             Event::PluginConfigurationChanged(kdl) => {
                 self.kdl = kdl;
                 self.reconfigure();
+                // `width`, `pad` and `agents_height` live in the same block, and nothing else
+                // re-reads them: without this the column keeps its old geometry until an
+                // unrelated resize or tab move happens to re-place it. Not folded into
+                // `reconfigure`, which is gated on the permission grant - placing the column is
+                // not.
+                self.apply_overlay_geometry();
                 true
             },
             // The payload is the real time the host slept, which is the only

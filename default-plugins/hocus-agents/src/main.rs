@@ -31,9 +31,14 @@
 //! **Hiding, though, does not work in both directions.** An overlay is hidden by
 //! name, where the old global strip hid by edge and so went away as one unit, and
 //! this pane does not know the chat's id. So Esc here sends `AGENT_STRIP_HIDE` to
-//! hocus, which holds both ids and puts the column away as one — rather than
-//! `hide_self`, which would leave the conversation on screen with its list
-//! missing.
+//! hocus, which holds both ids and puts the column away as one — `hide_self` alone
+//! would leave the conversation on screen with its list missing.
+//!
+//! It calls `hide_self` *as well*, though, as a fallback: with no hocus running —
+//! its pane closed by hand, or the plugin gone — the message has no recipient and
+//! the gesture would otherwise be a silent no-op, stranding a list that cannot put
+//! itself away. With hocus alive the two agree: hocus hides this pane first, and
+//! hiding an already-hidden pane does nothing.
 
 use std::collections::BTreeMap;
 
@@ -198,8 +203,10 @@ impl State {
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             // puts the whole column away, chat included - the same gesture that
-            // revealed it. Routed through hocus: see the module doc.
+            // revealed it. Routed through hocus, plus `hide_self` for when there is
+            // no hocus to route it to: see the module doc.
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
+            hide_self();
             return false;
         }
         if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
@@ -217,6 +224,7 @@ impl State {
         match key.bare_key {
             BareKey::Esc => {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
+                hide_self();
                 false
             },
             BareKey::Enter => {

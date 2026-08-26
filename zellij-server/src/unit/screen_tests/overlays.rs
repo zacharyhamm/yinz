@@ -154,6 +154,70 @@ fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
     );
 }
 
+/// The hocus column is two overlays, hidden one after the other, and the first of them is not
+/// the one the client is on. Consuming every suspended-focus entry for the tab therefore threw
+/// away the entry belonging to the client sitting on the *second* overlay, and by the time that
+/// one was hidden there was nothing left to restore - the client fell back onto a tiled pane
+/// instead of the global pane the column was opened from.
+#[test]
+fn hiding_a_sibling_overlay_leaves_the_focused_overlay_s_global_focus_to_restore() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let overlay = |y: usize| {
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(2)),
+                y: Some(PercentOrFixed::Fixed(y)),
+                width: Some(PercentOrFixed::Fixed(30)),
+                height: Some(PercentOrFixed::Fixed(4)),
+                ..Default::default()
+            },
+        )))
+    };
+
+    // the agent list, above the chat and never focused
+    let agents = PaneId::Terminal(3);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(agents, None, None, false, false, overlay(4), Some(1), None)
+        .expect("TEST");
+    // the chat, which is what the client is on
+    let chat = PaneId::Terminal(2);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(chat, None, None, false, true, overlay(9), Some(1), None)
+        .expect("TEST");
+    screen.activate_overlay(chat);
+    assert_eq!(screen.active_pane_id(1), Some(chat));
+
+    // `hide_column` hides the list first, then itself - two `SuppressPane`s, in that order
+    for pane_id in [agents, chat] {
+        let restore = screen.take_global_focus_after_overlay_close(pane_id);
+        screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(pane_id);
+        screen.restore_global_focus(restore);
+    }
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99)),
+        "hiding the whole column puts the client back on the global pane it came from"
+    );
+}
+
 /// A pane's z-index has to be its place in the occlusion stack, which is not the same as its place
 /// among the panes a given render pass happens to draw. Taking the index from the pass rather than
 /// from the stack clips a pane against its own geometry, dropping every one of its chunks - the
