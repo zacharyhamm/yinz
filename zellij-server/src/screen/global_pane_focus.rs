@@ -160,10 +160,15 @@ impl Screen {
                 if *saved_tab != tab_id {
                     return true;
                 }
+                // Only the clients this overlay was actually holding: the column hocus draws
+                // is two overlays hidden one after the other, and taking every entry on the tab
+                // would let the first hide consume the saved focus of a client sitting on the
+                // second - which then has nothing to restore.
                 if tab.get_active_pane_id(*client_id) == Some(pane_id) {
                     restore.push((*client_id, *global_pane));
+                    return false;
                 }
-                false
+                true
             });
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
             tab.set_should_clear_display_before_rendering();
