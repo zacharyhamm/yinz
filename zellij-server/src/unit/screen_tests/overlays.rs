@@ -1,4 +1,5 @@
 use super::*;
+use crate::panes::OverlayCarry;
 use std::collections::BTreeMap;
 use zellij_utils::data::{OverlayKind, OverlayPlacement, Resize, ResizeStrategy};
 
@@ -288,6 +289,70 @@ fn a_global_pane_does_not_paint_over_an_overlay_in_another_client_s_tab() {
     );
 }
 
+/// Where the plugin popups in these tests are placed. Fixed on both axes, so a drag is visible as
+/// a difference in the resolved geometry.
+fn popup_coordinates() -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(2)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Percent(60)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        ..Default::default()
+    }
+}
+
+/// Put a *plugin* overlay in `tab_id`, returning what `focus_plugin_pane` has to be asked for to
+/// find it again and the pane's id.
+///
+/// A plugin rather than a terminal because `move_to_focused_tab` is a `LaunchOrFocusPlugin` thing:
+/// the pane is looked up by its `RunPluginOrAlias`, which is why that comes back out.
+fn open_overlay_plugin(
+    screen: &mut Screen,
+    plugin_id: u32,
+    tab_id: usize,
+    coordinates: FloatingPaneCoordinates,
+) -> (RunPluginOrAlias, PaneId) {
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let popup = PaneFactory::plugin(
+        plugin_id,
+        Default::default(),
+        plugin_sender,
+        "popup".to_owned(),
+        "popup".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin.clone())),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let popup_id = PaneId::Plugin(plugin_id);
+    let tab = screen.tabs.get_mut(&tab_id).expect("TEST");
+    tab.show_floating_panes();
+    tab.add_overlay_pane(
+        popup,
+        popup_id,
+        OverlayKind::Dismissible,
+        coordinates,
+        OverlayCarry::default(),
+        true,
+        Some(1),
+    )
+    .expect("TEST");
+    (run_plugin, popup_id)
+}
+
 /// A popup bound with `move_to_focused_tab` follows the client from tab to tab. The tab it leaves
 /// forgets the coordinates it was placed with, so unless they travel with it the popup lands in
 /// the new tab as an ordinary floating pane - sized against the tab's viewport, and painted under
@@ -307,52 +372,9 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
     screen.render_to_clients().expect("TEST");
     while server_receiver.try_recv().is_ok() {}
 
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
-    let popup = PaneFactory::plugin(
-        7,
-        Default::default(),
-        plugin_sender,
-        "popup".to_owned(),
-        "popup".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
-        screen.style,
-        Some(Run::Plugin(run_plugin.clone())),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
-    );
-    let popup_id = PaneId::Plugin(7);
-    let coordinates = FloatingPaneCoordinates {
-        x: Some(PercentOrFixed::Fixed(2)),
-        y: Some(PercentOrFixed::Fixed(2)),
-        width: Some(PercentOrFixed::Percent(60)),
-        height: Some(PercentOrFixed::Fixed(4)),
-        ..Default::default()
-    };
+    let coordinates = popup_coordinates();
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 0, coordinates.clone());
     let first_tab = screen.tabs.get_mut(&0).expect("TEST");
-    first_tab.show_floating_panes();
-    first_tab
-        .add_overlay_pane(
-            popup,
-            popup_id,
-            OverlayKind::Dismissible,
-            coordinates,
-            false,
-            true,
-            Some(1),
-        )
-        .expect("TEST");
     assert!(first_tab.pane_is_overlay(popup_id));
     let placed_at = first_tab
         .get_pane_with_id(popup_id)
@@ -3830,6 +3852,104 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
     );
 }
 
+/// Where an overlay was dropped is *in-memory* state on the wrapper `extract_pane` throws away,
+/// so it has to be carried across a tab move by hand - exactly as suppression is, and now in the
+/// same `OverlayCarry`.
+///
+/// Without that, the position survives the move (it is in the coordinates, which do travel) and is
+/// then overwritten by the plugin's very next placement, because the destination no longer knows
+/// the user had a say. hocus's overlay column re-places itself on every `TabUpdate` and moves
+/// itself between tabs, so for it every tab switch undid the drag.
+#[test]
+fn a_dragged_overlay_stays_where_it_was_dropped_across_a_tab_move() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    let opened_with = overlay_coordinates();
+    open_overlay_with(&mut screen, 3, opened_with.clone());
+    drag_overlay_by(&mut screen, 3, 20, 4);
+    let dropped_at = floating_geom(&screen, 3);
+
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![PaneId::Terminal(3)], 1, false, 1)
+        .expect("TEST");
+    // the plugin restating its placement on the far side, which is what `follow_tab` does the
+    // instant the move lands
+    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), opened_with)]);
+
+    let after = screen.tabs[&1]
+        .get_pane_with_id(PaneId::Terminal(3))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (after.x, after.y),
+        (dropped_at.x, dropped_at.y),
+        "the overlay arrives where the user dropped it, and the plugin's restated placement takes \
+         only its size"
+    );
+}
+
+/// The same carry on the reveal path, which is the one the `a` and `c` keybindings take.
+///
+/// `LaunchOrFocusPlugin { move_to_focused_tab }` overrides exactly one bit of what it carries -
+/// naming a plugin is the user asking for it back, so a hidden overlay arrives shown. It must not
+/// quietly override the other: a reveal is not a request to undo the drag, and the plugin
+/// re-placing itself on arrival is what would do that.
+#[test]
+fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    let coordinates = popup_coordinates();
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 0, coordinates.clone());
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+    let from = Position::new(geom.y as i32, geom.x as u16);
+    let to = Position::new(geom.y as i32 + 5, geom.x as u16 + 12);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(from), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(to), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(to), 1);
+    let dropped_at = screen.tabs[&0]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+
+    // Esc puts the column away, and the user asks for it back from the other tab
+    assert!(screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(popup_id));
+    screen.switch_active_tab(1, None, true, 1).expect("TEST");
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, false, true, false, 1, &mut None)
+        .expect("TEST"));
+
+    let second_tab = screen.tabs.get(&1).expect("TEST");
+    assert!(
+        second_tab.overlays_are_rendered(),
+        "the reveal half of the move still happens - a pane asked for by name comes back shown"
+    );
+    // the plugin restating its placement, as hocus does the instant it hears where it landed
+    screen.change_overlay_coordinates(vec![(popup_id, coordinates)]);
+    let after = screen.tabs[&1]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (after.x, after.y),
+        (dropped_at.x, dropped_at.y),
+        "and the drag came with it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Per-pane suppression: an overlay set aside without being unloaded.
 //
@@ -4004,7 +4124,7 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
             PaneId::Plugin(9),
             OverlayKind::Dismissible,
             FloatingPaneCoordinates::default(),
-            false,
+            OverlayCarry::default(),
             true,
             Some(1),
         )

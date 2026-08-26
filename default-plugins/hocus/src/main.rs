@@ -435,8 +435,9 @@ pub struct State {
     /// Whether the column has been set aside with Esc.
     ///
     /// Tracked here as well as server-side because it gates two things hocus decides for itself:
-    /// it does not follow tab switches while hidden (a moved overlay arrives visible), and a
-    /// reveal from outside has to be noticed so the agent list comes back beside the conversation.
+    /// it does not follow tab switches while hidden (a column that has been set aside does not
+    /// chase the user around), and a reveal from outside has to be noticed so the two halves come
+    /// back together - including the one where the `a` keybinding reveals only the agent list.
     pub(crate) hidden: bool,
     /// A hide we have asked for and not yet seen take effect.
     ///

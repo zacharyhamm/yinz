@@ -67,7 +67,7 @@ use crate::{
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
-    panes::{FloatingPanes, OverlayPanes, PaneFactory, TiledPanes},
+    panes::{FloatingPanes, OverlayCarry, OverlayPanes, PaneFactory, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane, EMPTY_TERMINAL_CHARACTER},
     plugins::PluginInstruction,
     pty::{ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
@@ -266,10 +266,11 @@ pub(crate) enum AcceptedPane {
 pub(crate) enum ExtractedPanePlacement {
     Tiled,
     Floating,
-    /// `bool` is whether the overlay was hidden. It rides here rather than in `OverlayPlacement`
-    /// because that struct crosses the protobuf boundary and this is in-memory state, not
-    /// placement - the same split `position_is_user_stated` is on.
-    Overlay(OverlayPlacement, bool),
+    /// [`OverlayCarry`] is the in-memory half of the overlay's wrapper - whether it was set
+    /// aside, and whether where it sits is the user's doing. It rides here rather than in
+    /// `OverlayPlacement` because that struct crosses the protobuf boundary and neither bit is
+    /// placement.
+    Overlay(OverlayPlacement, OverlayCarry),
 }
 
 enum BufferedTabInstruction {
@@ -3272,8 +3273,9 @@ impl Tab {
             pid,
             placement.kind,
             placement.coordinates.unwrap_or_default(),
-            // a newly opened overlay is on screen; hiding is something that happens to it later
-            false,
+            // a newly opened overlay is on screen and nobody has dragged it yet; both are things
+            // that happen to it later
+            OverlayCarry::default(),
             should_focus_pane,
             None,
         )
@@ -5322,6 +5324,12 @@ impl Tab {
     pub fn overlay_placement_for(&self, pane_id: PaneId) -> Option<OverlayPlacement> {
         self.overlay_panes.placement_of(&pane_id)
     }
+    /// The other half of what a mover has to read before `extract_pane` - see [`OverlayCarry`].
+    /// Split from `overlay_placement_for` because that one crosses the protobuf boundary and this
+    /// one is in-memory state; a caller taking an overlay out of this tab wants both.
+    pub fn overlay_carry_for(&self, pane_id: PaneId) -> OverlayCarry {
+        self.overlay_panes.carry_of(&pane_id)
+    }
     /// Where `pane_id` belongs, for a caller about to take it out of this tab and hand it to
     /// another one. The overlay arm has to come first and has to be asked *here*: `extract_pane`
     /// drops the kind and coordinates on the way out, and the destination has no way to
@@ -5329,7 +5337,7 @@ impl Tab {
     /// out of.
     pub fn placement_for_extraction(&self, pane_id: PaneId) -> ExtractedPanePlacement {
         if let Some(placement) = self.overlay_placement_for(pane_id) {
-            ExtractedPanePlacement::Overlay(placement, self.overlay_panes.is_hidden(&pane_id))
+            ExtractedPanePlacement::Overlay(placement, self.overlay_carry_for(pane_id))
         } else if self.pane_id_is_floating(&pane_id) {
             ExtractedPanePlacement::Floating
         } else {
@@ -8213,18 +8221,20 @@ impl Tab {
     /// is also the reason there is no `find_room_for_new_pane` here - overlays do not tile
     /// themselves out of each other's way, they stack.
     ///
-    /// `hidden` is carried rather than derived: an overlay that follows a client to another tab is
+    /// `carry` is carried rather than derived: an overlay that follows a client to another tab is
     /// extracted as a bare `Box<dyn Pane>`, so everything the `OverlayPane` wrapper held - its
-    /// kind, its coordinates, and whether it was set aside - has to be handed back in here or the
-    /// pane arrives on the new tab suddenly visible. `Tab::overlay_placement_for` and
-    /// `OverlayPanes::is_hidden` are what a mover reads before `extract_pane` drops the wrapper.
+    /// kind, its coordinates, whether it was set aside and whether the user dragged it - has to be
+    /// handed back in here, or the pane arrives on the new tab suddenly visible, or back at the
+    /// position its plugin configured rather than the one the user dropped it at.
+    /// `Tab::overlay_placement_for` and `Tab::overlay_carry_for` are what a mover reads before
+    /// `extract_pane` drops the wrapper.
     pub fn add_overlay_pane(
         &mut self,
         mut pane: Box<dyn Pane>,
         pane_id: PaneId,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
-        hidden: bool,
+        carry: OverlayCarry,
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
@@ -8236,7 +8246,7 @@ impl Tab {
         }
         pane.set_active_at(Instant::now());
         self.overlay_panes
-            .add_pane(pane_id, pane, kind, coordinates, hidden);
+            .add_pane(pane_id, pane, kind, coordinates, carry);
         resize_pty!(
             self.overlay_panes
                 .get_mut(&pane_id)
@@ -8248,7 +8258,7 @@ impl Tab {
         .with_context(err_context)?;
         // a pane that arrived hidden is not on screen, so there is nothing to focus and no
         // `may_be_focused` that would allow it anyway
-        if should_focus_new_pane && !hidden {
+        if should_focus_new_pane && !carry.hidden {
             match client_id {
                 Some(client_id) => self.overlay_panes.focus_pane(pane_id, client_id),
                 None => self.overlay_panes.focus_pane_for_all_clients(pane_id),
@@ -8280,8 +8290,8 @@ impl Tab {
                 placement.kind,
                 placement.coordinates.unwrap_or_default(),
                 // this arm re-derives overlay-ness for a pane arriving through the floating door;
-                // nothing on that path carries a hidden overlay
-                false,
+                // nothing on that path carries a hidden or a dragged overlay
+                OverlayCarry::default(),
                 should_focus_new_pane,
                 client_id,
             );
@@ -8418,7 +8428,7 @@ impl Tab {
     ) -> AcceptedPane {
         let pane_id = pane.pid();
         match placement {
-            ExtractedPanePlacement::Overlay(overlay_placement, hidden) => {
+            ExtractedPanePlacement::Overlay(overlay_placement, carry) => {
                 // no room check: an overlay is not on a layer and does not tile, so there is nothing
                 // for it to run out of. That is also why this arm cannot return `NoRoom` - only
                 // `Accepted` or, if the pty thread is already gone, `LostInAdd`.
@@ -8431,7 +8441,7 @@ impl Tab {
                     pane_id,
                     overlay_placement.kind,
                     overlay_placement.coordinates.unwrap_or_default(),
-                    hidden,
+                    carry,
                     false,
                     None,
                 )

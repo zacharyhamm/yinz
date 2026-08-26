@@ -194,7 +194,13 @@ fn overlay_panes_with(
 
 fn add(panes: &mut OverlayPanes, id: u32, kind: OverlayKind, coords: FloatingPaneCoordinates) {
     let pane_id = PaneId::Terminal(id);
-    panes.add_pane(pane_id, mock_pane(pane_id), kind, coords, false);
+    panes.add_pane(
+        pane_id,
+        mock_pane(pane_id),
+        kind,
+        coords,
+        OverlayCarry::default(),
+    );
 }
 
 #[test]

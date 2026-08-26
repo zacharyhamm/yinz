@@ -119,6 +119,33 @@ fn the_conversation_keeps_a_drawable_height_on_a_short_screen() {
 }
 
 #[test]
+fn a_fat_pad_on_a_narrow_screen_still_leaves_the_column_on_screen() {
+    // `pad` is the x coordinate as well as the inset off the top and bottom, so a cap that looks
+    // only at the rows lets a tall, narrow display push the whole column off the right-hand edge.
+    for cols in [20, 40, 80] {
+        let (chat, agents) = column_geometry(&config(&[("pad", "50")]), 200, cols)
+            .unwrap_or_else(|| panic!("some geometry at {cols} columns"));
+        for (name, rectangle) in [("conversation", &chat), ("agent list", &agents)] {
+            let (x, y, w, h) = rect(rectangle);
+            assert!(
+                x < cols,
+                "the {name}'s left edge is on the screen at {cols} columns, got {x}"
+            );
+            assert!(
+                x + w <= cols,
+                "and its right edge too at {cols} columns, got {}",
+                x + w
+            );
+            assert!(
+                y + h <= 200,
+                "and it still fits vertically at {cols} columns, got {}",
+                y + h
+            );
+        }
+    }
+}
+
+#[test]
 fn no_geometry_before_the_first_tab_update() {
     assert!(
         column_geometry(&BTreeMap::new(), 0, 0).is_none(),
@@ -377,18 +404,22 @@ fn the_agent_lists_tab_is_tracked_beside_our_own() {
     );
 }
 
-/// A reveal follows *this* client, not whichever client's `TabUpdate` landed last. With several
-/// attached, `tabs`' active flag names nobody in particular - here it still says tab 0, from a
-/// client who is not the one being revealed for. Moving on that would be a move to the wrong tab;
-/// it would also panic, which is what makes this assertable at all.
+/// A reveal stays on the tab the manifest found us on, whichever client's copy of that manifest
+/// arrives first.
+///
+/// The host builds one `PaneUpdate` per attached client and sends every one of them, so the copy
+/// that happens to be processed first names an arbitrary client. This one is driven as client 1,
+/// who is recorded on tab 0 while the pane is on tab 3 - the shape that used to drag the column
+/// off the summoner's screen. Following tab 0 would also panic, which is what makes "no move was
+/// attempted" assertable at all.
 #[test]
-fn a_reveal_follows_the_client_it_is_revealed_for() {
+fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
     let mut state = State {
         own_plugin_id: 7,
         own_tab_index: Some(3),
         hidden: true,
         hide_pending: false,
-        client: 2,
+        client: 1,
         client_tabs: BTreeMap::from([(1, 0), (2, 3)]),
         tabs: vec![TabInfo {
             position: 0,
@@ -404,6 +435,62 @@ fn a_reveal_follows_the_client_it_is_revealed_for() {
     assert_eq!(
         state.own_tab_index,
         Some(3),
-        "and the column stayed with the client it was revealed for"
+        "and the column stayed where `move_to_focused_tab` had already put it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The agent list summoned on its own
+// ---------------------------------------------------------------------------
+
+/// `a` names one half of a two-pane column, so the server reveals the list and leaves the
+/// conversation suppressed. The column is one unit: the conversation comes back beside it.
+///
+/// Both halves are on tab 3 here, so no move is needed - which is also what makes this runnable
+/// off wasm, since `follow_tab` reaches a value-returning host shim.
+#[test]
+fn the_agent_list_summoned_alone_brings_the_conversation_back() {
+    let mut state = State {
+        own_plugin_id: 7,
+        agents_plugin: Some(9),
+        own_tab_index: Some(3),
+        hidden: true,
+        hide_pending: false,
+        ..Default::default()
+    };
+
+    state.on_panes(manifest(3, vec![pane(7, true), pane(9, false)]));
+
+    assert!(
+        !state.hidden,
+        "the `a` binding is documented as revealing the column, not half of it"
+    );
+    assert_eq!(state.own_tab_index, Some(3));
+    assert_eq!(
+        state.agents_tab_index,
+        Some(3),
+        "the pair are together, so `rejoin_agents_pane` has nothing to undo"
+    );
+}
+
+/// The other reading of the same arm: our own hide landing must not be mistaken for that reveal.
+/// `hide_column` hides the list first, so a manifest reporting us suppressed reports the list
+/// suppressed too.
+#[test]
+fn our_own_hide_landing_is_not_a_reveal() {
+    let mut state = State {
+        own_plugin_id: 7,
+        agents_plugin: Some(9),
+        hidden: true,
+        hide_pending: true,
+        ..Default::default()
+    };
+
+    state.on_panes(manifest(3, vec![pane(7, true), pane(9, true)]));
+
+    assert!(state.hidden, "both halves are away, and stay away");
+    assert!(
+        !state.hide_pending,
+        "the hide we asked for has been seen to land"
     );
 }
