@@ -2,7 +2,7 @@ use zellij_utils::errors::prelude::*;
 
 use super::{BreakPanesToTabOutcome, Screen};
 use crate::background_jobs::BackgroundJob;
-use crate::panes::PaneId;
+use crate::panes::{OverlayCarry, PaneId};
 use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane};
@@ -127,7 +127,7 @@ impl Screen {
             let pane_id = pane.pid();
             let without_relayout = true;
 
-            if let ExtractedPanePlacement::Overlay(overlay_placement, hidden) = placement {
+            if let ExtractedPanePlacement::Overlay(overlay_placement, carry) = placement {
                 // no geom: an overlay's geometry is resolved from its coordinates against the
                 // new tab's surface, which is exactly what carrying the placement is for. Not
                 // focused, for the same reason the tiled arm below is not.
@@ -136,7 +136,7 @@ impl Screen {
                     pane_id,
                     overlay_placement.kind,
                     overlay_placement.coordinates.unwrap_or_default(),
-                    hidden,
+                    carry,
                     false,
                     None,
                 )?;
@@ -177,15 +177,23 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         if self.tabs.len() > 1 {
-            let (active_pane_id, active_pane, pane_to_break_is_floating, overlay_placement) = {
+            let (
+                active_pane_id,
+                active_pane,
+                pane_to_break_is_floating,
+                overlay_placement,
+                overlay_carry,
+            ) = {
                 let active_tab = self.get_active_tab_mut(client_id)?;
                 let active_pane_id = active_tab
                     .get_active_pane_id(client_id)
                     .with_context(err_context)?;
                 let pane_to_break_is_floating = active_tab.are_floating_panes_visible();
                 // the active pane *is* the overlay whenever one is up, and the extraction below
-                // is what forgets that - so ask first
+                // is what forgets that - so ask first, for the placement and for the in-memory
+                // half that goes with it
                 let overlay_placement = active_tab.overlay_placement_for(active_pane_id);
+                let overlay_carry = active_tab.overlay_carry_for(active_pane_id);
                 let active_pane = active_tab
                     .extract_pane(active_pane_id, false)
                     .with_context(err_context)?;
@@ -194,6 +202,7 @@ impl Screen {
                     active_pane,
                     pane_to_break_is_floating,
                     overlay_placement,
+                    overlay_carry,
                 )
             };
             let update_mode_infos = false;
@@ -215,8 +224,12 @@ impl Screen {
                     placement.kind,
                     placement.coordinates.unwrap_or_default(),
                     // this breaks out the *active* pane, and `hide_pane` moves clients off what
-                    // it hides - so the pane reaching here cannot be a hidden one
-                    false,
+                    // it hides - so the pane reaching here cannot be a hidden one. Where the user
+                    // dragged it still travels: it is the same pane on the far side.
+                    OverlayCarry {
+                        hidden: false,
+                        ..overlay_carry
+                    },
                     true,
                     Some(client_id),
                 )?;

@@ -23,7 +23,8 @@
 //! - **Hiding is per pane, so the pair has to be hidden together.** The old strip hid as one unit
 //!   because hiding was per *edge*. Here `hide_column` names both panes, and `reveal_column` puts
 //!   both back - hocus is the half that knows about both, so both directions are routed through
-//!   it.
+//!   it. Revealing has the same problem from the other side: the `a` keybinding names only the
+//!   agent list, so a reveal can arrive as half a column and `on_panes` has to finish it.
 
 use std::collections::BTreeMap;
 
@@ -75,15 +76,19 @@ pub(crate) fn column_geometry(
     if rows == 0 || cols == 0 {
         return None;
     }
-    // Capped at a quarter of the screen so a fat `pad` on a small terminal cannot eat the column
-    // it is supposed to be insetting.
+    // Capped at a quarter of the screen on *both* axes, so a fat `pad` on a small terminal cannot
+    // eat the column it is supposed to be insetting. Capping against the rows alone was not enough:
+    // `pad` is the rectangles' `x` as well as their inset off the top and bottom, so on a tall,
+    // narrow display a rows-only cap let it exceed the column count outright and put the whole
+    // column off the right-hand edge of the screen.
     let pad = config
         .get("pad")
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_PAD)
-        .min(rows / 4);
+        .min(rows / 4)
+        .min(cols / 4);
     let width = resolve(config.get("width"), cols, DEFAULT_WIDTH_PERCENT)
         // an overlay is framed, so the plugin is rendered two cells narrower than the pane
         .max(ui::MIN_COLS + 2)
@@ -197,33 +202,25 @@ impl State {
     /// Only the agent list needs showing: whatever revealed hocus revealed *this* pane. The list
     /// is shown without focus, so the keyboard stays on the conversation the user asked for;
     /// `focus_agents_pane` is the path that means to move it.
+    ///
+    /// **No tab is followed here, and that is the whole of the correctness.** Both routes in have
+    /// already put the pane and the client who asked for it on the same tab before hocus hears a
+    /// word: `LaunchOrFocusPlugin { move_to_focused_tab }` extracts the overlay and re-adds it,
+    /// unhidden, on the focused tab, and `show_self` goes through `FocusPluginPaneWithId`, which
+    /// takes the *client* to the pane's tab. `on_panes` sets `own_tab_index` from the manifest
+    /// immediately before calling this, so where we are is known rather than guessed.
+    ///
+    /// Guessing was a bug rather than a redundancy. The host builds one `PaneUpdate` per attached
+    /// client and sends every one of them here, so `self.client` on the copy that happens to be
+    /// processed first is an arbitrary client - not the one who pressed the key. Following *their*
+    /// tab drags the freshly revealed column off the summoner's screen.
     pub(crate) fn reveal_column(&mut self) {
         self.hidden = false;
         self.hide_pending = false;
         if let Some(agents_id) = self.agents_plugin {
             show_pane_with_id(PaneId::Plugin(agents_id), false, false);
         }
-        // This client's tab rather than `self.tabs`' active flag: the flag is whatever the
-        // last-arriving client's `TabUpdate` said, so with several attached it names nobody in
-        // particular. `active_tab_index` remains the fallback for a reveal that arrives before any
-        // tab state has - with one client attached the two answers are the same.
-        let target = self
-            .client_tabs
-            .get(&self.client)
-            .copied()
-            .or_else(|| self.active_tab_index());
-        if let Some(target) = target {
-            self.follow_tab(target);
-        }
         self.apply_overlay_geometry();
-    }
-
-    /// The zero-based index of the active tab, as the last `TabUpdate` reported it.
-    pub(crate) fn active_tab_index(&self) -> Option<usize> {
-        self.tabs
-            .iter()
-            .find(|tab| tab.active)
-            .map(|tab| tab.position)
     }
 
     /// Carry the column to `tab_index`.
@@ -231,9 +228,10 @@ impl State {
     /// Both panes in one call so they cannot end up on different tabs, and without focus - a tab
     /// switch is not a request to type into hocus.
     ///
-    /// Never called while hidden. A hidden overlay that is moved arrives on the new tab *visible*,
-    /// because the hidden flag is in-memory state that does not survive the move; `reveal_column`
-    /// is what brings a hidden column back, and it moves the pair as part of doing so.
+    /// Not called while hidden - not because the move would be unsafe (the server carries an
+    /// overlay's suppression across a tab move, so a hidden column would arrive hidden) but
+    /// because a column the user has set aside has no business chasing their tab switches. It
+    /// comes back where it is asked for, and `on_panes` is what notices the asking.
     pub(crate) fn follow_tab(&mut self, tab_index: usize) {
         // Nothing to do until `PaneUpdate` has said where we actually are. Before that the column
         // is wherever it was opened - which is the active tab, since every path that opens it is

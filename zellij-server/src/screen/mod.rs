@@ -104,7 +104,7 @@ use crate::{
     output::HostKittyState,
     panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
-    panes::{PaneFactory, PaneId},
+    panes::{OverlayCarry, PaneFactory, PaneId},
     plugins::{PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction},
     pty_writer::PtyWriteInstruction,
@@ -2321,6 +2321,7 @@ impl Screen {
         // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
         // pane lands in the new tab sized against its viewport and painted under the global panes
         let mut overlay_placement = None;
+        let mut overlay_carry = OverlayCarry::default();
         let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
         let all_tabs = self.get_tabs_mut();
         for (tab_index, tab) in all_tabs.iter_mut() {
@@ -2328,6 +2329,7 @@ impl Screen {
                 tab_index_and_plugin_pane_id = Some((*tab_index, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_index != *tab_index {
                     overlay_placement = tab.overlay_placement_for(plugin_pane_id);
+                    overlay_carry = tab.overlay_carry_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
 
@@ -2347,8 +2349,14 @@ impl Screen {
                     placement.coordinates.unwrap_or_default(),
                     // this is the reveal path - `LaunchOrFocusPlugin` naming a plugin is the user
                     // asking for it back, so an overlay that was hidden arrives shown, exactly as
-                    // the same-tab branch below reveals it through `focus_pane_if_exists`
-                    false,
+                    // the same-tab branch below reveals it through `focus_pane_if_exists`. Only
+                    // the hidden bit is overridden: a reveal is not a request to undo the drag,
+                    // and the plugin re-placing itself on arrival would do exactly that without
+                    // the user-stated position carried across.
+                    OverlayCarry {
+                        hidden: false,
+                        ..overlay_carry
+                    },
                     true,
                     Some(client_id),
                 )?;

@@ -128,8 +128,8 @@ impl State {
             // because every client gets its own `TabUpdate` and obeying all of them puts two
             // clients on different tabs into a move loop with each other.
             let was_on = self.client_tabs.insert(self.client, position);
-            // Not while hidden: an overlay that moves between tabs arrives visible, because the
-            // hidden flag does not survive the move. `reveal_column` does the move instead.
+            // Not while hidden: a column the user has set aside does not chase their tab
+            // switches. It comes back where it is asked for - see `on_panes`.
             if !self.hidden {
                 if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
                     self.follow_tab(target);
@@ -162,16 +162,18 @@ impl State {
         // revealing a pane that is not there and never opens a new one. Cleared from the whole
         // manifest rather than from our own tab: the two halves can be on different tabs for as
         // long as it takes a `follow_tab` to land.
+        //
+        // Whether it is *drawn* is read in the same pass, because the `a` keybinding can reveal
+        // the list on its own while this half is still set aside - see below.
+        let mut agents_visible = false;
         if let Some(agents_id) = self.agents_plugin {
-            self.agents_tab_index = manifest
-                .panes
-                .iter()
-                .find(|(_, panes)| {
-                    panes
-                        .iter()
-                        .any(|pane| pane.is_plugin && pane.id == agents_id)
-                })
-                .map(|(tab_index, _)| *tab_index);
+            self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
+                let agents = panes
+                    .iter()
+                    .find(|pane| pane.is_plugin && pane.id == agents_id)?;
+                agents_visible = !agents.is_suppressed;
+                Some(*tab_index)
+            });
             if self.agents_tab_index.is_none() {
                 self.agents_plugin = None;
             }
@@ -184,7 +186,9 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
-            if own.is_suppressed {
+            if own.is_suppressed && agents_visible {
+                self.reveal_beside_the_agents_pane();
+            } else if own.is_suppressed {
                 // the hide we asked for has landed
                 self.hide_pending = false;
                 self.hidden = true;
@@ -200,6 +204,41 @@ impl State {
         }
         self.rejoin_agents_pane();
         false
+    }
+
+    /// The column was set aside, and something outside has put the agent list back on its own.
+    ///
+    /// That something is the `a` keybinding, whose `LaunchOrFocusPlugin "hocus-agents"` names one
+    /// half of a two-pane column: the server reveals the list and moves it to the summoning
+    /// client's tab, and this half hears nothing but a `PaneUpdate` still reporting it suppressed.
+    /// Left alone, `rejoin_agents_pane` then reads the two as parted and drags the list back to
+    /// the hidden column's tab - the pane the user just asked for disappears in front of them.
+    ///
+    /// The binding is documented as revealing the *column*, so that is what happens: the
+    /// conversation comes back beside the list, on the tab the list was summoned to.
+    ///
+    /// Two details carry the weight:
+    ///
+    /// - `show_pane_with_id` rather than `show_self`. The latter goes through
+    ///   `FocusPluginPaneWithId`, which would take the keyboard off the list the user asked to
+    ///   land on. This one is an unsuppress and nothing else, and it works on a pane that is not
+    ///   in anybody's active tab.
+    /// - The unsuppress is queued before the move. Instructions are drained in order, so the pane
+    ///   is already visible when `follow_tab` extracts it, and the `hidden` bit that travels with
+    ///   an overlay across tabs travels as `false`.
+    ///
+    /// No guard on `hide_pending`: `hide_column` hides the list first, so a manifest that reports
+    /// this pane suppressed while the list is drawn cannot be our own hide half-landed.
+    fn reveal_beside_the_agents_pane(&mut self) {
+        self.hidden = false;
+        self.hide_pending = false;
+        show_pane_with_id(PaneId::Plugin(self.own_plugin_id), false, false);
+        if let Some(agents_tab) = self.agents_tab_index {
+            // sets `agents_tab_index` to where we landed, so the `rejoin_agents_pane` at the tail
+            // of `on_panes` reads the pair as together rather than undoing this
+            self.follow_tab(agents_tab);
+        }
+        self.apply_overlay_geometry();
     }
 
     /// Drag the agent list back onto our tab if it has been left on another one.

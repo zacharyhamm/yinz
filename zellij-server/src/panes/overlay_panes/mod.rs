@@ -80,16 +80,24 @@
 //! now, its content is sized to that question, and there is no case of it sitting over something
 //! the user is trying to read. It is still draggable, like any other overlay.
 //!
+//! Neither claim is placement, and neither survives a move on its own: `extract_pane` drops the
+//! wrapper holding them, and a plugin that re-places itself would answer the move by putting the
+//! overlay back at its configured position and size. So both ride in [`OverlayCarry`], read from
+//! the source tab before the extraction and handed back to `add_pane`. That is the answer to the
+//! question this comment used to leave open - no `OverlayPlacement` field, and so no proto change,
+//! because none of these bits is placement.
+//!
 //! If one of the remaining absences turns out to be needed, that is a signal that the concept is
 //! not as clean as assumed. Say so rather than adding it quietly. Per-pane suppression is the one
 //! that has been needed so far, and the bullet above is that saying-so: the concept survived, but
 //! only because suppression turned out to be nameable in the same terms - one pane, its focus and
 //! its drag released with it, read at one point.
 //!
-//! One thing suppression is *not*, and must not become: a way to move an overlay between tabs
-//! unseen. `hidden` is in-memory only and is dropped when a pane is extracted, so an overlay that
-//! arrives on a new tab arrives visible. A plugin that hides itself is responsible for not moving
-//! itself while hidden.
+//! One thing suppression is *not*, and must not become: a way for a *reveal* to be silently
+//! undone. The cross-tab paths carry `hidden` deliberately, and the two that mean "the user asked
+//! for this pane back" (`LaunchOrFocusPlugin { move_to_focused_tab }` and `break_pane_to_new_tab`)
+//! override it to `false` at the call site, in the open, rather than relying on the bit being lost
+//! in transit.
 //!
 //! Not to be confused with the nested-session **guest modal**
 //! (`crate::panes::nested_session_modal`), which shares the word and nothing else: it is a dialog
@@ -134,30 +142,40 @@ pub struct OverlayPane {
     pane: Box<dyn Pane>,
     kind: OverlayKind,
     coordinates: FloatingPaneCoordinates,
-    /// The user dragged this overlay, so its `x`/`y` are theirs and a plugin re-asserting its
-    /// placement no longer moves it (`change_pane_coordinates`).
-    ///
-    /// Deliberately not in `OverlayPlacement`, which is what travels when an overlay follows a
-    /// client to another tab: that struct crosses the protobuf boundary, and the *coordinates* the
-    /// drag wrote travel in it already. Only the "the user said so" bit is in-memory, and it is
-    /// worth a proto change on the day a plugin re-places an overlay it has followed across.
-    position_is_user_stated: bool,
-    /// The user resized this overlay, so its `width`/`height` are theirs and a plugin re-asserting
-    /// its placement no longer resizes it (`change_pane_coordinates`).
-    ///
-    /// The size twin of `position_is_user_stated`, and in memory for the same reason: the
-    /// *coordinates* the resize wrote travel in `OverlayPlacement` already, only the "the user
-    /// said so" bit does not.
-    size_is_user_stated: bool,
+    /// The in-memory half of this wrapper - see [`OverlayCarry`], which is how it survives an
+    /// extraction.
+    carry: OverlayCarry,
+}
+
+/// The half of an overlay's wrapper that is *not* placement: whether it is set aside, and whether
+/// where it sits is the user's doing.
+///
+/// Both are in-memory only, which is why neither is in `OverlayPlacement` - that struct crosses
+/// the protobuf boundary. `extract_pane` drops this wrapper on the way to another tab, so a mover
+/// reads this first ([`OverlayPanes::carry_of`], [`crate::tab::Tab::overlay_carry_for`]) and hands
+/// it back to `add_pane`. They travel together rather than one at a time because the failure mode
+/// of forgetting one is invisible: the overlay arrives, simply not as itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OverlayCarry {
     /// Set aside by `hide_pane`: the overlay still exists, still holds its plugin and its
     /// scrollback, and is still re-resolved against the surface - it is simply not drawn and
     /// cannot be focused until `show_pane` names it again.
+    pub hidden: bool,
+    /// The user dragged this overlay, so its `x`/`y` are theirs and a plugin re-asserting its
+    /// placement no longer moves it (`change_pane_coordinates`).
     ///
-    /// Not in `OverlayPlacement` for the same reason `position_is_user_stated` is not: that
-    /// struct crosses the protobuf boundary, and this is in-memory state rather than placement.
-    /// The cross-tab paths therefore carry it by hand, through `add_overlay_pane`'s `hidden`
-    /// argument.
-    hidden: bool,
+    /// The *coordinates* the drag wrote travel in `OverlayPlacement` already; this is only the
+    /// "the user said so" bit. It used to be dropped by a move, which made every tab switch undo
+    /// the drag for a plugin that re-places itself - hocus's overlay column does, on every
+    /// `TabUpdate`.
+    pub position_is_user_stated: bool,
+    /// The user resized this overlay, so its `width`/`height` are theirs and a plugin re-asserting
+    /// its placement no longer resizes it (`change_pane_coordinates`).
+    ///
+    /// The size twin of `position_is_user_stated`, and here for the same reason: the *coordinates*
+    /// the resize wrote travel in `OverlayPlacement` already, only the "the user said so" bit does
+    /// not.
+    pub size_is_user_stated: bool,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -296,7 +314,7 @@ impl OverlayPanes {
         mut pane: Box<dyn Pane>,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
-        hidden: bool,
+        carry: OverlayCarry,
     ) {
         let (surface, origin) = self.surface();
         // `adjust_coordinates` resolves the geometry and nothing else, so a coordinate that is
@@ -314,9 +332,7 @@ impl OverlayPanes {
                 pane,
                 kind,
                 coordinates,
-                position_is_user_stated: false,
-                size_is_user_stated: false,
-                hidden,
+                carry,
             },
         );
         self.raise_within_class(pane_id);
@@ -338,7 +354,7 @@ impl OverlayPanes {
     /// Returns whether anything changed, so a caller can skip a render it does not need.
     pub fn hide_pane(&mut self, pane_id: PaneId) -> bool {
         match self.panes.get_mut(&pane_id) {
-            Some(overlay) if !overlay.hidden => overlay.hidden = true,
+            Some(overlay) if !overlay.carry.hidden => overlay.carry.hidden = true,
             _ => return false,
         }
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
@@ -354,7 +370,7 @@ impl OverlayPanes {
     /// restoring its agent list beside itself - should not move the keyboard by doing so.
     pub fn show_pane(&mut self, pane_id: PaneId) -> bool {
         match self.panes.get_mut(&pane_id) {
-            Some(overlay) if overlay.hidden => overlay.hidden = false,
+            Some(overlay) if overlay.carry.hidden => overlay.carry.hidden = false,
             _ => return false,
         }
         // back at the top of its own class, not the top of the stack: a modal opened while this
@@ -428,13 +444,11 @@ impl OverlayPanes {
                 pane: with_pane,
                 kind: removed.kind,
                 coordinates: removed.coordinates,
-                // the slot keeps where the user put it, exactly as it keeps its kind and its
-                // coordinates - a pane swapped into a dragged overlay is the pane the user
-                // dragged
-                position_is_user_stated: removed.position_is_user_stated,
-                size_is_user_stated: removed.size_is_user_stated,
-                // likewise: a pane swapped into a hidden slot is not suddenly on screen
-                hidden: removed.hidden,
+                // the slot keeps where the user put it and whether it was set aside, exactly as
+                // it keeps its kind and its coordinates - a pane swapped into a dragged overlay
+                // is the pane the user dragged, and one swapped into a hidden slot is not
+                // suddenly on screen
+                carry: removed.carry,
             },
         );
         if let Some(index) = self.z_indices.iter().position(|p_id| p_id == &pane_id) {
@@ -459,7 +473,7 @@ impl OverlayPanes {
     /// `Tab::get_active_pane_id` and the occlusion stack: a tab holding nothing but a hidden
     /// overlay has to behave exactly like a tab holding no overlay at all.
     pub fn has_panes(&self) -> bool {
-        self.panes.values().any(|overlay| !overlay.hidden)
+        self.panes.values().any(|overlay| !overlay.carry.hidden)
     }
     /// Whether this collection holds nothing *at all*, hidden panes included - the lifecycle
     /// question, as against `has_panes`'s drawing one.
@@ -468,9 +482,16 @@ impl OverlayPanes {
     }
     /// Whether `pane_id` is here but set aside. `false` for a pane that is not here at all.
     pub fn is_hidden(&self, pane_id: &PaneId) -> bool {
+        self.carry_of(pane_id).hidden
+    }
+    /// The in-memory half of `pane_id`'s wrapper, for a caller about to extract it - see
+    /// [`OverlayCarry`]. Defaults for a pane that is not here at all, which is what a pane with
+    /// no wrapper to lose would arrive as anyway.
+    pub fn carry_of(&self, pane_id: &PaneId) -> OverlayCarry {
         self.panes
             .get(pane_id)
-            .is_some_and(|overlay| overlay.hidden)
+            .map(|overlay| overlay.carry)
+            .unwrap_or_default()
     }
     pub fn len(&self) -> usize {
         self.panes.len()
@@ -560,9 +581,9 @@ impl OverlayPanes {
                 pane_info_for_pane.is_floating = true;
                 // a hidden overlay is set aside exactly as a suppressed tab pane is, and that is
                 // the field every consumer already reads to mean "here but not on screen"
-                pane_info_for_pane.is_suppressed = overlay.hidden;
+                pane_info_for_pane.is_suppressed = overlay.carry.hidden;
                 pane_info_for_pane.is_focused =
-                    !overlay.hidden && self.active_panes.pane_id_is_focused(pane_id);
+                    !overlay.carry.hidden && self.active_panes.pane_id_is_focused(pane_id);
                 // an overlay cannot go fullscreen - there is no `fullscreen_pane_id` here
                 pane_info_for_pane.is_fullscreen = false;
                 pane_info_for_pane
@@ -588,7 +609,7 @@ impl OverlayPanes {
             .filter(|pane_id| {
                 self.panes
                     .get(pane_id)
-                    .is_some_and(|overlay| !overlay.hidden)
+                    .is_some_and(|overlay| !overlay.carry.hidden)
             })
             .copied()
             .collect()
@@ -872,11 +893,11 @@ impl OverlayPanes {
         // `reapply_coordinates` would do with it anyway. The one exception is a position the user
         // dragged: that one is carried over, because nothing else in the system remembers it.
         let mut new_coordinates = new_coordinates;
-        if overlay.position_is_user_stated {
+        if overlay.carry.position_is_user_stated {
             new_coordinates.x = overlay.coordinates.x;
             new_coordinates.y = overlay.coordinates.y;
         }
-        if overlay.size_is_user_stated {
+        if overlay.carry.size_is_user_stated {
             new_coordinates.width = overlay.coordinates.width;
             new_coordinates.height = overlay.coordinates.height;
         }
@@ -1014,13 +1035,13 @@ impl OverlayPanes {
 
         overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
         overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
-        overlay.size_is_user_stated = true;
+        overlay.carry.size_is_user_stated = true;
         if geom.x != before.x || geom.y != before.y {
             // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as `origin + n`, so the
             // position round-trips exactly - the same arithmetic `move_pane_to_position` does
             overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
             overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
-            overlay.position_is_user_stated = true;
+            overlay.carry.position_is_user_stated = true;
         }
 
         // this is also what resizes the pane's pty to the new geometry
@@ -1089,7 +1110,7 @@ impl OverlayPanes {
         overlay.pane.set_should_render(true);
         overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
         overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
-        overlay.position_is_user_stated = true;
+        overlay.carry.position_is_user_stated = true;
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
         true
@@ -1157,7 +1178,7 @@ impl OverlayPanes {
         let viewport = *self.viewport.borrow();
         self.panes
             .iter()
-            .filter(|(_, overlay)| !overlay.hidden)
+            .filter(|(_, overlay)| !overlay.carry.hidden)
             .filter_map(|(pane_id, overlay)| {
                 let geom = overlay.pane.position_and_size();
                 geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
@@ -1168,7 +1189,7 @@ impl OverlayPanes {
         let viewport = *self.viewport.borrow();
         self.panes
             .values()
-            .filter(|overlay| !overlay.hidden)
+            .filter(|overlay| !overlay.carry.hidden)
             .any(|overlay| geom_is_outside_viewport(&overlay.pane.position_and_size(), &viewport))
     }
 
@@ -1290,7 +1311,11 @@ impl OverlayPanes {
         // This loop feeds `output.add_pane_contents` and does not derive from `stack_layer_ids`,
         // so it needs the hidden filter of its own - otherwise a hidden overlay's contents reach
         // the render report with no geometry ever drawn for them.
-        for (pane_id, overlay) in self.panes.iter().filter(|(_, overlay)| !overlay.hidden) {
+        for (pane_id, overlay) in self
+            .panes
+            .iter()
+            .filter(|(_, overlay)| !overlay.carry.hidden)
+        {
             match pane_id {
                 PaneId::Terminal(_) => {
                     output.add_pane_contents(
