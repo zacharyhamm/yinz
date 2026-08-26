@@ -3017,6 +3017,54 @@ fn a_modal_opened_over_a_modal_takes_both_and_hands_them_back_when_it_closes() {
     );
 }
 
+/// The reveal side of that rule. A modal that was set aside before a newer one opened is not the
+/// dialog the user is in, so unsuppressing it must put it back *underneath* the newer modal and
+/// leave the keyboard alone - `show_pane`'s unconditional raise-and-focus used to do the opposite,
+/// because for a modal the top of its own class is the top of the whole stack.
+#[test]
+fn an_unsuppressed_modal_stays_below_the_modal_that_came_up_while_it_was_away() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "FIRSTMODAL", OverlayKind::Modal);
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+    open_overlay_of_kind(&mut screen, 3, "SECONDMODAL", OverlayKind::Modal);
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(3)));
+
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the newer modal keeps the keyboard - it has no way to learn otherwise"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("SECONDMODAL"),
+        "and the top of the stack, got:\n{frame}"
+    );
+    assert!(
+        !frame.contains("FIRSTMODAL"),
+        "the revealed modal is back on screen, underneath it, got:\n{frame}"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .close_pane(PaneId::Terminal(3), false, None);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "so the revealed modal is not stranded: closing the newer one walks focus down to it"
+    );
+}
+
 /// An overlay outranks the floating layer in `get_active_pane_id`, so a dismissible overlay that
 /// keeps its focus when a floating pane opens leaves that pane behind the popup, with the keyboard
 /// still on the popup - and the popup, which learns it should close by seeing itself unfocused,
@@ -4215,6 +4263,18 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
     assert!(
         targets.contains(&9),
         "an overlay left behind on another tab must still hear the event it moves on, got {targets:?}"
+    );
+    let targets = screen.targeted_plugin_ids(1, EventType::PaneUpdate);
+    assert!(
+        targets.contains(&9),
+        "and the other state event, which is how it learns it was hidden or revealed, got {targets:?}"
+    );
+    // ...but only those two. An `InputReceived` is one client's keystroke on one tab, and an
+    // overlay sitting somewhere else would answer it by clearing UI the user never typed at.
+    let targets = screen.targeted_plugin_ids(1, EventType::InputReceived);
+    assert!(
+        !targets.contains(&9),
+        "input performed on another tab is not this overlay's business, got {targets:?}"
     );
 }
 

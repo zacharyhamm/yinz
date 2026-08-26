@@ -141,14 +141,26 @@ impl State {
                 if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
                     self.follow_tab(target);
                 }
-                // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
-                // reports a *change* of display area, so a placement it could not land - our pane
-                // not being on a tab yet - would otherwise never be retried. See `State::placed`.
-                // `!agents_placed` for the same reason, about the other pane - see
-                // `State::agents_placed`.
-                if resized || !self.placed || !self.agents_placed {
-                    self.apply_overlay_geometry();
-                }
+            }
+            // Outside the visibility gate, deliberately, where the tab-following above is not. The
+            // surface is cached a few lines up whatever is on screen, and this event is the only
+            // thing that ever reports it - so a resize seen while both panes were set aside is the
+            // last word on the surface and would never be re-reported. Skipping the placement for
+            // it would leave a pane revealed afterwards at the old size, in the old corner.
+            //
+            // Placing a hidden pane is not painting one: the server re-resolves a hidden overlay
+            // like any other (`OverlayPanes::reapply_coordinates`) and gates the paint separately
+            // (`stack_layer_ids`), and `hide_self_only` already places from behind the hide. It has
+            // to be hocus that restates it - these coordinates are `Fixed`, because the panes are
+            // anchored to the *bottom*, so nothing on the server can recompute them.
+            //
+            // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
+            // reports a *change* of display area, so a placement it could not land - our pane
+            // not being on a tab yet - would otherwise never be retried. See `State::placed`.
+            // `!agents_placed` for the same reason, about the other pane - see
+            // `State::agents_placed`.
+            if resized || !self.placed || !self.agents_placed {
+                self.apply_overlay_geometry();
             }
         }
         // Rather than deriving the active project a second way here. Switching tabs

@@ -218,12 +218,22 @@ impl Screen {
         // An overlay follows the client between tabs under its own steam - hocus moves itself on
         // `TabUpdate` - so a client's active tab is not necessarily where the overlay is right
         // now, and the active-tab walk above would leave it deaf to the very event it moves on.
-        // Same shape and same justification as the global-pane arm: this widens who *may* hear an
-        // event, never what a plugin actually receives.
-        for tab in self.tabs.values() {
-            for plugin_id in tab.overlay_plugin_ids() {
-                if !plugin_ids.contains(&plugin_id) {
-                    plugin_ids.push(plugin_id);
+        //
+        // **The two state events only**, unlike the global-pane arm above. Those two are what an
+        // overlay acts on from a tab nobody is looking at: `TabUpdate` is what it moves on, and
+        // `PaneUpdate` is how it learns it was hidden or revealed. An input event is one client's
+        // keystroke on one tab, and handing it to an overlay sitting somewhere else would have it
+        // clear or otherwise mutate its UI on behalf of input the user never sent it - a
+        // background overlay subscribed to `InputReceived` would hear every other tab's typing.
+        // An overlay on the client's *active* tab is untouched by this: `Tab::get_plugin_ids`
+        // already walks `overlay_panes`, hidden ones included, so it keeps the ordinary routing
+        // for every event type.
+        if matches!(event_type, EventType::TabUpdate | EventType::PaneUpdate) {
+            for tab in self.tabs.values() {
+                for plugin_id in tab.overlay_plugin_ids() {
+                    if !plugin_ids.contains(&plugin_id) {
+                        plugin_ids.push(plugin_id);
+                    }
                 }
             }
         }

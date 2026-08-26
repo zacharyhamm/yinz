@@ -394,33 +394,51 @@ impl OverlayPanes {
         true
     }
 
-    /// Put `pane_id` back on screen. Deliberately does not focus it - *unless it is a modal*:
-    /// `focus_pane_if_exists` is the path that reveals *and* focuses an ordinary overlay, and a
-    /// caller that only wants the pane drawn - hocus restoring its agent list beside itself -
-    /// should not move the keyboard by doing so.
+    /// Put `pane_id` back on screen. Deliberately does not focus it - *unless it is a modal with
+    /// no other modal above it*: `focus_pane_if_exists` is the path that reveals *and* focuses an
+    /// ordinary overlay, and a caller that only wants the pane drawn - hocus restoring its agent
+    /// list beside itself - should not move the keyboard by doing so.
     ///
-    /// A modal is the exception because for a modal the two are not separable. The modal lock is
-    /// read off `stack_layer_ids`, which filters `hidden`, so this statement is what re-arms it:
-    /// the moment this pane is back in the stack, `may_be_focused` starts refusing every other
+    /// A lone modal is the exception because for a modal the two are not separable. The modal lock
+    /// is read off `stack_layer_ids`, which filters `hidden`, so this statement is what re-arms
+    /// it: the moment this pane is back in the stack, `may_be_focused` starts refusing every other
     /// overlay the keyboard. Leaving it unfocused would put a dialog on screen that nobody is in
     /// and that nothing else may be focused *past* - and the modal has no channel to learn it, so
     /// it would sit there taking no input and letting nothing else take any either. Whoever
     /// unsuppresses a modal is asking for the modal back, and a modal *is* its keyboard.
+    ///
+    /// **Unless another modal came up while this one was away**, which is the one case where that
+    /// reasoning inverts: the newer modal is the dialog the user is actually in, and it has no
+    /// channel to learn it lost either. So an outranked modal is neither raised nor focused - see
+    /// `outranked` below. It is not stranded by that: it is back in the stack, so the lock holds
+    /// either way, and closing the newer modal walks focus down onto this one
+    /// (`move_clients_out_of_pane`).
     pub fn show_pane(&mut self, pane_id: PaneId) -> bool {
         match self.panes.get_mut(&pane_id) {
             Some(overlay) if overlay.carry.hidden => overlay.carry.hidden = false,
             _ => return false,
         }
-        // back at the top of its own class, not the top of the stack: a modal opened while this
-        // was set aside still outranks it, and `may_be_focused` still refuses it the keyboard
-        // while that modal is up.
-        self.raise_within_class(pane_id);
+        // Whether a modal that opened while this one was set aside is on screen now. Read after
+        // the unhide, so `stack_layer_ids` is the stack as it will actually be.
+        //
+        // Doing *nothing* is what keeps this pane underneath that modal: it never gave up its
+        // place in `z_indices` - only `remove_pane` does that - and it was pushed there before the
+        // newer modal was, so its stored position is already below. `raise_within_class` would
+        // undo exactly that, because for a modal the top of its class *is* the top of the stack.
+        // A non-modal is never outranked here: `raise_within_class` already puts one below the
+        // lowest modal, which is where it belongs.
+        let outranked = self.is_modal(&pane_id)
+            && self.stack_layer_ids().iter().any(|other| {
+                *other != pane_id
+                    && self.is_modal(other)
+                    && self.get(other).is_some_and(|pane| pane.selectable())
+            });
+        if !outranked {
+            self.raise_within_class(pane_id);
+        }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
-        if self.is_modal(&pane_id) {
-            // `focus_pane_for_all_clients` re-checks `may_be_focused`, so a modal that came up
-            // over this one while it was away still keeps the keyboard - this one is back on
-            // screen and back in the lock either way, which is the invariant being restored.
+        if self.is_modal(&pane_id) && !outranked {
             self.focus_pane_for_all_clients(pane_id);
         }
         true
