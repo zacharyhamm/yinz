@@ -123,6 +123,8 @@ fn serialize_and_deserialize_session_info_with_data() {
                 tab_id: 0,
                 is_flashing_bell: false,
                 has_bell_notification: false,
+                session_surface_rows: 12,
+                session_surface_columns: 14,
             },
             TabInfo {
                 position: 1,
@@ -144,6 +146,8 @@ fn serialize_and_deserialize_session_info_with_data() {
                 tab_id: 1,
                 is_flashing_bell: false,
                 has_bell_notification: false,
+                session_surface_rows: 12,
+                session_surface_columns: 14,
             },
         ],
         panes: PaneManifest {

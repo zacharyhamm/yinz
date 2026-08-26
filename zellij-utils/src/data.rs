@@ -2390,6 +2390,17 @@ pub struct TabInfo {
     pub has_bell_notification: bool,
     /// Whether this tab is currently flashing its bell (transient 400ms state)
     pub is_flashing_bell: bool,
+    /// Row count of the whole session surface: this tab's display area grown back over the
+    /// global-pane strips.
+    ///
+    /// This, and not `display_area_rows`, is the denominator a pane drawn *over* the session
+    /// resolves against - `Fixed` overlay coordinates are read as `session_surface_origin + n`.
+    /// A plugin placing an overlay against the display area places it against the tab centre,
+    /// which is smaller by whatever the global panes took. Zero when the sender predates the
+    /// field; read the two together or not at all.
+    pub session_surface_rows: usize,
+    /// Column count of the whole session surface. See `session_surface_rows`.
+    pub session_surface_columns: usize,
 }
 
 /// The `PaneManifest` contains a dictionary of panes, indexed by the tab position (0 indexed).

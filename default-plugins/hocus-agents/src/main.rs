@@ -69,16 +69,28 @@ struct State {
     /// Where the last render's window into `rows` began — needed to map a mouse
     /// click's on-screen line back to an index into `rows`.
     last_window_start: usize,
+    /// Whether this instance might be an agent list restored from a pre-overlay session dump, and
+    /// so a *global pane* on its way out. Set at `load` from the configuration and settled by the
+    /// first `PaneUpdate` — see `launch::may_be_legacy` and `launch::is_legacy_global_instance`.
+    legacy_suspect: bool,
+    /// Set once this half has closed itself, so it is asked for once.
+    migrating: bool,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
+        // A half restored as a global pane by a pre-overlay session dump has to close itself, and
+        // `PaneUpdate` is the only place the server says so. Subscribed unconditionally rather
+        // than only when suspected: `subscribe` is cumulative and there is nothing to gain from
+        // two shapes of it. The handler renders nothing and returns `false`.
+        self.legacy_suspect = launch::may_be_legacy(&configuration);
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            EventType::PaneUpdate,
         ]);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
@@ -87,29 +99,35 @@ impl ZellijPlugin for State {
         // from "some other plugin pane is". The pane it names follows with the
         // strip, a moment later.
         self.send_selection();
-        // One message doing two jobs. It asks hocus for the current strip, so a
-        // reload (or a session restore) does not sit empty until the next agentd
-        // snapshot — and, by naming hocus's url, it opens the chat if there is no
-        // hocus to ask. The chat is the other half of this column and the half
-        // that computes the rows drawn here, so a list with nothing feeding it is
-        // not worth having: usually hocus opened *this* pane and the message
-        // simply reaches it, but a keybinding can get here first.
-        //
-        // `MessageToPlugin` with a `plugin_url` is launch-or-reuse — an instance
-        // with the same (location, configuration) is handed the message rather
-        // than a second one being spawned — which is the same idempotence hocus
-        // relies on in the other direction.
-        //
-        // No coordinates: this pane does not know the column's proportions. hocus
-        // places both halves itself, on load and on every resize.
-        pipe_message_to_plugin(
-            MessageToPlugin::new(wire::AGENT_STRIP_HELLO)
-                .with_plugin_url(launch::HOCUS_ALIAS)
-                .with_plugin_config(launch::overlay_configuration()),
-        );
+        // See `say_hello_to_hocus`. Deferred while this half might be a legacy global pane. A legacy hocus sends the one
+        // handover this migration needs, and its replacement opens its own list; a second launch
+        // from here would be a second chance for the two to disagree about the configuration the
+        // lookup matches on, which is how you get two columns instead of one.
+        if !self.legacy_suspect {
+            self.say_hello_to_hocus();
+        }
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if let Event::PaneUpdate(manifest) = &event {
+            if self.legacy_suspect {
+                if !self.migrating
+                    && launch::is_legacy_global_instance(get_plugin_ids().plugin_id, manifest)
+                {
+                    // Restored as a global pane by a dump written before this column became a pair
+                    // of overlays. Nothing but closing: the legacy hocus asks for the overlay
+                    // column, and the hocus that answers opens its own list beside itself.
+                    self.migrating = true;
+                    close_self();
+                    return false;
+                }
+                // An ordinary non-overlay launch after all, so the greeting that was held back
+                // while this was in doubt goes out now.
+                self.legacy_suspect = false;
+                self.say_hello_to_hocus();
+            }
+            return false;
+        }
         let selection = self.selection();
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
@@ -321,6 +339,29 @@ impl State {
     /// which the tests drive directly and which stay free of host calls for that
     /// reason. The plugin id goes along every time: it is how hocus knows that this
     /// pane, and not the chat below it, is the one the daemon reports focused.
+    /// Ask hocus for the current strip - and open it if there is none to ask.
+    ///
+    /// One message doing two jobs. It asks hocus for the current strip, so a reload (or a session
+    /// restore) does not sit empty until the next agentd snapshot - and, by naming hocus's url, it
+    /// opens the chat if there is no hocus to ask. The chat is the other half of this column and
+    /// the half that computes the rows drawn here, so a list with nothing feeding it is not worth
+    /// having: usually hocus opened *this* pane and the message simply reaches it, but a
+    /// keybinding can get here first.
+    ///
+    /// `MessageToPlugin` with a `plugin_url` is launch-or-reuse - an instance with the same
+    /// (location, configuration) is handed the message rather than a second one being spawned -
+    /// which is the same idempotence hocus relies on in the other direction.
+    ///
+    /// No coordinates: this pane does not know the column's proportions. hocus places both halves
+    /// itself, on load and on every resize.
+    fn say_hello_to_hocus(&self) {
+        pipe_message_to_plugin(
+            MessageToPlugin::new(wire::AGENT_STRIP_HELLO)
+                .with_plugin_url(launch::HOCUS_ALIAS)
+                .with_plugin_config(launch::overlay_configuration()),
+        );
+    }
+
     fn send_selection(&self) {
         let selection = wire::Selection {
             plugin_id: get_plugin_ids().plugin_id,

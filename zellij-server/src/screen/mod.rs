@@ -3748,6 +3748,9 @@ impl Screen {
             let (active_swap_layout_name, is_swap_layout_dirty) = tab.swap_layout_info();
             let tab_viewport = tab.get_viewport();
             let tab_display_area = tab.get_display_area();
+            let tab_session_surface = self
+                .session_surface_for_tab(tab.id)
+                .unwrap_or_else(|| tab.get_session_surface());
             let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
 
@@ -3773,6 +3776,8 @@ impl Screen {
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                session_surface_rows: tab_session_surface.rows,
+                session_surface_columns: tab_session_surface.cols,
             }
         })
     }

@@ -876,3 +876,58 @@ fn global_process_exit_removes_the_dock_and_restores_tab_geometry() {
     assert!(screen.global_panes.pane(PaneId::Terminal(42)).is_none());
     assert_eq!(screen.tabs.get(&0).unwrap().size.rows, 10);
 }
+
+/// `TabInfo` reports two rectangles and a plugin has to be able to tell them apart: the display
+/// area is the tab centre, what is left once the global-pane strips are carved off, and the
+/// session surface is what they were carved out of. An overlay's coordinates resolve against the
+/// second (`OverlayPanes::surface`), so a plugin placing one against the first - hocus's column
+/// did - comes up short by exactly the strips' thickness.
+#[test]
+fn tab_info_reports_the_session_surface_beside_the_tabs_display_area() {
+    let size = Size { cols: 40, rows: 10 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    add_global_terminal(&mut screen, 42);
+
+    let tab_infos = screen.generate_and_report_tab_state().unwrap();
+    let tab_info = tab_infos.first().expect("one tab");
+
+    assert!(
+        tab_info.session_surface_rows > tab_info.display_area_rows,
+        "a bottom strip takes rows off the tab centre and the surface keeps them: surface {} \
+         against display area {}",
+        tab_info.session_surface_rows,
+        tab_info.display_area_rows,
+    );
+    assert_eq!(
+        tab_info.session_surface_columns, tab_info.display_area_columns,
+        "and it takes nothing off the other axis"
+    );
+    assert_eq!(
+        (
+            tab_info.session_surface_rows,
+            tab_info.session_surface_columns
+        ),
+        (size.rows, size.cols),
+        "the surface is the whole screen - there is nothing else on it to account for"
+    );
+}
+
+/// The other half of the contract: with nothing carved off, the two rectangles are the same one,
+/// so a plugin reading the surface is never worse off than one reading the display area.
+#[test]
+fn tab_info_reports_one_rectangle_twice_when_there_are_no_global_panes() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
+    new_tab(&mut screen, 1, 0);
+
+    let tab_infos = screen.generate_and_report_tab_state().unwrap();
+    let tab_info = tab_infos.first().expect("one tab");
+
+    assert_eq!(
+        (
+            tab_info.session_surface_rows,
+            tab_info.session_surface_columns
+        ),
+        (tab_info.display_area_rows, tab_info.display_area_columns),
+    );
+}

@@ -501,9 +501,9 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
 
     state.on_tabs(tabs.clone());
     assert_eq!(
-        (state.display_area_rows, state.display_area_cols),
+        (state.surface_rows, state.surface_cols),
         (50, 200),
-        "the screen's size is learned here whether or not the placement lands"
+        "the surface's size is learned here whether or not the placement lands"
     );
     assert!(
         !state.placed,
@@ -608,5 +608,191 @@ fn our_own_hide_landing_is_not_a_reveal() {
     assert!(
         !state.hide_pending,
         "the hide we asked for has been seen to land"
+    );
+}
+
+// ---- which rectangle the column is placed against ---------------------------------------------
+//
+// `TabInfo` reports two of them and they are not the same: `display_area_*` is the tab centre,
+// what is left once the global-pane strips have been carved off, and `session_surface_*` is the
+// whole surface those strips were carved out of. The server resolves an overlay's coordinates
+// against the second, so that is the one the arithmetic has to use.
+
+/// A tab whose centre is smaller than the surface by a strip on each axis - the shape any session
+/// with a global pane in it has.
+fn tab_with_a_strip() -> TabInfo {
+    TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 45,
+        display_area_columns: 190,
+        session_surface_rows: 50,
+        session_surface_columns: 200,
+        ..TabInfo::default()
+    }
+}
+
+#[test]
+fn the_column_is_placed_against_the_session_surface_and_not_the_tab() {
+    let tab = tab_with_a_strip();
+    assert_eq!(
+        surface_of(&tab),
+        (50, 200),
+        "the surface, not the centre the strips left behind"
+    );
+
+    let (rows, cols) = surface_of(&tab);
+    let (chat, _) = column_geometry(&BTreeMap::new(), rows, cols).expect("some geometry");
+    let (_, chat_y, chat_w, chat_h) = rect(&chat);
+    assert_eq!(
+        chat_y + chat_h,
+        50 - DEFAULT_PAD,
+        "the bottom edge is one padding up from the bottom of the *surface* - placing against the \
+         tab centre would add the strip's rows to the padding the user asked for"
+    );
+    assert_eq!(
+        chat_w, 60,
+        "and the width is 30% of the surface, not of the centre"
+    );
+}
+
+/// A `TabInfo` from a server that predates the field. Wrong by the strips, which is what the code
+/// did before - and much better than a column collapsed to nothing.
+#[test]
+fn a_tab_info_without_a_surface_falls_back_to_the_display_area() {
+    let tab = TabInfo {
+        display_area_rows: 45,
+        display_area_columns: 190,
+        ..TabInfo::default()
+    };
+    assert_eq!(surface_of(&tab), (45, 190));
+}
+
+/// Both-or-neither: half a surface is not a surface, and mixing the two denominators is exactly
+/// the bug this pair of fields exists to close.
+#[test]
+fn a_half_populated_surface_falls_back_as_a_whole() {
+    let rows_only = TabInfo {
+        display_area_rows: 45,
+        display_area_columns: 190,
+        session_surface_rows: 50,
+        ..TabInfo::default()
+    };
+    assert_eq!(surface_of(&rows_only), (45, 190));
+
+    let cols_only = TabInfo {
+        display_area_rows: 45,
+        display_area_columns: 190,
+        session_surface_columns: 200,
+        ..TabInfo::default()
+    };
+    assert_eq!(surface_of(&cols_only), (45, 190));
+}
+
+#[test]
+fn the_surface_is_what_a_tab_update_caches() {
+    let mut state = State {
+        own_plugin_id: 7,
+        ..Default::default()
+    };
+    state.on_tabs(vec![tab_with_a_strip()]);
+    assert_eq!((state.surface_rows, state.surface_cols), (50, 200));
+}
+
+// ---- putting a parted column back together -----------------------------------------------------
+//
+// Both keybindings carry `move_to_focused_tab`, and both move only the half they name. Which half
+// moved is the whole question, and the answer is which half the server focused.
+
+#[test]
+fn a_summoned_agent_list_is_followed_rather_than_dragged_back() {
+    assert_eq!(rejoin(0, 1, true, true), Some(Rejoin::Follow(1)));
+}
+
+#[test]
+fn an_agent_list_left_behind_by_a_summoned_conversation_is_dragged_over() {
+    assert_eq!(rejoin(1, 0, false, true), Some(Rejoin::Drag(1)));
+}
+
+/// Focus outlives the client that set it, so a list focused and then abandoned on a tab nobody is
+/// looking at must not get to pull the column onto it.
+#[test]
+fn a_focused_agent_list_on_a_tab_nobody_is_on_is_still_dragged_over() {
+    assert_eq!(rejoin(0, 1, true, false), Some(Rejoin::Drag(0)));
+}
+
+#[test]
+fn a_column_that_is_already_together_asks_for_nothing() {
+    for focused in [true, false] {
+        for someones in [true, false] {
+            assert_eq!(rejoin(2, 2, focused, someones), None);
+        }
+    }
+}
+
+// `rejoin` is tested as the pure function it is, and deliberately not through `on_panes`: both of
+// its arms end in `break_panes_to_tab_with_index`, a value-returning host call that blocks on a
+// reply no native test can send. That is the same reason `tab_to_follow` is a free function - the
+// decision is the part worth pinning, and it is the part that can be.
+
+// ---- migrating a legacy global-pane hocus ------------------------------------------------------
+//
+// A session dump written before this column became a pair of overlays restores both halves as
+// *global panes*. Overlays are not serialized, so nothing else brings the column back and nothing
+// else takes the old strip away: the keybinding opens a second, overlay column beside it.
+
+/// A manifest in which the server is drawing us as a global pane - the restored shape.
+fn global_manifest(own_id: u32) -> PaneManifest {
+    PaneManifest {
+        global_panes: vec![pane(own_id, false)],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_hocus_restored_as_a_global_pane_hands_over_exactly_once() {
+    let mut state = State {
+        own_plugin_id: 7,
+        legacy_suspect: true,
+        ..Default::default()
+    };
+
+    state.on_panes(global_manifest(7));
+    assert!(
+        state.migrating,
+        "the manifest confirms the suspicion the configuration raised"
+    );
+
+    // A second manifest before the close lands must not send a second handover: two launches are
+    // two chances to disagree about the configuration the lookup matches on.
+    state.on_panes(global_manifest(7));
+    assert!(state.migrating);
+    assert!(
+        state.legacy_suspect,
+        "and this half stays a suspect for as long as it is here - it is on its way out, not \
+         carrying on as an ordinary column"
+    );
+}
+
+/// The suspicion is raised by a missing `overlay` key, which is also true of a hocus someone put
+/// in a layout on purpose. The manifest is what tells the two apart, and clearing the suspicion is
+/// what lets the deferred load-time work happen.
+#[test]
+fn a_non_overlay_hocus_that_is_not_a_global_pane_carries_on() {
+    let mut state = State {
+        own_plugin_id: 7,
+        legacy_suspect: true,
+        ..Default::default()
+    };
+
+    state.on_panes(manifest(2, vec![pane(7, false)]));
+
+    assert!(!state.migrating, "nothing to hand over to");
+    assert!(!state.legacy_suspect, "and nothing left to suspect");
+    assert_eq!(
+        state.own_tab_index,
+        Some(2),
+        "the ordinary bookkeeping runs, rather than being skipped by an early return"
     );
 }

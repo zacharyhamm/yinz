@@ -360,14 +360,33 @@ impl OverlayPanes {
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
             self.pane_being_moved_with_mouse = None;
         }
-        self.move_clients_out_of_pane(pane_id);
+        if self.is_modal(&pane_id) {
+            // A modal's clients may not simply fall to whatever is underneath. While this modal
+            // was on screen `may_be_focused` refused every non-modal overlay the keyboard, and
+            // setting the modal aside is not the user asking for that refusal to be reversed - it
+            // is the same modal, merely not drawn. So focus walks to the next *modal* down, or
+            // nowhere. `move_clients_out_of_pane`'s selectable-only rule is right for a
+            // dismissible overlay and wrong here for exactly this reason.
+            self.move_clients_out_of_modal(pane_id);
+        } else {
+            self.move_clients_out_of_pane(pane_id);
+        }
         self.set_force_render();
         true
     }
 
-    /// Put `pane_id` back on screen. Deliberately does not focus it: `focus_pane_if_exists` is the
-    /// path that reveals *and* focuses, and a caller that only wants the pane drawn - hocus
-    /// restoring its agent list beside itself - should not move the keyboard by doing so.
+    /// Put `pane_id` back on screen. Deliberately does not focus it - *unless it is a modal*:
+    /// `focus_pane_if_exists` is the path that reveals *and* focuses an ordinary overlay, and a
+    /// caller that only wants the pane drawn - hocus restoring its agent list beside itself -
+    /// should not move the keyboard by doing so.
+    ///
+    /// A modal is the exception because for a modal the two are not separable. The modal lock is
+    /// read off `stack_layer_ids`, which filters `hidden`, so this statement is what re-arms it:
+    /// the moment this pane is back in the stack, `may_be_focused` starts refusing every other
+    /// overlay the keyboard. Leaving it unfocused would put a dialog on screen that nobody is in
+    /// and that nothing else may be focused *past* - and the modal has no channel to learn it, so
+    /// it would sit there taking no input and letting nothing else take any either. Whoever
+    /// unsuppresses a modal is asking for the modal back, and a modal *is* its keyboard.
     pub fn show_pane(&mut self, pane_id: PaneId) -> bool {
         match self.panes.get_mut(&pane_id) {
             Some(overlay) if overlay.carry.hidden => overlay.carry.hidden = false,
@@ -379,6 +398,12 @@ impl OverlayPanes {
         self.raise_within_class(pane_id);
         self.set_pane_frames().non_fatal();
         self.set_force_render();
+        if self.is_modal(&pane_id) {
+            // `focus_pane_for_all_clients` re-checks `may_be_focused`, so a modal that came up
+            // over this one while it was away still keeps the keyboard - this one is back on
+            // screen and back in the lock either way, which is the invariant being restored.
+            self.focus_pane_for_all_clients(pane_id);
+        }
         true
     }
 
@@ -817,6 +842,37 @@ impl OverlayPanes {
             .into_iter()
             .rev()
             .find(|id| *id != pane_id && self.get(id).is_some_and(|pane| pane.selectable()));
+        let focused_clients: Vec<ClientId> = self
+            .active_panes
+            .iter()
+            .filter(|(_, p_id)| **p_id == pane_id)
+            .map(|(c_id, _)| *c_id)
+            .collect();
+        for client_id in focused_clients {
+            match next {
+                Some(next_pane_id) => {
+                    self.active_panes
+                        .insert(client_id, next_pane_id, &self.panes)
+                },
+                None => {
+                    self.active_panes.remove(&client_id, &self.panes);
+                },
+            }
+        }
+    }
+    /// The modal twin of `move_clients_out_of_pane`: walk every client focused on `pane_id` down to
+    /// the next modal, or off this collection entirely.
+    ///
+    /// Used when a modal is set aside rather than closed. A closing modal may hand the keyboard to
+    /// whatever is underneath, because the lock goes with it; a hidden one keeps the lock (it is
+    /// still in `self.panes`, and `show_pane` puts it straight back into the stack), so handing the
+    /// keyboard down would focus a pane that `may_be_focused` refuses.
+    fn move_clients_out_of_modal(&mut self, pane_id: PaneId) {
+        let next = self.stack_layer_ids().into_iter().rev().find(|id| {
+            *id != pane_id
+                && self.is_modal(id)
+                && self.get(id).is_some_and(|pane| pane.selectable())
+        });
         let focused_clients: Vec<ClientId> = self
             .active_panes
             .iter()

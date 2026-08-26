@@ -44,6 +44,16 @@ pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
 /// after the user closed it. Nothing reads the payload - the message exists for the launch-or-reuse
 /// its url performs, and the pane answers with `AGENT_STRIP_HELLO` once it is up.
 pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
+/// legacy hocus → hocus: open the overlay column.
+///
+/// The mirror of [`AGENT_STRIP_OPEN`], and for the same reason - a name whose only job is to carry
+/// a `plugin_url`, so the launch-or-reuse behind it opens an overlay-configured hocus. Nothing
+/// reads the payload, and the receiving half treats it as a no-op: by the time it arrives the
+/// message has already done its work.
+///
+/// Sent by a hocus restored from a pre-overlay session dump as a *global* pane, on its way out.
+/// See `hocus_proto::launch::is_legacy_global_instance`.
+pub const HOCUS_OPEN: &str = "hocus_open";
 /// hocus-agents → hocus: put the whole column away.
 ///
 /// The column is two overlays and an overlay is hidden *by name*, where the old global strip hid
