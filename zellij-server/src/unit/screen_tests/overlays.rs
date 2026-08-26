@@ -2347,6 +2347,62 @@ fn a_resize_keystroke_resizes_the_overlay_that_has_the_keyboard() {
     );
 }
 
+/// The same keystroke with a fullscreen floating pane underneath. `Tab::resize` used to return at
+/// its floating-fullscreen guard before ever reaching the overlay branch, so the overlay was
+/// unresizable by keyboard in this one state - while ctrl-dragging its frame resized it fine.
+#[test]
+fn a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+    assert_eq!(
+        screen.tabs[&0].fullscreen_pane_id(),
+        Some(PaneId::Terminal(2)),
+        "the floating pane is the one that went fullscreen"
+    );
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+
+    let floating_before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(3))
+        .expect("TEST")
+        .position_and_size();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .expect("TEST");
+
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(3))
+        .expect("TEST")
+        .position_and_size();
+    assert!(
+        after.cols.as_usize() > before.cols.as_usize(),
+        "the overlay grew: {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        floating_before,
+        screen.tabs[&0]
+            .get_pane_with_id(PaneId::Terminal(2))
+            .expect("TEST")
+            .position_and_size(),
+        "the fullscreen floating pane behind it is untouched"
+    );
+}
+
 /// The mouse half, end to end. `start_pane_resize_with_mouse` used to look in the floating and
 /// tiled collections only, so an overlay id resolved to neither and errored the whole mouse event
 /// - which is why the ctrl-press branch refused an overlay outright rather than being taught to
