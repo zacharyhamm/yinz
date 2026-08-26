@@ -67,6 +67,10 @@ struct State {
     /// Where the last render's window into `rows` began — needed to map a mouse
     /// click's on-screen line back to an index into `rows`.
     last_window_start: usize,
+    /// How many rows the last render gave the list. The rest of the pane is the summary box,
+    /// which is drawn under the list and points at nothing: a click down there has to be
+    /// rejected rather than mapped through `last_window_start` onto a row that was never drawn.
+    last_list_rows: usize,
     /// Whether this instance might be an agent list restored from a pre-overlay session dump, and
     /// so a *global pane* on its way out. Set at `load` from the configuration and settled by the
     /// first `PaneUpdate` — see `launch::may_be_legacy` and `launch::is_legacy_global_instance`.
@@ -172,6 +176,7 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, rows: usize, cols: usize) {
         if self.rows.is_empty() {
+            self.last_list_rows = 0;
             print_text_with_coordinates(
                 Text::new("no agents").dim_range(..),
                 0,
@@ -195,6 +200,7 @@ impl ZellijPlugin for State {
             .saturating_sub(list_rows / 2)
             .min(self.rows.len().saturating_sub(list_rows));
         self.last_window_start = start;
+        self.last_list_rows = list_rows;
         let live = self.live();
         for (index, row) in self.rows.iter().skip(start).take(list_rows).enumerate() {
             let selected = start + index == self.selected;
@@ -301,7 +307,12 @@ impl State {
     /// feel like navigating to it and pressing Enter, whether or not it was
     /// already selected.
     fn on_click(&mut self, line: usize) -> bool {
-        let Some(index) = click_target(&self.rows, self.last_window_start, line) else {
+        let Some(index) = click_target(
+            &self.rows,
+            self.last_window_start,
+            self.last_list_rows,
+            line,
+        ) else {
             return false;
         };
         let moved = index != self.selected;
@@ -473,8 +484,17 @@ fn selectable(row: &StripRow) -> bool {
 }
 
 /// The row a click on screen line `line` resolves to, if any - `None` for a
-/// header row or a click past the last row.
-fn click_target(rows: &[StripRow], window_start: usize, line: usize) -> Option<usize> {
+/// header row, a click past the last row, or a click on the summary box under
+/// the list, which `list_rows` is the height of the list above.
+fn click_target(
+    rows: &[StripRow],
+    window_start: usize,
+    list_rows: usize,
+    line: usize,
+) -> Option<usize> {
+    if line >= list_rows {
+        return None;
+    }
     let index = window_start + line;
     rows.get(index).filter(|row| selectable(row)).map(|_| index)
 }
@@ -636,20 +656,28 @@ mod tests {
     fn a_click_resolves_to_the_agent_row_under_it() {
         let rows = strip();
         // line 3 is "  7  codex  idle", offset by a window that starts at 1
-        assert_eq!(click_target(&rows, 1, 2), Some(3));
+        assert_eq!(click_target(&rows, 1, rows.len(), 2), Some(3));
     }
 
     #[test]
     fn a_click_on_a_header_row_hits_nothing() {
         let rows = strip();
-        assert_eq!(click_target(&rows, 0, 0), None, "the Project header");
-        assert_eq!(click_target(&rows, 0, 1), None, "the Branch header");
+        assert_eq!(
+            click_target(&rows, 0, rows.len(), 0),
+            None,
+            "the Project header"
+        );
+        assert_eq!(
+            click_target(&rows, 0, rows.len(), 1),
+            None,
+            "the Branch header"
+        );
     }
 
     #[test]
     fn a_click_past_the_last_row_hits_nothing() {
         let rows = strip();
-        assert_eq!(click_target(&rows, 0, rows.len()), None);
+        assert_eq!(click_target(&rows, 0, rows.len(), rows.len()), None);
     }
 
     #[test]
@@ -825,6 +853,34 @@ mod tests {
         // the whole strip still fits above the box here, so the window starts at the top and a
         // click lands on the row it points at
         assert!(state.rows.len() <= list_rows);
-        assert_eq!(click_target(&state.rows, 0, 3), Some(3));
+        assert_eq!(click_target(&state.rows, 0, list_rows, 3), Some(3));
+    }
+
+    /// And a click *on* the box hits nothing. Without the height the line would be mapped
+    /// through the window start onto a row the box is covering, so pointing at the model's
+    /// words would focus an agent the user never pointed at.
+    #[test]
+    fn a_click_on_the_summary_box_hits_nothing() {
+        let mut state = State::default();
+        // a strip longer than the window, so the rows the box covers are real rows
+        let mut rows = strip();
+        for pane_id in 20..30 {
+            rows.push(agent(pane_id, &format!("  {pane_id}  claude  idle")));
+        }
+        state.set_rows(with_summary(rows, 3, "Ran the tests, all green.", false));
+
+        let pane_rows = 12;
+        let list_rows = pane_rows - state.summary_box(pane_rows, 40).len();
+        assert!(list_rows < pane_rows, "the box took rows off the list");
+        assert!(
+            state.rows.len() > list_rows,
+            "and the strip outruns what is left"
+        );
+
+        assert_eq!(click_target(&state.rows, 0, list_rows, list_rows), None);
+        assert!(
+            click_target(&state.rows, 0, list_rows, list_rows - 1).is_some(),
+            "the last row of the list is still clickable"
+        );
     }
 }
