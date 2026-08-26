@@ -38,11 +38,13 @@ fn the_column_sits_in_the_bottom_left_corner_inset_by_the_padding() {
         "the bottom edge is one padding up from the bottom of the screen"
     );
     assert_eq!(
-        agents_y, DEFAULT_PAD,
-        "and the top of the column is one padding down from the top"
+        agents_y,
+        50 - DEFAULT_PAD - (50 * DEFAULT_HEIGHT_PERCENT / 100),
+        "and the top of the column is its height up from that bottom edge - the column is \
+         anchored to the bottom, not stretched between the paddings"
     );
     assert_eq!(chat_w, agents_w, "one column, so one width");
-    assert_eq!(chat_w, 50, "25% of 200 columns");
+    assert_eq!(chat_w, 60, "30% of 200 columns");
     assert_eq!(
         agents_y + agents_h,
         chat_y,
@@ -73,15 +75,85 @@ fn width_pad_and_agents_height_are_configurable() {
     assert_eq!(chat_x, 1, "the configured padding");
     assert_eq!(chat_w, 40, "a fixed width is taken as written");
     assert_eq!(chat_y + chat_h, 49, "and the bottom follows the padding");
-    assert_eq!(rect(&agents).1, 1, "the top of the column too");
+    assert_eq!(
+        rect(&agents).1,
+        49 - (50 * DEFAULT_HEIGHT_PERCENT / 100),
+        "and the top is the column's height above it"
+    );
 
     let (chat, agents) =
         column_geometry(&config(&[("agents_height", "50%")]), 50, 200).expect("some geometry");
+    // The column is 33 rows here - two thirds of 50 - so an even split cannot be exactly even;
+    // the odd row goes to the conversation, which is where the reading happens.
     assert_eq!(
-        rect(&chat).3,
-        rect(&agents).3,
-        "an even split gives the two halves the same height"
+        rect(&chat).3 as isize - rect(&agents).3 as isize,
+        1,
+        "an even split gives the two halves the same height, give or take the odd row"
     );
+}
+
+/// The shape asked for: a panel taller than it is wide, roughly two thirds of the screen's rows
+/// and under a third of its columns - not the full-height quarter-width strip the column used to
+/// be, which read as a split of the screen rather than something sitting on top of it.
+#[test]
+fn the_column_is_two_thirds_of_the_screen_tall_and_under_a_third_of_it_wide() {
+    for (rows, cols) in [(50, 200), (40, 160), (60, 120)] {
+        let (chat, agents) = column_geometry(&BTreeMap::new(), rows, cols).expect("some geometry");
+        let (_, _, width, chat_h) = rect(&chat);
+        let (_, agents_y, _, agents_h) = rect(&agents);
+        let height = chat_h + agents_h;
+        assert_eq!(
+            height,
+            rows * DEFAULT_HEIGHT_PERCENT / 100,
+            "two thirds of {rows} rows"
+        );
+        assert!(
+            width * 3 < cols,
+            "under a third of {cols} columns, got {width}"
+        );
+        assert!(
+            height > width / 2,
+            "and taller than it is wide once a cell's two-to-one aspect is allowed for: \
+             {height} rows against {width} columns"
+        );
+        assert_eq!(
+            agents_y,
+            rows - DEFAULT_PAD - height,
+            "the top floats; the bottom is what is anchored"
+        );
+    }
+}
+
+#[test]
+fn the_height_is_configurable_and_kept_on_the_screen() {
+    let half = column_geometry(&config(&[("height", "50%")]), 50, 200).expect("some geometry");
+    let (_, _, _, chat_h) = rect(&half.0);
+    let (_, agents_y, _, agents_h) = rect(&half.1);
+    assert_eq!(chat_h + agents_h, 25, "50% of 50 rows");
+    assert_eq!(
+        agents_y,
+        50 - DEFAULT_PAD - 25,
+        "still anchored at the bottom"
+    );
+
+    let fixed = column_geometry(&config(&[("height", "20")]), 50, 200).expect("some geometry");
+    assert_eq!(
+        rect(&fixed.0).3 + rect(&fixed.1).3,
+        20,
+        "a fixed height is taken as written"
+    );
+
+    // A height nobody could fit is clamped rather than run off the top of the screen, the same
+    // way `width` is clamped against the columns.
+    let tall = column_geometry(&config(&[("height", "300%")]), 50, 200).expect("some geometry");
+    let (_, agents_y, _, agents_h) = rect(&tall.1);
+    let (_, chat_y, _, chat_h) = rect(&tall.0);
+    assert_eq!(
+        agents_y, DEFAULT_PAD,
+        "clamped to what is between the paddings"
+    );
+    assert_eq!(chat_y + chat_h, 50 - DEFAULT_PAD);
+    assert_eq!(agents_y + agents_h, chat_y);
 }
 
 #[test]
@@ -402,6 +474,50 @@ fn the_agent_lists_tab_is_tracked_beside_our_own() {
         Some(3),
         "the pair are together, which is what says there is nothing to rejoin"
     );
+}
+
+/// The column is placed even when the only `TabUpdate` that reports a change of display area
+/// arrives before the server knows where our pane is.
+///
+/// That `TabUpdate` is where the placement used to happen and nowhere else, and a placement made
+/// then is dropped in silence: `Screen::change_overlay_coordinates` looks the pane up in the tabs
+/// and does nothing when no tab contains it - the state a `TabUpdate` replayed from the
+/// pre-permission cache arrives in. No later update reports a *change*, so the column was left at
+/// the centered half-screen the host gives an overlay that named no coordinates.
+#[test]
+fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
+    let mut state = State {
+        own_plugin_id: 7,
+        ..Default::default()
+    };
+    let tabs = vec![TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 50,
+        display_area_columns: 200,
+        ..TabInfo::default()
+    }];
+
+    state.on_tabs(tabs.clone());
+    assert_eq!(
+        (state.display_area_rows, state.display_area_cols),
+        (50, 200),
+        "the screen's size is learned here whether or not the placement lands"
+    );
+    assert!(
+        !state.placed,
+        "nothing said our pane was on a tab, so nothing says the placement reached it"
+    );
+
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+    assert!(
+        state.placed,
+        "the manifest names our tab, so this is the first moment a placement can land - and does"
+    );
+
+    state.on_tabs(tabs);
+    assert!(state.placed, "and it stays placed");
 }
 
 /// A reveal stays on the tab the manifest found us on, whichever client's copy of that manifest

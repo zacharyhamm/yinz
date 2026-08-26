@@ -445,6 +445,20 @@ pub struct State {
     /// still reports us visible. Without this the transition test in `on_panes` would read that
     /// stale frame as a reveal and put the column straight back.
     pub(crate) hide_pending: bool,
+    /// Whether the column's geometry has actually reached the server.
+    ///
+    /// A pane with no coordinates is born half the surface, *centered* - that is what
+    /// `OverlayPanes::base_geom` gives an overlay the keybindings launched without any - and the
+    /// column is only moved out of the middle of the screen by `apply_overlay_geometry`. That call
+    /// is fire-and-forget: the screen thread looks our pane up and does nothing if no tab contains
+    /// it yet, which is the state a `TabUpdate` replayed from the pre-permission cache arrives in.
+    /// The old code placed the column on the first `TabUpdate` that changed the display area and
+    /// no other, so a placement lost that way was never retried and hocus opened centered.
+    ///
+    /// So the placement is tracked rather than assumed, and `on_tabs` and `on_panes` both keep
+    /// trying until it is true. `apply_overlay_geometry` sets it from `own_tab_index`, which the
+    /// `PaneManifest` is the only source of.
+    pub(crate) placed: bool,
     /// The agents pane, as it announced itself.
     ///
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
@@ -547,6 +561,7 @@ impl Default for State {
             client_tabs: BTreeMap::new(),
             hidden: false,
             hide_pending: false,
+            placed: false,
             agents_plugin: None,
             agents_selected: None,
             active_project: None,

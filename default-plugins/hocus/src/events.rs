@@ -134,7 +134,10 @@ impl State {
                 if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
                     self.follow_tab(target);
                 }
-                if resized {
+                // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
+                // reports a *change* of display area, so a placement it could not land - our pane
+                // not being on a tab yet - would otherwise never be retried. See `State::placed`.
+                if resized || !self.placed {
                     self.apply_overlay_geometry();
                 }
             }
@@ -186,6 +189,13 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
+            // The manifest is what makes a placement possible at all: it names the tab our pane is
+            // on, which is the thing `change_overlay_coordinates` needs to find it. A column still
+            // sitting at the centered default the host gave it is placed here, whichever event
+            // failed to place it first. Converges by construction - the call sets `placed`.
+            if !self.placed {
+                self.apply_overlay_geometry();
+            }
             if own.is_suppressed && agents_visible {
                 self.reveal_beside_the_agents_pane();
             } else if own.is_suppressed {
