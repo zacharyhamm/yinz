@@ -1175,7 +1175,7 @@ fn help_line(state: &State) -> &'static str {
         Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
         Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
-        Status::Idle => "<Ctrl l> new chat  <Ctrl r> focus agents  <Esc> hide",
+        Status::Idle => "<Ctrl l> new chat  <Esc> hide",
     }
 }
 

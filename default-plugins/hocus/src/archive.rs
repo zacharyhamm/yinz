@@ -187,25 +187,6 @@ impl State {
         });
     }
 
-    /// Ctrl-r's answer: bring the agents pane into view and focus it, spawning
-    /// or adopting it as needed. The one path in this half that opens a list -
-    /// the user asking for it by name is exactly what makes it not an
-    /// unbidden one.
-    ///
-    /// The branches the list groups by are the only part of a snapshot that
-    /// goes stale on its own — a checkout in an agent's folder changes one and
-    /// no host event says so — so focusing the list asks for a fresh probe.
-    /// The answer arrives as an ordinary snapshot and is pushed to the pane.
-    pub(crate) fn focus_agents_pane(&mut self) -> bool {
-        self.autosave();
-        // focus is leaving the conversation, so a temporary list would sit
-        // open with nobody holding it
-        let had_picker = self.picker.take().is_some();
-        self.open_agents_pane(true);
-        Self::request_branch_refresh();
-        had_picker
-    }
-
     /// The agent strip as the hocus-agents pane should draw it.
     pub(crate) fn current_strip(&self) -> agents::Strip {
         let rows = agents::strip_rows(

@@ -298,14 +298,11 @@ impl State {
             return false;
         }
 
-        // These must be caught before TextInput sees them. Its bare-key arm
+        // This must be caught before TextInput sees it. Its bare-key arm
         // doesn't check for modifiers, so it would take Ctrl-l as a literal 'l'
         // and Alt-Enter as a submit.
         if key.bare_key == BareKey::Char('l') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             return self.new_chat();
-        }
-        if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            return self.focus_agents_pane();
         }
         // The temporary lists are modal while open.
         if self.picker.is_some() {

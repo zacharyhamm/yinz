@@ -358,7 +358,7 @@ fn an_agent_list_the_user_closed_is_forgotten() {
     state.on_panes(manifest(0, vec![pane(7, false)]));
     assert_eq!(
         state.agents_plugin, None,
-        "otherwise Ctrl-r would go on revealing a pane that is not there, and never open one"
+        "otherwise the geometry pass would go on placing a pane that is not there"
     );
 }
 

@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
-use hocus_proto::launch::{overlay_configuration, HOCUS_AGENTS_ALIAS, HOCUS_ALIAS};
+use hocus_proto::launch::{overlay_configuration, HOCUS_ALIAS};
 
 use crate::ui;
 use crate::State;
@@ -394,10 +394,10 @@ impl State {
     /// Ask an agent list that already exists to announce itself - and open nothing if there is
     /// none.
     ///
-    /// The message carries no `plugin_url`, which is the whole of the difference from
-    /// [`State::open_agents_pane`]: without one it is delivered to whoever is listening and
-    /// launches nobody. That is what opening the conversation alone means - the user asked for a
-    /// chat, and a list they did not ask for must not appear beside it.
+    /// The message carries no `plugin_url`, so it is delivered to whoever is listening and
+    /// launches nobody. That is the whole of the point: the `a` keybinding is the one thing that
+    /// opens a list, and a list the user did not ask for must not appear beside a conversation
+    /// they did.
     ///
     /// It is still worth sending. A hocus that loaded after the list - a reload, a restore, the
     /// `a` keybinding having got here first - has no idea the list exists, and the list's plugin
@@ -421,42 +421,6 @@ impl State {
         if from_agents && self.own_tab_index.is_none() {
             self.open_hidden = true;
         }
-    }
-
-    /// Open the agent list beside this one - or reveal the one that is already there.
-    ///
-    /// The explicit ask: `Ctrl r`. Unlike [`State::greet_agents_pane`] this one carries the url,
-    /// so it opens a list when there is none.
-    ///
-    /// `MessageToPlugin` with a `plugin_url` is launch-or-reuse: `get_or_load_plugins` hands the
-    /// message to an existing instance with the same (location, configuration) rather than
-    /// spawning a second one, and even to one that is still loading. That is the same idempotence
-    /// the old `launch_or_focus_global_pane_split` had, and the reason this is not
-    /// `open_plugin_pane_floating`, which always creates a pane.
-    pub(crate) fn open_agents_pane(&mut self, should_focus: bool) {
-        if let Some(agents_id) = self.agents_plugin {
-            show_pane_with_id(PaneId::Plugin(agents_id), false, should_focus);
-            self.apply_overlay_geometry();
-            return;
-        }
-        let mut message = MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN)
-            .with_plugin_url(HOCUS_AGENTS_ALIAS)
-            .with_plugin_config(overlay_configuration());
-        // `should_focus` has to reach the *launch* as well as the reveal above, or `Ctrl r` on a
-        // session with no list yet opens one and leaves the keyboard here - a launch behind
-        // `plugin_url` comes up unfocused unless it is asked otherwise.
-        if should_focus {
-            message = message.new_plugin_instance_should_be_focused();
-        }
-        if let Some((_, agents)) = overlay_geometry(
-            &self.kdl,
-            self.surface_rows,
-            self.surface_cols,
-            !self.hidden,
-        ) {
-            message = message.with_floating_pane_coordinates(agents);
-        }
-        pipe_message_to_plugin(message);
     }
 }
 
