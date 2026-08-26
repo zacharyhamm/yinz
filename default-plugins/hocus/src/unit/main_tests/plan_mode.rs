@@ -238,15 +238,32 @@ fn typing_at_a_plan_answers_it_rather_than_queueing() {
     assert_eq!(last_user.content, "do it the other way");
 }
 
-/// Esc is the conservative answer everywhere else in this pane, and there is no
-/// tool queue here to abort.
+/// Esc only ever puts hocus away. A plan waiting for an answer is not an answer,
+/// so it is still waiting when the pane comes back - the same treatment a tool
+/// call waiting on y/n gets.
 #[test]
-fn esc_keeps_planning_and_aborts_nothing() {
+fn esc_hides_and_leaves_the_plan_waiting() {
     let mut state = planning_state();
     reply_and_settle(&mut state, "The plan.");
     state.on_key(KeyWithModifier::new(BareKey::Esc));
 
-    assert!(state.is_planning());
+    assert!(state.awaiting_plan(), "the approval is still outstanding");
+    assert!(
+        !state.messages.iter().any(|m| m.content == "tools aborted"),
+        "there was nothing to abort",
+    );
+}
+
+/// Ctrl-c is the interrupt, and a waiting plan is the only outstanding question
+/// while one waits - so it answers that rather than falling through to a tool
+/// queue that is empty.
+#[test]
+fn ctrl_c_declines_the_plan_and_aborts_nothing() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state.on_key(KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier());
+
+    assert!(state.is_planning(), "back to planning, not carrying it out");
     assert!(
         !state.messages.iter().any(|m| m.content == "tools aborted"),
         "there was nothing to abort",

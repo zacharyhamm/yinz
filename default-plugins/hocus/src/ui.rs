@@ -1171,9 +1171,7 @@ fn help_line(state: &State) -> &'static str {
         Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide",
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingLinear => {
-            "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll"
-        },
+        Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::Idle if state.is_streaming() => {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
