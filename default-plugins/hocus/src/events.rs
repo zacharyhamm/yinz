@@ -12,6 +12,11 @@ impl State {
         key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
 
+    /// The interrupt. Split out from Esc, which now only ever hides.
+    pub(crate) fn is_interrupt_key(key: &KeyWithModifier) -> bool {
+        key.bare_key == BareKey::Char('c') && key.has_modifiers(&[KeyModifier::Ctrl])
+    }
+
     /// Re-resolve the config after Zellij reports the KDL block changed.
     ///
     /// Gated on `self.granted` — before the grant `self.env` is empty, and
@@ -318,6 +323,33 @@ impl State {
         if self.picker.is_some() {
             return self.picker_key(key);
         }
+        // Interrupt whatever is running. This used to be Esc's job, which meant a
+        // streaming reply could not be put away without also being killed - the
+        // state you are most likely to want out of the way was the one state where
+        // hiding cost you the answer.
+        if Self::is_interrupt_key(&key) {
+            // A plan first: nothing is running while one waits, so it is the only
+            // outstanding question, and `abort_tools` would push "tools aborted"
+            // over an empty queue. Esc leaves the prompt standing, exactly as it
+            // does for a tool waiting on y/n — hiding answers nothing.
+            if self.awaiting_plan() {
+                return self.decline_plan();
+            }
+            // Tools next, because they are the nearer thing: a stream and a tool
+            // run can both be outstanding, and the tool is the one the prompt is
+            // asking about.
+            if self.tools_busy() {
+                return self.abort_tools();
+            }
+            if self.is_streaming() {
+                return self.cancel_stream();
+            }
+            // Nothing to interrupt, so it falls back to what Ctrl-c means in a
+            // shell - and to what TextInput would have done with it anyway, before
+            // this arm started taking the key first.
+            self.input.clear();
+            return true;
+        }
         // The confirmation prompt owns y/n outright, for the same reason: they
         // would otherwise be typed into the input box.
         if (self.is_confirming() || self.awaiting_plan()) && key.has_no_modifiers() {
@@ -361,23 +393,15 @@ impl State {
 
         match self.input.handle_key(key) {
             InputAction::Submit => self.submit(),
-            // A plan first: nothing is running while one waits, so it is the
-            // only outstanding question. Esc reads as `n` here, the
-            // conservative answer it is everywhere else in this pane — and
-            // going to `abort_tools` instead would push "tools aborted" over an
-            // empty queue.
-            InputAction::Cancel if self.awaiting_plan() => self.decline_plan(),
-            // Then tools, because they are the nearer thing: a stream and a
-            // tool run can now both be outstanding, and the tool is the one the
-            // prompt is asking about.
-            InputAction::Cancel if self.tools_busy() => self.abort_tools(),
-            // One instance holds every stream, so whoever presses Esc can
-            // cancel whatever is arriving, no matter who started it.
-            InputAction::Cancel if self.is_streaming() => self.cancel_stream(),
             InputAction::Cancel => {
-                // Hide this pane without unloading it; the agent list beside it,
-                // if there is one, stays. The launch binding restores the same
-                // plugin from any tab. Ctrl-l starts a new archived conversation.
+                // Esc is unconditionally "put hocus away" now; Ctrl-c is the
+                // interrupt. Nothing is torn down by hiding: a stream keeps
+                // arriving into a suppressed pane and a tool call waiting on y/n
+                // is still waiting when the pane comes back.
+                //
+                // Hidden, not unloaded; the agent list beside it, if there is one,
+                // stays. The launch binding restores the same plugin from any tab.
+                // Ctrl-l starts a new archived conversation.
                 self.hide_self_only();
                 false
             },
