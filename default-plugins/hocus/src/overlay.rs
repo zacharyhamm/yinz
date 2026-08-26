@@ -379,7 +379,14 @@ impl State {
         pipe_message_to_plugin(
             MessageToPlugin::new(hocus_proto::wire::HOCUS_OPEN)
                 .with_plugin_url(HOCUS_ALIAS)
-                .with_plugin_config(overlay_configuration()),
+                .with_plugin_config(overlay_configuration())
+                // The overlay opened here is standing in for *this* pane, which the user summoned
+                // with a keybinding - so it has to arrive holding the keyboard, exactly as the
+                // pane it replaces would have. Left unset, the launch behind `plugin_url` decides,
+                // and it decides `false` (`should_focus.unwrap_or(false)` in `plugins::mod`): the
+                // conversation would come up on screen with the keys still going to whatever the
+                // user was in.
+                .new_plugin_instance_should_be_focused(),
         );
         close_self();
     }
@@ -435,6 +442,12 @@ impl State {
         let mut message = MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN)
             .with_plugin_url(HOCUS_AGENTS_ALIAS)
             .with_plugin_config(overlay_configuration());
+        // `should_focus` has to reach the *launch* as well as the reveal above, or `Ctrl r` on a
+        // session with no list yet opens one and leaves the keyboard here - a launch behind
+        // `plugin_url` comes up unfocused unless it is asked otherwise.
+        if should_focus {
+            message = message.new_plugin_instance_should_be_focused();
+        }
         if let Some((_, agents)) = overlay_geometry(
             &self.kdl,
             self.surface_rows,
