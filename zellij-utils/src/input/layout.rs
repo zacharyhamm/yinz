@@ -191,6 +191,26 @@ impl RunPluginOrAlias {
             None
         }
     }
+    /// Whether this plugin places its own overlay, and so must not be painted at the default
+    /// geometry it is born with while it gets round to it.
+    ///
+    /// An overlay that named no coordinates is born half the surface, *centered*
+    /// (`OverlayPanes::base_geom`) - which, for a pair of panels that belong in the bottom-left
+    /// corner, is squarely on top of each other. The pane is only moved out of there by its owner,
+    /// a round trip later, so the launch is visible as a flash in the middle of the screen before
+    /// the panel appears where it belongs. Opting in here says "do not paint me until somebody has
+    /// placed me"; the first `change_overlay_coordinates` naming the pane is what releases it.
+    ///
+    /// Opt-in rather than the rule for every coordinate-less overlay, because most of them have no
+    /// owner to place them: `hocus-new-agent` and the quit confirmation are put where they go by
+    /// the server and would simply never appear.
+    ///
+    /// **The key is part of plugin identity**, as `overlay` is - a plugin is (location,
+    /// configuration) - so a keybinding that writes it and a plugin-side launch that does not
+    /// address two different instances. See `hocus_proto::launch::overlay_configuration`.
+    pub fn awaits_placement(&self) -> bool {
+        self.configuration_value_is_true("awaits_placement")
+    }
     pub fn requests_overlay(&self) -> bool {
         self.overlay_placement().is_some()
     }

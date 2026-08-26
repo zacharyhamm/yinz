@@ -984,6 +984,16 @@ fn overlay_placement_for(
     })
 }
 
+/// Whether a pane launched with this `Run` places its own overlay, and so must not be painted
+/// until it has been placed. See [`OverlayCarry::awaiting_placement`].
+///
+/// Read at a pane's *birth* only. An overlay moving between tabs carries its `OverlayCarry`
+/// across (`accept_extracted_pane`), and re-deriving this there would blank a pane that was placed
+/// long ago every time the user switched tabs.
+fn run_awaits_placement(run: &Option<Run>) -> bool {
+    matches!(run, Some(Run::Plugin(run_plugin)) if run_plugin.awaits_placement())
+}
+
 pub fn get_next_terminal_position(
     tiled_panes: &TiledPanes,
     floating_panes: &FloatingPanes,
@@ -3268,14 +3278,19 @@ impl Tab {
         if start_suppressed {
             return self.park_new_pane(new_pane);
         }
+        let awaiting_placement = run_awaits_placement(new_pane.invoked_with());
         self.add_overlay_pane(
             new_pane,
             pid,
             placement.kind,
             placement.coordinates.unwrap_or_default(),
             // a newly opened overlay is on screen and nobody has dragged it yet; both are things
-            // that happen to it later
-            OverlayCarry::default(),
+            // that happen to it later. It may still be waiting to be placed, which is not the same
+            // as being hidden - see `OverlayCarry::awaiting_placement`.
+            OverlayCarry {
+                awaiting_placement,
+                ..Default::default()
+            },
             should_focus_pane,
             None,
         )
@@ -8284,14 +8299,19 @@ impl Tab {
         if let Some(placement) =
             overlay_placement_for(&floating_pane_coordinates, pane.invoked_with())
         {
+            let awaiting_placement = run_awaits_placement(pane.invoked_with());
             return self.add_overlay_pane(
                 pane,
                 pane_id,
                 placement.kind,
                 placement.coordinates.unwrap_or_default(),
                 // this arm re-derives overlay-ness for a pane arriving through the floating door;
-                // nothing on that path carries a hidden or a dragged overlay
-                OverlayCarry::default(),
+                // nothing on that path carries a hidden or a dragged overlay, and a pane being
+                // born there is waiting to be placed on the same terms as one born the other way
+                OverlayCarry {
+                    awaiting_placement,
+                    ..Default::default()
+                },
                 should_focus_new_pane,
                 client_id,
             );

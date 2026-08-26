@@ -20,6 +20,16 @@
 //! tooltip. The alternative was teaching the server to anchor, which is a protobuf change to
 //! `FloatingPaneCoordinates` and a second denominator to keep in step.
 //!
+//! **A pane is not painted until it has been placed.** An overlay that named no coordinates is
+//! born half the surface, *centered* (`OverlayPanes::base_geom`) - which, for two panels that
+//! belong in the same corner, is squarely on top of each other. Only the arithmetic below moves
+//! them out of there, and it cannot run until the pane is on a tab for the placement to find, so
+//! the launch used to be visible as a flash in the middle of the screen. Both halves are launched
+//! `awaits_placement true` (`hocus_proto::launch::overlay_configuration`, and the `a`/`c`
+//! keybindings), which tells the server to hold the paint until the first
+//! `change_overlay_coordinates` names the pane. `apply_overlay_geometry` is that call, and
+//! `State::placed` / `State::agents_placed` are what keep making it until it lands.
+//!
 //! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, where a
 //! global pane belonged to the session. `on_tabs` moves whichever halves are on screen to the tab
 //! that became active, which is what keeps hocus present the way the strip used to be. This is
@@ -261,6 +271,9 @@ impl State {
     /// The agent list's `x` depends on whether *this* pane is on screen, so hiding and revealing
     /// the conversation both come back through here - that is what slides the list into the
     /// left-hand slot and back out of it.
+    ///
+    /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
+    /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
         let Some((chat, agents)) = overlay_geometry(
             &self.kdl,
@@ -276,6 +289,10 @@ impl State {
         }
         change_overlay_coordinates(placements);
         self.placed = self.own_tab_index.is_some();
+        // The same test, pane for pane: the manifest naming a tab is the only evidence the call
+        // could have landed. A list nobody has opened is nothing to place and so counts as placed,
+        // which is what keeps `on_panes` and `on_tabs` from retrying on every event forever.
+        self.agents_placed = self.agents_plugin.is_none() || self.agents_tab_index.is_some();
     }
 
     /// Put the conversation away without unloading it, leaving the agent list where it is.

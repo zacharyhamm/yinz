@@ -362,6 +362,136 @@ fn an_agent_list_the_user_closed_is_forgotten() {
     );
 }
 
+// ---- the list's placement, which is tracked apart from the conversation's -------------------
+//
+// The list is launched by its own keybinding and announces itself from `load`, before the screen
+// thread has put its pane on a tab. The placement that announcement makes is dropped in silence,
+// exactly as the conversation's first one can be - and `placed`, being about the conversation, was
+// already true, so no retry came back to it. That is what left the list at the centered default,
+// on top of the conversation.
+
+/// One `AGENT_SELECTION`, as the list sends on load.
+fn selection(plugin_id: u32) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(plugin_id),
+        name: hocus_proto::wire::AGENT_SELECTION.to_owned(),
+        payload: Some(
+            serde_json::to_string(&hocus_proto::wire::Selection {
+                plugin_id,
+                pane_id: None,
+            })
+            .expect("serialize"),
+        ),
+        args: BTreeMap::new(),
+        is_private: true,
+    }
+}
+
+/// A hocus that knows where it is and has nothing to place beside it. `agents_placed` starts true
+/// for the same reason `placed` does not: an absent list is not an unplaced one, and a retry that
+/// spun on it would fire on every event for as long as nobody opened one.
+fn placed_state() -> State {
+    let mut state = State {
+        own_plugin_id: 7,
+        ..Default::default()
+    };
+    state.on_tabs(vec![TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 50,
+        display_area_columns: 200,
+        ..TabInfo::default()
+    }]);
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+    assert!(state.placed && state.agents_placed);
+    state
+}
+
+#[test]
+fn a_list_that_announces_itself_before_it_is_on_a_tab_is_placed_when_it_appears() {
+    let mut state = placed_state();
+
+    state.pipe(selection(9));
+    assert_eq!(state.agents_plugin, Some(9));
+    assert!(
+        !state.agents_placed,
+        "no manifest has named the list's tab, so nothing says that placement reached it"
+    );
+
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
+    assert!(
+        state.agents_placed,
+        "the manifest names its tab, so this is the first moment a placement for it can land"
+    );
+
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
+    assert!(state.agents_placed, "and it stays placed");
+}
+
+/// The list sends one of these per `j`/`k` keystroke. None of them is news, and none of them may
+/// re-open a placement that has already landed.
+#[test]
+fn a_repeated_announcement_owes_no_placement() {
+    let mut state = placed_state();
+    state.agents_plugin = Some(9);
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
+
+    state.pipe(selection(9));
+    assert!(
+        state.agents_placed,
+        "the same id it already had, so nothing was announced and nothing is owed"
+    );
+}
+
+/// A list the user closes and opens again is a *new* pane at the centered default, so the retry
+/// has to be owed a second time.
+#[test]
+fn a_reopened_list_is_placed_again() {
+    let mut state = placed_state();
+    state.pipe(selection(9));
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
+    assert!(state.agents_placed);
+
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+    assert_eq!(state.agents_plugin, None);
+    assert!(
+        state.agents_placed,
+        "a list that is gone is nothing to place, or the retry would spin"
+    );
+
+    state.pipe(selection(11));
+    assert!(
+        !state.agents_placed,
+        "a fresh pane, at the centered default, with a placement owed to it"
+    );
+    state.on_panes(manifest(0, vec![pane(7, false), pane(11, false)]));
+    assert!(state.agents_placed);
+}
+
+/// `on_tabs` retries too, and on the same terms: it is the only event that reports the surface,
+/// so a list that announced itself between two manifests must not have to wait for a third.
+#[test]
+fn a_tab_update_retries_the_lists_placement() {
+    let mut state = placed_state();
+    state.agents_plugin = Some(9);
+    state.agents_tab_index = Some(0);
+    state.agents_placed = false;
+
+    state.on_tabs(vec![TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 50,
+        display_area_columns: 200,
+        ..TabInfo::default()
+    }]);
+    assert!(
+        state.agents_placed,
+        "the same surface as before, so nothing but `!agents_placed` could have retried this"
+    );
+}
+
 /// A pane never collapses to nothing: `FloatingPaneCoordinates::new` rejects a zero height, and
 /// what comes back in its place is half the surface, *centered* - the pane would jump to the
 /// middle of the screen rather than simply being small.

@@ -1817,3 +1817,127 @@ fn focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours() {
     assert!(!panes.is_hidden(&PaneId::Terminal(1)));
     assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
 }
+
+// ---- an overlay that is placed by its owner ---------------------------------------------------
+//
+// A launch that named no coordinates is born half the surface, *centered*. For hocus's pair of
+// corner panels that is squarely on top of each other, and only their owner moves them out of
+// there - a round trip later, once the pane is on a tab for the placement to find. The flag says
+// "do not paint me until somebody has placed me"; see `OverlayCarry::awaiting_placement`.
+
+fn add_awaiting_placement(panes: &mut OverlayPanes, id: u32) {
+    let pane_id = PaneId::Terminal(id);
+    panes.add_pane(
+        pane_id,
+        mock_pane(pane_id),
+        OverlayKind::Dismissible,
+        FloatingPaneCoordinates::default(),
+        OverlayCarry {
+            awaiting_placement: true,
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn an_overlay_awaiting_placement_is_not_drawn() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    assert!(
+        panes.rendered_pane_ids().is_empty(),
+        "nothing is painted for it"
+    );
+    assert!(
+        panes.layers().is_empty(),
+        "and nothing is clipped against it either, or it would erase what is underneath"
+    );
+    assert!(
+        panes.panes_contain(&PaneId::Terminal(1)),
+        "it exists all the same - this is not `hide_pane`"
+    );
+}
+
+/// Not `hidden`, which is the user setting a pane aside and is reported as `is_suppressed`. A
+/// plugin reads that field to tell that it was hidden or revealed, and a pane a frame old has been
+/// neither.
+#[test]
+fn an_overlay_awaiting_placement_does_not_report_itself_hidden() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    assert!(!panes.is_hidden(&PaneId::Terminal(1)));
+    let info = panes.pane_info(&HashMap::new());
+    assert_eq!(info.len(), 1);
+    assert!(!info[0].is_suppressed);
+}
+
+#[test]
+fn the_first_placement_is_what_draws_it() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .unwrap();
+
+    assert_eq!(panes.rendered_pane_ids(), vec![PaneId::Terminal(1)]);
+    assert_eq!(
+        panes
+            .get(&PaneId::Terminal(1))
+            .unwrap()
+            .position_and_size()
+            .cols
+            .as_usize(),
+        48,
+        "and it is drawn where it was placed, not where it was born"
+    );
+}
+
+/// The safety valve. An overlay whose owner never places it would otherwise be invisible for as
+/// long as it lived; a resize shows it where it was born, which is what it would have done without
+/// the flag at all.
+#[test]
+fn a_resize_releases_an_overlay_nobody_ever_placed() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add_awaiting_placement(&mut panes, 1);
+    assert!(panes.rendered_pane_ids().is_empty());
+
+    *display_area.borrow_mut() = Size {
+        cols: 100,
+        rows: 30,
+    };
+    panes.reapply_coordinates();
+
+    assert_eq!(panes.rendered_pane_ids(), vec![PaneId::Terminal(1)]);
+}
+
+/// It travels, so a pane that was still waiting when the user switched tabs is still waiting when
+/// it arrives - and one that had been placed does not go blank on the way across.
+#[test]
+fn awaiting_placement_survives_a_move_between_collections() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+    let carry = panes.carry_of(&PaneId::Terminal(1));
+    assert!(carry.awaiting_placement);
+
+    let pane = panes.remove_pane(PaneId::Terminal(1)).unwrap();
+    let mut elsewhere = overlay_panes(80, 20);
+    elsewhere.add_pane(
+        PaneId::Terminal(1),
+        pane,
+        OverlayKind::Dismissible,
+        FloatingPaneCoordinates::default(),
+        carry,
+    );
+    assert!(elsewhere.rendered_pane_ids().is_empty());
+
+    elsewhere
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .unwrap();
+    let carry = elsewhere.carry_of(&PaneId::Terminal(1));
+    assert!(
+        !carry.awaiting_placement,
+        "and a placed overlay carries that across rather than going blank on the next move"
+    );
+}

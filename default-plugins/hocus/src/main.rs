@@ -469,6 +469,21 @@ pub struct State {
     /// trying until it is true. `apply_overlay_geometry` sets it from `own_tab_index`, which the
     /// `PaneManifest` is the only source of.
     pub(crate) placed: bool,
+    /// The same question as [`State::placed`], asked about the *other* pane.
+    ///
+    /// One flag was not enough, and the gap was the whole of the bug it closes: the agent list is
+    /// launched by its own keybinding and announces itself from `load`, which runs before the
+    /// screen thread has put its pane on a tab. The placement `on_selection` makes on that
+    /// announcement is therefore dropped in the same silence `placed` exists for - and `placed`
+    /// itself, being about *our* pane, was already true, so neither retry came back to the list.
+    /// It sat where `OverlayPanes::base_geom` put it, in the middle of the screen, over the
+    /// conversation.
+    ///
+    /// `agents_tab_index` is the evidence, exactly as `own_tab_index` is for `placed`: the
+    /// manifest naming the list's tab is the only word hocus gets that a placement for it could
+    /// have landed. **No list counts as placed**, or the retry would spin on every event for as
+    /// long as nobody had opened one.
+    pub(crate) agents_placed: bool,
     /// Whether this instance might be a hocus restored from a pre-overlay session dump, and so
     /// one that has to hand over to an overlay-configured hocus and close.
     ///
@@ -593,6 +608,7 @@ impl Default for State {
             hidden: false,
             hide_pending: false,
             placed: false,
+            agents_placed: true,
             agents_plugin: None,
             open_hidden: false,
             active_project: None,

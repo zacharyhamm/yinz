@@ -6739,6 +6739,7 @@ Config {
                             configuration: Some(
                                 PluginUserConfiguration(
                                     {
+                                        "awaits_placement": "true",
                                         "overlay": "true",
                                     },
                                 ),
@@ -6784,6 +6785,7 @@ Config {
                             configuration: Some(
                                 PluginUserConfiguration(
                                     {
+                                        "awaits_placement": "true",
                                         "overlay": "true",
                                     },
                                 ),

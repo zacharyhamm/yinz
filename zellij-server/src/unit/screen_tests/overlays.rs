@@ -301,6 +301,83 @@ fn popup_coordinates() -> FloatingPaneCoordinates {
     }
 }
 
+/// The whole point of `awaits_placement`, through the door a keybinding launch actually comes in
+/// by.
+///
+/// `overlay true` alone puts the pane on screen at `base_geom`'s half-size-centered default, and
+/// its owner only moves it out of there a round trip later - which for hocus's two corner panels
+/// is a flash in the middle of the screen, on top of each other. With the flag the pane exists,
+/// can be focused, and is simply not painted until somebody places it.
+#[test]
+fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_new_screen(size, false, false);
+    new_tab(&mut screen, 1, 0);
+
+    let configuration = [
+        ("overlay".to_owned(), "true".to_owned()),
+        ("awaits_placement".to_owned(), "true".to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &Some(configuration), None, None)
+            .unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let pane = PaneFactory::plugin(
+        9,
+        Default::default(),
+        plugin_sender,
+        "popup".to_owned(),
+        "popup".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin)),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let pane_id = PaneId::Plugin(9);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    // the door `LaunchOrFocusPlugin { floating true; overlay true }` comes in by: overlay-ness is
+    // re-derived from the configuration, and so is this
+    tab.add_floating_pane(pane, pane_id, Some(popup_coordinates()), true, Some(1))
+        .expect("TEST");
+
+    assert!(
+        tab.pane_is_overlay(pane_id),
+        "it is an overlay, and it exists"
+    );
+    assert!(
+        tab.overlay_carry_for(pane_id).awaiting_placement,
+        "and it is waiting to be told where it goes"
+    );
+    // `position_is_on_an_overlay` asks `visible_pane_id_at`, which derives from the same one list
+    // the painting does - so this is "nothing is drawn there", not merely "nothing is clickable"
+    let inside = Position::new(3, 3);
+    assert!(
+        !tab.position_is_on_an_overlay(&inside),
+        "nothing is painted for it until somebody places it"
+    );
+
+    tab.change_overlay_coordinates(&pane_id, popup_coordinates())
+        .expect("TEST");
+    assert!(
+        !tab.overlay_carry_for(pane_id).awaiting_placement
+            && tab.position_is_on_an_overlay(&inside),
+        "the first placement is what draws it"
+    );
+}
+
 /// Put a *plugin* overlay in `tab_id`, returning what `focus_plugin_pane` has to be asked for to
 /// find it again and the pane's id.
 ///
