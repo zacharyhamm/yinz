@@ -358,6 +358,60 @@ fn resize_to_clients_takes_the_min_across_clients_and_grows_back_on_detach() {
 }
 
 #[test]
+fn attaching_client_records_the_surface_before_a_render_tick() {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 200,
+            rows: 60,
+        },
+        true,
+        true,
+    );
+    new_tab(&mut screen, 1, 0);
+    screen.set_client_size(
+        1,
+        Size {
+            cols: 200,
+            rows: 60,
+        },
+    );
+    screen.resize_to_clients().expect("TEST");
+
+    // a second, smaller client attaches - what ScreenInstruction::AddClient runs, minus the
+    // debounced render that would otherwise be the first thing to record the new surface
+    screen.set_client_size(2, Size { cols: 80, rows: 24 });
+    screen.add_client(2, false).expect("TEST");
+    screen.reflow_all_tabs().expect("TEST");
+
+    // ...and both clients detach before that render tick can fire
+    screen.remove_client(1).expect("TEST");
+    screen.remove_client(2).expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.surface_size(),
+        Size { cols: 80, rows: 24 },
+        "the detached session stands in with the surface the attach laid the tabs out over, \
+         not the pre-attach one"
+    );
+    assert_eq!(
+        screen.size_for_client(None),
+        Size { cols: 80, rows: 24 },
+        "a tab created against the detached session (`zellij action new-tab`) is built at that \
+         same surface"
+    );
+
+    // render_to_clients lays every tab out against surface_size on each frame, so a stale value
+    // would not just be reported - it would snap the tabs back
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&0).unwrap().get_display_area(),
+        Size { cols: 80, rows: 24 },
+        "a render tick against the detached session keeps the attach's layout"
+    );
+}
+
+#[test]
 fn resize_to_clients_reflows_every_tab_and_survives_a_render() {
     let mut screen = create_non_mirrored_screen(Size { cols: 50, rows: 12 });
     new_tab(&mut screen, 1, 0);
