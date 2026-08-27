@@ -1060,8 +1060,8 @@ mod tests {
         pane
     }
 
-    // regression test: a content offset (border/title reservation, as global panes and
-    // framed panes both apply) used to make `cursor_coordinates` reject any cursor on the
+    // regression test: a content offset (the border/title reservation a framed pane applies)
+    // used to make `cursor_coordinates` reject any cursor on the
     // last content row/column, because it bounds-checked the offset-shifted coordinates
     // against the un-shifted content extents.
     #[test]

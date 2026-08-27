@@ -2390,17 +2390,6 @@ pub struct TabInfo {
     pub has_bell_notification: bool,
     /// Whether this tab is currently flashing its bell (transient 400ms state)
     pub is_flashing_bell: bool,
-    /// Row count of the whole session surface: this tab's display area grown back over the
-    /// global-pane strips.
-    ///
-    /// This, and not `display_area_rows`, is the denominator a pane drawn *over* the session
-    /// resolves against - `Fixed` overlay coordinates are read as `session_surface_origin + n`.
-    /// A plugin placing an overlay against the display area places it against the tab centre,
-    /// which is smaller by whatever the global panes took. Zero when the sender predates the
-    /// field; read the two together or not at all.
-    pub session_surface_rows: usize,
-    /// Column count of the whole session surface. See `session_surface_rows`.
-    pub session_surface_columns: usize,
 }
 
 /// The `PaneManifest` contains a dictionary of panes, indexed by the tab position (0 indexed).
@@ -2409,9 +2398,6 @@ pub struct TabInfo {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PaneManifest {
     pub panes: HashMap<usize, Vec<PaneInfo>>, // usize is the tab position
-    /// The session-global panes, in declaration order.
-    #[serde(default)]
-    pub global_panes: Vec<PaneInfo>,
 }
 
 /// Contains all the information for a currently open pane
@@ -2476,12 +2462,6 @@ pub struct PaneInfo {
     pub default_fg: Option<String>,
     /// The default background color of this pane, if set (e.g. "#001a3a")
     pub default_bg: Option<String>,
-    /// The global pane placement, if this pane is global.
-    #[serde(default)]
-    pub global_placement: Option<GlobalPanePlacement>,
-    /// True if this global pane is hidden.
-    #[serde(default)]
-    pub is_hidden: bool,
     /// The folder this pane's process is in right now, for a terminal pane.
     ///
     /// Carried on every manifest rather than only announced by `CwdChanged`: an
@@ -3154,36 +3134,6 @@ pub enum PaneId {
     Plugin(u32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GlobalPaneEdge {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GlobalPanePlacement {
-    pub edge: GlobalPaneEdge,
-    /// The strip's thickness. Panes sharing an edge form one strip; the first visible pane's
-    /// size wins and joiners adopt it.
-    pub size: PercentOrFixed,
-    /// This pane's share of the strip's long axis. `None` panes divide whatever the explicit
-    /// lengths leave over equally, so a lone pane spans the whole strip.
-    #[serde(default)]
-    pub length: Option<PercentOrFixed>,
-}
-
-impl Default for GlobalPanePlacement {
-    fn default() -> Self {
-        Self {
-            edge: GlobalPaneEdge::Left,
-            size: PercentOrFixed::Fixed(1),
-            length: None,
-        }
-    }
-}
-
 impl Default for PaneId {
     fn default() -> Self {
         PaneId::Terminal(0)
@@ -3728,7 +3678,7 @@ impl FromStr for OverlayKind {
 
 /// A request to place a pane on the session surface rather than on a tab's floating layer.
 ///
-/// Modelled on `GlobalPanePlacement`: the placement is the thing that says what the pane is, so
+/// The placement is the thing that says what the pane is, so
 /// that overlay-ness cannot be lost by a caller that rebuilds the coordinates.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayPlacement {
@@ -3779,7 +3729,7 @@ pub enum NewPanePlacement {
         pane_id_to_stack_under: Option<PaneId>,
         borderless: Option<bool>,
     },
-    /// Over the whole session surface, above the global panes - not on the tab's floating layer.
+    /// Over the whole session surface - not on the tab's floating layer.
     Overlay(OverlayPlacement),
 }
 
@@ -3965,7 +3915,7 @@ pub enum PluginCommand {
     OpenTerminalFloating(FileToOpen, Option<FloatingPaneCoordinates>), // only used for the path as cwd
     OpenCommandPane(CommandToRun, Context),
     OpenCommandPaneFloating(CommandToRun, Option<FloatingPaneCoordinates>, Context),
-    /// Open a command pane directly onto the session surface, above the global panes. A terminal
+    /// Open a command pane directly onto the session surface, above the tab's own panes. A terminal
     /// pane carries no plugin configuration, so the placement is the only thing that can say it
     /// is an overlay - and which kind.
     OpenCommandPaneOverlay(CommandToRun, OverlayPlacement, Context),
@@ -4211,18 +4161,6 @@ pub enum PluginCommand {
     ListClients,
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned
-    SetGlobalPanePlacement(PaneId, GlobalPanePlacement),
-    /// Launch a plugin as a split of the calling plugin's own global pane (before it towards the
-    /// strip's start when `before`), or reveal and optionally focus it if a global pane for the
-    /// plugin already exists. No-op when the caller is not a global pane.
-    LaunchOrFocusGlobalPaneSplit {
-        plugin_url: String,
-        config: BTreeMap<String, String>,
-        before: bool,
-        length: Option<PercentOrFixed>,
-        should_focus: bool,
-        skip_cache: bool,
-    },
     StackPanes(Vec<PaneId>),
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     /// Move or resize an overlay on the session surface. The overlay's kind was decided when it

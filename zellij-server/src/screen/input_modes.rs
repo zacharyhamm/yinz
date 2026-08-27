@@ -57,7 +57,6 @@ impl Screen {
             tab.mark_active_pane_for_rerender(client_id);
             tab.update_input_modes()?;
         }
-        self.update_global_input_modes([client_id])?;
         // Notify background plugins subscribed to ModeUpdate
         let mut bg_updates = vec![];
         for ((bg_pid, bg_cid), subs) in &self.background_plugin_subscriptions {
@@ -78,7 +77,7 @@ impl Screen {
         Ok(())
     }
     // Keep the client's mode in sync with the pane it just focused: entering a scrolled pane
-    // (tab pane or global pane) switches to Scroll so its position is navigable, leaving it
+    // switches to Scroll so its position is navigable, leaving it
     // returns to the default mode. Only the default<->Scroll pair is touched (Normal by
     // default, Locked under unlock-first), so a client in another mode (Pane, Tab, Search,
     // ...) is never pulled out of it.
@@ -106,17 +105,11 @@ impl Screen {
             .send_to_server(ServerInstruction::ChangeMode(client_id, new_mode, None))
             .with_context(|| format!("failed to sync scroll mode on focus for client {client_id}"))
     }
-    // Whether the client's currently focused pane (tab pane or global pane) is scrolled.
+    // Whether the client's currently focused pane is scrolled.
     pub(super) fn active_pane_is_scrolled(&mut self, client_id: ClientId) -> bool {
-        if self.global_panes.focused_pane_id(client_id).is_some() {
-            self.active_pane_id(client_id)
-                .and_then(|pane_id| self.with_pane(pane_id, |pane| pane.is_scrolled()))
-                .unwrap_or(false)
-        } else {
-            self.get_active_tab(client_id)
-                .map(|tab| tab.active_pane_is_scrolled(client_id))
-                .unwrap_or(false)
-        }
+        self.get_active_tab(client_id)
+            .map(|tab| tab.active_pane_is_scrolled(client_id))
+            .unwrap_or(false)
     }
     pub(super) fn sync_scroll_mode_if_scroll_changed(
         &mut self,
@@ -139,36 +132,6 @@ impl Screen {
             }
         }
         Ok(())
-    }
-    pub(super) fn update_global_input_modes(
-        &self,
-        client_ids: impl IntoIterator<Item = ClientId>,
-    ) -> Result<()> {
-        let currently_marking_pane_group = self.currently_marking_pane_group.borrow();
-        let connected_clients = self.connected_clients.borrow();
-        let mode_infos: Vec<_> = client_ids
-            .into_iter()
-            .map(|client_id| {
-                let mut mode_info = self
-                    .mode_info
-                    .get(&client_id)
-                    .unwrap_or(&self.default_mode_info)
-                    .clone();
-                mode_info.shell = Some(self.default_shell.clone());
-                mode_info.editor = self.default_editor.clone();
-                mode_info.web_clients_allowed = Some(self.web_clients_allowed);
-                mode_info.web_sharing = Some(self.web_sharing);
-                mode_info.currently_marking_pane_group =
-                    currently_marking_pane_group.get(&client_id).copied();
-                mode_info.web_server_ip = Some(self.web_server_ip);
-                mode_info.web_server_port = Some(self.web_server_port);
-                mode_info.is_web_client = connected_clients.get(&client_id).copied();
-                mode_info.web_server_capability = Some(cfg!(feature = "web_server_capability"));
-                mode_info.pane_frame_style = Some(self.pane_frame_style);
-                (client_id, mode_info)
-            })
-            .collect();
-        self.global_panes.update_input_modes(&mode_infos)
     }
     pub fn change_mode_for_all_clients(
         &mut self,
@@ -204,22 +167,11 @@ impl Screen {
                 plugin_ids.extend(tab.get_plugin_ids());
             }
         }
-        // A global pane is visible in every tab but sits in none, so the active-tab
-        // walk above never finds it and it is not a background plugin either — it is
-        // loaded with a real tab index. Without this it would hear nothing at all.
-        // Every event type, not just ModeUpdate: `WasmBridge::update_plugins` gates
-        // each event on the plugin's own subscription list, so this widens who *may*
-        // hear an event, never what a plugin actually receives.
-        for plugin_id in self.global_panes.plugin_ids() {
-            if !plugin_ids.contains(&plugin_id) {
-                plugin_ids.push(plugin_id);
-            }
-        }
         // An overlay follows the client between tabs under its own steam - hocus moves itself on
         // `TabUpdate` - so a client's active tab is not necessarily where the overlay is right
         // now, and the active-tab walk above would leave it deaf to the very event it moves on.
         //
-        // **The two state events only**, unlike the global-pane arm above. Those two are what an
+        // **The two state events only.** Those two are what an
         // overlay acts on from a tab nobody is looking at: `TabUpdate` is what it moves on, and
         // `PaneUpdate` is how it learns it was hidden or revealed. An input event is one client's
         // keystroke on one tab, and handing it to an overlay sitting somewhere else would have it

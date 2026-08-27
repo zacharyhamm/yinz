@@ -241,16 +241,6 @@ impl<'a> PaneContentsAndUi<'a> {
             .with_context(err_context)?;
         Ok(())
     }
-    /// Save the host terminal cursor position, so a following `restore_host_cursor_position` can
-    /// undo any cursor movement a fake cursor causes as a side effect of drawing itself.
-    pub fn save_host_cursor_position(&mut self, client_id: ClientId) {
-        self.output
-            .add_post_vte_instruction_to_client(client_id, "\u{1b}[s");
-    }
-    pub fn restore_host_cursor_position(&mut self, client_id: ClientId) {
-        self.output
-            .add_post_vte_instruction_to_client(client_id, "\u{1b}[u");
-    }
     pub fn render_fake_cursor_if_needed(&mut self, client_id: ClientId) -> Result<()> {
         let pane_focused_for_client_id = self.focused_clients.contains(&client_id);
         let pane_focused_for_different_client = self
@@ -510,9 +500,8 @@ pub struct FrameColorState {
 /// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins
 /// with where two panes share one boundary cell (see `Boundaries::add_rect` and `combine_symbols`).
 ///
-/// A free function because the boundary a global pane shares with a tab is drawn by the *tab*, so
-/// `GlobalPaneManager::tab_facing_borders` has to arrive at the same answer for a pane the tab does
-/// not own (see `Boundaries::contribute_color_to_line`).
+/// A free function so a caller outside `PaneContentsAndUi` can arrive at the same answer for a
+/// pane it is drawing a boundary for.
 pub fn frame_color(
     style: &Style,
     state: FrameColorState,

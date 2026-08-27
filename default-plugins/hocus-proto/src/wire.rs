@@ -121,7 +121,7 @@ pub struct PollReply {
     ///
     /// Here rather than on `AgentPane` because it is a fact about the session, not
     /// about a pane, and one field costs one place to set it. Only the daemon can
-    /// answer it: a global pane hears no `PaneUpdate` of its own.
+    /// answer it: a plugin cannot read its own focus off a `PaneUpdate`.
     #[serde(default)]
     pub focused: Option<u32>,
     /// The plugin pane the user is looking at, if it is one.

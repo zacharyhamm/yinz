@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_utils::common_path::common_path_all;
 use zellij_utils::pane_size::PaneGeom;
 use zellij_utils::{
-    data::{GlobalPanePlacement, LayoutMetadata, PaneMetadata, TabMetadata},
+    data::{LayoutMetadata, PaneMetadata, TabMetadata},
     input::command::RunCommand,
     input::layout::{Layout, Run, RunPlugin, RunPluginOrAlias},
     input::plugins::PluginAliases,
@@ -32,7 +32,6 @@ pub struct SessionLayoutMetadata {
     pub default_shell: Option<PathBuf>,
     pub default_editor: Option<PathBuf>,
     tabs: Vec<TabLayoutMetadata>,
-    global_panes: Vec<PaneLayoutMetadata>,
 }
 
 impl SessionLayoutMetadata {
@@ -70,17 +69,6 @@ impl SessionLayoutMetadata {
                 }
             }
         }
-        for pane in self.global_panes.iter_mut() {
-            if let Some(Run::Command(run_command)) = pane.run.as_mut() {
-                if Self::is_default_shell(
-                    self.default_shell.as_ref(),
-                    &run_command.command.display().to_string(),
-                    &run_command.args,
-                ) {
-                    pane.run = None;
-                }
-            }
-        }
     }
     pub fn list_clients_metadata(&self) -> String {
         let mut clients_metadata: BTreeMap<ClientId, ClientMetadata> = BTreeMap::new();
@@ -102,18 +90,6 @@ impl SessionLayoutMetadata {
                 }
             }
         }
-        for pane in &self.global_panes {
-            for focused_client in &pane.focused_clients {
-                clients_metadata.insert(
-                    *focused_client,
-                    ClientMetadata {
-                        pane_id: pane.id,
-                        command: pane.run.clone(),
-                    },
-                );
-            }
-        }
-
         ClientMetadata::render_many(clients_metadata, &self.default_editor)
     }
     pub fn all_clients_metadata(&self) -> BTreeMap<ClientId, ClientMetadata> {
@@ -136,17 +112,6 @@ impl SessionLayoutMetadata {
                 }
             }
         }
-        for pane in &self.global_panes {
-            for focused_client in &pane.focused_clients {
-                clients_metadata.insert(
-                    *focused_client,
-                    ClientMetadata {
-                        pane_id: pane.id,
-                        command: pane.run.clone(),
-                    },
-                );
-            }
-        }
         clients_metadata
     }
     pub fn is_dirty(&self) -> bool {
@@ -155,8 +120,7 @@ impl SessionLayoutMetadata {
         // 1. The current number of panes is different than the number of panes in the base layout
         //    (meaning a pane was opened or closed)
         // 2. One or more terminal panes are running a command that is not the default shell
-        let base_layout_pane_count =
-            self.default_layout.pane_count() + self.default_layout.global_panes.len();
+        let base_layout_pane_count = self.default_layout.pane_count();
         let current_pane_count = self.pane_count();
         if current_pane_count != base_layout_pane_count {
             return true;
@@ -193,30 +157,10 @@ impl SessionLayoutMetadata {
                 }
             }
         }
-        for pane in &self.global_panes {
-            match pane.run.as_ref() {
-                Some(Run::Command(run_command)) => {
-                    if !Self::is_default_shell(
-                        self.default_shell.as_ref(),
-                        &run_command.command.display().to_string(),
-                        &run_command.args,
-                    ) {
-                        return true;
-                    }
-                },
-                Some(Run::EditFile(_, _, _)) => return true,
-                _ => {},
-            }
-        }
         false
     }
     fn pane_count(&self) -> usize {
         let mut pane_count = 0;
-        for pane in &self.global_panes {
-            if !self.should_exclude_from_count(pane) {
-                pane_count += 1;
-            }
-        }
         for tab in &self.tabs {
             for tiled_pane in &tab.tiled_panes {
                 if !self.should_exclude_from_count(tiled_pane) {
@@ -283,16 +227,8 @@ impl SessionLayoutMetadata {
             floating_panes,
         })
     }
-    pub fn add_global_pane(&mut self, pane: PaneLayoutMetadata) {
-        self.global_panes.push(pane);
-    }
     pub fn all_terminal_ids(&self) -> Vec<u32> {
         let mut terminal_ids = vec![];
-        for pane_layout_metadata in &self.global_panes {
-            if let PaneId::Terminal(id) = pane_layout_metadata.id {
-                terminal_ids.push(id);
-            }
-        }
         for tab in &self.tabs {
             for pane_layout_metadata in &tab.tiled_panes {
                 if let PaneId::Terminal(id) = pane_layout_metadata.id {
@@ -309,11 +245,6 @@ impl SessionLayoutMetadata {
     }
     pub fn all_plugin_ids(&self) -> Vec<u32> {
         let mut plugin_ids = vec![];
-        for pane_layout_metadata in &self.global_panes {
-            if let PaneId::Plugin(id) = pane_layout_metadata.id {
-                plugin_ids.push(id);
-            }
-        }
         for tab in &self.tabs {
             for pane_layout_metadata in &tab.tiled_panes {
                 if let PaneId::Plugin(id) = pane_layout_metadata.id {
@@ -329,8 +260,6 @@ impl SessionLayoutMetadata {
         plugin_ids
     }
     pub fn remove_plugin_from_layout(&mut self, plugin_id_to_remove: u32) {
-        self.global_panes
-            .retain(|pane| !matches!(pane.id, PaneId::Plugin(id) if id == plugin_id_to_remove));
         for tab in &mut self.tabs {
             // Filter tiled panes
             tab.tiled_panes.retain(|pane| {
@@ -381,9 +310,6 @@ impl SessionLayoutMetadata {
                 update_cmd_in_pane_metadata(pane_layout_metadata);
             }
         }
-        for pane_layout_metadata in self.global_panes.iter_mut() {
-            update_cmd_in_pane_metadata(pane_layout_metadata);
-        }
     }
     pub fn update_terminal_cwds(&mut self, mut terminal_ids_to_cwds: HashMap<u32, PathBuf>) {
         if let Some(common_path_between_cwds) =
@@ -411,9 +337,6 @@ impl SessionLayoutMetadata {
                 update_cwd_in_pane_metadata(pane_layout_metadata);
             }
         }
-        for pane_layout_metadata in self.global_panes.iter_mut() {
-            update_cwd_in_pane_metadata(pane_layout_metadata);
-        }
     }
     pub fn update_plugin_cmds(&mut self, mut plugin_ids_to_run_plugins: HashMap<u32, RunPlugin>) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
@@ -431,9 +354,6 @@ impl SessionLayoutMetadata {
             for pane_layout_metadata in tab.floating_panes.iter_mut() {
                 update_cmd_in_pane_metadata(pane_layout_metadata);
             }
-        }
-        for pane_layout_metadata in self.global_panes.iter_mut() {
-            update_cmd_in_pane_metadata(pane_layout_metadata);
         }
     }
     pub fn update_default_editor(&mut self, default_editor: &Option<PathBuf>) {
@@ -541,9 +461,6 @@ impl SessionLayoutMetadata {
                 upgrade_pane(pane);
             }
         }
-        for pane in self.global_panes.iter_mut() {
-            upgrade_pane(pane);
-        }
     }
     pub fn update_plugin_aliases_in_default_layout(&mut self, plugin_aliases: &PluginAliases) {
         self.default_layout
@@ -573,7 +490,6 @@ impl Into<GlobalLayoutManifest> for SessionLayoutMetadata {
             default_layout: self.default_layout,
             default_shell: self.default_shell,
             global_cwd: self.global_cwd,
-            global_panes: self.global_panes.into_iter().map(Into::into).collect(),
             tabs: self
                 .tabs
                 .into_iter()
@@ -627,8 +543,6 @@ impl Into<PaneLayoutManifest> for PaneLayoutMetadata {
             pane_contents: self.pane_contents,
             default_fg: self.default_fg,
             default_bg: self.default_bg,
-            global_placement: self.global_placement,
-            is_hidden: self.is_hidden,
         }
     }
 }
@@ -655,8 +569,6 @@ pub struct PaneLayoutMetadata {
     focused_clients: Vec<ClientId>,
     default_fg: Option<String>,
     default_bg: Option<String>,
-    global_placement: Option<GlobalPanePlacement>,
-    is_hidden: bool,
 }
 
 impl PaneLayoutMetadata {
@@ -684,42 +596,9 @@ impl PaneLayoutMetadata {
             focused_clients,
             default_fg,
             default_bg,
-            global_placement: None,
-            is_hidden: false,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_global(
-        id: PaneId,
-        geom: PaneGeom,
-        is_borderless: bool,
-        run: Option<Run>,
-        title: Option<String>,
-        is_focused: bool,
-        pane_contents: Option<String>,
-        focused_clients: Vec<ClientId>,
-        default_fg: Option<String>,
-        default_bg: Option<String>,
-        placement: GlobalPanePlacement,
-        is_hidden: bool,
-    ) -> Self {
-        let mut pane = Self::new(
-            id,
-            geom,
-            is_borderless,
-            run,
-            title,
-            is_focused,
-            pane_contents,
-            focused_clients,
-            default_fg,
-            default_bg,
-        );
-        pane.global_placement = Some(placement);
-        pane.is_hidden = is_hidden;
-        pane
-    }
     fn to_pane_metadata(&self) -> PaneMetadata {
         // Try to extract a meaningful name from the pane
         // Priority: explicit title > command name > file name > plugin location
@@ -815,10 +694,7 @@ impl ClientMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
-    use zellij_utils::input::layout::{PercentOrFixed, RunPlugin};
     use zellij_utils::pane_size::PaneGeom;
-    use zellij_utils::session_serialization::serialize_session_layout;
 
     fn make_command_pane(terminal_id: u32, command: &str, args: Vec<&str>) -> PaneLayoutMetadata {
         let mut run_command = RunCommand::new(PathBuf::from(command));
@@ -867,149 +743,6 @@ mod tests {
 
     fn get_first_tiled_run(meta: &SessionLayoutMetadata) -> Option<&Run> {
         meta.tabs[0].tiled_panes[0].run.as_ref()
-    }
-
-    #[test]
-    fn global_pane_resurrection_preserves_order_metadata_and_visibility() {
-        let left = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Left,
-            size: PercentOrFixed::Percent(25),
-            length: None,
-        };
-        let bottom = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Bottom,
-            size: PercentOrFixed::Fixed(4),
-            length: None,
-        };
-        let mut command = RunCommand::new(PathBuf::from("tail"));
-        command.args = vec!["-f".to_owned(), "/tmp/app.log".to_owned()];
-        let plugin = RunPlugin::from_url("zellij:strider").unwrap();
-        let mut metadata = SessionLayoutMetadata::default();
-        metadata.add_global_pane(PaneLayoutMetadata::new_global(
-            PaneId::Terminal(1),
-            PaneGeom::default(),
-            true,
-            Some(Run::Command(command.clone())),
-            Some("log".to_owned()),
-            false,
-            Some("saved terminal contents".to_owned()),
-            vec![],
-            Some("#ffffff".to_owned()),
-            Some("#000000".to_owned()),
-            left,
-            false,
-        ));
-        metadata.add_global_pane(PaneLayoutMetadata::new_global(
-            PaneId::Plugin(2),
-            PaneGeom::default(),
-            false,
-            Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin.clone()))),
-            Some("files".to_owned()),
-            false,
-            Some("saved plugin contents".to_owned()),
-            vec![],
-            None,
-            None,
-            bottom,
-            true,
-        ));
-
-        let manifest: GlobalLayoutManifest = metadata.into();
-        assert_eq!(manifest.global_panes.len(), 2);
-        assert_eq!(manifest.global_panes[0].run, Some(Run::Command(command)));
-        assert!(manifest.global_panes[0].is_borderless);
-        assert_eq!(manifest.global_panes[0].global_placement, Some(left));
-        assert!(!manifest.global_panes[0].is_hidden);
-        assert_eq!(
-            manifest.global_panes[0].pane_contents.as_deref(),
-            Some("saved terminal contents")
-        );
-        assert_eq!(
-            manifest.global_panes[1].run,
-            Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin)))
-        );
-        assert_eq!(manifest.global_panes[1].global_placement, Some(bottom));
-        assert!(manifest.global_panes[1].is_hidden);
-
-        let (serialized, pane_contents) = serialize_session_layout(manifest).unwrap();
-        assert_eq!(pane_contents.len(), 1);
-        assert_eq!(
-            pane_contents.values().next().map(String::as_str),
-            Some("saved plugin contents")
-        );
-        let parsed = Layout::from_kdl(&serialized, None, None, None).unwrap();
-        assert_eq!(parsed.global_panes.len(), 2);
-        assert_eq!(parsed.global_panes[0].placement, left);
-        assert!(!parsed.global_panes[0].hidden);
-        assert_eq!(parsed.global_panes[1].placement, bottom);
-        assert!(parsed.global_panes[1].hidden);
-    }
-
-    #[test]
-    fn global_pane_metadata_uses_terminal_and_plugin_enrichment() {
-        let placement = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Left,
-            size: PercentOrFixed::Fixed(8),
-            length: None,
-        };
-        let mut metadata = SessionLayoutMetadata::default();
-        metadata.add_global_pane(PaneLayoutMetadata::new_global(
-            PaneId::Terminal(11),
-            PaneGeom::default(),
-            false,
-            None,
-            None,
-            true,
-            None,
-            vec![7],
-            None,
-            None,
-            placement,
-            false,
-        ));
-        metadata.add_global_pane(PaneLayoutMetadata::new_global(
-            PaneId::Plugin(22),
-            PaneGeom::default(),
-            false,
-            None,
-            None,
-            false,
-            None,
-            vec![],
-            None,
-            None,
-            placement,
-            false,
-        ));
-
-        assert_eq!(metadata.all_terminal_ids(), vec![11]);
-        assert_eq!(metadata.all_plugin_ids(), vec![22]);
-        assert_eq!(
-            metadata.all_clients_metadata()[&7].get_pane_id(),
-            PaneId::Terminal(11)
-        );
-
-        metadata.update_terminal_commands(HashMap::from([(
-            11,
-            vec!["tail".to_owned(), "-f".to_owned()],
-        )]));
-        metadata.update_terminal_cwds(HashMap::from([(11, PathBuf::from("/tmp"))]));
-        metadata.update_plugin_cmds(HashMap::from([(
-            22,
-            RunPlugin::from_url("zellij:strider").unwrap(),
-        )]));
-
-        let manifest: GlobalLayoutManifest = metadata.clone().into();
-        assert!(matches!(
-            manifest.global_panes[0].run,
-            Some(Run::Command(_))
-        ));
-        assert_eq!(manifest.global_panes[0].cwd, Some(PathBuf::new()));
-        assert!(matches!(manifest.global_panes[1].run, Some(Run::Plugin(_))));
-
-        metadata.remove_plugin_from_layout(22);
-        let manifest: GlobalLayoutManifest = metadata.into();
-        assert_eq!(manifest.global_panes.len(), 1);
     }
 
     // detects_editor_pane_no_line_number: covered by the group-0 draw with

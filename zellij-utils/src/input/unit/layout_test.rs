@@ -1,10 +1,8 @@
 use super::super::layout::*;
-use crate::data::GlobalPaneEdge;
-use crate::input::config::ConfigError;
 use insta::assert_snapshot;
 
 fn normalize_layout_debug(s: String) -> String {
-    s.replace("    global_panes: [],\n", "")
+    s
 }
 
 #[test]
@@ -16,128 +14,6 @@ fn empty_layout() {
         ..Default::default()
     };
     assert_eq!(layout, expected_layout);
-}
-
-#[test]
-fn layout_with_global_terminal_and_plugin_panes() {
-    let layout = Layout::from_kdl(
-        r#"
-        layout {
-            global_panes {
-                pane edge="left" size="25%" hidden=true borderless=true {
-                    plugin location="zellij:strider"
-                }
-                pane edge="bottom" size=10 command="tail" focus=true {
-                    args "-f" "/tmp/app.log"
-                }
-            }
-            tab name="main"
-        }
-    "#,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(layout.global_panes.len(), 2);
-    assert_eq!(layout.global_panes[0].placement.edge, GlobalPaneEdge::Left);
-    assert_eq!(
-        layout.global_panes[0].placement.size,
-        PercentOrFixed::Percent(25)
-    );
-    assert!(layout.global_panes[0].hidden);
-    assert!(layout.global_panes[0].borderless);
-    assert_eq!(
-        layout.global_panes[1].placement.edge,
-        GlobalPaneEdge::Bottom
-    );
-    assert_eq!(
-        layout.global_panes[1].placement.size,
-        PercentOrFixed::Fixed(10)
-    );
-    assert!(layout.global_panes[1].focus);
-}
-
-#[test]
-fn global_panes_require_valid_edge_and_positive_size() {
-    for (pane, expected_error) in [
-        (
-            r#"pane size=10"#,
-            "global pane requires edge left, right, top or bottom",
-        ),
-        (
-            r#"pane edge="middle" size=10"#,
-            "global pane requires edge left, right, top or bottom",
-        ),
-        (
-            r#"pane edge="left" size=0"#,
-            "global pane size must be greater than zero",
-        ),
-        (
-            r#"pane edge="left" size=-1"#,
-            "global pane size must be greater than zero",
-        ),
-    ] {
-        let source = format!("layout {{ global_panes {{\n{pane}\n}}\ntab\n}}");
-        let error = Layout::from_kdl(&source, None, None, None).unwrap_err();
-        match error {
-            ConfigError::KdlError(error) => {
-                assert_eq!(error.error_message, expected_error, "{pane}")
-            },
-            error => panic!("{pane}: {error:?}"),
-        }
-    }
-}
-
-#[test]
-fn global_panes_on_the_same_edge_split_the_strip_in_declaration_order() {
-    // panes sharing an edge form one strip and split its long axis; `length` is a pane's
-    // share of that axis and `None` shares the remainder
-    let source = "layout {\nglobal_panes {\npane edge=\"left\" size=\"25%\" length=\"30%\"\npane edge=\"left\" size=\"25%\"\npane edge=\"left\" size=\"25%\" length=6 hidden=true\n}\ntab\n}";
-    let layout = Layout::from_kdl(source, None, None, None).unwrap();
-    assert_eq!(layout.global_panes.len(), 3);
-    assert_eq!(layout.global_panes[0].placement.edge, GlobalPaneEdge::Left);
-    assert_eq!(
-        layout.global_panes[0].placement.length,
-        Some(PercentOrFixed::Percent(30))
-    );
-    assert_eq!(layout.global_panes[1].placement.length, None);
-    assert_eq!(
-        layout.global_panes[2].placement.length,
-        Some(PercentOrFixed::Fixed(6))
-    );
-    assert!(layout.global_panes[2].hidden);
-}
-
-#[test]
-fn global_pane_length_must_be_positive() {
-    for length in [0, -1] {
-        let source = format!(
-            "layout {{\nglobal_panes {{\npane edge=\"left\" size=1 length={length}\n}}\ntab\n}}"
-        );
-        let error = Layout::from_kdl(&source, None, None, None).unwrap_err();
-        match error {
-            ConfigError::KdlError(error) => {
-                assert_eq!(error.error_message, "length should be greater than 0")
-            },
-            error => panic!("{error:?}"),
-        }
-    }
-}
-
-#[test]
-fn layout_can_contain_only_one_global_panes_block() {
-    let source = "layout {\nglobal_panes {\npane edge=\"left\" size=1\n}\nglobal_panes {\npane edge=\"right\" size=1\n}\ntab\n}";
-    let error = Layout::from_kdl(source, None, None, None).unwrap_err();
-
-    match error {
-        ConfigError::KdlError(error) => assert_eq!(
-            error.error_message,
-            "layout can contain only one global_panes block"
-        ),
-        error => panic!("{error:?}"),
-    }
 }
 
 #[test]

@@ -1,9 +1,7 @@
 use super::{screen_thread_main, CopyOptions, Screen, ScreenInstruction};
-use crate::global_panes::GlobalPaneManager;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
 use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
-use crate::route::NotificationEnd;
 use crate::{
     channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
     thread_bus::Bus, ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
@@ -20,13 +18,12 @@ use zellij_utils::data::{
 };
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
-use zellij_utils::input::command::{RunCommand, RunCommandAction, TerminalAction};
+use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, GlobalPaneLayout, Layout, PercentOrFixed, PluginAlias,
-    PluginUserConfiguration, Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection,
-    TiledPaneLayout,
+    FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
+    RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, TiledPaneLayout,
 };
 
 use zellij_utils::input::mouse::MouseEvent;
@@ -40,8 +37,7 @@ use crate::os_input_output::{AsyncReader, NullAsyncReader};
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{
     plugins::{PluginInstruction, PluginRenderAsset},
-    pty::{pty_thread_main, ClientTabIndexOrPaneId, Pty, PtyInstruction},
-    ui::loading_indication::LoadingIndication,
+    pty::{ClientTabIndexOrPaneId, PtyInstruction},
 };
 use std::collections::HashSet;
 use std::env::set_var;
@@ -61,7 +57,6 @@ use zellij_utils::{
 use crate::panes::grid::Grid;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::sixel::SixelImageStore;
-use crate::panes::terminal_character::AnsiCode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -946,326 +941,6 @@ fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
         .expect("TEST");
 }
 
-fn insert_left_global_pane(screen: &mut Screen, cols: usize) {
-    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
-
-    let global_pane = PaneFactory::terminal(
-        99,
-        Default::default(),
-        screen.style,
-        1,
-        "global".to_owned(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Some("global".to_owned()),
-        None,
-        false,
-        true,
-        true,
-        true,
-        false,
-        None,
-    );
-    screen
-        .global_panes
-        .insert(
-            global_pane,
-            GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Fixed(cols),
-                length: None,
-            },
-            false,
-        )
-        .unwrap();
-}
-
-fn assert_tiled_panes_are_bounded_by_left_global_pane(screen: &Screen, global_cols: usize) {
-    let screen_cols = screen.surface_size().cols;
-    let tab = screen.tabs.get(&0).unwrap();
-    assert_eq!(tab.get_display_area_origin(), (global_cols, 0));
-    assert_eq!(tab.get_viewport().x, global_cols);
-    let geoms: Vec<_> = tab
-        .get_tiled_panes()
-        .map(|(id, p)| (*id, p.position_and_size()))
-        .collect();
-    assert!(geoms.len() > 1, "expected more than one tiled pane");
-    for (id, geom) in &geoms {
-        assert!(
-            geom.x >= global_cols,
-            "pane {:?} at x {} is underneath the global pane (which is {} columns wide)",
-            id,
-            geom.x,
-            global_cols
-        );
-        assert!(
-            geom.x + geom.cols.as_usize() <= screen_cols,
-            "pane {:?} overflows the screen: {} + {} > {}",
-            id,
-            geom.x,
-            geom.cols.as_usize(),
-            screen_cols
-        );
-    }
-    let rightmost_edge = geoms
-        .iter()
-        .map(|(_, geom)| geom.x + geom.cols.as_usize())
-        .max()
-        .unwrap();
-    assert_eq!(
-        rightmost_edge, screen_cols,
-        "tiled panes do not reach the right edge of the screen"
-    );
-}
-
-/// Add a non-selectable borderless pane on the bottom edge of `tab_id`, standing in for the
-/// status-bar plugin.
-fn add_chrome_pane(screen: &mut Screen, tab_id: usize, pane_id: u32, client_id: ClientId) {
-    let tab = screen.tabs.get_mut(&tab_id).unwrap();
-    tab.new_pane(
-        PaneId::Terminal(pane_id),
-        None,
-        None,
-        false,
-        true,
-        NewPanePlacement::Tiled {
-            direction: Some(Direction::Down),
-            borderless: Some(true),
-        },
-        Some(client_id),
-        None,
-    )
-    .unwrap();
-    tab.set_pane_selectable(PaneId::Terminal(pane_id), false);
-}
-
-fn global_pane_cols(screen: &Screen) -> usize {
-    screen
-        .global_panes
-        .pane(PaneId::Terminal(99))
-        .unwrap()
-        .position_and_size()
-        .cols
-        .as_usize()
-}
-
-/// A tab with two tiled panes (1 and 2) plus one global pane (99) on the left edge. Focus is left
-/// on the newly created pane 2, which is the last pane of the tab's cycle.
-fn screen_with_two_tiled_panes_and_a_global_pane() -> Screen {
-    let client_id = 1;
-    let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
-    new_tab(&mut screen, 1, 0);
-    insert_left_global_pane(&mut screen, 10);
-    screen
-        .resize_to_screen(Size { cols: 50, rows: 12 })
-        .unwrap();
-    screen
-        .get_active_tab_mut(client_id)
-        .unwrap()
-        .new_pane(
-            PaneId::Terminal(2),
-            None,
-            None,
-            false,
-            true,
-            NewPanePlacement::default(),
-            Some(client_id),
-            None,
-        )
-        .unwrap();
-    screen
-}
-
-fn insert_global_pane_on_edge(
-    screen: &mut Screen,
-    id: u32,
-    edge: zellij_utils::data::GlobalPaneEdge,
-    cols: usize,
-) {
-    use zellij_utils::data::GlobalPanePlacement;
-
-    let global_pane = PaneFactory::terminal(
-        id,
-        Default::default(),
-        screen.style,
-        1,
-        "global".to_owned(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Some("global".to_owned()),
-        None,
-        false,
-        true,
-        true,
-        true,
-        false,
-        None,
-    );
-    screen
-        .global_panes
-        .insert(
-            global_pane,
-            GlobalPanePlacement {
-                edge,
-                size: PercentOrFixed::Fixed(cols),
-                length: None,
-            },
-            false,
-        )
-        .unwrap();
-}
-
-/// The colour of every cell in column `x`, over `rows`, as the client sees it.
-fn column_foregrounds(
-    rendered: &str,
-    size: Size,
-    x: usize,
-    rows: std::ops::Range<usize>,
-) -> Vec<Option<AnsiCode>> {
-    let mut grid = grid_for_render_snapshot(size);
-    take_snapshot_and_cursor_coordinates(rendered, &mut grid);
-    rows.map(|y| grid.viewport[y].columns[x].styles.foreground)
-        .collect()
-}
-
-fn add_matching_global_plugin(
-    screen: &mut Screen,
-    plugin_id: u32,
-    run_plugin: RunPluginOrAlias,
-    hidden: bool,
-) {
-    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
-
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
-    let pane = PaneFactory::plugin(
-        plugin_id,
-        Default::default(),
-        plugin_sender,
-        "global plugin".to_owned(),
-        "global plugin".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
-        screen.style,
-        Some(Run::Plugin(run_plugin)),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
-    );
-    screen
-        .global_panes
-        .insert(
-            pane,
-            GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Fixed(5),
-                length: None,
-            },
-            hidden,
-        )
-        .unwrap();
-    screen
-        .global_panes
-        .resize(zellij_utils::pane_size::Viewport {
-            x: 0,
-            y: 0,
-            cols: screen.surface_size().cols,
-            rows: screen.surface_size().rows,
-        })
-        .unwrap();
-}
-
-fn add_global_terminal(screen: &mut Screen, terminal_id: u32) {
-    add_global_terminal_on_edge(
-        screen,
-        terminal_id,
-        zellij_utils::data::GlobalPaneEdge::Bottom,
-    )
-}
-
-fn add_global_terminal_on_edge(
-    screen: &mut Screen,
-    terminal_id: u32,
-    edge: zellij_utils::data::GlobalPaneEdge,
-) {
-    use zellij_utils::data::GlobalPanePlacement;
-
-    let pane = PaneFactory::terminal(
-        terminal_id,
-        Default::default(),
-        screen.style,
-        1,
-        "global terminal".to_owned(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Some("global terminal".to_owned()),
-        None,
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
-        screen.osc8_hyperlinks,
-        screen.explicitly_disable_kitty_keyboard_protocol,
-        None,
-    );
-    screen
-        .global_panes
-        .insert(
-            pane,
-            GlobalPanePlacement {
-                edge,
-                size: PercentOrFixed::Fixed(3),
-                length: None,
-            },
-            false,
-        )
-        .unwrap();
-    let center = screen
-        .global_panes
-        .resize(screen.surface_size().into())
-        .unwrap();
-    for tab in screen.tabs.values_mut() {
-        tab.resize_whole_tab_to(center).unwrap();
-    }
-}
-
-fn assert_global_tab_command_rejected(
-    mock_screen: &MockScreen,
-    command_name: &str,
-    build: impl FnOnce(NotificationEnd) -> ScreenInstruction,
-) {
-    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-    mock_screen
-        .to_screen
-        .send(build(NotificationEnd::new(completion_tx)))
-        .unwrap();
-    let completion = completion_rx.blocking_recv().unwrap();
-    assert_eq!(completion.exit_status, Some(1), "{command_name}");
-    assert_eq!(
-        completion.error_message.as_deref(),
-        Some("global pane has no tab"),
-        "{command_name}"
-    );
-}
-
 fn create_fixed_size_screen() -> Screen {
     create_new_screen(
         Size {
@@ -1665,42 +1340,6 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
     )
 }
 
-fn add_hidden_global_plugin(screen: &mut Screen, plugin_id: u32) {
-    use zellij_utils::data::{GlobalPaneEdge, GlobalPanePlacement};
-
-    let pane = PaneFactory::plugin(
-        plugin_id,
-        Default::default(),
-        screen.bus.senders.to_plugin.clone().unwrap(),
-        "global plugin".to_owned(),
-        "global plugin".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
-        screen.style,
-        None,
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
-    );
-    screen
-        .global_panes
-        .insert(
-            pane,
-            GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Fixed(1),
-                length: None,
-            },
-            true,
-        )
-        .unwrap();
-}
-
 // =====================================================================
 // Pause-on-forward state machine (pane-level)
 //
@@ -1844,125 +1483,6 @@ fn guest_announce_message() -> zellij_utils::nested_session::NestedSessionMessag
     }
 }
 
-// =====================================================================================
-// GP validation-phase regression tests (see global-pane-review-checklist.md).
-// Retained from Phase 1 validation: the failing tests below demonstrate confirmed defects
-// and must pass in their respective fix stages.
-// - gp01_* (stage 2A): FAIL - resize below a fixed pane / percentage rounding to zero aborts
-// - gp02_* (stage 2B): FAIL - moved floating panes drift by the global-pane origin on reflow
-// - gp04_* (stage 3B): PASS - protects the strip-change frame reapplication
-// - gp05_* (stage 4A): FAIL - borderless left/top panes' content is overwritten by separators
-// - gp06_* (stage 4B): PASS - same-edge global panes split the strip's long axis
-// =====================================================================================
-
-fn gp_insert_global_pane(
-    screen: &mut Screen,
-    id: u32,
-    edge: zellij_utils::data::GlobalPaneEdge,
-    size: PercentOrFixed,
-    borderless: bool,
-) {
-    gp_try_insert_global_pane(screen, id, edge, size, borderless, false).unwrap()
-}
-
-fn gp_try_insert_global_pane(
-    screen: &mut Screen,
-    id: u32,
-    edge: zellij_utils::data::GlobalPaneEdge,
-    size: PercentOrFixed,
-    borderless: bool,
-    hidden: bool,
-) -> Result<()> {
-    use zellij_utils::data::GlobalPanePlacement;
-
-    let mut global_pane = PaneFactory::terminal(
-        id,
-        Default::default(),
-        screen.style,
-        1,
-        "global".to_owned(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Some("global".to_owned()),
-        None,
-        false,
-        true,
-        true,
-        true,
-        false,
-        None,
-    );
-    if borderless {
-        global_pane.set_borderless(true);
-    }
-    screen.global_panes.insert(
-        global_pane,
-        GlobalPanePlacement {
-            edge,
-            size,
-            length: None,
-        },
-        hidden,
-    )
-}
-
-/// Split a terminal off an existing global pane, the way a strip grows a second
-/// pane. The split is a global pane in its own right, sharing the anchor's edge.
-fn gp_insert_global_split(screen: &mut Screen, id: u32, anchor: PaneId) {
-    let split = PaneFactory::terminal(
-        id,
-        Default::default(),
-        screen.style,
-        1,
-        "global split".to_owned(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Some("global split".to_owned()),
-        None,
-        false,
-        true,
-        true,
-        true,
-        false,
-        None,
-    );
-    screen
-        .global_panes
-        .insert_split(split, anchor, true, None)
-        .expect("TEST");
-}
-
-fn gp_drain_client_1_snapshot(
-    server_receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
-    grid: &mut Grid,
-) -> String {
-    let mut snapshot = String::new();
-    while let Ok((instruction, _)) = server_receiver.try_recv() {
-        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
-            if let Some(output) = rendered_clients.remove(&1) {
-                snapshot = take_snapshot_and_cursor_coordinates(&output, grid).1;
-            }
-        }
-    }
-    snapshot
-}
-
-fn gp_line_content(snapshot_line: &str) -> &str {
-    // grid debug lines are formatted as `00 (C): <content>`
-    match snapshot_line.find("): ") {
-        Some(index) => &snapshot_line[index + 3..],
-        None => snapshot_line,
-    }
-}
-
 /// Open a floating pane in `tab_index` and give it something to say. `overlay` places it
 /// against the whole surface, as the ask-hocus popup places itself.
 fn open_floating_pane(
@@ -2017,21 +1537,6 @@ fn render_frame_into(
         }
     }
     snapshot
-}
-
-fn gp_fill_global_rows_left(screen: &mut Screen, rows: usize, cols: usize) {
-    let mut content = Vec::new();
-    for row in 0..rows {
-        content.extend(std::iter::repeat_n(b'G', cols));
-        if row + 1 < rows {
-            content.extend_from_slice(b"\r\n");
-        }
-    }
-    screen
-        .global_panes
-        .pane_mut(PaneId::Terminal(99))
-        .unwrap()
-        .handle_pty_bytes(content);
 }
 
 // Regression tests for: leaving Scroll mode used to unconditionally snap the active pane's
@@ -2166,9 +1671,7 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
 // ---------------------------------------------------------------------------
 //
 // A pane arriving from another session is placed by `NewPane`, which reads
-// `ClientTabIndexOrPaneId::ClientId` as "wherever the client is". For a client
-// focused on a global pane that means *inside* the global pane - a session-wide
-// strip that a pane from somewhere else has no business in.
+// `ClientTabIndexOrPaneId::ClientId` as "wherever the client is".
 
 /// Adopt a pane with the given placement and return the `NewPane` it asks for.
 fn adopted_pane_placement_target(
@@ -2454,7 +1957,6 @@ fn quit_action_launches_a_new_confirmation_plugin() {
             _,
             None,
             false,
-            None,
             Some(OverlayPlacement {
                 kind: OverlayKind::Modal,
                 coordinates: None,
@@ -2514,18 +2016,12 @@ mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
 mod clients;
 mod floating_panes;
-mod global_pane_layout;
-mod global_pane_regressions;
-mod global_panes_focus;
-mod global_panes_highlight;
-mod global_panes_lifecycle;
-mod global_panes_manifest;
-mod global_panes_render;
 mod hooks;
 mod host_query;
 mod mouse;
 mod nested_sessions;
 mod overlays;
+mod pane_state;
 mod plugin_broadcasts;
 mod reveal_pane;
 mod scroll_and_warp;

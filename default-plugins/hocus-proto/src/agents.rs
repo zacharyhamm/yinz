@@ -2198,7 +2198,7 @@ mod tests {
 
     #[test]
     fn tab_projects_agree_only_when_one_project_owns_the_tab() {
-        let global = AgentPane {
+        let untabbed = AgentPane {
             cwd: Some("/work/hocus".to_owned()),
             ..pane(9, "codex", Some("codex"))
         };
@@ -2209,9 +2209,9 @@ mod tests {
             // Tab 2 has two projects, so it agrees on nothing.
             in_folder(5, "codex", "/work/hocus", 2),
             in_folder(6, "aider", "/work/pocus", 2),
-            // Tab 3 has a shell, not an agent, and the global pane is in no tab.
+            // Tab 3 has a shell, not an agent, and pane 9 is in no tab at all.
             in_folder(7, "zsh", "/work/hocus", 3),
-            global,
+            untabbed,
         ];
         let owners = owners(&[
             (3, "hocus"),
@@ -2229,7 +2229,7 @@ mod tests {
 
     #[test]
     fn tab_project_labels_name_a_tab_after_every_project_in_it() {
-        let global = AgentPane {
+        let untabbed = AgentPane {
             cwd: Some("/work/hocus".to_owned()),
             ..pane(9, "codex", Some("codex"))
         };
@@ -2240,9 +2240,9 @@ mod tests {
             // Two projects, sorted rather than left in pane order.
             in_folder(5, "codex", "/work/pocus", 2),
             in_folder(6, "aider", "/work/hocus", 2),
-            // A shell is not an agent, and the global pane is in no tab.
+            // A shell is not an agent, and pane 9 is in no tab at all.
             in_folder(7, "zsh", "/work/hocus", 3),
-            global,
+            untabbed,
         ];
         let owners = owners(&[
             (3, "hocus"),

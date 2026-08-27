@@ -184,7 +184,6 @@ impl PaneGroups {
                 Some(floating_pane_coordinates),
                 None,
                 None,
-                None,
             ));
         }
     }

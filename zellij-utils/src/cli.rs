@@ -571,7 +571,7 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
+        /// Position this pane against the whole session surface and draw it above the tab's panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
         /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
@@ -674,7 +674,7 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
+        /// Position this pane against the whole session surface and draw it above the tab's panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
         /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
@@ -738,7 +738,7 @@ pub enum Sessions {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
+        /// Position this pane against the whole session surface and draw it above the tab's panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
         /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
@@ -1099,7 +1099,7 @@ pub enum CliAction {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
+        /// Position this pane against the whole session surface and draw it above the tab's panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
         /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
@@ -1155,32 +1155,6 @@ pub enum CliAction {
         /// mouse)
         #[clap(long, value_parser)]
         borderless: Option<bool>,
-        /// Place the pane at a shared screen edge for every client
-        #[clap(
-            long,
-            requires_all(["edge", "size"]),
-            conflicts_with_all([
-                "floating",
-                "in_place",
-                "stacked",
-                "blocking",
-                "block_until_exit_success",
-                "block_until_exit_failure",
-                "block_until_exit",
-                "plugin"
-            ])
-        )]
-        global: bool,
-        /// Screen edge for a global pane
-        #[clap(
-            long,
-            requires("global"),
-            value_parser = ["left", "right", "top", "bottom"]
-        )]
-        edge: Option<String>,
-        /// Width or height of a global pane, as a fixed amount or percentage
-        #[clap(long, requires("global"))]
-        size: Option<String>,
         /// Target a specific tab by ID
         #[clap(
             long,
@@ -1233,7 +1207,7 @@ pub enum CliAction {
         /// Whether to pin a floating pane so that it is always on top
         #[clap(long, requires("floating"))]
         pinned: Option<bool>,
-        /// Position this pane against the whole session surface and draw it above global panes
+        /// Position this pane against the whole session surface and draw it above the tab's panes
         #[clap(long, requires("floating"))]
         overlay: Option<bool>,
         /// As --overlay, but the pane keeps focus until it closes itself. For a pane that has no
@@ -1506,20 +1480,6 @@ pub enum CliAction {
         close_replaced_pane: bool,
         #[clap(short, long, value_parser)]
         move_to_focused_tab: bool,
-        #[clap(
-            long,
-            requires_all(["edge", "size"]),
-            conflicts_with_all(["floating", "in_place", "move_to_focused_tab"])
-        )]
-        global: bool,
-        #[clap(
-            long,
-            requires("global"),
-            value_parser = ["left", "right", "top", "bottom"]
-        )]
-        edge: Option<String>,
-        #[clap(long, requires("global"))]
-        size: Option<String>,
         url: String,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
@@ -1538,20 +1498,6 @@ pub enum CliAction {
         /// Close the replaced pane instead of suspending it (only effective with --in-place)
         #[clap(long, requires("in_place"))]
         close_replaced_pane: bool,
-        #[clap(
-            long,
-            requires_all(["edge", "size"]),
-            conflicts_with_all(["floating", "in_place"])
-        )]
-        global: bool,
-        #[clap(
-            long,
-            requires("global"),
-            value_parser = ["left", "right", "top", "bottom"]
-        )]
-        edge: Option<String>,
-        #[clap(long, requires("global"))]
-        size: Option<String>,
         url: Url,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
@@ -1830,88 +1776,15 @@ mod tests {
     }
 
     #[test]
-    fn global_plugin_flags_are_all_required_and_conflict_with_other_placement_modes() {
-        let valid = try_parse_cli([
-            "zellij",
-            "action",
-            "launch-or-focus-plugin",
-            "--global",
-            "--edge",
-            "left",
-            "--size",
-            "25%",
-            "hocus",
-        ])
-        .unwrap();
-        assert!(matches!(
-            valid.command,
-            Some(Command::Action(action))
-                if matches!(*action, CliAction::LaunchOrFocusPlugin {
-                    global: true,
-                    edge: Some(ref edge),
-                    size: Some(ref size),
-                    ..
-                } if edge == "left" && size == "25%")
-        ));
-
-        for args in [
-            vec![
-                "zellij",
-                "action",
-                "launch-or-focus-plugin",
-                "--global",
-                "hocus",
-            ],
-            vec![
-                "zellij",
-                "action",
-                "launch-or-focus-plugin",
-                "--global",
-                "--edge",
-                "left",
-                "hocus",
-            ],
-            vec![
-                "zellij",
-                "action",
-                "launch-or-focus-plugin",
-                "--edge",
-                "left",
-                "--size",
-                "25%",
-                "hocus",
-            ],
-        ] {
-            assert!(try_parse_cli(args).is_err());
-        }
-
-        for mode in ["--floating", "--in-place", "--move-to-focused-tab"] {
-            assert!(try_parse_cli([
-                "zellij",
-                "action",
-                "launch-or-focus-plugin",
-                "--global",
-                "--edge",
-                "left",
-                "--size",
-                "25%",
-                mode,
-                "hocus",
-            ])
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn non_global_plugin_invocation_is_unchanged() {
+    fn a_plugin_launch_takes_the_url_and_nothing_else_by_default() {
         let cli = try_parse_cli(["zellij", "action", "launch-or-focus-plugin", "hocus"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Action(action))
                 if matches!(*action, CliAction::LaunchOrFocusPlugin {
-                    global: false,
-                    edge: None,
-                    size: None,
+                    floating: false,
+                    in_place: false,
+                    move_to_focused_tab: false,
                     ..
                 })
         ));

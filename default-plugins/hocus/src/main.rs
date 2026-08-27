@@ -428,12 +428,9 @@ pub struct State {
     focused_plugin: Option<u32>,
     /// The session surface the overlays are placed against, from the active tab's `TabInfo`.
     ///
-    /// The *surface*, not the tab's display area, and the difference is the whole reason these are
-    /// named as they are: an overlay's coordinates are resolved against the session surface
-    /// (`OverlayPanes::surface`), which is the display area grown back over the global-pane
-    /// strips. Placing against the display area places against the tab centre, which is smaller by
-    /// whatever the global panes took. `overlay::surface_of` is what reads the right pair off a
-    /// `TabInfo`; `overlay::overlay_geometry` does the arithmetic.
+    /// An overlay's coordinates are resolved against the whole session surface
+    /// (`OverlayPanes::surface`), which a tab occupies in full. `overlay::surface_of` reads the
+    /// pair off a `TabInfo`; `overlay::overlay_geometry` does the arithmetic.
     pub(crate) surface_rows: usize,
     pub(crate) surface_cols: usize,
     /// This plugin's own pane id, read once at load.

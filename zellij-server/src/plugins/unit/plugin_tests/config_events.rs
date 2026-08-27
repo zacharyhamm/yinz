@@ -56,7 +56,6 @@ pub fn generate_random_name_permission_denied() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -147,7 +146,6 @@ pub fn save_layout_permission_denied() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -245,7 +243,6 @@ pub fn plugin_receives_config_change_event() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -371,7 +368,6 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -483,7 +479,6 @@ pub fn get_session_environment_variables_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

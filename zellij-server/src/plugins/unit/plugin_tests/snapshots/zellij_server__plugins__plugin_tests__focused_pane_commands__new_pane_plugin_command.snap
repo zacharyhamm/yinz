@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/focused_pane_commands.rs
 expression: "format!(\"{:#?}\", new_pane_event)"
 ---
 Some(
@@ -25,6 +25,5 @@ Some(
             },
         ),
         false,
-        None,
     ),
 )

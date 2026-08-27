@@ -54,7 +54,6 @@ pub fn close_tab_with_index_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -127,7 +126,6 @@ pub fn break_panes_to_new_tab_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -208,7 +206,6 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -281,7 +278,6 @@ pub fn break_panes_to_tab_with_id_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

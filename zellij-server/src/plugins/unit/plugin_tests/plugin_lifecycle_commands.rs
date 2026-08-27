@@ -54,7 +54,6 @@ pub fn reload_plugin_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -121,7 +120,6 @@ pub fn load_new_plugin_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -199,7 +197,6 @@ pub fn rebind_keys_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -283,7 +280,6 @@ pub fn list_clients_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -360,7 +356,6 @@ pub fn before_close_plugin_event() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(5000));
     // here we send an unload to plugin id 0 (the first plugin id, presumably this plugin)
@@ -433,7 +428,6 @@ pub fn show_cursor_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -516,7 +510,6 @@ pub fn hide_cursor_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -594,7 +587,6 @@ pub fn copy_to_clipboard_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -668,7 +660,6 @@ pub fn run_action_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -760,7 +751,6 @@ pub fn send_sigint_to_pane_id_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -848,7 +838,6 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -925,7 +914,6 @@ pub fn copy_to_clipboard_without_permission() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -1010,7 +998,6 @@ pub fn run_action_without_permission() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

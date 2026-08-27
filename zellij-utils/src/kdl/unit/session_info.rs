@@ -10,29 +10,6 @@ fn serialize_and_deserialize_session_info() {
 }
 
 #[test]
-fn serialize_and_deserialize_session_info_with_global_pane() {
-    let mut session_info = SessionInfo::default();
-    session_info.panes.global_panes.push(PaneInfo {
-        id: 42,
-        global_placement: Some(GlobalPanePlacement {
-            edge: GlobalPaneEdge::Right,
-            size: PercentOrFixed::Percent(30),
-            length: None,
-        }),
-        is_hidden: true,
-        ..Default::default()
-    });
-
-    let serialized = session_info.to_string();
-    let deserialized = SessionInfo::from_string(&serialized, "not this session").unwrap();
-
-    assert_eq!(
-        deserialized.panes.global_panes,
-        session_info.panes.global_panes
-    );
-}
-
-#[test]
 fn serialize_and_deserialize_session_info_with_data() {
     let panes_list = vec![
         PaneInfo {
@@ -62,8 +39,6 @@ fn serialize_and_deserialize_session_info_with_data() {
             index_in_pane_group: Default::default(), // we don't serialize this
             default_fg: None,
             default_bg: None,
-            global_placement: None,
-            is_hidden: false,
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
@@ -93,8 +68,6 @@ fn serialize_and_deserialize_session_info_with_data() {
             index_in_pane_group: Default::default(), // we don't serialize this
             default_fg: None,
             default_bg: None,
-            global_placement: None,
-            is_hidden: false,
             cwd: None,
         },
     ];
@@ -123,8 +96,6 @@ fn serialize_and_deserialize_session_info_with_data() {
                 tab_id: 0,
                 is_flashing_bell: false,
                 has_bell_notification: false,
-                session_surface_rows: 12,
-                session_surface_columns: 14,
             },
             TabInfo {
                 position: 1,
@@ -146,8 +117,6 @@ fn serialize_and_deserialize_session_info_with_data() {
                 tab_id: 1,
                 is_flashing_bell: false,
                 has_bell_notification: false,
-                session_surface_rows: 12,
-                session_surface_columns: 14,
             },
         ],
         panes: PaneManifest {

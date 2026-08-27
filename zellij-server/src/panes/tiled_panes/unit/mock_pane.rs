@@ -133,12 +133,7 @@ pub struct Run {
     pub panes: Vec<PaneSnapshot>,
 }
 
-pub fn run_layout(
-    specs: &[PaneSpec],
-    direction: SplitDirection,
-    space: usize,
-    origin: usize,
-) -> Run {
+pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -> Run {
     let mut owned: Vec<Box<dyn Pane>> = specs
         .iter()
         .map(|s| Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>)
@@ -150,7 +145,7 @@ pub fn run_layout(
     }
     let map = Rc::new(RefCell::new(map));
 
-    let result = PaneResizer::new(map.clone()).layout(direction, space, origin);
+    let result = PaneResizer::new(map.clone()).layout(direction, space);
 
     let outcome = match result {
         Ok(()) => Outcome::Ok,

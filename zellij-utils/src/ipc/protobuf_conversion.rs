@@ -36,7 +36,7 @@ use std::path::PathBuf;
 
 /// Converts `ClientToServerMsg` to its protobuf representation.
 /// # Errors
-/// Returns `anyhow::Error` if the contained `Action` fails to convert (e.g. invalid `GlobalPanePlacement` size/edge, or other fallible action fields).
+/// Returns `anyhow::Error` if the contained `Action` fails to convert.
 /// This changed from `From` (infallible) at base `5254e4fc` to `TryFrom` in this branch; external callers must now use `try_into()?` / `TryFrom::try_from` and handle the error (see `zellij-utils/src/ipc.rs:387,496` for internal handling).
 // Convert Rust ClientToServerMsg to protobuf
 impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
@@ -1369,7 +1369,6 @@ impl TryFrom<crate::input::actions::Action>
             SearchInputAction,
             SearchToggleOptionAction,
             SetDarkThemeAction,
-            SetGlobalPanePlacementAction,
             SetLightThemeAction,
             SetPaneBorderlessAction,
             SetPaneColorAction,
@@ -1587,13 +1586,11 @@ impl TryFrom<crate::input::actions::Action>
                 direction,
                 pane_name,
                 start_suppressed,
-                global_placement,
             } => ActionType::NewPane(NewPaneAction {
                 direction: direction.map(direction_to_proto_i32),
                 pane_name,
                 start_suppressed,
                 near_current_pane: false,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::EditFile {
                 payload,
@@ -1606,7 +1603,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 no_focus,
                 tab_id,
-                global_placement,
             } => ActionType::EditFile(EditFileAction {
                 payload: Some(payload.into()),
                 direction: direction.map(direction_to_proto_i32),
@@ -1618,7 +1614,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::NewFloatingPane {
                 command,
@@ -1627,7 +1622,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 no_focus,
                 tab_id,
-                global_placement,
             } => ActionType::NewFloatingPane(NewFloatingPaneAction {
                 command: command.map(|c| c.into()),
                 pane_name,
@@ -1635,7 +1629,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::NewTiledPane {
                 direction,
@@ -1645,7 +1638,6 @@ impl TryFrom<crate::input::actions::Action>
                 no_focus,
                 borderless,
                 tab_id,
-                global_placement,
             } => ActionType::NewTiledPane(NewTiledPaneAction {
                 direction: direction.map(direction_to_proto_i32),
                 command: command.map(|c| c.into()),
@@ -1654,7 +1646,6 @@ impl TryFrom<crate::input::actions::Action>
                 borderless,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::NewInPlacePane {
                 command,
@@ -1664,7 +1655,6 @@ impl TryFrom<crate::input::actions::Action>
                 pane_id_to_replace,
                 close_replaced_pane,
                 tab_id,
-                global_placement,
             } => ActionType::NewInPlacePane(NewInPlacePaneAction {
                 command: command.map(|c| c.into()),
                 pane_name,
@@ -1673,7 +1663,6 @@ impl TryFrom<crate::input::actions::Action>
                 close_replaced_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::NewStackedPane {
                 command,
@@ -1681,14 +1670,12 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 no_focus,
                 tab_id,
-                global_placement,
             } => ActionType::NewStackedPane(NewStackedPaneAction {
                 command: command.map(|c| c.into()),
                 pane_name,
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::NewBlockingPane {
                 placement,
@@ -1698,7 +1685,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 no_focus,
                 tab_id,
-                global_placement,
             } => ActionType::NewBlockingPane(NewBlockingPaneAction {
                 placement: Some(placement.into()),
                 pane_name,
@@ -1707,7 +1693,6 @@ impl TryFrom<crate::input::actions::Action>
                 near_current_pane,
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::TogglePaneEmbedOrFloating => {
                 ActionType::TogglePaneEmbedOrFloating(TogglePaneEmbedOrFloatingAction {})
@@ -1801,12 +1786,10 @@ impl TryFrom<crate::input::actions::Action>
                 command,
                 near_current_pane,
                 no_focus,
-                global_placement,
             } => ActionType::Run(RunAction {
                 command: Some(command.into()),
                 near_current_pane,
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::Detach => ActionType::Detach(DetachAction {}),
             crate::input::actions::Action::SetDarkTheme => {
@@ -1898,7 +1881,6 @@ impl TryFrom<crate::input::actions::Action>
                 close_replaced_pane,
                 skip_cache,
                 tab_id,
-                global_placement,
             } => ActionType::LaunchOrFocusPlugin(LaunchOrFocusPluginAction {
                 plugin: Some(plugin.into()),
                 should_float,
@@ -1907,7 +1889,6 @@ impl TryFrom<crate::input::actions::Action>
                 close_replaced_pane,
                 skip_cache,
                 tab_id: tab_id.map(|t| t as u32),
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::LaunchPlugin {
                 plugin,
@@ -1918,7 +1899,6 @@ impl TryFrom<crate::input::actions::Action>
                 cwd,
                 no_focus,
                 tab_id,
-                global_placement,
             } => ActionType::LaunchPlugin(LaunchPluginAction {
                 plugin: Some(plugin.into()),
                 should_float,
@@ -1928,7 +1908,6 @@ impl TryFrom<crate::input::actions::Action>
                 cwd: cwd.map(|p| p.to_string_lossy().to_string()),
                 tab_id: tab_id.map(|t| t as u32),
                 no_focus,
-                global_placement: global_placement.map(TryInto::try_into).transpose()?,
             }),
             crate::input::actions::Action::MouseEvent { event } => {
                 ActionType::MouseEvent(MouseEventAction {
@@ -2195,12 +2174,6 @@ impl TryFrom<crate::input::actions::Action>
                 pane_id: Some(pane_id.into()),
                 coordinates: Some(coordinates.into()),
             }),
-            crate::input::actions::Action::SetGlobalPanePlacement { pane_id, placement } => {
-                ActionType::SetGlobalPanePlacement(SetGlobalPanePlacementAction {
-                    pane_id: Some(pane_id.into()),
-                    placement: Some(placement.try_into()?),
-                })
-            },
             crate::input::actions::Action::TogglePaneBorderless { pane_id } => {
                 ActionType::TogglePaneBorderless(TogglePaneBorderlessAction {
                     pane_id: Some(pane_id.into()),
@@ -2561,10 +2534,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     .transpose()?,
                 pane_name: new_pane_action.pane_name,
                 start_suppressed: new_pane_action.start_suppressed,
-                global_placement: new_pane_action
-                    .global_placement
-                    .map(TryInto::try_into)
-                    .transpose()?,
             }),
             ActionType::EditFile(edit_file_action) => Ok(crate::input::actions::Action::EditFile {
                 payload: edit_file_action
@@ -2586,10 +2555,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 near_current_pane: edit_file_action.near_current_pane,
                 no_focus: edit_file_action.no_focus,
                 tab_id: edit_file_action.tab_id.map(|t| t as usize),
-                global_placement: edit_file_action
-                    .global_placement
-                    .map(TryInto::try_into)
-                    .transpose()?,
             }),
             ActionType::NewFloatingPane(new_floating_action) => {
                 Ok(crate::input::actions::Action::NewFloatingPane {
@@ -2605,10 +2570,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     near_current_pane: new_floating_action.near_current_pane,
                     no_focus: new_floating_action.no_focus,
                     tab_id: new_floating_action.tab_id.map(|t| t as usize),
-                    global_placement: new_floating_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::NewTiledPane(new_tiled_action) => {
@@ -2623,10 +2584,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     no_focus: new_tiled_action.no_focus,
                     borderless: new_tiled_action.borderless,
                     tab_id: new_tiled_action.tab_id.map(|t| t as usize),
-                    global_placement: new_tiled_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::NewInPlacePane(new_in_place_action) => {
@@ -2643,10 +2600,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .and_then(|p| p.try_into().ok()),
                     close_replaced_pane: new_in_place_action.close_replaced_pane,
                     tab_id: new_in_place_action.tab_id.map(|t| t as usize),
-                    global_placement: new_in_place_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::NewStackedPane(new_stacked_action) => {
@@ -2659,10 +2612,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     near_current_pane: new_stacked_action.near_current_pane,
                     no_focus: new_stacked_action.no_focus,
                     tab_id: new_stacked_action.tab_id.map(|t| t as usize),
-                    global_placement: new_stacked_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::NewBlockingPane(new_blocking_action) => {
@@ -2683,10 +2632,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     near_current_pane: new_blocking_action.near_current_pane,
                     no_focus: new_blocking_action.no_focus,
                     tab_id: new_blocking_action.tab_id.map(|t| t as usize),
-                    global_placement: new_blocking_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::TogglePaneEmbedOrFloating(_) => {
@@ -2803,10 +2748,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     .try_into()?,
                 near_current_pane: run_action.near_current_pane,
                 no_focus: run_action.no_focus,
-                global_placement: run_action
-                    .global_placement
-                    .map(TryInto::try_into)
-                    .transpose()?,
             }),
             ActionType::Detach(_) => Ok(crate::input::actions::Action::Detach),
             ActionType::SetDarkTheme(_) => Ok(crate::input::actions::Action::SetDarkTheme),
@@ -2898,10 +2839,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     close_replaced_pane: launch_plugin_action.close_replaced_pane,
                     skip_cache: launch_plugin_action.skip_cache,
                     tab_id: launch_plugin_action.tab_id.map(|t| t as usize),
-                    global_placement: launch_plugin_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::LaunchPlugin(launch_plugin_action) => {
@@ -2917,10 +2854,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     cwd: launch_plugin_action.cwd.map(PathBuf::from),
                     no_focus: launch_plugin_action.no_focus,
                     tab_id: launch_plugin_action.tab_id.map(|t| t as usize),
-                    global_placement: launch_plugin_action
-                        .global_placement
-                        .map(TryInto::try_into)
-                        .transpose()?,
                 })
             },
             ActionType::MouseEvent(mouse_event_action) => {
@@ -3216,18 +3149,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .try_into()?,
                 },
             ),
-            ActionType::SetGlobalPanePlacement(set_global_placement_action) => {
-                Ok(crate::input::actions::Action::SetGlobalPanePlacement {
-                    pane_id: set_global_placement_action
-                        .pane_id
-                        .ok_or_else(|| anyhow!("SetGlobalPanePlacement missing pane_id"))?
-                        .try_into()?,
-                    placement: set_global_placement_action
-                        .placement
-                        .ok_or_else(|| anyhow!("SetGlobalPanePlacement missing placement"))?
-                        .try_into()?,
-                })
-            },
             ActionType::TogglePaneBorderless(toggle_borderless_action) => {
                 Ok(crate::input::actions::Action::TogglePaneBorderless {
                     pane_id: toggle_borderless_action
@@ -4099,122 +4020,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::FloatingCoor
             },
             CoordinateType::Fixed(f) => Ok(crate::input::layout::PercentOrFixed::Fixed(f as usize)),
         }
-    }
-}
-
-impl TryFrom<crate::data::GlobalPanePlacement>
-    for crate::client_server_contract::client_server_contract::GlobalPanePlacement
-{
-    type Error = anyhow::Error;
-
-    fn try_from(placement: crate::data::GlobalPanePlacement) -> Result<Self> {
-        use crate::client_server_contract::client_server_contract::{
-            GlobalPaneEdge, GlobalPaneSize,
-        };
-
-        let edge = match placement.edge {
-            crate::data::GlobalPaneEdge::Left => GlobalPaneEdge::Left,
-            crate::data::GlobalPaneEdge::Right => GlobalPaneEdge::Right,
-            crate::data::GlobalPaneEdge::Top => GlobalPaneEdge::Top,
-            crate::data::GlobalPaneEdge::Bottom => GlobalPaneEdge::Bottom,
-        };
-        let size_type = contract_global_pane_size_to_protobuf(placement.size)?;
-        let length = placement
-            .length
-            .map(|length| {
-                contract_global_pane_size_to_protobuf(length).map(|size_type| GlobalPaneSize {
-                    size_type: Some(size_type),
-                })
-            })
-            .transpose()?;
-        Ok(Self {
-            edge: edge as i32,
-            size: Some(GlobalPaneSize {
-                size_type: Some(size_type),
-            }),
-            length,
-        })
-    }
-}
-
-fn contract_global_pane_size_to_protobuf(
-    size: crate::input::layout::PercentOrFixed,
-) -> Result<crate::client_server_contract::client_server_contract::global_pane_size::SizeType> {
-    use crate::client_server_contract::client_server_contract::global_pane_size;
-    match size {
-        crate::input::layout::PercentOrFixed::Fixed(0)
-        | crate::input::layout::PercentOrFixed::Percent(0) => {
-            Err(anyhow!("Global pane size must be greater than zero"))
-        },
-        crate::input::layout::PercentOrFixed::Percent(size) if size > 100 => {
-            Err(anyhow!("Global pane percent must be between 1 and 100"))
-        },
-        crate::input::layout::PercentOrFixed::Fixed(size) => Ok(global_pane_size::SizeType::Fixed(
-            u32::try_from(size)
-                .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
-        )),
-        crate::input::layout::PercentOrFixed::Percent(size) => {
-            Ok(global_pane_size::SizeType::Percent(
-                u32::try_from(size)
-                    .map_err(|_| anyhow!("Global pane size does not fit u32: {}", size))?,
-            ))
-        },
-    }
-}
-
-fn contract_global_pane_size_from_protobuf(
-    size: crate::client_server_contract::client_server_contract::global_pane_size::SizeType,
-) -> Result<crate::input::layout::PercentOrFixed> {
-    use crate::client_server_contract::client_server_contract::global_pane_size;
-    match size {
-        global_pane_size::SizeType::Fixed(0) | global_pane_size::SizeType::Percent(0) => {
-            Err(anyhow!("Global pane size must be greater than zero"))
-        },
-        global_pane_size::SizeType::Percent(size) if size > 100 => {
-            Err(anyhow!("Global pane percent must be between 1 and 100"))
-        },
-        global_pane_size::SizeType::Fixed(size) => Ok(crate::input::layout::PercentOrFixed::Fixed(
-            usize::try_from(size)
-                .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
-        )),
-        global_pane_size::SizeType::Percent(size) => {
-            Ok(crate::input::layout::PercentOrFixed::Percent(
-                usize::try_from(size)
-                    .map_err(|_| anyhow!("Global pane size does not fit usize: {}", size))?,
-            ))
-        },
-    }
-}
-
-impl TryFrom<crate::client_server_contract::client_server_contract::GlobalPanePlacement>
-    for crate::data::GlobalPanePlacement
-{
-    type Error = anyhow::Error;
-
-    fn try_from(
-        placement: crate::client_server_contract::client_server_contract::GlobalPanePlacement,
-    ) -> Result<Self> {
-        use crate::client_server_contract::client_server_contract::GlobalPaneEdge;
-
-        let edge = match GlobalPaneEdge::try_from(placement.edge) {
-            Ok(GlobalPaneEdge::Left) => crate::data::GlobalPaneEdge::Left,
-            Ok(GlobalPaneEdge::Right) => crate::data::GlobalPaneEdge::Right,
-            Ok(GlobalPaneEdge::Top) => crate::data::GlobalPaneEdge::Top,
-            Ok(GlobalPaneEdge::Bottom) => crate::data::GlobalPaneEdge::Bottom,
-            _ => return Err(anyhow!("Invalid global pane edge: {}", placement.edge)),
-        };
-        let size = contract_global_pane_size_from_protobuf(
-            placement
-                .size
-                .and_then(|size| size.size_type)
-                .ok_or_else(|| anyhow!("Global pane placement missing size"))?,
-        )?;
-        let length = placement
-            .length
-            .and_then(|length| length.size_type)
-            .map(contract_global_pane_size_from_protobuf)
-            .transpose()?;
-        Ok(Self { edge, size, length })
     }
 }
 

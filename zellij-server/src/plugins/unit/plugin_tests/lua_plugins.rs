@@ -73,7 +73,6 @@ pub fn lua_plugin_loads_and_renders() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     // The fixture subscribes to Key, so this reaches `update` and asks for a re-render.
@@ -160,7 +159,6 @@ pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
         None,
         None,
         None,
-        None,
     ));
     screen_thread.join().unwrap();
     teardown();
@@ -231,7 +229,6 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -323,7 +320,6 @@ pub fn lua_plugin_receives_its_configuration() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -373,7 +369,6 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -459,7 +454,6 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     // 't' is what the fixture maps to `zellij.open_terminal`.
@@ -527,7 +521,6 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -604,7 +597,6 @@ pub fn a_newly_reachable_command_works_end_to_end() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -693,7 +685,6 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         None,
         None,
         None,
-        None,
     ));
     screen_thread.join().unwrap();
     teardown();
@@ -746,7 +737,6 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -813,7 +803,6 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

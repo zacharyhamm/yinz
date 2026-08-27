@@ -12,9 +12,7 @@ use zellij_utils::data::{
     Direction, NewPanePlacement, OverlayPlacement, Resize, ResizeStrategy, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, PercentOrFixed, SplitDirection, SplitSize, TiledPaneLayout,
-};
+use zellij_utils::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -23,7 +21,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
+use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels};
 use zellij_utils::{
     data::{ModeInfo, Palette, Style},
     input::command::{RunCommand, TerminalAction},
@@ -442,18 +440,6 @@ fn floating_pane_geom(tab: &Tab, pane_id: PaneId) -> PaneGeom {
         .get(&pane_id)
         .expect("floating pane exists")
         .current_geom()
-}
-
-/// Places the tab as `Screen` would when a 10 column global pane is docked to the left of the
-/// screen: the tab keeps `cols` columns, starting at column 10.
-fn dock_tab_beside_left_global_pane(tab: &mut Tab, cols: usize, rows: usize) {
-    tab.resize_whole_tab_to(Viewport {
-        x: 10,
-        y: 0,
-        cols,
-        rows,
-    })
-    .unwrap();
 }
 
 fn create_tab_with_four_panes() -> Tab {

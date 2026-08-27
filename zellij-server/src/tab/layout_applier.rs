@@ -1054,26 +1054,16 @@ impl<'a> LayoutApplier<'a> {
         pane_frame_style: PaneFrameStyle,
     ) {
         {
-            // reset viewport before reapplying offset, keeping the tab's origin (non-zero when
-            // global panes are docked to the left or top of the screen)
-            let (origin_x, origin_y) = tiled_panes.display_area_origin();
+            // reset viewport before reapplying offset
             let mut viewport = viewport.borrow_mut();
             *viewport = (*display_area.borrow()).into();
-            viewport.x = origin_x;
-            viewport.y = origin_y;
         }
         let boundary_geoms = tiled_panes.non_selectable_pane_geoms_inside_viewport();
         {
             // curly braces here is so that we free viewport immediately when we're done
             let mut viewport = viewport.borrow_mut();
             for position_and_size in boundary_geoms {
-                // "covers the viewport width" rather than "equals" it: a tab bar or status bar
-                // beside a left/right global pane is widened over it (see
-                // `TiledPanes::expand_ui_panes_over_global_strips`) and still has to be offset out
-                // of the viewport
-                if position_and_size.x <= viewport.x
-                    && position_and_size.x + position_and_size.cols >= viewport.x + viewport.cols
-                {
+                if position_and_size.x == viewport.x && position_and_size.cols == viewport.cols {
                     if position_and_size.y == viewport.y {
                         viewport.y += position_and_size.rows;
                         viewport.rows -= position_and_size.rows;
@@ -1145,12 +1135,7 @@ impl<'a> LayoutApplier<'a> {
             (display_area.cols, display_area.rows)
         };
 
-        // panes are positioned from the tab's origin, which is non-zero when global panes are
-        // docked to the left or top of the screen
-        let (origin_x, origin_y) = self.tiled_panes.display_area_origin();
         let mut free_space = PaneGeom::default();
-        free_space.x = origin_x;
-        free_space.y = origin_y;
         free_space.cols.set_inner(display_area_cols);
         free_space.rows.set_inner(display_area_rows);
         free_space

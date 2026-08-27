@@ -737,7 +737,6 @@ pub mod tests {
             close_replaced_pane: false,
             skip_cache: false,
             tab_id: None,
-            global_placement: None,
         }
     }
 

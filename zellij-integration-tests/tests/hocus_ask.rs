@@ -70,26 +70,6 @@ const HOCUS_AND_SHELL: &str = r#"layout {
 }
 "#;
 
-const GLOBAL_AND_SHELL: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true
-    }
-    pane
-}
-"#;
-
-/// As above, plus a floating pane the popup has to share the floating layer with.
-const GLOBAL_SHELL_AND_FLOATING: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%"
-    }
-    pane
-    floating_panes {
-        pane
-    }
-}
-"#;
-
 /// A session with one shell pane and the popup available.
 fn start_without_hocus() -> TestSession {
     let zellij = TestRunner::new(TERMINAL_SIZE).with_config(ASK_ONLY).start();
@@ -212,109 +192,6 @@ fn dismissing_the_popup_returns_focus_to_the_pane_it_covered() {
     zellij.quit();
 }
 
-#[test]
-fn popup_from_a_global_pane_covers_it_and_returns_focus() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(ASK_ONLY)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
-    let shell = zellij.expect_pty_spawn();
-    shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("$")
-    });
-    zellij.send_stdin(&keys::alt('h'));
-    for _ in 0..50 {
-        zellij.send_stdin(b"g");
-        if global.stdin_bytes().contains(&b'g') {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(global.stdin_bytes().contains(&b'g'), "global pane focused");
-
-    open_popup(&zellij);
-    let prompt_column = zellij
-        .snapshot()
-        .lines()
-        .into_iter()
-        .find_map(|line| {
-            line.find(POPUP_PROMPT)
-                .map(|byte_index| line[..byte_index].chars().count())
-        })
-        .expect("popup prompt rendered");
-    assert!(prompt_column < TERMINAL_SIZE.cols / 2);
-
-    zellij.send_stdin(b"q");
-    zellij.wait_until("the popup takes keyboard focus", |snapshot| {
-        snapshot.contains("ask> q")
-    });
-    zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("the popup closes", |snapshot| {
-        !snapshot.contains(POPUP_PROMPT)
-    });
-
-    let mut restored = false;
-    for _ in 0..50 {
-        zellij.send_stdin(b"x");
-        if global.stdin_bytes().contains(&b'x') {
-            restored = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(
-        restored,
-        "closing the popup should restore global-pane focus"
-    );
-    zellij.quit();
-}
-
-/// The popup is one floating pane among however many are already open, and the server draws the
-/// floating panes in two passes - the overlays, of which the popup is one, and everything else.
-/// A popup whose z-index comes from its place in its own pass rather than from the stack of all
-/// of them is clipped against its own geometry and disappears, leaving the global pane behind it
-/// on screen.
-#[test]
-fn the_popup_covers_a_global_pane_with_another_floating_pane_already_open() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(ASK_ONLY)
-        .with_layout(LayoutInfo::Stringified(
-            GLOBAL_SHELL_AND_FLOATING.to_owned(),
-        ))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
-    let shell = zellij.expect_pty_spawn();
-    shell.output(PROMPT);
-    let floating_shell = zellij.expect_pty_spawn();
-    floating_shell.output(b"FLOATING PANE");
-    zellij.wait_until("the global, tiled and floating panes load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("FLOATING PANE")
-    });
-
-    open_popup(&zellij);
-    let snapshot = zellij.snapshot();
-    assert!(
-        snapshot.contains(POPUP_TITLE),
-        "the popup should draw its frame over the panes it covers, got:\n{snapshot}"
-    );
-
-    // the popup takes its place over the global pane only once it has repositioned itself, so
-    // what matters is that it can still paint after that - a question typed into it has to arrive
-    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
-    zellij.send_stdin(b"still on top?");
-    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
-    zellij.wait_until(
-        "the popup can still paint over what it covers",
-        |snapshot| snapshot.contains("still on top?"),
-    );
-
-    zellij.quit();
-}
-
 /// Selecting another pane is a way of saying you are done with the popup.
 ///
 /// `Alt n` opens the new pane *floating and focused*, on top of the popup
@@ -341,54 +218,6 @@ fn focusing_another_pane_dismisses_the_popup() {
     zellij.wait_until("the popup gives way to the new pane", |grid_snapshot| {
         !grid_snapshot.contains(POPUP_TITLE) && !grid_snapshot.contains(POPUP_PROMPT)
     });
-
-    zellij.quit();
-}
-
-/// An overlay is the one pane placed against the whole surface, so it is the one pane whose cells
-/// can land on a global pane - outside the viewport of every tab, including its own. The tab it
-/// lives in stops painting the moment its last client leaves it, so nothing draws the popup for a
-/// client looking at another tab; the question is whether anything paints over what it left there.
-#[test]
-fn a_popup_over_a_global_pane_is_gone_from_another_tab() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(ASK_ONLY)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
-    let first_shell = zellij.expect_pty_spawn();
-    first_shell.output(b"first tab shell");
-    first_shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
-    });
-
-    open_popup(&zellij);
-    zellij.send_stdin(&keys::BRACKETED_PASTE_START);
-    zellij.send_stdin(b"abandoned question");
-    zellij.send_stdin(&keys::BRACKETED_PASTE_END);
-    zellij.wait_until("the question is on screen", |snapshot| {
-        snapshot.contains("abandoned question")
-    });
-
-    // Tab mode, then `n` for a new tab - which spawns a shell of its own.
-    zellij.send_stdin(&keys::ctrl('t'));
-    zellij.send_stdin(b"n");
-    let second_shell = zellij.expect_pty_spawn();
-    second_shell.output(b"second tab shell");
-    second_shell.output(PROMPT);
-    zellij.wait_until("the second tab is up", |snapshot| {
-        snapshot.contains("second tab shell")
-    });
-
-    let snapshot = zellij.snapshot();
-    assert!(
-        !snapshot.contains(POPUP_TITLE)
-            && !snapshot.contains(POPUP_PROMPT)
-            && !snapshot.contains("abandoned question"),
-        "the popup belongs to the tab that was left behind, got:\n{snapshot}"
-    );
 
     zellij.quit();
 }

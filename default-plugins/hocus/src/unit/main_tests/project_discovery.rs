@@ -156,8 +156,8 @@ fn an_explicit_assignment_wins_over_the_automatic_one() {
     );
 }
 
-/// hocus is a global pane, so it may never learn which tab is active. The
-/// focused agent is the answer either way.
+/// hocus may never learn which tab is active. The focused agent is the answer
+/// either way.
 #[test]
 fn the_focused_agent_names_the_project_with_no_tabs_at_all() {
     let mut state = idle_state();
