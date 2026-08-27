@@ -212,6 +212,18 @@ impl Drop for NotificationEnd {
 // otherwise blocking-CLI actions
 // (`wait_forever=true`) park this function while still holding the guard,
 // deadlocking concurrent `session_data.write()`s.
+/// Whether a key's resolved actions take an open context menu with them.
+///
+/// A key that writes to the pane is handled in `ScreenInstruction::WriteCharacter`, which gives the
+/// menu first refusal on the keys it uses and dismisses it for the rest. Anything else was resolved
+/// to its own instructions here and never passes that point, so a menu would survive the tab
+/// switch, focus move or layout change it is now describing wrongly.
+fn actions_dismiss_context_menu(actions: &[Action]) -> bool {
+    actions
+        .iter()
+        .any(|action| !matches!(action, Action::Write { .. } | Action::WriteChars { .. }))
+}
+
 fn new_pane_routing(
     no_focus: bool,
     near_current_pane: bool,
@@ -2486,6 +2498,15 @@ pub(crate) fn route_thread_main(
                             if let Some((senders, default_shell, client_input_mode, actions)) =
                                 dispatch_inputs
                             {
+                                // Enqueued ahead of the actions themselves, so an open menu is gone
+                                // before the state it was covering changes. Gated rather than
+                                // unconditional to keep ordinary typing - which `WriteCharacter`
+                                // already handles - off this path entirely.
+                                if actions_dismiss_context_menu(&actions) {
+                                    let _ = senders.send_to_screen(
+                                        ScreenInstruction::CloseContextMenu(client_id),
+                                    );
+                                }
                                 for action in actions {
                                     // Send user input to plugin thread for logging
                                     let _ = senders.send_to_plugin(PluginInstruction::UserInput {
@@ -3504,6 +3525,27 @@ fn send_output_to_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this guards: bound keys become their own screen instructions and never reach
+    /// `WriteCharacter`, so without a dismissal here a tab switch leaves a stale menu on screen,
+    /// still offering to act on the pane it was opened over.
+    #[test]
+    fn only_keys_bound_to_something_other_than_writing_dismiss_a_context_menu() {
+        let write = Action::Write {
+            key_with_modifier: None,
+            bytes: vec![b'a'],
+            is_kitty_keyboard_protocol: false,
+        };
+        assert!(!actions_dismiss_context_menu(std::slice::from_ref(&write)));
+        assert!(!actions_dismiss_context_menu(&[Action::WriteChars {
+            chars: "a".to_owned()
+        }]));
+        assert!(actions_dismiss_context_menu(&[Action::GoToNextTab]));
+        assert!(
+            actions_dismiss_context_menu(&[write, Action::GoToNextTab]),
+            "one non-writing action in the sequence is enough"
+        );
+    }
 
     #[test]
     fn test_notification_end_sets_affected_tab_id() {

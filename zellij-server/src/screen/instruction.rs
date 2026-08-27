@@ -572,6 +572,14 @@ pub enum ScreenInstruction {
         actions: Vec<Action>,
         client_id: ClientId,
     },
+    /// Dismiss this client's context menu, if it has one.
+    ///
+    /// Sent from `route.rs` for a key bound to something other than writing to the pane: those
+    /// actions become their own screen instructions and never reach `WriteCharacter`, where the
+    /// menu otherwise gets out of the way. Without this a tab switch or a focus move leaves a menu
+    /// painted over the state it was describing, still offering to act on the pane it was opened
+    /// over.
+    CloseContextMenu(ClientId),
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
