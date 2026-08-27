@@ -107,10 +107,30 @@ impl Screen {
                 }
             }
 
+            let session_surface = Viewport {
+                x: 0,
+                y: 0,
+                cols: surface.cols,
+                rows: surface.rows,
+            };
+
+            // The toasts are drawn above every pane, so nothing may put a cursor - real or the
+            // fake one standing in for another client - on a cell they cover. Told to the output
+            // before anything renders, because the fake cursors are decided while the panes draw.
+            output.set_notification_rects(if self.notifications.is_empty() {
+                vec![]
+            } else {
+                self.notification_cell_rects(session_surface, now)
+            });
+
+            // Only the panes here: the cursor is placed further down, once the toasts have painted
+            // too.
+            let mut tabs_that_rendered: Vec<usize> = vec![];
             for (tab_index, tab) in &mut self.tabs {
                 if tab.has_selectable_tiled_panes() {
                     // Pass None for normal client rendering
-                    tab.render(&mut output, None).context(err_context)?;
+                    tab.render_panes(&mut output, None).context(err_context)?;
+                    tabs_that_rendered.push(*tab_index);
                 } else if !tab.is_pending() {
                     tabs_to_close.push(*tab_index);
                 }
@@ -125,14 +145,20 @@ impl Screen {
                     .filter(|client_id| !self.watcher_clients.contains_key(client_id))
                     .copied()
                     .collect();
-                let session_surface = Viewport {
-                    x: 0,
-                    y: 0,
-                    cols: surface.cols,
-                    rows: surface.rows,
-                };
                 self.render_notifications(&mut output, session_surface, &regular_client_ids, now)
                     .context(err_context)?;
+            }
+
+            // The cursor goes after the toasts, not inside each tab's render. `render_cursor` only
+            // re-places the cursor when something painted this frame, and a toast repainting on
+            // its own is exactly that - a frame whose only chunks belong to a layer the tab cannot
+            // see. Deciding before they painted left such a frame with no goto at all, so the
+            // cursor stayed wherever the toast's last absolute goto put it: blinking in the
+            // bottom-right of the box.
+            for tab_index in &tabs_that_rendered {
+                if let Some(tab) = self.tabs.get_mut(tab_index) {
+                    tab.render_cursor_last(&mut output);
+                }
             }
 
             let pane_render_report = output.drain_pane_render_report();
