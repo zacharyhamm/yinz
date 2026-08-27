@@ -41,7 +41,6 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
-use hocus_proto::launch::{overlay_configuration, HOCUS_ALIAS};
 
 use crate::ui;
 use crate::State;
@@ -373,48 +372,6 @@ impl State {
         // the destination resolves the coordinates against its own surface, but the sizes are
         // ours to restate - nothing else knows the panes' proportions
         self.apply_overlay_geometry();
-    }
-
-    /// Hand over to an overlay-configured hocus and close.
-    ///
-    /// This instance was restored from a session dump written before hocus became an overlay, so
-    /// the server is drawing it as a *global pane* - a strip carved off the session surface, with
-    /// every tab shrunk to fit beside it. Nothing else will clear it: overlays are not serialized,
-    /// so the pane the user asks for with the keybinding is a second one, opened beside a strip
-    /// that stays until it is closed by hand.
-    ///
-    /// **Only this half sends a launch.** The message names `HOCUS_ALIAS` with
-    /// `overlay_configuration()`, so the launch-or-reuse behind the url opens an overlay hocus -
-    /// and a legacy `hocus-agents` therefore has nothing to do but close itself. Two launchers
-    /// would be two chances to disagree about the configuration the lookup matches on
-    /// (`message_to_plugin` stamps a `caller_cwd` from the sending plugin, and that lookup is
-    /// exact), which is how you get two conversations instead of one.
-    ///
-    /// **No coordinates.** A global pane's cached surface is not the one the new overlay will be
-    /// placed against, so any geometry computed here would be wrong. The new hocus places itself
-    /// on its first `TabUpdate`, which is what it does when it is launched any other way.
-    ///
-    /// The handover cannot loop: this instance's identity has no `overlay` key and the one being
-    /// asked for does, so the message can never be routed back here - and what it opens is never
-    /// a suspect.
-    pub(crate) fn migrate_to_overlay(&mut self) {
-        if self.migrating {
-            return;
-        }
-        self.migrating = true;
-        pipe_message_to_plugin(
-            MessageToPlugin::new(hocus_proto::wire::HOCUS_OPEN)
-                .with_plugin_url(HOCUS_ALIAS)
-                .with_plugin_config(overlay_configuration())
-                // The overlay opened here is standing in for *this* pane, which the user summoned
-                // with a keybinding - so it has to arrive holding the keyboard, exactly as the
-                // pane it replaces would have. Left unset, the launch behind `plugin_url` decides,
-                // and it decides `false` (`should_focus.unwrap_or(false)` in `plugins::mod`): the
-                // conversation would come up on screen with the keys still going to whatever the
-                // user was in.
-                .new_plugin_instance_should_be_focused(),
-        );
-        close_self();
     }
 
     /// Ask an agent list that already exists to announce itself - and open nothing if there is
