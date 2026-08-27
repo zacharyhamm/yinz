@@ -8801,6 +8801,36 @@ impl Tab {
             self.suppressed_panes.insert(pane_id, suppressed_pane);
         }
     }
+    /// Take this tab's dismissible overlays out of it, ready to be given to another tab.
+    ///
+    /// An overlay is drawn over the whole session surface rather than inside this tab's
+    /// viewport, and hocus - the one thing that lives in one for a whole session - holds state no
+    /// other pane does. So a tab going away is not a reason for one to be unloaded: `close_tab_by_id`
+    /// takes them out here and re-homes them, exactly as it already does for suppressed panes.
+    ///
+    /// **Modals are deliberately left behind.** A modal is a dialog *about* the tab that is going
+    /// away, and one re-homed unfocused is an input deadlock: `OverlayPanes::may_be_focused`
+    /// refuses every other overlay the keyboard while a modal is in `stack_layer_ids`, and a modal
+    /// has no channel to learn that it lost focus. It closes with the tab.
+    ///
+    /// The placement is read *before* the extraction, which is what destroys the wrapper holding
+    /// an overlay's kind and coordinates - see [`Tab::placement_for_extraction`].
+    pub fn extract_overlay_panes(&mut self) -> Vec<(ExtractedPanePlacement, Box<dyn Pane>)> {
+        let pane_ids: Vec<PaneId> = self
+            .overlay_panes
+            .pane_ids()
+            .filter(|pane_id| !self.overlay_panes.is_modal(pane_id))
+            .copied()
+            .collect();
+        pane_ids
+            .into_iter()
+            .filter_map(|pane_id| {
+                let placement = self.placement_for_extraction(pane_id);
+                self.extract_pane(pane_id, true)
+                    .map(|pane| (placement, pane))
+            })
+            .collect()
+    }
     pub fn toggle_pane_pinned(&mut self, client_id: ClientId) {
         if let Some(pane) = self.get_active_pane_mut(client_id) {
             pane.toggle_pinned();

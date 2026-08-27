@@ -520,9 +520,9 @@ impl Screen {
     /// with nothing to act on.
     ///
     /// The tab's own panes, which is not the same as `get_all_pane_ids`: that also
-    /// reports the suppressed *plugin* panes, and closing one would take it away
-    /// from the whole session rather than from this tab. `close_tab_by_id` already
-    /// knows to re-home those. The suppressed panes that do have to go are the
+    /// reports the suppressed *plugin* panes and the overlays, and closing one
+    /// would take it away from the whole session rather than from this tab.
+    /// `close_tab_by_id` already knows to re-home both. The suppressed panes that do have to go are the
     /// hidden members of the tab's stack lists — they are travelling, and being
     /// re-homed would leave them in another tab with their supervisors handed away.
     pub(super) fn empty_and_close_tab(&mut self, tab_index: usize) {
@@ -545,9 +545,11 @@ impl Screen {
             // Only what was released, which is what the tiled and floating slots were built from.
             // An overlay has no slot and so was never handed over (see
             // `Tab::tiled_and_floating_pane_ids`); taking it out here would remove it from the tab
-            // before `close_tab_by_id` could tell the pty thread about it, and - because nothing
-            // in this function says a word to that thread - its child would be left running with
-            // nothing attached to it. Left where it is, it closes with the tab like any other.
+            // before `close_tab_by_id` could see it, and that is the one thing that knows what to
+            // do with one. Left where it is, it is re-homed into a surviving tab
+            // (`Screen::move_overlay_panes_from_closed_tab`) - which is right for a warp too: an
+            // overlay is a local plugin instance with no process to hand over, so it stays in this
+            // session rather than travelling with the tab.
             for pane_id in tab.tiled_and_floating_pane_ids() {
                 tab.close_pane(pane_id, false, None);
                 emptied.push(pane_id);
