@@ -235,6 +235,7 @@ pub enum ScreenContext {
     ShowFloatingPanes,
     HideFloatingPanes,
     AreFloatingPanesVisible,
+    ContextMenuHandleKeyIfOpen,
     TogglePaneEmbedOrFloating,
     WriteCharacter,
     ResizeIncreaseAll,

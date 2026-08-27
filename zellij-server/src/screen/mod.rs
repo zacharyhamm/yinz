@@ -77,7 +77,7 @@ use zellij_utils::data::{
     WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::HookPoint;
 use zellij_utils::input::keybinds::Keybinds;
@@ -727,6 +727,10 @@ pub(crate) struct Screen {
     // duration is its creation time
     default_layout: Box<Layout>,
     default_shell: PathBuf,
+    /// Same shell as `default_shell`, in the `route_action`-ready shape (command plus
+    /// `default_cwd`), for menu-triggered pane creation to route with the real configured
+    /// shell instead of falling back to `get_default_shell()`.
+    default_shell_action: Option<TerminalAction>,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     arrow_fonts: bool,
@@ -1094,6 +1098,7 @@ impl Screen {
         default_layout: Box<Layout>,
         default_layout_name: Option<String>,
         default_shell: PathBuf,
+        default_shell_action: Option<TerminalAction>,
         session_serialization: bool,
         serialize_pane_viewport: bool,
         scrollback_lines_to_serialize: Option<usize>,
@@ -1184,6 +1189,7 @@ impl Screen {
             default_layout,
             default_layout_name,
             default_shell,
+            default_shell_action,
             session_serialization,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
@@ -2843,6 +2849,7 @@ impl Screen {
         theme: Styling,
         simplified_ui: bool,
         default_shell: Option<PathBuf>,
+        default_cwd: Option<PathBuf>,
         pane_frame_style: PaneFrameStyle,
         copy_command: Option<String>,
         copy_to_clipboard: Option<Clipboard>,
@@ -2880,6 +2887,14 @@ impl Screen {
         self.default_mode_info.update_keybinds(new_keybinds.clone());
         self.default_mode_info.update_default_mode(new_default_mode);
         self.default_shell = default_shell.clone().unwrap_or_else(|| get_default_shell());
+        self.default_shell_action = default_shell.clone().map(|shell| {
+            TerminalAction::RunCommand(RunCommand {
+                command: shell,
+                cwd: default_cwd.clone(),
+                use_terminal_title: true,
+                ..Default::default()
+            })
+        });
         self.default_editor = default_editor.clone().or_else(|| get_default_editor());
         self.auto_layout = auto_layout;
         self.copy_options.command = copy_command.clone();

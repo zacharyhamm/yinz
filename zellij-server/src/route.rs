@@ -2457,6 +2457,12 @@ pub(crate) fn route_thread_main(
                                 .unwrap()
                                 .set_last_active_client(client_id);
 
+                            // Cloned before `key` is moved into the passthrough branch below, so
+                            // it survives to ask an open menu about a key that resolves to
+                            // something other than a write - see the `actions_dismiss_context_menu`
+                            // use further down for why only that case needs it.
+                            let key_for_menu_check = key.clone();
+
                             // The read guard ends as a temporary in this expression so
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
@@ -2498,43 +2504,70 @@ pub(crate) fn route_thread_main(
                             if let Some((senders, default_shell, client_input_mode, actions)) =
                                 dispatch_inputs
                             {
-                                // Enqueued ahead of the actions themselves, so an open menu is gone
-                                // before the state it was covering changes. Gated rather than
-                                // unconditional to keep ordinary typing - which `WriteCharacter`
-                                // already handles - off this path entirely.
+                                // A key that resolves to a write is handled by
+                                // `ScreenInstruction::WriteCharacter`, which already gives an open
+                                // menu first refusal on the keys it uses. Anything else - a key
+                                // bound to its own action by the current mode, e.g. Down/Enter/Esc
+                                // in Pane or Resize mode - never reaches that path, so the menu
+                                // would never get a say. Ask it here, before the mode's own
+                                // binding fires, rather than only dismissing it after the fact.
+                                let mut menu_handled_key = false;
                                 if actions_dismiss_context_menu(&actions) {
-                                    let _ = senders.send_to_screen(
-                                        ScreenInstruction::CloseContextMenu(client_id),
+                                    let (completion_tx, completion_rx) = oneshot::channel();
+                                    let sent = senders.send_to_screen(
+                                        ScreenInstruction::ContextMenuHandleKeyIfOpen {
+                                            key: Some(key_for_menu_check),
+                                            client_id,
+                                            completion: Some(NotificationEnd::new(completion_tx)),
+                                        },
                                     );
+                                    if sent.is_ok() {
+                                        menu_handled_key = wait_for_action_completion(
+                                            completion_rx,
+                                            "ContextMenuHandleKeyIfOpen",
+                                            false,
+                                        )
+                                        .stdout_message
+                                        .as_deref()
+                                            == Some("true");
+                                    }
+                                    if !menu_handled_key {
+                                        let _ = senders.send_to_screen(
+                                            ScreenInstruction::CloseContextMenu(client_id),
+                                        );
+                                    }
                                 }
-                                for action in actions {
-                                    // Send user input to plugin thread for logging
-                                    let _ = senders.send_to_plugin(PluginInstruction::UserInput {
-                                        client_id,
-                                        action: action.clone(),
-                                        terminal_id: None,
-                                        cli_client_id: None,
-                                    });
+                                if !menu_handled_key {
+                                    for action in actions {
+                                        // Send user input to plugin thread for logging
+                                        let _ =
+                                            senders.send_to_plugin(PluginInstruction::UserInput {
+                                                client_id,
+                                                action: action.clone(),
+                                                terminal_id: None,
+                                                cli_client_id: None,
+                                            });
 
-                                    match route_action(
-                                        action,
-                                        client_id,
-                                        None,
-                                        None,
-                                        senders.clone(),
-                                        default_shell.clone(),
-                                        Some(&mut seen_cli_pipes),
-                                        client_input_mode,
-                                        Some(os_input.clone()),
-                                    ) {
-                                        Ok(route_action_should_break) => {
-                                            if route_action_should_break.0 {
-                                                should_break = true;
-                                            }
-                                        },
-                                        Err(e) => {
-                                            log::error!("{}", e);
-                                        },
+                                        match route_action(
+                                            action,
+                                            client_id,
+                                            None,
+                                            None,
+                                            senders.clone(),
+                                            default_shell.clone(),
+                                            Some(&mut seen_cli_pipes),
+                                            client_input_mode,
+                                            Some(os_input.clone()),
+                                        ) {
+                                            Ok(route_action_should_break) => {
+                                                if route_action_should_break.0 {
+                                                    should_break = true;
+                                                }
+                                            },
+                                            Err(e) => {
+                                                log::error!("{}", e);
+                                            },
+                                        }
                                     }
                                 }
                             }

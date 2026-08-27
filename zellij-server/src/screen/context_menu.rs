@@ -535,6 +535,7 @@ impl Screen {
     fn run_context_menu_actions(&self, pane_id: PaneId, actions: Vec<Action>, client_id: ClientId) {
         let senders = self.bus.senders.clone();
         let default_mode = self.default_mode_info.mode;
+        let default_shell = self.default_shell_action.clone();
         let spawned = thread::Builder::new()
             .name("context_menu_actions".to_string())
             .spawn(move || {
@@ -558,7 +559,7 @@ impl Screen {
                         None,
                         Some(pane_id),
                         senders.clone(),
-                        None,
+                        default_shell.clone(),
                         None,
                         default_mode,
                         None,

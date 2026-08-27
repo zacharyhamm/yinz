@@ -684,6 +684,7 @@ fn a_reload_replaces_the_configured_menu() {
             Styling::default(),
             true,
             None,
+            None, // default_cwd
             PaneFrameStyle::None,
             None,
             None,
