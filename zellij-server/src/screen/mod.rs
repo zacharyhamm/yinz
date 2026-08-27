@@ -1003,14 +1003,11 @@ pub(crate) enum ContextMenuItems {
     /// change under a pointer already on its way to a row, so a menu waits instead - bounded by
     /// `BackgroundJob::ContextMenuTimeout`, which promotes it to `configured` if the plugin never
     /// answers. That timer is why an unbound or wedged hook cannot make right-click do nothing.
-    AwaitingPlugin {
-        configured: Vec<ContextMenuItem>,
-    },
-    /// The fallback is visible, but the first matching plugin answer may still replace it.
-    Fallback {
-        items: Vec<ContextMenuItem>,
-        configured: Vec<ContextMenuItem>,
-    },
+    AwaitingPlugin { configured: Vec<ContextMenuItem> },
+    /// The list the menu shows for the rest of its life, from whichever of the plugin and the
+    /// timeout got there first. Nothing replaces it: the moment a menu is drawn it is also
+    /// clickable, and a list that changes under a press the user has already made would run an
+    /// item they never aimed at.
     Ready(Vec<ContextMenuItem>),
 }
 
@@ -1019,7 +1016,7 @@ impl ContextMenuItems {
     fn visible(&self) -> &[ContextMenuItem] {
         match self {
             ContextMenuItems::AwaitingPlugin { .. } => &[],
-            ContextMenuItems::Fallback { items, .. } | ContextMenuItems::Ready(items) => items,
+            ContextMenuItems::Ready(items) => items,
         }
     }
 }

@@ -392,6 +392,7 @@ pub enum ScreenContext {
     ContextMenuTimedOut,
     SetContextMenu,
     ActivateContextMenuItem,
+    CloseContextMenu,
     DumpLayoutToPlugin,
     GetFocusedPaneInfo,
     GetPaneInfo,

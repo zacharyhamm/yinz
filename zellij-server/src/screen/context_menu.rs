@@ -14,10 +14,12 @@
 //!   [`Screen::dispatch_context_menu_actions`] restores the focus before running an item rather
 //!   than trusting that it held - and it runs a queue-turn later than the click that activated the
 //!   item, so that a focus change already queued behind that click cannot land between the two.
-//! - **A menu draws nothing until it knows what it says.** The plugin hook answers asynchronously,
-//!   so a fresh menu is `AwaitingPlugin` and paints no cells at all. `BackgroundJob::ContextMenuTimeout`
-//!   promotes it to the configured items if no answer arrives, which is what stops an unbound or
-//!   wedged hook from making right-click silently do nothing.
+//! - **A menu draws nothing until it knows what it says, and then says it until it closes.** The
+//!   plugin hook answers asynchronously, so a fresh menu is `AwaitingPlugin` and paints no cells at
+//!   all. `BackgroundJob::ContextMenuTimeout` promotes it to the configured items if no answer
+//!   arrives, which is what stops an unbound or wedged hook from making right-click silently do
+//!   nothing. Whichever of the two gets there first is the list the menu keeps - a drawn menu is a
+//!   clickable one, and rows that move under a press the user has already made run the wrong item.
 //! - **Closing forces a repaint.** Nothing underneath a menu is dirty when it goes, so its cells
 //!   would keep its glyphs. [`Screen::close_context_menu`] force-renders every tab and the global
 //!   panes, exactly as `advance_notification_animations` does when a toast leaves.
@@ -47,8 +49,8 @@ use crate::ClientId;
 ///
 /// Short enough that a wedged plugin is not a visible stall, long enough that a plugin doing
 /// ordinary work - a few `BTreeMap` lookups and a filter - always wins the race. A plugin that
-/// answers late is not wrong, only late: its answer arrives, matches the still-open menu's
-/// `request_id`, and replaces the fallback list in place.
+/// answers after the timer has fired is dropped: the configured items are already drawn, and
+/// therefore already being clicked, so replacing the rows now could run an item nobody aimed at.
 pub(crate) const CONTEXT_MENU_PLUGIN_TIMEOUT_MS: u64 = 100;
 
 /// Give a plugin's items their behaviour back.
@@ -177,11 +179,11 @@ impl Screen {
         // back on. Matching against what *this menu* was opened with rather than the live config:
         // the two are normally the same, but a menu should do what it offered when it opened.
         let configured = match &menu.items {
-            ContextMenuItems::AwaitingPlugin { configured }
-            | ContextMenuItems::Fallback { configured, .. } => configured,
+            ContextMenuItems::AwaitingPlugin { configured } => configured,
             ContextMenuItems::Ready(_) => {
-                // A second answer to a menu already showing one. Nothing to re-attach against,
-                // and the first answer is the one the user is looking at.
+                // An answer to a menu that is already drawn - a second answer, or one that lost the
+                // race to the timeout. Either way the user is looking at, and may already be
+                // pressing, the list this would replace.
                 return;
             },
         };
@@ -210,11 +212,9 @@ impl Screen {
             // The plugin answered between the timer firing and this running. Its answer wins.
             return;
         };
-        let configured = configured.clone();
-        menu.items = ContextMenuItems::Fallback {
-            items: configured.clone(),
-            configured,
-        };
+        // `Ready` rather than a fallback state of its own: nothing replaces this list either, so
+        // there is nothing left for the distinction to decide.
+        menu.items = ContextMenuItems::Ready(configured.clone());
         if menu.items.visible().is_empty() {
             self.close_context_menu(client_id);
         }
@@ -489,12 +489,13 @@ impl Screen {
         self.render(None).non_fatal();
     }
 
-    /// Restore the focus a menu item's actions are relative to, then run them.
+    /// Run a menu item's actions against the pane its menu was opened over.
     ///
     /// Reached from `ScreenInstruction::ActivateContextMenuItem`, which
     /// [`Screen::activate_context_menu_item`] enqueued - so everything the queue was already
-    /// holding has been processed, and whatever focus *those* instructions wanted is now in place
-    /// and about to be overridden by the pane the user actually right-clicked.
+    /// holding has been processed, and whatever focus *those* instructions wanted is about to be
+    /// overridden by the pane the user actually right-clicked. The override itself belongs to
+    /// [`Screen::run_context_menu_actions`], which puts it next to the action it is for.
     pub(crate) fn dispatch_context_menu_actions(
         &mut self,
         pane_id: PaneId,
@@ -504,24 +505,16 @@ impl Screen {
         // The menu's pane can be gone by now - most closures take the menu with them
         // (`close_context_menus_for_pane`), but the item was activated a queue-turn ago and
         // nothing stops a pane closing in between. An item offering to act on a pane that no
-        // longer exists must do nothing at all: `focus_pane_with_id` would only log, and the
+        // longer exists must do nothing at all: the focus assertion would only log, and the
         // focus-relative actions would then run against whichever pane the client was moved to.
         if self.tab_containing_pane(pane_id).is_none() {
             log::debug!("context menu pane {pane_id:?} is gone, dropping its item's actions");
             return;
         }
-        // A menu takes no focus, so the clicked pane is normally still the focused one and
-        // `Copy`/`CloseFocus` already mean it. "Normally" is not "always": the hook - or any other
-        // plugin - can focus something else while the menu is up, and then the actions would land
-        // on a pane the user never pointed at.
-        if self.active_pane_id(client_id) != Some(pane_id) {
-            self.focus_pane_with_id(pane_id, false, false, client_id)
-                .non_fatal();
-        }
-        self.run_context_menu_actions(actions, client_id);
+        self.run_context_menu_actions(pane_id, actions, client_id);
     }
 
-    /// Route an item's actions, in order, off the screen thread.
+    /// Route an item's actions, in order, off the screen thread - each one against `pane_id`.
     ///
     /// Off-thread because `route_action` sends *to* the screen and blocks on the completion it
     /// gets back; running it here would deadlock the thread it is waiting on. `run_action` in the
@@ -530,7 +523,16 @@ impl Screen {
     /// Sequential rather than concurrent: an item that splits a pane and then renames it means
     /// those in that order, and `route_action` already blocks on each action's completion (with a
     /// timeout), so awaiting them is just running them one after another.
-    fn run_context_menu_actions(&self, actions: Vec<Action>, client_id: ClientId) {
+    ///
+    /// A menu takes no focus, so the clicked pane is normally still the focused one and
+    /// `Copy`/`CloseFocus` already mean it. "Normally" is not "always": the hook - or any other
+    /// plugin - can focus elsewhere while the menu is up. Asserting the focus from *this* thread,
+    /// immediately before the action it belongs to, is what makes the pair inseparable: restoring
+    /// it on the screen thread instead would leave everything that arrives while this thread is
+    /// starting up free to land between the two. What remains is another thread's send falling
+    /// between these two sends, which is a focus change genuinely concurrent with the item rather
+    /// than one that was already queued.
+    fn run_context_menu_actions(&self, pane_id: PaneId, actions: Vec<Action>, client_id: ClientId) {
         let senders = self.bus.senders.clone();
         let default_mode = self.default_mode_info.mode;
         let spawned = thread::Builder::new()
@@ -538,16 +540,23 @@ impl Screen {
             .spawn(move || {
                 for action in actions {
                     let name = action.to_string();
-                    // `pane_id: None` on purpose. `new_pane_routing` only consults it for
-                    // `no_focus`/`near_current_pane` placements; everything else routes by client,
-                    // which means the client's focused pane - and the caller has just made sure
-                    // that is the pane the menu was opened over. Naming the pane here would say the
-                    // same thing in a way that could drift from it.
+                    // A no-op when the pane is already focused, which is the ordinary case - see
+                    // the `already_focused` arm of `ScreenInstruction::FocusPaneWithId`.
+                    senders
+                        .send_to_screen(ScreenInstruction::FocusPaneWithId(
+                            pane_id, false, false, client_id, None,
+                        ))
+                        .non_fatal();
+                    // Named rather than left as `None`: `new_pane_routing` consults it for
+                    // `no_focus`/`near_current_pane` placements, which without it would be placed
+                    // relative to whatever the client is focused on rather than to the pane the
+                    // menu was opened over. Everything else routes by client, which the
+                    // `FocusPaneWithId` above has just pointed at the same pane.
                     if let Err(e) = route_action(
                         action,
                         client_id,
                         None,
-                        None,
+                        Some(pane_id),
                         senders.clone(),
                         None,
                         None,

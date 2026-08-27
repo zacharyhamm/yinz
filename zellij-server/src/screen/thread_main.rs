@@ -3589,6 +3589,11 @@ pub(crate) fn screen_thread_main(
                 screen.dispatch_context_menu_actions(pane_id, actions, client_id);
                 screen.render(None)?;
             },
+            ScreenInstruction::CloseContextMenu(client_id) => {
+                if screen.close_context_menu(client_id) {
+                    screen.render(None)?;
+                }
+            },
             ScreenInstruction::DismissNotification(id) => {
                 // the toast stays in the stack, sliding back out, until
                 // `reap_settled_notifications` sees its reveal reach zero and actually removes it

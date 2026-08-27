@@ -101,8 +101,11 @@ fn the_timeout_falls_back_to_the_configured_items() {
     assert_eq!(layout.rows[0].label, "Copy");
 }
 
+/// A menu that is drawn is a menu that is being clicked. An answer arriving after the fallback is
+/// up would move the rows out from under a press the user has already made, so the release could
+/// run an item they never aimed at - `Close pane` where they meant `Copy`.
 #[test]
-fn a_late_plugin_answer_replaces_the_timeout_fallback() {
+fn a_late_plugin_answer_is_ignored_once_the_fallback_is_visible() {
     let client_id = 1;
     let mut screen = screen_with_menu_configured();
     let request_id =
@@ -117,15 +120,36 @@ fn a_late_plugin_answer_replaces_the_timeout_fallback() {
     );
 
     let items = screen.context_menus[&client_id].items.visible();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].label, "Filtered");
+    assert_eq!(
+        items.len(),
+        3,
+        "the fallback the user is looking at stays: {items:?}"
+    );
+    assert_eq!(items[0].label, "Copy");
+}
 
+/// The same rule from the other side: the first answer wins, and a second one for the same menu
+/// changes nothing either.
+#[test]
+fn a_second_plugin_answer_is_ignored() {
+    let client_id = 1;
+    let mut screen = screen_with_menu_configured();
+    let request_id =
+        screen.open_context_menu(click_context(PaneId::Terminal(1), (10, 5)), client_id);
+
+    screen.set_context_menu_items(
+        request_id,
+        vec![ContextMenuItem::new("Filtered", vec![])],
+        Some(HOOK_PLUGIN_ID),
+        client_id,
+    );
     screen.set_context_menu_items(
         request_id,
         vec![ContextMenuItem::new("Stale", vec![])],
         Some(HOOK_PLUGIN_ID),
         client_id,
     );
+
     assert_eq!(
         screen.context_menus[&client_id].items.visible()[0].label,
         "Filtered"
@@ -433,6 +457,16 @@ fn closing_a_menu_forces_what_was_under_it_to_repaint() {
     );
 }
 
+/// `ScreenInstruction::CloseContextMenu` - sent for every key bound to something other than
+/// writing to the pane - renders only when there was a menu to take away.
+#[test]
+fn closing_a_menu_a_client_does_not_have_does_nothing() {
+    let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
+    assert!(screen.close_context_menu(client_id));
+    assert!(!screen.close_context_menu(client_id));
+    assert!(!screen.close_context_menu(client_id + 1));
+}
+
 #[test]
 fn a_menu_over_a_pane_closes_when_that_pane_does() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
@@ -588,6 +622,7 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
 #[test]
 fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
     let client_id = 1;
+    let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut screen = screen_with_menu_configured();
     {
         let tab = screen.get_active_tab_mut(client_id).unwrap();
@@ -604,19 +639,30 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         .expect("TEST");
     assert_eq!(screen.active_pane_id(client_id), Some(PaneId::Terminal(2)));
 
-    // "Copy", the first selectable row, carries `Action::Copy` - a focus-relative action.
-    screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), client_id);
-    screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Enter)), client_id);
-
-    // The restore happens when the enqueued instruction is drained, not inline - see
-    // `activating_an_item_enqueues_rather_than_acting_inline` for why. Standing in for the screen
-    // thread here is what lets this test assert the thing it is actually about.
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    // "Copy" is a focus-relative action, and this stands in for the screen thread draining the
+    // instruction the activation enqueued - see `activating_an_item_enqueues_rather_than_acting_inline`.
     screen.dispatch_context_menu_actions(PaneId::Terminal(1), vec![Action::Copy], client_id);
 
-    assert_eq!(
-        screen.active_pane_id(client_id),
-        Some(PaneId::Terminal(1)),
-        "the pane the menu was opened over is focused again before the item runs"
+    // The focus assertion is sent by the same thread that sends the action, immediately before it,
+    // so nothing the screen was already holding can be processed between the two.
+    let focus = screen_receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the focus assertion reaches the screen queue");
+    match focus.0 {
+        ScreenInstruction::FocusPaneWithId(pane_id, _, _, for_client, _) => {
+            assert_eq!(pane_id, PaneId::Terminal(1), "the pane the menu was over");
+            assert_eq!(for_client, client_id);
+        },
+        other => panic!("expected the focus to be asserted first, got {other:?}"),
+    }
+    let copy = screen_receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the action reaches the screen queue");
+    assert!(
+        matches!(copy.0, ScreenInstruction::Copy(..)),
+        "got {:?}",
+        copy.0
     );
 }
 
@@ -767,12 +813,20 @@ fn a_vanished_pane_drops_its_items_actions() {
     // ...and the same call for a pane that *is* there does route it, so the assertion above is
     // about the missing pane rather than about the plumbing being dead.
     screen.dispatch_context_menu_actions(PaneId::Terminal(1), vec![Action::CloseFocus], client_id);
-    let routed = screen_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the action reaches the screen queue");
+    // The focus assertion comes first - see
+    // `an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile`.
+    let routed: Vec<_> = std::iter::from_fn(|| {
+        screen_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .map(|(instruction, _)| instruction)
+    })
+    .take(2)
+    .collect();
     assert!(
-        matches!(routed.0, ScreenInstruction::CloseFocusedPane(..)),
-        "got {:?}",
-        routed.0
+        routed
+            .iter()
+            .any(|instruction| matches!(instruction, ScreenInstruction::CloseFocusedPane(..))),
+        "got {routed:?}"
     );
 }
