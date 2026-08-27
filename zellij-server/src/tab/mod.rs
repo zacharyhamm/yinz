@@ -5305,16 +5305,29 @@ impl Tab {
     /// Draw this tab: its tiled panes and chrome, then the floating layer and the overlays above
     /// it, then the cursor.
     ///
-    /// The cursor goes last so that it is placed once every pane contributing to this tab's frame
-    /// is in the output, rather than wherever the last character chunk happened to land.
+    /// The cursor goes last so that it is placed once everything contributing to the frame is in
+    /// the output, rather than wherever the last character chunk happened to land. A caller that
+    /// paints *above* the tabs - the session's toasts do - must therefore not use this: it has to
+    /// call `render_panes` for every tab, paint its own layer, and only then place the cursor with
+    /// `render_cursor_last`. See `Screen::render_to_clients`.
     pub fn render(
+        &mut self,
+        output: &mut Output,
+        client_id_override: Option<ClientId>,
+    ) -> Result<()> {
+        self.render_panes(output, client_id_override)?;
+        self.render_cursor_last(output);
+        Ok(())
+    }
+
+    /// Everything `render` draws except the cursor.
+    pub fn render_panes(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
-        self.render_cursor_last(output);
         Ok(())
     }
 
@@ -5439,8 +5452,9 @@ impl Tab {
         self.overlay_panes.has_panes()
     }
 
-    /// Position this tab's cursor, once every pane that contributes to its frame is in the output.
-    fn render_cursor_last(&mut self, output: &mut Output) {
+    /// Position this tab's cursor, once everything that contributes to the frame - every pane, and
+    /// any layer painted above them - is in the output.
+    pub fn render_cursor_last(&mut self, output: &mut Output) {
         let connected_clients: Vec<ClientId> =
             { self.connected_clients.borrow().iter().copied().collect() };
         if connected_clients.is_empty() {
@@ -5546,11 +5560,16 @@ impl Tab {
                     } else {
                         let hide_cursor = "\u{1b}[?25l";
                         output.add_post_vte_instruction_to_client(client_id, hide_cursor);
+                        // the memo below is only written when the cursor is shown, so leaving it
+                        // in place while something covers the cursor would let the frame that
+                        // uncovers it decide nothing changed and emit no goto
+                        self.cursor_positions_and_shape.remove(&client_id);
                     }
                 },
                 None => {
                     let hide_cursor = "\u{1b}[?25l";
                     output.add_post_vte_instruction_to_client(client_id, hide_cursor);
+                    self.cursor_positions_and_shape.remove(&client_id);
                 },
             }
         }
