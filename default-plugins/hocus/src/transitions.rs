@@ -188,13 +188,13 @@ impl State {
     /// to infer it, and says what that call will do rather than handing over the
     /// model's own JSON to read.
     pub fn confirmation_prompt(&self) -> Option<Vec<String>> {
-        // A plan waiting on a `y`/`n` renders through the same tail as a tool
+        // A plan waiting on an answer renders through the same tail as a tool
         // does — the wrapping, the blank line above it, and the anchor
         // suppression that keeps it from being scrolled off the bottom
         // unanswered are all things it needs for the same reasons.
         if self.awaiting_plan() {
             return Some(vec![
-                "carry out this plan?  <y> yes  <n> keep planning".to_owned()
+                "plan ready  /execute carries it out  <n> keep planning".to_owned(),
             ]);
         }
         match self.status {
@@ -203,7 +203,7 @@ impl State {
         }
     }
 
-    /// Whether a plan is waiting on a `y`/`n`.
+    /// Whether a plan is waiting to be executed or refined.
     ///
     /// Deliberately *not* folded into `is_in_flight`: nothing is arriving and no
     /// tool is running, so a question typed at the plan must go out as the next
@@ -214,7 +214,7 @@ impl State {
 
     /// Whether the read-only tool set is what goes out with the next request.
     ///
-    /// False while a plan waits on its `y`/`n` — nothing goes out at all then —
+    /// False while a plan waits on its answer — nothing goes out at all then —
     /// which is why the UI asks `plan_mode_on` instead.
     pub(crate) fn is_planning(&self) -> bool {
         matches!(self.plan, Plan::Planning)

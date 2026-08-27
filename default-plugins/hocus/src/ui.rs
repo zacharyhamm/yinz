@@ -1162,7 +1162,7 @@ fn help_line(state: &State) -> &'static str {
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
     if state.awaiting_plan() {
-        return "carry out this plan?  <y> yes  <n> keep planning  <Esc> hide";
+        return "plan ready  /execute carries it out  <n> keep planning  <Esc> hide";
     }
     // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
     // and a stream are both outstanding it takes the tool first.
@@ -1175,7 +1175,7 @@ fn help_line(state: &State) -> &'static str {
         Status::Idle if state.is_streaming() => {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
-        Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
+        Status::Idle if state.is_planning() => "planning  read-only tools  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
         Status::Idle => "<Ctrl l> new chat  <Esc> hide",
     }
